@@ -123,13 +123,10 @@ export async function checkGithubSync(repoInput: string, options: GithubSyncChec
       });
       commands.push(commandSummary("gh auth status --hostname github.com", ghAuth));
       ghAuthenticated = ghAuth.ok;
-      if (!ghAuth.ok && looksAuthBlocked(ghAuth)) {
-        authBlocked = true;
-      }
     }
   }
 
-  const warnings = buildWarnings({
+  const warnings = buildGithubSyncWarnings({
     branch,
     dirtyFileCount,
     localHead,
@@ -198,7 +195,7 @@ export function parseGithubRemote(remoteUrl: string): string | null {
   return null;
 }
 
-function buildWarnings(input: {
+export function buildGithubSyncWarnings(input: {
   branch: string | null;
   dirtyFileCount: number;
   localHead: string | null;
@@ -213,6 +210,8 @@ function buildWarnings(input: {
   authBlocked: boolean;
 }): string[] {
   const warnings: string[] = [];
+  const sourceSyncOk = input.pushDryRunChecked && input.pushDryRunOk === true;
+  const sshGitHubRemote = input.remoteUrl ? isGithubSshRemote(input.remoteUrl) : false;
   if (!input.branch) {
     warnings.push("current branch could not be determined");
   }
@@ -238,7 +237,7 @@ function buildWarnings(input: {
   }
   if (input.ghInstalled === false) {
     warnings.push("GitHub CLI is not installed in this shell");
-  } else if (input.ghInstalled && input.ghAuthenticated === false) {
+  } else if (input.ghInstalled && input.ghAuthenticated === false && !(sourceSyncOk && sshGitHubRemote)) {
     warnings.push("GitHub CLI is installed but not authenticated for github.com");
   }
   return warnings;
@@ -259,6 +258,8 @@ export function buildGithubSyncNextSteps(input: {
   ghAuthenticated: boolean | null;
 }): string[] {
   const steps: string[] = [];
+  const sourceSyncOk = input.pushDryRunChecked && input.pushDryRunOk === true;
+  const sshGitHubRemote = input.remoteUrl ? isGithubSshRemote(input.remoteUrl) : false;
   if (!input.remoteUrl) {
     steps.push(`add a GitHub remote, for example: git -C ${shellQuote(input.repoRoot)} remote add ${input.remoteName} git@github.com:OWNER/REPO.git`);
     return steps;
@@ -271,11 +272,14 @@ export function buildGithubSyncNextSteps(input: {
     steps.push("checkout or create the branch that should be pushed to GitHub");
     return steps;
   }
-  if (input.authBlocked || input.ghInstalled === false || input.ghAuthenticated === false) {
+  if (input.authBlocked || (!sourceSyncOk && input.ghInstalled === false) || (!sourceSyncOk && input.ghAuthenticated === false && !sshGitHubRemote)) {
     steps.push("authenticate normal git access with SSH keys, a credential manager, or `gh auth login` from a shell that has gh installed");
   }
   if (input.remoteHead && input.localHead && input.remoteHead === input.localHead) {
     steps.push(`local ${input.branch} is already synced with ${input.remoteName}/${input.branch}; no source push is needed`);
+    if (input.ghInstalled && input.ghAuthenticated === false) {
+      steps.push("keep gh logged out until an API workflow needs it; prefer a short-lived GH_TOKEN or login only for that workflow, then logout");
+    }
     steps.push("do not use GitHub Packages for source sync; packages are only for publishing npm/container artifacts later");
     steps.push("do not expect the Codex GitHub connector to supply shell git credentials; it is useful for repository inspection and small API operations, not local `git push` authentication");
     return steps;
@@ -402,6 +406,10 @@ function shortSha(value: string): string {
 
 function formatNullableBool(value: boolean | null): string {
   return value === null ? "not checked" : value ? "yes" : "no";
+}
+
+function isGithubSshRemote(remoteUrl: string): boolean {
+  return /^(?:[^@\s]+@)?github\.com:/iu.test(remoteUrl.trim()) || /^ssh:\/\/(?:[^@\s]+@)?github\.com\//iu.test(remoteUrl.trim());
 }
 
 function shellQuote(value: string): string {

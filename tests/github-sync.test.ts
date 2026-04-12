@@ -3,7 +3,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildGithubSyncNextSteps, checkGithubSync, parseGithubRemote } from "../src/github-sync.js";
+import { buildGithubSyncNextSteps, buildGithubSyncWarnings, checkGithubSync, parseGithubRemote } from "../src/github-sync.js";
 
 describe("GitHub sync diagnostics", () => {
   it("parses common GitHub remote URL forms", () => {
@@ -65,6 +65,63 @@ describe("GitHub sync diagnostics", () => {
     expect(nextSteps[0]).toContain("already synced");
     expect(nextSteps.join("\n")).not.toContain("push the current branch");
   });
+
+  it("treats logged-out gh as acceptable when SSH source sync is already healthy", async () => {
+    const result = await checkGithubSync(await createGitRepoWithSshRemote(), {
+      skipNetwork: true,
+      checkGh: false
+    });
+    const warnings = buildGithubSyncWarnings({
+      branch: result.data.branch,
+      dirtyFileCount: result.data.dirtyFileCount,
+      localHead: result.data.localHead,
+      remoteUrl: result.data.remoteUrl,
+      repoFullName: result.data.repoFullName,
+      remoteHead: result.data.localHead,
+      remoteChecked: true,
+      pushDryRunChecked: true,
+      pushDryRunOk: true,
+      ghInstalled: true,
+      ghAuthenticated: false,
+      authBlocked: false
+    });
+    const nextSteps = buildGithubSyncNextSteps({
+      repoRoot: result.data.repoRoot,
+      branch: result.data.branch,
+      remoteName: result.data.remoteName,
+      remoteUrl: result.data.remoteUrl,
+      repoFullName: result.data.repoFullName,
+      localHead: result.data.localHead,
+      remoteHead: result.data.localHead,
+      pushDryRunChecked: true,
+      pushDryRunOk: true,
+      authBlocked: false,
+      ghInstalled: true,
+      ghAuthenticated: false
+    });
+
+    expect(warnings).not.toContain("GitHub CLI is installed but not authenticated for github.com");
+    expect(nextSteps.join("\n")).toContain("keep gh logged out");
+  });
+
+  it("does not convert logged-out gh into a source git auth warning", () => {
+    const warnings = buildGithubSyncWarnings({
+      branch: "main",
+      dirtyFileCount: 0,
+      localHead: "69ce4b6a95dae12815f4070a7974b0a7bc37c972",
+      remoteUrl: "git@github.com:mirnoorata/codexa.git",
+      repoFullName: "mirnoorata/codexa",
+      remoteHead: "69ce4b6a95dae12815f4070a7974b0a7bc37c972",
+      remoteChecked: true,
+      pushDryRunChecked: true,
+      pushDryRunOk: true,
+      ghInstalled: true,
+      ghAuthenticated: false,
+      authBlocked: false
+    });
+
+    expect(warnings).toEqual([]);
+  });
 });
 
 async function createGitRepo(): Promise<string> {
@@ -77,5 +134,11 @@ async function createGitRepo(): Promise<string> {
     cwd: repo,
     stdio: "ignore"
   });
+  return repo;
+}
+
+async function createGitRepoWithSshRemote(): Promise<string> {
+  const repo = await createGitRepo();
+  execFileSync("git", ["remote", "add", "origin", "git@github.com:mirnoorata/codexa.git"], { cwd: repo });
   return repo;
 }
