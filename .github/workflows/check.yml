@@ -26,5 +26,5 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Run Codexa gates
-        run: npm run check
+      - name: Run Codexa security gates
+        run: npm run security:check

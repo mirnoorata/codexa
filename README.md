@@ -255,6 +255,18 @@ npm run privacy:release
 commit. It is expected to fail until the private development history has been
 replaced by sanitized public history.
 
+To prove that the current `HEAD` can be exported as a clean fresh-history
+release without changing the working repo, run:
+
+```bash
+npm run public:snapshot-check
+```
+
+That command builds a temporary one-commit repository from `git archive HEAD`,
+then runs current-file, history, and source-hygiene gates inside the temporary
+repo. It requires a clean working tree so the verified snapshot exactly matches
+the committed source.
+
 Before creating a public source archive, remove local generated artifacts and
 export from git rather than from the working directory:
 
