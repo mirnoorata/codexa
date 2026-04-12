@@ -1,0 +1,39 @@
+{
+  "name": "codexa",
+  "version": "0.1.0",
+  "description": "Codex-native codebase intelligence context compiler and query-only MCP server.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "codexa": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "node scripts/verify-source-hygiene.mjs",
+    "test": "vitest run",
+    "test:schema": "vitest run tests/schema.test.ts",
+    "check": "npm run typecheck && npm run lint && npm test && npm run build",
+    "dev": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.29.0",
+    "commander": "^14.0.3",
+    "tree-sitter": "^0.21.1",
+    "tree-sitter-python": "^0.21.0",
+    "tree-sitter-typescript": "^0.23.2",
+    "typescript": "^5.9.3",
+    "zod": "^4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "tsx": "^4.20.6",
+    "vitest": "^4.0.15"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}
