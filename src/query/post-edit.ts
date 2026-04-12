@@ -9,6 +9,7 @@ import { normalizeSearchText } from "./search.js";
 import { formatTestRecommendations, recommendTests, uniqueTests, wasTestRun } from "./tests.js";
 import { findFile, normalizeInputPaths, resolveSymbolTarget } from "./targets.js";
 import { isCodexaControlPath, formatChangedEntry } from "./worktree.js";
+import { savePostEditOutcome } from "../post-edit-outcomes.js";
 import { loadTaskSnapshot, saveTaskSnapshot } from "../task-snapshots.js";
 import type {
   ChangedFileEntry,
@@ -311,6 +312,25 @@ export async function postEditReviewQuery(
     workflows
   });
   const quality = contextData.quality;
+  const savedOutcome = await savePostEditOutcome({
+    repoRoot,
+    task,
+    taskId: snapshot?.taskId ?? loadedSnapshot.latestTaskId,
+    snapshotPath: loadedSnapshot.path,
+    verdict,
+    freshness,
+    changedFiles: editPaths,
+    plannedEditTargets: plannedScope,
+    reviewTargets,
+    unplannedEditedFiles,
+    unindexedEditedFiles,
+    driftReasons,
+    tests,
+    testsNotRun,
+    ranTests,
+    quality,
+    confidence: quality?.counts
+  });
   const text = [
     freshnessBanner(freshness, refresh),
     quality ? formatContextQuality(quality) : undefined,
@@ -318,6 +338,7 @@ export async function postEditReviewQuery(
     `Task: ${task}`,
     snapshot ? `Snapshot: ${snapshot.taskId} (${snapshot.createdAt})` : `Snapshot: unavailable${loadedSnapshot.missingReason ? ` (${loadedSnapshot.missingReason})` : ""}; using current dirty tree only`,
     `Verdict: ${verdict}`,
+    `Outcome record: ${savedOutcome.relativePath}`,
     "",
     "Changed since snapshot:",
     ...(changedSinceSnapshot.length > 0 ? changedSinceSnapshot.slice(0, 30).map(formatChangedEntry) : ["- none detected"]),
@@ -409,7 +430,11 @@ export async function postEditReviewQuery(
       context: context.data,
       quality,
       driftReasons,
-      nextActions
+      nextActions,
+      outcome: {
+        ...savedOutcome.outcome,
+        path: savedOutcome.relativePath
+      }
     }
   };
 }

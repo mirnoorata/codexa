@@ -5,6 +5,8 @@ import { renderCodexUseContract } from "./codex-contract.js";
 import { buildIndexLocked } from "./indexer.js";
 import { statusQuery } from "./queries.js";
 
+const EDIT_HOOK_MATCHER = "Edit|MultiEdit|Write|apply_patch";
+
 export interface InitOptions {
   autoRefresh?: boolean;
   cliPath: string;
@@ -148,10 +150,9 @@ async function upsertHooksConfig(hooksPath: string, options: { cliPath: string; 
   const existing = await readTextIfExists(hooksPath);
   const parsed = existing.trim() ? parseHooksJson(existing, hooksPath) : {};
   const hooks = isPlainObject(parsed.hooks) ? parsed.hooks : {};
-  const sessionStart = Array.isArray(hooks.SessionStart) ? hooks.SessionStart : [];
-  const cleanedSessionStart = sessionStart
-    .map((entry) => cleanHookEntry(entry, options))
-    .filter((entry): entry is Record<string, unknown> => entry !== null);
+  const cleanedSessionStart = cleanHookList(hooks.SessionStart, options);
+  const cleanedPreToolUse = cleanHookList(hooks.PreToolUse, options);
+  const cleanedPostToolUse = cleanHookList(hooks.PostToolUse, options);
 
   cleanedSessionStart.push({
     codexaManaged: true,
@@ -166,15 +167,50 @@ async function upsertHooksConfig(hooksPath: string, options: { cliPath: string; 
       }
     ]
   });
+  cleanedPreToolUse.push({
+    codexaManaged: true,
+    matcher: EDIT_HOOK_MATCHER,
+    hooks: [
+      {
+        codexaManaged: true,
+        type: "command",
+        command: `node ${shellQuote(options.cliPath)} hook-pre-edit ${shellQuote(options.repoRoot)}`,
+        statusMessage: "Checking Codexa change-plan snapshot",
+        timeout: 5
+      }
+    ]
+  });
+  cleanedPostToolUse.push({
+    codexaManaged: true,
+    matcher: EDIT_HOOK_MATCHER,
+    hooks: [
+      {
+        codexaManaged: true,
+        type: "command",
+        command: `node ${shellQuote(options.cliPath)} hook-post-edit ${shellQuote(options.repoRoot)}`,
+        statusMessage: "Running Codexa post-edit review",
+        timeout: 20
+      }
+    ]
+  });
 
   const next = {
     ...parsed,
     hooks: {
       ...hooks,
-      SessionStart: cleanedSessionStart
+      SessionStart: cleanedSessionStart,
+      PreToolUse: cleanedPreToolUse,
+      PostToolUse: cleanedPostToolUse
     }
   };
   await writeFile(hooksPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+}
+
+function cleanHookList(value: unknown, options: { cliPath: string; repoRoot: string }): Record<string, unknown>[] {
+  const entries = Array.isArray(value) ? value : [];
+  return entries
+    .map((entry) => cleanHookEntry(entry, options))
+    .filter((entry): entry is Record<string, unknown> => entry !== null);
 }
 
 function cleanHookEntry(entry: unknown, options: { cliPath: string; repoRoot: string }): Record<string, unknown> | null {
@@ -208,7 +244,7 @@ function isCodexaHookCommand(command: string, options: { cliPath: string; repoRo
   if (command.includes("codexa-sessionstart")) {
     return true;
   }
-  if (!/\bsession-start\b/u.test(command)) {
+  if (!/\b(session-start|hook-pre-edit|hook-post-edit)\b/u.test(command)) {
     return false;
   }
   return (

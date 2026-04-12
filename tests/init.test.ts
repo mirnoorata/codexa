@@ -23,10 +23,17 @@ describe("Codexa project init", () => {
     expect(config).toContain(`args = ["/opt/codexa/dist/cli.js", "serve", "${repo}", "--auto-refresh"]`);
 
     const hooks = JSON.parse(await readFile(path.join(repo, ".codex/hooks.json"), "utf8")) as {
-      hooks: { SessionStart: Array<{ hooks: Array<{ command: string }> }> };
+      hooks: {
+        SessionStart: Array<{ hooks: Array<{ command: string }> }>;
+        PreToolUse: Array<{ matcher: string; hooks: Array<{ command: string }> }>;
+        PostToolUse: Array<{ matcher: string; hooks: Array<{ command: string }> }>;
+      };
     };
     expect(hooks.hooks.SessionStart).toHaveLength(1);
     expect(hooks.hooks.SessionStart[0].hooks[0].command).toBe(`node '/opt/codexa/dist/cli.js' session-start '${repo}'`);
+    expect(hooks.hooks.PreToolUse[0].matcher).toBe("Edit|MultiEdit|Write|apply_patch");
+    expect(hooks.hooks.PreToolUse[0].hooks[0].command).toBe(`node '/opt/codexa/dist/cli.js' hook-pre-edit '${repo}'`);
+    expect(hooks.hooks.PostToolUse[0].hooks[0].command).toBe(`node '/opt/codexa/dist/cli.js' hook-post-edit '${repo}'`);
 
     const freshness = await readFile(path.join(repo, ".codex/codebase/freshness.json"), "utf8");
     expect(JSON.parse(freshness).stale).toBe(false);

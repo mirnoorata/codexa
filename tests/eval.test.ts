@@ -15,6 +15,9 @@ describe("Codexa eval benchmark", () => {
     expect(result.data.scenarios.every((scenario) => scenario.metrics.refreshed === false)).toBe(true);
     expect(result.data.scenarios.some((scenario) => scenario.id === "synthetic-ts-impact-decoy-control")).toBe(true);
     expect(result.data.scenarios.some((scenario) => scenario.id === "synthetic-session-context-seedless")).toBe(true);
+    expect(result.data.calibrationSummary).toBeTruthy();
+    expect(Object.values(result.data.calibrationSummary.postEditVerdicts).reduce((sum, value) => sum + value, 0)).toBeGreaterThanOrEqual(1);
+    expect(result.data.calibrationSummary.outcomeRecords.some((entry) => entry.startsWith(".codex/cache/codexa-outcomes/"))).toBe(true);
     const tsScenario = result.data.scenarios.find((scenario) => scenario.id === "synthetic-ts-impact-decoy-control");
     expect(tsScenario?.comparison.baselineFileCount).toBeGreaterThan(tsScenario?.comparison.codexaFileCount ?? 0);
     expect(tsScenario?.comparison.precisionDelta).toBeGreaterThanOrEqual(0);

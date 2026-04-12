@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rename, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { buildIndex } from "./indexer.js";
@@ -76,6 +76,14 @@ interface ScoredEvalScenario {
     broadRetrievalFailure: boolean;
     rawRgBetter: boolean;
     rawRgBetterReason?: string;
+    postEditOutcome?: {
+      verdict?: string;
+      outcomeId?: string;
+      path?: string;
+      driftReasons: string[];
+      calibrationLabels: string[];
+      testsNotRun: string[];
+    };
   };
   failures: string[];
   sample: string;
@@ -99,6 +107,15 @@ export interface EvalResult {
     passed: boolean;
     score: number;
     antiCheat: string[];
+    calibrationSummary: {
+      falsePositiveFiles: string[];
+      missingExpectedTests: string[];
+      heuristicHeavyScenarios: string[];
+      broadRetrievalFailures: string[];
+      rawRgBetterScenarios: string[];
+      postEditVerdicts: Record<string, number>;
+      outcomeRecords: string[];
+    };
     scenarios: ScoredEvalScenario[];
   };
 }
@@ -140,7 +157,8 @@ export async function runEval(
   const passed = scored.every((scenario) => scenario.passed);
   const scoredOnly = scored.filter((scenario) => scenario.scored);
   const score = scoredOnly.length > 0 ? scoredOnly.reduce((sum, scenario) => sum + scenario.score, 0) / scoredOnly.length : 0;
-  const data = { seed, suite, passed, score, antiCheat, scenarios: scored };
+  const data = { seed, suite, passed, score, antiCheat, calibrationSummary: calibrationSummary(scored), scenarios: scored };
+  await saveEvalData(repo, seed, data);
   return {
     passed,
     data,
@@ -735,6 +753,7 @@ function scoreScenario(scenario: EvalScenario, result: QueryResult, baseline: st
         .filter((entry): entry is string => Boolean(entry))
         .join("; ")
     : undefined;
+  const postEditOutcome = postEditOutcomeFromData(result.data);
 
   if (fileRecall !== null && fileRecall < minFileRecall) {
     failures.push(`file recall ${fileRecall.toFixed(2)} < ${minFileRecall.toFixed(2)}`);
@@ -812,10 +831,58 @@ function scoreScenario(scenario: EvalScenario, result: QueryResult, baseline: st
       heuristicHeavy,
       broadRetrievalFailure,
       rawRgBetter,
-      rawRgBetterReason
+      rawRgBetterReason,
+      postEditOutcome
     },
     failures,
     sample: result.text.split(/\r?\n/).slice(0, 14).join("\n")
+  };
+}
+
+async function saveEvalData(repoRoot: string, seed: string, data: EvalResult["data"]): Promise<void> {
+  const dir = path.join(repoRoot, ".codex/cache/codexa-evals");
+  await mkdir(dir, { recursive: true });
+  const safeSeed = seed.replace(/[^A-Za-z0-9._-]+/g, "-").slice(0, 160) || "eval";
+  const filePath = path.join(dir, `${safeSeed}.json`);
+  await atomicJsonWrite(filePath, data);
+  await atomicJsonWrite(path.join(dir, "latest.json"), {
+    schemaVersion: 1,
+    seed: data.seed,
+    suite: data.suite,
+    passed: data.passed,
+    score: data.score,
+    path: path.basename(filePath),
+    createdAt: new Date().toISOString()
+  });
+}
+
+async function atomicJsonWrite(filePath: string, value: unknown): Promise<void> {
+  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  await writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await rename(tmp, filePath);
+}
+
+function calibrationSummary(scenarios: ScoredEvalScenario[]): EvalResult["data"]["calibrationSummary"] {
+  const postEditVerdicts: Record<string, number> = {};
+  const outcomeRecords: string[] = [];
+  for (const scenario of scenarios) {
+    const verdict = scenario.calibration.postEditOutcome?.verdict;
+    if (verdict) {
+      postEditVerdicts[verdict] = (postEditVerdicts[verdict] ?? 0) + 1;
+    }
+    const outcomePath = scenario.calibration.postEditOutcome?.path;
+    if (outcomePath) {
+      outcomeRecords.push(outcomePath);
+    }
+  }
+  return {
+    falsePositiveFiles: uniqueInOrder(scenarios.flatMap((scenario) => scenario.calibration.falsePositiveFiles)),
+    missingExpectedTests: uniqueInOrder(scenarios.flatMap((scenario) => scenario.calibration.missingExpectedTests)),
+    heuristicHeavyScenarios: scenarios.filter((scenario) => scenario.calibration.heuristicHeavy).map((scenario) => scenario.id),
+    broadRetrievalFailures: scenarios.filter((scenario) => scenario.calibration.broadRetrievalFailure).map((scenario) => scenario.id),
+    rawRgBetterScenarios: scenarios.filter((scenario) => scenario.calibration.rawRgBetter).map((scenario) => scenario.id),
+    postEditVerdicts,
+    outcomeRecords: uniqueInOrder(outcomeRecords)
   };
 }
 
@@ -926,6 +993,43 @@ function qualityFromData(data: unknown): { level: string; counts: { authoritativ
     }
   }
   return null;
+}
+
+function postEditOutcomeFromData(data: unknown): ScoredEvalScenario["calibration"]["postEditOutcome"] {
+  if (!data || typeof data !== "object") {
+    return undefined;
+  }
+  const record = data as Record<string, unknown>;
+  const outcome = record.outcome;
+  if (outcome && typeof outcome === "object") {
+    const value = outcome as Record<string, unknown>;
+    const testsNotRun = Array.isArray(value.testsNotRun)
+      ? value.testsNotRun.flatMap((entry) => {
+          if (typeof entry === "string") {
+            return [entry];
+          }
+          if (entry && typeof entry === "object" && typeof (entry as { path?: unknown }).path === "string") {
+            return [(entry as { path: string }).path];
+          }
+          return [];
+        })
+      : [];
+    return {
+      verdict: typeof value.verdict === "string" ? value.verdict : undefined,
+      outcomeId: typeof value.outcomeId === "string" ? value.outcomeId : undefined,
+      path: typeof value.path === "string" ? value.path : undefined,
+      driftReasons: Array.isArray(value.driftReasons) ? value.driftReasons.filter((entry): entry is string => typeof entry === "string") : [],
+      calibrationLabels: Array.isArray(value.calibrationLabels) ? value.calibrationLabels.filter((entry): entry is string => typeof entry === "string") : [],
+      testsNotRun
+    };
+  }
+  for (const key of ["review", "postEdit", "post_edit", "plan"]) {
+    const nested = postEditOutcomeFromData(record[key]);
+    if (nested) {
+      return nested;
+    }
+  }
+  return undefined;
 }
 
 function numericCount(value: unknown): number {

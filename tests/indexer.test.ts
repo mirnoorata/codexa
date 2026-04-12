@@ -52,6 +52,8 @@ describe("Codexa indexer", () => {
     expect(index.graphEdges.some((edge) => edge.edgeKind === "IMPORTS" && edge.fromPath === "src/uses-type-only.ts" && edge.toPath === "src/types-only.ts")).toBe(false);
     expect(index.usageSites.some((usage) => usage.path === "src/uses-type-only.ts" && usage.name === "FooTypeOnly" && usage.kind !== "type_reference" && usage.targetSymbolId)).toBe(false);
     expect(index.imports.some((imp) => imp.path === "src/barrel.ts" && imp.specifier === "./util" && imp.reExport && imp.resolvedPath === "src/util.ts")).toBe(true);
+    expect(index.imports.some((imp) => imp.path === "src/default-barrel.ts" && imp.specifier === "./contracts" && imp.importedName === "default" && imp.localName === "ContractDefault" && imp.reExport)).toBe(true);
+    expect(index.imports.some((imp) => imp.path === "src/default-barrel.ts" && imp.specifier === "./contracts" && imp.importedName === "ThingContract" && imp.localName === "PublicThingContract" && imp.reExport && imp.typeOnly)).toBe(true);
     expect(index.imports.some((imp) => imp.path === "src/aliased.ts" && imp.importedName === "helper" && imp.localName === "renamedHelper")).toBe(true);
     expect(index.imports.some((imp) => imp.path === "src/ns.ts" && imp.importedName === "*" && imp.localName === "util")).toBe(true);
     expect(index.imports.some((imp) => imp.path === "src/dynamic-import.ts" && imp.specifier === "./lazy" && imp.resolvedPath === "src/lazy.ts")).toBe(true);
@@ -88,6 +90,7 @@ describe("Codexa indexer", () => {
     expect(index.usageSites.some((usage) => usage.path === "src/uses-constant.ts" && usage.name === "LOCAL_VALUE" && usage.kind === "reference" && usage.targetSymbolId === valueSymbol?.id)).toBe(true);
     const defaultSymbol = index.symbols.find((symbol) => symbol.path === "src/contracts.ts" && symbol.name === "default");
     expect(index.usageSites.some((usage) => usage.path === "src/default-consumer.ts" && usage.name === "DefaultThing" && usage.targetSymbolId === defaultSymbol?.id)).toBe(true);
+    expect(index.usageSites.some((usage) => usage.path === "src/default-barrel-consumer.ts" && usage.name === "ContractDefault" && usage.targetSymbolId === defaultSymbol?.id)).toBe(true);
     const normalizeSymbol = index.symbols.find((symbol) => symbol.path === "service/helpers.py" && symbol.name === "normalize");
     expect(index.usageSites.some((usage) => usage.path === "service/alias_app.py" && usage.name === "clean" && usage.targetSymbolId === normalizeSymbol?.id)).toBe(true);
     expect(index.usageSites.some((usage) => usage.path === "service/ns_app.py" && usage.name === "helpers.normalize" && usage.targetSymbolId === normalizeSymbol?.id)).toBe(true);
@@ -96,10 +99,13 @@ describe("Codexa indexer", () => {
     expect(index.usageSites.some((usage) => usage.path === "service/submodule_user.py" && usage.name === "helpers.normalize" && usage.targetSymbolId === normalizeSymbol?.id)).toBe(true);
     const serviceStart = index.symbols.find((symbol) => symbol.path === "src/service-class.ts" && symbol.qualifiedName === "Service.start");
     expect(index.usageSites.some((usage) => usage.path === "src/service-class-consumer.ts" && usage.name === "mod.Service.start" && usage.targetSymbolId === serviceStart?.id)).toBe(true);
-    const objectGet = index.symbols.find((symbol) => symbol.path === "src/object-client.ts" && symbol.name === "get");
-    expect(index.usageSites.some((usage) => usage.path === "src/object-client-consumer.ts" && usage.name === "client.get" && usage.targetSymbolId === objectGet?.id)).toBe(false);
+    const objectGet = index.symbols.find((symbol) => symbol.path === "src/object-client.ts" && symbol.qualifiedName === "client.get");
+    expect(index.usageSites.some((usage) => usage.path === "src/object-client-consumer.ts" && usage.name === "client.get" && usage.targetSymbolId === objectGet?.id)).toBe(true);
+    expect(index.symbols.some((symbol) => symbol.path === "src/object-client.ts" && symbol.qualifiedName === "client.get" && symbol.kind === "method")).toBe(true);
     const fixtureSymbol = index.symbols.find((symbol) => symbol.path === "tests/test_app.py" && symbol.name === "value" && symbol.kind === "fixture");
     expect(index.usageSites.some((usage) => usage.path === "tests/test_app.py" && usage.name === "value" && usage.kind === "test_reference" && usage.targetSymbolId === fixtureSymbol?.id)).toBe(true);
+    const derivedFixtureSymbol = index.symbols.find((symbol) => symbol.path === "tests/test_app.py" && symbol.name === "derived" && symbol.kind === "fixture");
+    expect(index.usageSites.some((usage) => usage.path === "tests/test_app.py" && usage.name === "value" && usage.kind === "test_reference" && usage.usedBySymbolId === derivedFixtureSymbol?.id && usage.targetSymbolId === fixtureSymbol?.id)).toBe(true);
     const dangerSymbol = index.symbols.find((symbol) => symbol.path === "web/src/Danger.tsx" && symbol.name === "Danger");
     expect(index.usageSites.some((usage) => usage.path === "web/src/uses-danger.tsx" && usage.name === "Danger" && usage.targetSymbolId === dangerSymbol?.id)).toBe(true);
     expect(index.usageSites.some((usage) => usage.name.includes("router.get") && usage.confidence === "heuristic")).toBe(true);
@@ -108,14 +114,22 @@ describe("Codexa indexer", () => {
     expect(index.risks.some((risk) => risk.path === "src/ops.ts" && risk.signal === "filesystem-write-boundary")).toBe(true);
     expect(index.risks.some((risk) => risk.path === "web/src/Danger.tsx" && risk.signal === "dangerous-html-sink")).toBe(true);
     expect(index.risks.some((risk) => risk.path === "web/src/Wrapped.tsx" && risk.signal === "react-component")).toBe(true);
+    expect(index.usageSites.some((usage) => usage.path === "web/src/create-element.tsx" && usage.name === "Danger" && usage.targetSymbolId === dangerSymbol?.id)).toBe(true);
     expect(index.risks.some((risk) => risk.path === "scripts/service-control.sh" && risk.signal === "operator-runtime")).toBe(true);
     expect(index.risks.some((risk) => risk.path === "service/app.py" && risk.signal === "semgrep.fastapi-auth" && risk.source === "static-analysis")).toBe(true);
+    expect(index.risks.some((risk) => risk.path === "service/frameworks.py" && risk.signal === "fastapi-route")).toBe(true);
+    expect(index.risks.some((risk) => risk.path === "service/frameworks.py" && risk.signal === "celery-task")).toBe(true);
+    expect(index.risks.some((risk) => risk.path === "service/frameworks.py" && risk.signal === "pydantic-model")).toBe(true);
+    expect(index.risks.some((risk) => risk.path === "service/frameworks.py" && risk.signal === "sqlalchemy-model")).toBe(true);
+    expect(index.usageSites.some((usage) => usage.path === "service/frameworks.py" && usage.name === "BaseModel" && usage.kind === "type_reference")).toBe(true);
     expect(index.testEdges.some((edge) => edge.path === "tests/test_app.py")).toBe(true);
     expect(index.testEdges.some((edge) => edge.path === "tests/test_alias_app.py" && edge.targetPath === "service/alias_app.py" && edge.reason === "imports service/alias_app.py")).toBe(true);
     expect(index.graphEdges.some((edge) => edge.edgeKind === "CALLS" && edge.toSymbolId === normalizeSymbol?.id)).toBe(true);
     expect(index.graphEdges.some((edge) => edge.edgeKind === "EXTENDS" && edge.fromPath === "src/contracts.ts")).toBe(true);
     expect(index.graphEdges.some((edge) => edge.edgeKind === "IMPLEMENTS" && edge.fromPath === "src/contracts.ts")).toBe(true);
     expect(index.graphEdges.some((edge) => edge.edgeKind === "TYPE_EXPORTS" && edge.fromPath === "src/contracts.ts")).toBe(true);
+    expect(index.usageSites.some((usage) => usage.path === "web/tsconfig.json" && usage.name === "../src" && usage.text === "project reference ../src")).toBe(true);
+    expect(index.risks.some((risk) => risk.path === "web/tsconfig.json" && risk.signal === "typescript-project-reference")).toBe(true);
     expect(index.graphEdges.some((edge) => edge.edgeKind === "ROUTE_HANDLES" && edge.fromPath === "service/app.py")).toBe(true);
     expect(index.symbols.find((symbol) => symbol.path === "service/app.py" && symbol.name === "on_startup")?.kind).not.toBe("route");
     expect(index.graphEdges.some((edge) => edge.edgeKind === "UI_CALLS_ENDPOINT" && edge.fromPath === "service/app.py")).toBe(false);
@@ -722,8 +736,14 @@ describe("Codexa indexer", () => {
       riskDeltas: unknown[];
       changedGroups: unknown[];
       snapshotLoad: { missingReason?: string };
+      outcome: { path: string; verdict: string; calibrationLabels: string[]; testsNotRun: Array<{ path: string }> };
     };
     expect(reviewData.verdict).not.toBe("continue");
+    expect(reviewData.outcome.verdict).toBe(reviewData.verdict);
+    expect(reviewData.outcome.path).toMatch(/^\.codex\/cache\/codexa-outcomes\/.+\.json$/u);
+    expect(reviewData.outcome.calibrationLabels).toContain("unplanned-edits");
+    expect(reviewData.outcome.testsNotRun.some((test) => test.path === "tests/test_app.py")).toBe(true);
+    expect(JSON.parse(await readFile(path.join(repo, reviewData.outcome.path), "utf8")).verdict).toBe(reviewData.verdict);
     expect(reviewData.unplannedEditedFiles).toContain("src/ops.ts");
     expect(reviewData.tests.some((test) => test.path === "tests/test_app.py")).toBe(true);
     expect(reviewData.changedGroups.length).toBeGreaterThan(0);
@@ -914,6 +934,8 @@ async function createFixtureRepo(): Promise<string> {
   await writeFile(path.join(repo, "src/symbol-drift.ts"), "export function plannedFoo() {\n  return 1\n}\n\nexport function unplannedBar() {\n  return 2\n}\n", "utf8");
   await writeFile(path.join(repo, "src/barrel.ts"), "export { helper } from './util'\n", "utf8");
   await writeFile(path.join(repo, "src/barrel-consumer.ts"), "import { helper } from './barrel'\nexport function useBarrelHelper() { return helper() }\n", "utf8");
+  await writeFile(path.join(repo, "src/default-barrel.ts"), "export { default as ContractDefault } from './contracts'\nexport type { ThingContract as PublicThingContract } from './contracts'\n", "utf8");
+  await writeFile(path.join(repo, "src/default-barrel-consumer.ts"), "import { ContractDefault } from './default-barrel'\nexport function useDefaultAlias() { return ContractDefault() }\n", "utf8");
   await writeFile(path.join(repo, "src/chained-a.ts"), "export { helper } from './util'\n", "utf8");
   await writeFile(path.join(repo, "src/chained-b.ts"), "export { helper } from './chained-a'\n", "utf8");
   await writeFile(path.join(repo, "src/chained-consumer.ts"), "import { helper as chainedHelper } from './chained-b'\nexport function useChained() { return chainedHelper() }\n", "utf8");
@@ -958,12 +980,13 @@ async function createFixtureRepo(): Promise<string> {
   await writeFile(path.join(repo, "src/object-client-consumer.ts"), "import { client } from './object-client'\nexport function runClient() { return client.get() }\n", "utf8");
   await writeFile(
     path.join(repo, "web/tsconfig.json"),
-    JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@/*": ["./src/*"] } } }, null, 2),
+    JSON.stringify({ compilerOptions: { baseUrl: ".", paths: { "@/*": ["./src/*"] } }, references: [{ path: "../src" }] }, null, 2),
     "utf8"
   );
   await writeFile(path.join(repo, "web/src/lib/thing.ts"), "export function thing() { return 'thing' }\n", "utf8");
   await writeFile(path.join(repo, "web/src/Danger.tsx"), "export function Danger({ html }: { html: string }) { return <div dangerouslySetInnerHTML={{ __html: html }} /> }\n", "utf8");
   await writeFile(path.join(repo, "web/src/uses-danger.tsx"), "import { Danger } from './Danger'\nexport function UsesDanger() { return <Danger html=\"ok\" /> }\n", "utf8");
+  await writeFile(path.join(repo, "web/src/create-element.tsx"), "import React from 'react'\nimport { Danger } from './Danger'\nexport function MakeDanger() { return React.createElement(Danger, { html: 'ok' }) }\n", "utf8");
   await writeFile(path.join(repo, "web/src/Wrapped.tsx"), "import { memo } from 'react'\nfunction Inner() { return <span /> }\nexport default memo(function WrappedWidget() { return <Inner /> })\n", "utf8");
   await writeFile(
     path.join(repo, "web/src/feature.ts"),
@@ -1056,8 +1079,13 @@ async function createFixtureRepo(): Promise<string> {
     "utf8"
   );
   await writeFile(
+    path.join(repo, "service/frameworks.py"),
+    "from fastapi import APIRouter, Depends, FastAPI\nfrom pydantic import BaseModel\nfrom sqlalchemy.orm import DeclarativeBase, mapped_column\nfrom celery import Celery, shared_task\n\napp = FastAPI()\nrouter = APIRouter()\ncelery_app = Celery(__name__)\n\nclass Item(BaseModel):\n    id: str\n\nclass Base(DeclarativeBase):\n    pass\n\nclass User(Base):\n    __tablename__ = 'users'\n    id = mapped_column(primary_key=True)\n\ndef get_db():\n    return None\n\n@shared_task\ndef rebuild_index_job():\n    return 'ok'\n\n@router.post('/api/frameworks')\ndef create_item(item: Item, db=Depends(get_db)):\n    return item\n",
+    "utf8"
+  );
+  await writeFile(
     path.join(repo, "tests/test_app.py"),
-    "from service.app import route_thing\nimport pytest\n\n@pytest.fixture\ndef value():\n    return 'A'\n\ndef test_route(value):\n    assert route_thing(value) == 'A'\n\ndef test_route_client(client):\n    client.get('/api/thing')\n",
+    "from service.app import route_thing\nimport pytest\n\n@pytest.fixture\ndef value():\n    return 'A'\n\n@pytest.fixture\ndef derived(value):\n    return value\n\ndef test_route(value):\n    assert route_thing(value) == 'A'\n\ndef test_route_client(client):\n    client.get('/api/thing')\n\ndef test_fixture_dependency(derived):\n    assert derived == 'A'\n",
     "utf8"
   );
   await writeFile(

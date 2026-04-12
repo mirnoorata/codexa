@@ -21,14 +21,23 @@ serves focused MCP context tools over stdio.
 - A generated `.codex/codebase/codex-contract.md` that gives Codex a deterministic
   automatic-use contract for session start, pre-edit snapshots, post-edit drift
   review, workflow tracing, dependency checks, and final test planning.
-- Atlas-focused relationship hints for node package manifests, node type string
-  references, TypeScript path aliases, changed symbols, route/job/test surfaces,
-  and candidate test commands with provenance.
+- Generic relationship hints for package manifests, TypeScript project/path
+  configuration, changed symbols, route/job/test surfaces, and candidate test
+  commands with provenance. Atlas-specific rule patterns exist only as a local
+  rules pack and regression target, not as the core architecture.
 - Import-aware symbol binding for TypeScript/Python aliases and namespace/member
   calls so impact analysis can follow `import { x as y }`, `import * as ns`, and
   `from .module import x as y` usage without treating every match as a raw string.
   TypeScript source imports that name emitted `.js` files resolve back to `.ts`
   and `.tsx` sources.
+- Offline TypeScript compiler assist strengthens default exports, aliased
+  re-exports, type-only exports, JSX/createElement references, object literal
+  methods, project references, and path alias metadata without running an LSP
+  daemon.
+- Python package/static analysis resolves relative imports, `__init__.py`
+  re-exports, pytest fixture dependencies, class base references, and generic
+  FastAPI/Celery/Pydantic/SQLAlchemy hints with heuristic labels where runtime
+  framework behavior cannot be proven statically.
 - A small built-in structural rule pack that emits bounded risk signals for shell
   execution, filesystem writes, MCP tool surfaces, raw HTML sinks, and SQL
   execution boundaries without adding Semgrep/ast-grep as runtime dependencies.
@@ -59,6 +68,12 @@ serves focused MCP context tools over stdio.
   plan-time dirty baseline under `.codex/cache/`, and `post_edit_review`
   compares the actual post-edit dirty tree against that snapshot for drift,
   unplanned files, risk/workflow signals, and tests still unaccounted for.
+- `codexa init` also writes lightweight edit hooks when supported by Codex
+  hooks: `hook-pre-edit` reminds Codex when a non-trivial edit lacks a saved
+  change-plan snapshot, and `hook-post-edit` runs a bounded post-edit review.
+  Each review writes a compact outcome record under
+  `.codex/cache/codexa-outcomes/`; eval runs summarize those outcomes under
+  `.codex/cache/codexa-evals/`.
 - Strict evidence tiers in query output: `authoritative`, `derived`,
   `heuristic`, and `fallback`, including test recommendations.
 - Deterministic context quality checks that can warn when a packet is

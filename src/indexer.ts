@@ -23,7 +23,7 @@ import { normalizePath, stableId, uniqueSorted } from "./util.js";
 import { writeArtifacts } from "./artifacts.js";
 
 export const CODEBASE_DIR = ".codex/codebase";
-const PARSE_CACHE_VERSION = "parse-cache-v1-ts-js-py-json-20260412-store-workflows2";
+const PARSE_CACHE_VERSION = "parse-cache-v1-ts-js-py-json-20260412-semantic-auto-review";
 const PARSE_CACHE_PATH = ".codex/cache/codexa-parse-cache.json";
 const INDEX_LOCK_DIR = ".codex/cache/codexa-index.lock";
 const INDEX_LOCK_STALE_MS = 120_000;

@@ -7,6 +7,7 @@ import { initializeProject, sessionStartSummary } from "./init.js";
 import { runLiveIndexer, type LiveIndexEvent } from "./live-index.js";
 import { serveMcp } from "./mcp.js";
 import { updateStaticAnalysisReports } from "./static-analysis.js";
+import { loadTaskSnapshot } from "./task-snapshots.js";
 import {
   contextPackQuery,
   callersQuery,
@@ -85,6 +86,37 @@ program
       console.log(`Next Codex sessions only need: focus on ${result.repoRoot}`);
     }
   );
+
+program
+  .command("hook-pre-edit")
+  .argument("<repo>", "repository root")
+  .description("Cheap hook helper that reminds Codex when no change-plan snapshot exists before an edit.")
+  .action(async (repo: string) => {
+    const resolved = path.resolve(repo);
+    const snapshot = await loadTaskSnapshot(resolved);
+    if (!snapshot.snapshot) {
+      console.log("Codexa: no change-plan snapshot is available. For code edits, call change_plan with saveSnapshot=true before editing when the task is non-trivial.");
+      return;
+    }
+    console.log(`Codexa: change-plan snapshot ready (${snapshot.snapshot.taskId}). After edits, post_edit_review will compare planned vs actual work.`);
+  });
+
+program
+  .command("hook-post-edit")
+  .argument("<repo>", "repository root")
+  .description("Bounded hook helper that runs the post-edit review packet after edit tools.")
+  .action(async (repo: string) => {
+    const result = await postEditReviewQuery(
+      path.resolve(repo),
+      {
+        tokenBudget: 1200,
+        limit: 5,
+        includeSnippets: false
+      },
+      { autoRefresh: true, commandBudgetMs: 15_000, maxResults: 6 }
+    );
+    console.log(compactHookOutput(result.text));
+  });
 
 program
   .command("index")
@@ -621,6 +653,44 @@ program.parseAsync(process.argv).catch((error) => {
 
 function printQuery(result: { text: string }) {
   console.log(result.text);
+}
+
+function compactHookOutput(text: string): string {
+  const lines = text.split(/\r?\n/);
+  const keep: string[] = [];
+  let keepNextActions = false;
+  let nextActionCount = 0;
+  for (const line of lines) {
+    if (
+      line.startsWith("Codexa post-edit review") ||
+      line.startsWith("Task:") ||
+      line.startsWith("Snapshot:") ||
+      line.startsWith("Verdict:") ||
+      line.startsWith("Outcome record:") ||
+      line.startsWith("Tests still unaccounted for:")
+    ) {
+      keep.push(line);
+      continue;
+    }
+    if (line === "Next actions:") {
+      keep.push(line);
+      keepNextActions = true;
+      nextActionCount = 0;
+      continue;
+    }
+    if (keepNextActions && line.startsWith("- ")) {
+      keep.push(line);
+      nextActionCount += 1;
+      if (nextActionCount >= 4) {
+        keepNextActions = false;
+      }
+      continue;
+    }
+    if (line.trim() === "") {
+      keepNextActions = false;
+    }
+  }
+  return keep.length > 0 ? keep.join("\n") : lines.slice(0, 16).join("\n");
 }
 
 function parseIntOption(value: string): number {

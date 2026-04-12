@@ -4,7 +4,7 @@
 
 Codexa V1 is a Codex-first context compiler plus an MCP context server. It is not a GitNexus clone and has no GitNexus dependency.
 
-The first milestone targets `/srv/atlas`, optimizes for blast-radius analysis, and keeps the implementation intentionally small: TypeScript CLI, Tree-sitter parsing for TypeScript/TSX/Python, an in-memory graph, JSON/NDJSON persistence, concise Codex-native artifacts, and a focused MCP context surface.
+The first milestone used `/srv/atlas` as the acceptance project, but Codexa is not Atlas-specialized. It optimizes for generic blast-radius analysis and keeps the implementation intentionally small: TypeScript CLI, Tree-sitter parsing for TypeScript/TSX/Python, offline TypeScript/Python static assists, an in-memory graph, JSON/NDJSON persistence, concise Codex-native artifacts, and a focused MCP context surface.
 
 ## Key Decisions
 
@@ -14,8 +14,8 @@ The first milestone targets `/srv/atlas`, optimizes for blast-radius analysis, a
 - Dirty working trees are supported from day one because Codex works inside active edits.
 - Artifacts are Codex-first: short, ranked, actionable, and provenance-backed.
 - Python support is included for simple structure, imports, decorators, tests, and direct usage sites, but dynamic/framework behavior is marked heuristic.
-- Atlas support includes TypeScript path alias resolution, node package manifest symbols, node type string-reference linkage, changed-symbol summaries for dirty diffs, and heuristic candidate test commands.
-- Research-driven V1.1 additions keep the same small architecture while adding a default `task_brief` path, task-shaped `context_pack` output, bounded impact expansion inside task packets, grouped dirty-diff impact, MCP output schemas/annotations/resources/prompts, content-hash parse caching, Atlas framework detectors, a repo-local SessionStart helper, provenance-aware test command suggestions, known-gap reporting, and a structured anti-cheat eval harness.
+- Generic project support includes TypeScript path alias/project-reference metadata, package manifest symbols, Python package and `__init__.py` resolution, changed-symbol summaries for dirty diffs, framework route/job/test surfaces, and heuristic candidate test commands.
+- Research-driven V1.1 additions keep the same small architecture while adding a default `task_brief` path, task-shaped `context_pack` output, bounded impact expansion inside task packets, grouped dirty-diff impact, MCP output schemas/annotations/resources/prompts, content-hash parse caching, generic framework detectors, repo-local SessionStart/edit-loop helpers, provenance-aware test command suggestions, known-gap reporting, and a structured anti-cheat eval harness.
 - The current implementation also adds natural-language `focus_brief`/`session_context`, a small BM25/inverted-index retrieval layer, first-class typed graph edges, route/job/manifest workflow traces, generated architecture playbooks, change-plan packets, and cross-process refresh locking. These are still local, deterministic, and dependency-light.
 - The first competitive Codex-native differentiator is the generated
   `.codex/codebase/codex-contract.md` plus SessionStart packet. It tells Codex
@@ -59,7 +59,7 @@ codexa serve <repo>
 ```
 
 `init` is the user-facing setup command. It writes the repo-local `.codex/config.toml`
-MCP entry, writes/updates the SessionStart hook, and indexes the repo unless
+MCP entry, writes/updates the SessionStart and edit-loop hooks, and indexes the repo unless
 `--no-index` is passed. After `codexa init`, future Codex sessions should only
 need `focus on <repo>`; Codexa is discovered from the project `.codex` config.
 `index` writes `.codex/codebase/*` inside the target repo. `watch` keeps those
@@ -149,26 +149,28 @@ The indexer walks git-visible files while respecting ignore rules and common gen
 
 Unchanged files are reused from a content-hash parse cache at `.codex/cache/codexa-parse-cache.json`. The cache stores pre-resolution parse results and rebases snapshot metadata on reuse. The resolver still runs over the full current index, so changed files can relink against cached unchanged files. Cache misses, corrupt caches, parser-version changes, and missing entries fall back to normal parsing.
 
-The resolver reads TypeScript `tsconfig.json` path aliases from indexed files.
-Atlas `@/*` imports resolve through `web/tsconfig.json` to `web/src/*`.
-Import edges preserve both the exported/imported name and the local alias. The
-resolver then binds usage sites through named imports, aliased imports, namespace
-imports, Python relative imports, and Python module namespace calls before falling
-back to same-file or unique global symbol names. Test files that import source
-files produce direct `TestEdge` facts, which gives test planning stronger
-evidence than filename proximity alone. TypeScript ESM imports that name `.js`,
-`.mjs`, `.cjs`, or `.jsx` outputs can resolve back to `.ts`/`.tsx` source files,
-which keeps source-first projects like Codexa linked before build output exists.
+The resolver reads TypeScript `tsconfig.json` path aliases and project-reference
+metadata from indexed files. Import edges preserve both the exported/imported
+name and the local alias. The resolver then binds usage sites through named
+imports, aliased imports, default-export aliases, namespace imports, object
+literal methods, Python relative imports, Python `__init__.py` re-exports, and
+Python module namespace calls before falling back to same-file or unique global
+symbol names. Test files that import source files produce direct `TestEdge`
+facts, which gives test planning stronger evidence than filename proximity
+alone. TypeScript ESM imports that name `.js`, `.mjs`, `.cjs`, or `.jsx` outputs
+can resolve back to `.ts`/`.tsx` source files, which keeps source-first projects
+like Codexa linked before build output exists.
 
 Atlas package manifests under `atlas_api/packages/*.json` produce `node` symbols for each `type_id`. Literal node type references across Python, TypeScript, JSON, and tests are linked back to those manifest symbols with heuristic confidence unless they come directly from the manifest.
 
-Atlas-specific detectors remain narrow:
+Generic framework detectors stay heuristic unless the relationship is explicit
+in source:
 
 - FastAPI-style routes, websockets, event handlers, task/job decorators, pytest fixtures, and pytest tests.
 - React hook/component naming hints.
-- Atlas adapters, generator template files, package manifests, and node type string references.
+- Pydantic models, SQLAlchemy/SQLModel models, Celery/shared-task registrations, and framework wiring calls.
 - Operator-risk files such as service units and service/release/preview control scripts.
-- Manifest field references such as node `type_id` and `adapter_key`, with non-authoritative confidence where cross-language linking is heuristic.
+- Optional local-rule packs can add project-specific hints, such as Atlas adapters, generator template files, package manifests, and node type string references, without making the core graph Atlas-specific.
 
 Codexa also ships a tiny inspectable structural rule pack. It is deliberately not
 a replacement for Semgrep, ast-grep, or CodeQL. The rules only add bounded
@@ -374,6 +376,16 @@ flag in `.codex/config.toml`. The hook runs `codexa session-start <repo>` on
 startup/resume. The helper prints cheap status by default; setting
 `CODEXA_SESSIONSTART_CONTEXT=1` also prints a bounded no-refresh `context-pack`
 preview. It does not mutate source files.
+
+When Codex edit hooks are available, init also writes `hook-pre-edit` and
+`hook-post-edit` entries for edit tools. The pre-edit helper is intentionally a
+cheap guardrail: it reminds Codex to call `change_plan --save-snapshot` before a
+non-trivial edit if no task snapshot exists. The post-edit helper runs a bounded
+`post_edit_review`, returns the clear `continue` / `run_tests` / `inspect` /
+`replan` verdict, and records compact outcome data in
+`.codex/cache/codexa-outcomes/`. Eval runs persist aggregate calibration data
+under `.codex/cache/codexa-evals/` so noisy cases, missing tests, heuristic-heavy
+packets, and raw-search-better cases become regression material.
 
 ### Benchmark Integrity
 

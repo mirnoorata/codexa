@@ -294,6 +294,16 @@ function buildReExportBindings(imports: ImportEdgeFact[], symbolsByPath: Map<str
         continue;
       }
       const candidates = symbolsByPath.get(imp.resolvedPath) ?? [];
+      if (imp.importedName === "default" && imp.localName) {
+        const defaultMatch = exactSymbolInPath(candidates, "default") ?? lookupReExport(result, imp.resolvedPath, "default");
+        if (defaultMatch) {
+          changed = add(imp.path, imp.localName, defaultMatch) || changed;
+          if (imp.localName === "default") {
+            changed = add(imp.path, "default", defaultMatch) || changed;
+          }
+        }
+        continue;
+      }
       if (imp.importedName === "*") {
         for (const symbol of candidates.filter((candidate) => candidate.exported || !candidate.parentSymbolId)) {
           changed = add(imp.path, symbol.name, symbol) || changed;
@@ -390,7 +400,9 @@ function resolveImportedUsage(usage: UsageSiteFact, bindings: ImportBindings): S
   const prefixTarget = exact?.get(prefix);
   if (prefixTarget) {
     if (prefixTarget.kind === "variable") {
-      return undefined;
+      const candidates = bindings.symbolsByPath.get(prefixTarget.path) ?? [];
+      const memberChain = rest.join(".");
+      return exactSymbolInPath(candidates, `${prefixTarget.qualifiedName}.${memberChain}`) ?? exactSymbolInPath(candidates, `${prefixTarget.name}.${memberChain}`);
     }
     const qualifiedMember = `${prefixTarget.qualifiedName}.${rest.join(".")}`;
     const memberChain = rest.join(".");

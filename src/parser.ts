@@ -178,7 +178,15 @@ function parseJsonManifest(input: ParseFileInput, sourceText: string, empty: Par
     return empty;
   }
   try {
-    const parsed = JSON.parse(sourceText) as { scripts?: Record<string, string>; nodes?: Array<Record<string, unknown>>; namespace?: string; name?: string };
+    const parsed = JSON.parse(sourceText) as {
+      scripts?: Record<string, string>;
+      nodes?: Array<Record<string, unknown>>;
+      namespace?: string;
+      name?: string;
+      compilerOptions?: { baseUrl?: string; paths?: Record<string, string[]> };
+      references?: Array<{ path?: unknown }>;
+      extends?: unknown;
+    };
     const symbols: SymbolFact[] = [];
     const usageSites: UsageSiteFact[] = [];
     const risks: RiskSignalFact[] = [];
@@ -228,6 +236,100 @@ function parseJsonManifest(input: ParseFileInput, sourceText: string, empty: Par
             reason: `${name}: ${command}`
           });
         }
+      }
+    }
+    if (basename === "tsconfig.json") {
+      const projectName = input.relativePath === "tsconfig.json" ? "root" : path.posix.dirname(input.relativePath);
+      symbols.push({
+        id: stableId("tsconfig-project", input.relativePath, projectName),
+        type: "Symbol",
+        path: input.relativePath,
+        source: "manifest",
+        confidence: "authoritative",
+        snapshotId,
+        indexedAt,
+        name: projectName,
+        qualifiedName: `typescript project ${projectName}`,
+        kind: "module",
+        language: "json",
+        exported: false,
+        decorators: []
+      });
+      const compilerOptions = parsed.compilerOptions ?? {};
+      if (compilerOptions.baseUrl || (compilerOptions.paths && Object.keys(compilerOptions.paths).length > 0)) {
+        usageSites.push({
+          id: stableId("tsconfig-baseurl", input.relativePath, compilerOptions.baseUrl ?? "."),
+          type: "UsageSite",
+          path: input.relativePath,
+          source: "manifest",
+          confidence: "authoritative",
+          snapshotId,
+          indexedAt,
+          name: compilerOptions.baseUrl ? `baseUrl ${compilerOptions.baseUrl}` : "baseUrl .",
+          kind: "reference",
+          text: `baseUrl ${compilerOptions.baseUrl ?? "."}`
+        });
+      }
+      for (const [alias, targets] of Object.entries(compilerOptions.paths ?? {})) {
+        const target = targets[0];
+        if (!target) {
+          continue;
+        }
+        usageSites.push({
+          id: stableId("tsconfig-path-alias", input.relativePath, alias, target),
+          type: "UsageSite",
+          path: input.relativePath,
+          source: "manifest",
+          confidence: "authoritative",
+          snapshotId,
+          indexedAt,
+          name: alias,
+          kind: "reference",
+          text: `path alias ${alias} -> ${target}`
+        });
+      }
+      for (const reference of parsed.references ?? []) {
+        if (typeof reference.path !== "string" || !reference.path.trim()) {
+          continue;
+        }
+        usageSites.push({
+          id: stableId("tsconfig-project-reference", input.relativePath, reference.path),
+          type: "UsageSite",
+          path: input.relativePath,
+          source: "manifest",
+          confidence: "authoritative",
+          snapshotId,
+          indexedAt,
+          name: reference.path,
+          kind: "reference",
+          text: `project reference ${reference.path}`
+        });
+        risks.push({
+          id: stableId("tsconfig-project-reference-risk", input.relativePath, reference.path),
+          type: "RiskSignal",
+          path: input.relativePath,
+          source: "manifest",
+          confidence: "authoritative",
+          snapshotId,
+          indexedAt,
+          signal: "typescript-project-reference",
+          score: 1.5,
+          reason: `project reference ${reference.path}`
+        });
+      }
+      if (typeof parsed.extends === "string" && parsed.extends.trim()) {
+        usageSites.push({
+          id: stableId("tsconfig-extends", input.relativePath, parsed.extends),
+          type: "UsageSite",
+          path: input.relativePath,
+          source: "manifest",
+          confidence: "authoritative",
+          snapshotId,
+          indexedAt,
+          name: parsed.extends,
+          kind: "reference",
+          text: `extends ${parsed.extends}`
+        });
       }
     }
     if (isAtlasPackage && Array.isArray(parsed.nodes)) {
@@ -419,8 +521,17 @@ function extractPython(root: SyntaxNode, ctx: ExtractContext): void {
         if (definition.type === "class_definition") {
           className = name;
           childScope = "class";
+          for (const baseName of pythonClassBaseNames(definition)) {
+            ctx.usageSites.push(usageFact(ctx, definition, baseName, "type_reference", `extends ${baseName}`, symbol.id, "derived"));
+          }
         } else {
           childScope = "function";
+        }
+        addPythonFrameworkHints(ctx, definition, symbol, pendingDecorators);
+        if (kind === "fixture") {
+          for (const param of pythonParameterNames(definition)) {
+            ctx.usageSites.push(usageFact(ctx, definition, param, "test_reference", `fixture dependency ${param}`, symbol.id, "derived"));
+          }
         }
         for (const decorator of pendingDecorators) {
           if (isRouteDecorator(decorator) || isTaskDecorator(decorator)) {
@@ -448,6 +559,7 @@ function extractPython(root: SyntaxNode, ctx: ExtractContext): void {
       for (const imp of pythonImports(node, ctx.sourceText)) {
         ctx.imports.push(importFact(ctx, node, imp.specifier, imp.importedName, imp.localName));
         ctx.usageSites.push(usageFact(ctx, node, imp.localName ?? imp.importedName ?? imp.specifier, "import", node.text, parentSymbolId, "authoritative"));
+        addPythonImportFrameworkHint(ctx, node, imp);
       }
     }
 
@@ -455,6 +567,7 @@ function extractPython(root: SyntaxNode, ctx: ExtractContext): void {
       const name = callName(node);
       if (name) {
         ctx.usageSites.push(usageFact(ctx, node, name, "call", node.text, parentSymbolId, "derived"));
+        addPythonCallFrameworkHint(ctx, node, name);
       }
     }
 
@@ -533,7 +646,7 @@ function extractEcma(root: SyntaxNode, ctx: ExtractContext): void {
 
     if (node.type === "export_statement") {
       for (const imp of ecmaReExports(node)) {
-        ctx.imports.push(importFact(ctx, node, imp.specifier, imp.importedName, imp.localName, true));
+        ctx.imports.push(importFact(ctx, node, imp.specifier, imp.importedName, imp.localName, true, imp.typeOnly));
         ctx.usageSites.push(usageFact(ctx, node, imp.localName ?? imp.importedName ?? imp.specifier, "import", node.text, parentSymbolId, "authoritative"));
       }
     }
@@ -577,6 +690,7 @@ function addTypeScriptCompilerAssist(ctx: ExtractContext): void {
         (symbol) =>
           symbol.path === ctx.path &&
           symbol.name === name &&
+          symbol.qualifiedName === qualifiedName &&
           symbol.kind === kind &&
           Math.abs((symbol.range?.startByte ?? -1) - range.startByte) < 4
       )
@@ -645,6 +759,22 @@ function addTypeScriptCompilerAssist(ctx: ExtractContext): void {
         }
       }
     }
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && ts.isObjectLiteralExpression(node.initializer)) {
+      const exported = variableDeclarationExported(node);
+      for (const property of node.initializer.properties) {
+        const propertyName = objectLiteralPropertyName(property.name, sourceFile);
+        if (!propertyName) {
+          continue;
+        }
+        if (
+          ts.isMethodDeclaration(property) ||
+          (ts.isPropertyAssignment(property) &&
+            (ts.isFunctionExpression(property.initializer) || ts.isArrowFunction(property.initializer)))
+        ) {
+          addSymbol(property, propertyName, `${node.name.text}.${propertyName}`, "method", exported);
+        }
+      }
+    }
     if ((ts.isClassDeclaration(node) || ts.isInterfaceDeclaration(node)) && node.name) {
       const usedBySymbolId = findLocalSymbolId(ctx, node.name.text);
       for (const clause of node.heritageClauses ?? []) {
@@ -659,6 +789,12 @@ function addTypeScriptCompilerAssist(ctx: ExtractContext): void {
       const name = node.tagName.getText(sourceFile);
       if (/^[A-Z]/.test(name)) {
         addUsage(node.tagName, name, "reference", `jsx component ${name}`, undefined, "derived");
+      }
+    }
+    if (ts.isCallExpression(node) && isReactCreateElementCall(node, sourceFile)) {
+      const firstArg = node.arguments[0];
+      if (firstArg && ts.isIdentifier(firstArg) && /^[A-Z]/.test(firstArg.text)) {
+        addUsage(firstArg, firstArg.text, "reference", `React.createElement ${firstArg.text}`, undefined, "derived");
       }
     }
     if (ts.isIdentifier(node) && importedLocals.has(node.text) && isRuntimeReferenceIdentifier(node)) {
@@ -842,26 +978,32 @@ function ecmaImports(node: SyntaxNode): Array<{ specifier: string; importedName?
   return imports.length > 0 ? imports : [{ specifier }];
 }
 
-function ecmaReExports(node: SyntaxNode): Array<{ specifier: string; importedName?: string; localName?: string }> {
+function ecmaReExports(node: SyntaxNode): Array<{ specifier: string; importedName?: string; localName?: string; typeOnly?: boolean }> {
   const text = node.text;
   const specifier = /from\s+["']([^"']+)["']/.exec(text)?.[1];
   if (!specifier) {
     return [];
   }
+  const statementTypeOnly = /^export\s+type\b/.test(text);
+  const namespaceName = /export\s+\*\s+as\s+([A-Za-z_$][\w$]*)\s+from/u.exec(text)?.[1];
+  if (namespaceName) {
+    return [{ specifier, importedName: "*", localName: namespaceName, typeOnly: statementTypeOnly }];
+  }
   if (/export\s+\*/.test(text)) {
-    return [{ specifier, importedName: "*", localName: "*" }];
+    return [{ specifier, importedName: "*", localName: "*", typeOnly: statementTypeOnly }];
   }
   const named = /\{([^}]+)\}/.exec(text)?.[1];
   if (!named) {
-    return [{ specifier }];
+    return [{ specifier, typeOnly: statementTypeOnly }];
   }
   return named
     .split(",")
     .map((part) => part.trim())
     .filter(Boolean)
     .map((part) => {
-      const [name, alias] = part.split(/\s+as\s+/);
-      return { specifier, importedName: name, localName: alias ?? name };
+      const typeOnly = statementTypeOnly || part.startsWith("type ");
+      const [name, alias] = part.replace(/^type\s+/, "").split(/\s+as\s+/);
+      return { specifier, importedName: name, localName: alias ?? name, typeOnly };
     });
 }
 
@@ -959,6 +1101,27 @@ function scriptKindForPath(filePath: string): ts.ScriptKind {
   return ts.ScriptKind.TS;
 }
 
+function variableDeclarationExported(node: ts.VariableDeclaration): boolean {
+  const statement = node.parent?.parent;
+  return Boolean(statement && ts.isVariableStatement(statement) && ts.getModifiers(statement)?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword));
+}
+
+function objectLiteralPropertyName(name: ts.PropertyName | undefined, sourceFile: ts.SourceFile): string | undefined {
+  if (!name) {
+    return undefined;
+  }
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) {
+    return name.text;
+  }
+  const text = name.getText(sourceFile).replace(/^["']|["']$/g, "");
+  return /^[A-Za-z_$][\w$]*$/.test(text) ? text : undefined;
+}
+
+function isReactCreateElementCall(node: ts.CallExpression, sourceFile: ts.SourceFile): boolean {
+  const expression = node.expression.getText(sourceFile);
+  return expression === "React.createElement" || expression.endsWith(".createElement");
+}
+
 function hasDefaultExport(node: ts.Node): boolean {
   return ts.canHaveModifiers(node) && Boolean(ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword));
 }
@@ -1028,6 +1191,80 @@ function heritageExpressionName(value: string): string {
 
 function findLocalSymbolId(ctx: ExtractContext, name: string): string | undefined {
   return ctx.symbols.find((symbol) => symbol.path === ctx.path && (symbol.name === name || symbol.qualifiedName === name))?.id;
+}
+
+function pythonClassBaseNames(node: SyntaxNode): string[] {
+  const match = /^class\s+[A-Za-z_][\w]*\s*\(([^)]*)\)/s.exec(node.text.trim());
+  if (!match) {
+    return [];
+  }
+  return match[1]
+    .split(",")
+    .map((part) =>
+      part
+        .trim()
+        .replace(/\[.*$/s, "")
+        .replace(/\(.*$/s, "")
+        .split(".")
+        .filter(Boolean)
+        .join(".")
+    )
+    .filter(Boolean)
+    .slice(0, 12);
+}
+
+function addPythonFrameworkHints(ctx: ExtractContext, node: SyntaxNode, symbol: SymbolFact, decorators: string[]): void {
+  if (ctx.language !== "python") {
+    return;
+  }
+  const bases = symbol.kind === "class" ? pythonClassBaseNames(node) : [];
+  if (symbol.kind === "route") {
+    ctx.risks.push(riskFact(ctx, node, "fastapi-route", 2, `${symbol.qualifiedName} is registered by a route decorator`));
+  }
+  if (decorators.some((decorator) => /(celery|shared_task|\.task|@task|@job)/i.test(decorator))) {
+    ctx.risks.push(riskFact(ctx, node, "celery-task", 2, `${symbol.qualifiedName} is registered as a background task`));
+  }
+  if (bases.some((base) => /\b(BaseModel|pydantic\.BaseModel)\b/.test(base))) {
+    ctx.risks.push(riskFact(ctx, node, "pydantic-model", 1.8, `${symbol.qualifiedName} inherits from Pydantic BaseModel`));
+  }
+  if (bases.some((base) => /\b(DeclarativeBase|SQLModel|Base)\b/.test(base)) && /\b(Column|mapped_column|relationship|__tablename__)\b/.test(node.text)) {
+    ctx.risks.push(riskFact(ctx, node, "sqlalchemy-model", 1.8, `${symbol.qualifiedName} looks like a SQLAlchemy/SQLModel model`));
+  }
+}
+
+function addPythonImportFrameworkHint(
+  ctx: ExtractContext,
+  node: SyntaxNode,
+  imp: { specifier: string; importedName?: string; localName?: string }
+): void {
+  const value = `${imp.specifier}.${imp.importedName ?? ""}.${imp.localName ?? ""}`;
+  if (/\bfastapi\b/i.test(value)) {
+    ctx.risks.push(riskFact(ctx, node, "fastapi-framework", 1.5, `imports ${imp.importedName ?? imp.specifier}`));
+  }
+  if (/\b(celery|shared_task)\b/i.test(value)) {
+    ctx.risks.push(riskFact(ctx, node, "celery-framework", 1.5, `imports ${imp.importedName ?? imp.specifier}`));
+  }
+  if (/\bpydantic\b/i.test(value)) {
+    ctx.risks.push(riskFact(ctx, node, "pydantic-framework", 1.5, `imports ${imp.importedName ?? imp.specifier}`));
+  }
+  if (/\b(sqlalchemy|sqlmodel)\b/i.test(value)) {
+    ctx.risks.push(riskFact(ctx, node, "sqlalchemy-framework", 1.5, `imports ${imp.importedName ?? imp.specifier}`));
+  }
+}
+
+function addPythonCallFrameworkHint(ctx: ExtractContext, node: SyntaxNode, name: string): void {
+  if (/^(FastAPI|APIRouter|include_router|Depends)$|\.include_router$|\.dependency_overrides$/i.test(name)) {
+    ctx.risks.push(riskFact(ctx, node, "fastapi-runtime-wiring", 1.5, `FastAPI runtime wiring call ${name}`));
+  }
+  if (/^(Celery|shared_task)$|\.task$|\.send_task$|\.delay$|\.apply_async$/i.test(name)) {
+    ctx.risks.push(riskFact(ctx, node, "celery-runtime-wiring", 1.5, `background task call ${name}`));
+  }
+  if (/^(BaseModel|Field|model_validate|model_dump)$|\.model_validate$|\.model_dump$/i.test(name)) {
+    ctx.risks.push(riskFact(ctx, node, "pydantic-runtime-wiring", 1.2, `Pydantic call ${name}`));
+  }
+  if (/^(Column|mapped_column|relationship|select|Session)$|\.execute$|\.scalars$|\.commit$/i.test(name)) {
+    ctx.risks.push(riskFact(ctx, node, "sqlalchemy-runtime-wiring", 1.5, `SQLAlchemy call ${name}`));
+  }
 }
 
 function isRouteDecorator(decorator: string): boolean {
