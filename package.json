@@ -21,9 +21,9 @@
     "public:snapshot-check": "node scripts/verify-public-snapshot.mjs",
     "clean:private-artifacts": "node scripts/clean-private-artifacts.mjs",
     "release:archive": "npm run check && git archive --format=tar.gz --output codexa-public-head.tar.gz HEAD",
-    "test": "vitest run",
+    "test": "npm run build && vitest run",
     "test:schema": "vitest run tests/schema.test.ts",
-    "check": "npm run typecheck && npm run lint && npm run privacy && npm test && npm run build",
+    "check": "npm run typecheck && npm run lint && npm run privacy && npm test",
     "security:check": "npm run check && npm run audit && npm run public:snapshot-check",
     "dev": "tsx src/cli.ts"
   },
