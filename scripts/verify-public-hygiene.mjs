@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { execFileSync } from "node:child_process";
-import { existsSync, lstatSync, readFileSync, readlinkSync } from "node:fs";
+import { lstatSync, readFileSync, readlinkSync } from "node:fs";
 
 const scanHistory = process.argv.includes("--history");
 
@@ -54,14 +54,14 @@ function scanCurrentTrackedFiles() {
     .split("\0")
     .filter(Boolean);
   for (const file of trackedFiles) {
-    if (!existsSync(file)) {
+    const stat = safeLstat(file);
+    if (!stat) {
       continue;
     }
     const pathBlocked = scanPath({ file });
     if (pathBlocked) {
       continue;
     }
-    const stat = lstatSync(file);
     if (stat.isSymbolicLink()) {
       scanFileText({ file, text: readlinkSync(file), source: "symlink target" });
       continue;
@@ -220,6 +220,14 @@ function formatLocation(input, line) {
 
 function looksBinary(buffer) {
   return buffer.includes(0);
+}
+
+function safeLstat(file) {
+  try {
+    return lstatSync(file);
+  } catch {
+    return null;
+  }
 }
 
 function lineNumberForIndex(text, index) {
