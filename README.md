@@ -115,6 +115,7 @@ node dist/cli.js workflow-path /srv/atlas --query "queue workflow"
 node dist/cli.js change-plan /srv/atlas --task "Change polling behavior safely" --file web/src/features/atlas/use-run-polling.ts --save-snapshot --task-id polling-update
 node dist/cli.js post-edit-review /srv/atlas --task-id polling-update --ran-test web/src/features/atlas/use-run-polling.test.tsx
 node dist/cli.js eval /srv/atlas --suite all --seed codexa-v1-benchmark
+node dist/cli.js github-sync-check /srv/codexa
 node dist/cli.js serve /srv/atlas
 ```
 
@@ -193,6 +194,33 @@ reports/codeql.sarif
 codeql.sarif
 semgrep.json
 ```
+
+## GitHub Source Sync
+
+Codexa treats GitHub source sync as normal git transport, not as a package
+registry action. The GitHub Packages page is only relevant later if Codexa is
+published as an npm package or container image. It is not needed to push source
+code.
+
+Run this diagnostic when a local Codexa repository and GitHub repository appear
+out of sync:
+
+```bash
+codexa github-sync-check /srv/codexa
+codexa github-sync-check /srv/codexa --no-network
+```
+
+The command checks the current branch, local HEAD, GitHub remote URL, remote
+branch visibility, `git push --dry-run`, and optional `gh auth status`. It sets
+`GIT_TERMINAL_PROMPT=0` so failures are explicit instead of hanging on a hidden
+credential prompt.
+
+Important boundary: the Codex GitHub connector can inspect repositories and make
+small GitHub API changes, but it does not provide shell credentials for local
+`git push`. For full source sync, authenticate normal git access with SSH, a
+credential manager, or `gh auth login`, then push from the shell. If the remote
+branch contains only a bootstrap placeholder commit, inspect it first and replace
+it intentionally with `git push --force-with-lease`.
 
 ## Codex Setup
 

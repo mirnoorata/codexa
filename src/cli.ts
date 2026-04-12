@@ -3,6 +3,7 @@ import { Command } from "commander";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildIndexLocked } from "./indexer.js";
+import { checkGithubSync } from "./github-sync.js";
 import { initializeProject, sessionStartSummary } from "./init.js";
 import { runLiveIndexer, type LiveIndexEvent } from "./live-index.js";
 import { serveMcp } from "./mcp.js";
@@ -201,6 +202,39 @@ program
         index: opts.index
       });
       console.log(result.text);
+    }
+  );
+
+program
+  .command("github-sync-check")
+  .argument("[repo]", "repository root; defaults to the current directory", process.cwd())
+  .option("--remote <name>", "git remote name to inspect", "origin")
+  .option("--branch <branch>", "branch to inspect; defaults to the current branch")
+  .option("--no-network", "skip remote ls-remote and push dry-run checks")
+  .option("--no-push-check", "skip git push --dry-run")
+  .option("--no-gh-check", "skip GitHub CLI detection")
+  .option("--json", "emit structured JSON")
+  .description("Diagnose whether a Codexa repo is ready for normal authenticated GitHub source sync.")
+  .action(
+    async (
+      repo: string,
+      opts: {
+        remote: string;
+        branch?: string;
+        network: boolean;
+        pushCheck: boolean;
+        ghCheck: boolean;
+        json?: boolean;
+      }
+    ) => {
+      const result = await checkGithubSync(path.resolve(repo), {
+        remote: opts.remote,
+        branch: opts.branch,
+        skipNetwork: !opts.network,
+        checkPush: opts.pushCheck,
+        checkGh: opts.ghCheck
+      });
+      console.log(opts.json ? JSON.stringify(result.data, null, 2) : result.text);
     }
   );
 
