@@ -3,7 +3,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { checkGithubSync, parseGithubRemote } from "../src/github-sync.js";
+import { buildGithubSyncNextSteps, checkGithubSync, parseGithubRemote } from "../src/github-sync.js";
 
 describe("GitHub sync diagnostics", () => {
   it("parses common GitHub remote URL forms", () => {
@@ -44,6 +44,26 @@ describe("GitHub sync diagnostics", () => {
     expect(result.data.remoteUrl).toBeNull();
     expect(result.data.warnings).toContain("no origin remote URL is configured");
     expect(result.data.nextSteps[0]).toContain("remote add origin");
+  });
+
+  it("does not recommend pushing when the remote head already matches local head", async () => {
+    const nextSteps = buildGithubSyncNextSteps({
+      repoRoot: "/srv/codexa",
+      branch: "main",
+      remoteName: "origin",
+      remoteUrl: "git@github.com:mirnoorata/codexa.git",
+      repoFullName: "mirnoorata/codexa",
+      localHead: "876ddf19ea32e5ceb7f852f36121a6e6d11a83e1",
+      remoteHead: "876ddf19ea32e5ceb7f852f36121a6e6d11a83e1",
+      pushDryRunChecked: true,
+      pushDryRunOk: true,
+      authBlocked: false,
+      ghInstalled: true,
+      ghAuthenticated: true
+    });
+
+    expect(nextSteps[0]).toContain("already synced");
+    expect(nextSteps.join("\n")).not.toContain("push the current branch");
   });
 });
 

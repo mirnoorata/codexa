@@ -143,7 +143,7 @@ export async function checkGithubSync(repoInput: string, options: GithubSyncChec
     ghAuthenticated,
     authBlocked
   });
-  const nextSteps = buildNextSteps({
+  const nextSteps = buildGithubSyncNextSteps({
     repoRoot,
     branch,
     remoteName,
@@ -244,7 +244,7 @@ function buildWarnings(input: {
   return warnings;
 }
 
-function buildNextSteps(input: {
+export function buildGithubSyncNextSteps(input: {
   repoRoot: string;
   branch: string | null;
   remoteName: string;
@@ -273,6 +273,12 @@ function buildNextSteps(input: {
   }
   if (input.authBlocked || input.ghInstalled === false || input.ghAuthenticated === false) {
     steps.push("authenticate normal git access with SSH keys, a credential manager, or `gh auth login` from a shell that has gh installed");
+  }
+  if (input.remoteHead && input.localHead && input.remoteHead === input.localHead) {
+    steps.push(`local ${input.branch} is already synced with ${input.remoteName}/${input.branch}; no source push is needed`);
+    steps.push("do not use GitHub Packages for source sync; packages are only for publishing npm/container artifacts later");
+    steps.push("do not expect the Codex GitHub connector to supply shell git credentials; it is useful for repository inspection and small API operations, not local `git push` authentication");
+    return steps;
   }
   if (input.pushDryRunChecked && input.pushDryRunOk === true) {
     steps.push(`push the current branch: git -C ${shellQuote(input.repoRoot)} push -u ${input.remoteName} ${input.branch}`);
