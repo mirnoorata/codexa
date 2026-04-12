@@ -93,7 +93,7 @@ const STOP_WORDS = new Set([
 const SYNONYMS: Record<string, string[]> = {
   api: ["route", "router", "endpoint", "handler", "server", "app"],
   architecture: ["module", "indexer", "parser", "resolver", "query", "mcp", "graph", "workflow", "artifact"],
-  atlas: ["adapter", "package", "manifest", "node", "workflow", "queue", "run"],
+  project: ["adapter", "package", "manifest", "node", "workflow", "queue", "run"],
   automatic: ["init", "session", "hook", "config", "mcp"],
   backend: ["api", "route", "server", "python", "adapter", "store"],
   brief: ["task", "context", "pack", "query"],

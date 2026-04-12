@@ -81,7 +81,7 @@ describe("Codexa project init", () => {
               },
               {
                 matcher: "startup|resume",
-                hooks: [{ type: "command", command: "/srv/codexa/scripts/codexa-sessionstart-atlas.sh /srv/atlas", timeout: 5 }]
+                hooks: [{ type: "command", command: "/opt/codexa/scripts/codexa-sessionstart-legacy.sh /opt/project", timeout: 5 }]
               }
             ]
           }
@@ -93,11 +93,11 @@ describe("Codexa project init", () => {
     );
 
     const first = await initializeProject(repo, {
-      cliPath: "/srv/codexa/dist/cli.js",
+      cliPath: "/opt/codexa/dist/cli.js",
       index: false
     });
     await initializeProject(repo, {
-      cliPath: "/srv/codexa/dist/cli.js",
+      cliPath: "/opt/codexa/dist/cli.js",
       index: false
     });
 
@@ -114,8 +114,8 @@ describe("Codexa project init", () => {
     const commands = hooks.hooks.SessionStart.flatMap((entry) => entry.hooks.map((hook) => hook.command));
     expect(commands).toContain("echo keep");
     expect(commands).toContain("node ./scripts/session-start.js");
-    expect(commands.filter((command) => command.includes(" session-start ") && command.includes("/srv/codexa/dist/cli.js"))).toHaveLength(1);
-    expect(commands.some((command) => command.includes("codexa-sessionstart-atlas"))).toBe(false);
+    expect(commands.filter((command) => command.includes(" session-start ") && command.includes("/opt/codexa/dist/cli.js"))).toHaveLength(1);
+    expect(commands.some((command) => command.includes("codexa-sessionstart-legacy"))).toBe(false);
   });
 
   it("deduplicates managed hooks even when the CLI path is not named codexa", async () => {

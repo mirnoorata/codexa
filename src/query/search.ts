@@ -328,7 +328,7 @@ export function codeLikeQueryFromTask(task?: string): string {
   const stopWords = new Set([
     "add",
     "and",
-    "atlas",
+    "project",
     "change",
     "choose",
     "codex",

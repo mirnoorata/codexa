@@ -272,7 +272,7 @@ function addTypedWorkflowEdges(
   }
 
   const adapterFileList = [...adapterFiles].map((filePath) => filesByPath.get(filePath)).filter((file): file is FileFact => Boolean(file));
-  for (const usage of index.usageSites.filter((site) => site.path.startsWith("atlas_api/packages/") && /adapter_key\s+/i.test(site.text))) {
+  for (const usage of index.usageSites.filter((site) => site.path.startsWith("sample_api/packages/") && /adapter_key\s+/i.test(site.text))) {
     const manifest = filesByPath.get(usage.path);
     if (!manifest) {
       continue;
@@ -379,7 +379,7 @@ function isStoreBoundarySymbol(symbol: SymbolFact): boolean {
 }
 
 function isStoreLikeName(value: string): boolean {
-  return /\b(AtlasStore|RunStore|Store|Repository|Coordinator|Database)\b/.test(value) || /(Store|Repository|Coordinator)$/.test(value);
+  return /\b(ProjectStore|RunStore|Store|Repository|Coordinator|Database)\b/.test(value) || /(Store|Repository|Coordinator)$/.test(value);
 }
 
 function inferRouteStoreCallTarget(
@@ -463,7 +463,7 @@ function matchingAdaptersForKey(adapters: FileFact[], adapterKey: string, manife
       const pathText = adapter.path.toLowerCase();
       const exact = stem === adapterKey.toLowerCase() || stem === underscoredKey || compactStem === compactKey;
       const terminalExact = keyParts.at(-1) ? stem === keyParts.at(-1) : false;
-      const localityBoost = manifestPath?.startsWith("atlas_api/packages/") && adapter.path.startsWith("atlas_api/adapters/") ? 20 : 0;
+      const localityBoost = manifestPath?.startsWith("sample_api/packages/") && adapter.path.startsWith("sample_api/adapters/") ? 20 : 0;
       const score = exact
         ? 100 + localityBoost
         : terminalExact
@@ -524,7 +524,7 @@ export function extractWorkflowTraces(index: CodexaIndex): WorkflowTraceFact[] {
         line: symbol.range?.startLine,
         symbolId: symbol.id,
         confidence: symbol.confidence,
-        reason: "Atlas manifest node"
+        reason: "Project manifest node"
       }
     ];
     for (const usage of index.usageSites.filter((site) => site.targetSymbolId === symbol.id || site.name === symbol.name).slice(0, 20)) {

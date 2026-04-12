@@ -9,11 +9,11 @@ import { isTestPath } from "./language.js";
 import { changePlanQuery, contextPackQuery, diffImpactQuery, focusBriefQuery, impactQuery, postEditReviewQuery, searchQuery, taskBriefQuery, testPlanQuery, workflowPathQuery } from "./queries.js";
 import type { QueryOptions, QueryResult, TestRecommendation } from "./types.js";
 
-type EvalSuite = "all" | "atlas" | "synthetic";
+type EvalSuite = "all" | "project" | "synthetic";
 
 interface EvalScenario {
   id: string;
-  suite: "atlas" | "synthetic";
+  suite: "project" | "synthetic";
   description: string;
   repoRoot: string;
   scored?: boolean;
@@ -130,7 +130,7 @@ export async function runEval(
   const suite = evalOptions.suite ?? "all";
   const failOnRefresh = evalOptions.failOnRefresh ?? true;
   const scenarios = [
-    ...(suite === "all" || suite === "atlas" ? atlasScenarios(repo, options) : []),
+    ...(suite === "all" || suite === "project" ? projectScenarios(repo, options) : []),
     ...(suite === "all" || suite === "synthetic" ? await syntheticScenarios(seed) : [])
   ];
   const antiCheat = [
@@ -166,21 +166,21 @@ export async function runEval(
   };
 }
 
-function atlasScenarios(repo: string, options: QueryOptions): EvalScenario[] {
+function projectScenarios(repo: string, options: QueryOptions): EvalScenario[] {
   const queryOptions = { autoRefresh: options.autoRefresh ?? false };
   const scenarios: EvalScenario[] = [];
 
   scenarios.push({
-    id: "atlas-dirty-context-pack",
-    suite: "atlas",
-    description: "Current Atlas dirty tree should produce bounded grouped context, not a raw git-status dump.",
+    id: "project-dirty-context-pack",
+    suite: "project",
+    description: "Current Project dirty tree should produce bounded grouped context, not a raw git-status dump.",
     repoRoot: repo,
     baselineCommand: ["git", "status", "--short"],
     codexa: async () =>
       contextPackQuery(
         repo,
         {
-          task: "Understand the current dirty Atlas diff and choose focused verification.",
+          task: "Understand the current dirty Project diff and choose focused verification.",
           diff: true,
           tokenBudget: 2500,
           limit: 10
@@ -193,18 +193,18 @@ function atlasScenarios(repo: string, options: QueryOptions): EvalScenario[] {
     }
   });
 
-  const runPolling = path.join(repo, "web/src/features/atlas/use-run-polling.ts");
+  const runPolling = path.join(repo, "web/src/features/project/use-run-polling.ts");
   if (fileExists(runPolling)) {
     scenarios.push({
-      id: "atlas-use-run-polling-impact",
-      suite: "atlas",
+      id: "project-use-run-polling-impact",
+      suite: "project",
       description: "Exact frontend hook impact should surface the hook file and targeted test.",
       repoRoot: repo,
       baselineCommand: ["rg", "-n", "useRunPolling", "web/src", "tests"],
       codexa: async () => impactQuery(repo, { symbol: "useRunPolling" }, queryOptions),
       oracle: {
-        expectedFiles: ["web/src/features/atlas/use-run-polling.ts"],
-        expectedTests: ["web/src/features/atlas/use-run-polling.test.tsx"],
+        expectedFiles: ["web/src/features/project/use-run-polling.ts"],
+        expectedTests: ["web/src/features/project/use-run-polling.test.tsx"],
         minFileRecall: 1,
         minTestRecall: 0.5,
         minFilePrecisionAtK: 0.25,
@@ -212,11 +212,11 @@ function atlasScenarios(repo: string, options: QueryOptions): EvalScenario[] {
       }
     });
     scenarios.push({
-      id: "atlas-queue-polling-workflow",
-      suite: "atlas",
-      description: "Historical Atlas queue polling workflow should connect frontend hook, UI dashboard, backend queue routes, store, and tests.",
+      id: "project-queue-polling-workflow",
+      suite: "project",
+      description: "Historical Project queue polling workflow should connect frontend hook, UI dashboard, backend queue routes, store, and tests.",
       repoRoot: repo,
-      baselineCommand: ["rg", "-n", "queue|poll|/api/runs|/api/queue", "web/src/features/atlas", "web/src/lib", "atlas_api", "tests"],
+      baselineCommand: ["rg", "-n", "queue|poll|/api/runs|/api/queue", "web/src/features/project", "web/src/lib", "sample_api", "tests"],
       codexa: async () =>
         workflowPathQuery(
           repo,
@@ -228,12 +228,12 @@ function atlasScenarios(repo: string, options: QueryOptions): EvalScenario[] {
         ),
       oracle: {
         expectedFiles: [
-          "web/src/features/atlas/use-run-polling.ts",
-          "web/src/features/atlas/queue-dashboard.tsx",
-          "atlas_api/app.py",
-          "atlas_api/store.py"
+          "web/src/features/project/use-run-polling.ts",
+          "web/src/features/project/queue-dashboard.tsx",
+          "sample_api/app.py",
+          "sample_api/store.py"
         ],
-        expectedTests: ["web/src/features/atlas/use-run-polling.test.tsx", "tests/test_queue.py"],
+        expectedTests: ["web/src/features/project/use-run-polling.test.tsx", "tests/test_queue.py"],
         minFileRecall: 0.5,
         minTestRecall: 0.5,
         minFilePrecisionAtK: 0.2,
@@ -241,20 +241,20 @@ function atlasScenarios(repo: string, options: QueryOptions): EvalScenario[] {
       }
     });
   } else {
-    scenarios.push(missingRequiredAtlasScenario(repo, "atlas-use-run-polling-impact", "web/src/features/atlas/use-run-polling.ts"));
-    scenarios.push(missingRequiredAtlasScenario(repo, "atlas-queue-polling-workflow", "web/src/features/atlas/use-run-polling.ts"));
+    scenarios.push(missingRequiredProjectScenario(repo, "project-use-run-polling-impact", "web/src/features/project/use-run-polling.ts"));
+    scenarios.push(missingRequiredProjectScenario(repo, "project-queue-polling-workflow", "web/src/features/project/use-run-polling.ts"));
   }
 
-  if (fileExists(path.join(repo, "atlas_api/packages/atlas.s2s.json"))) {
+  if (fileExists(path.join(repo, "sample_api/packages/project.s2s.json"))) {
     scenarios.push({
-      id: "atlas-s2s-manifest-impact",
-      suite: "atlas",
-      description: "Atlas S2S manifest impact should connect package, runtime, and tests.",
+      id: "project-s2s-manifest-impact",
+      suite: "project",
+      description: "Project S2S manifest impact should connect package, runtime, and tests.",
       repoRoot: repo,
-      baselineCommand: ["rg", "-n", "s2s\\.audio\\.speech_to_speech", "atlas_api", "tests", "web/src"],
-      codexa: async () => impactQuery(repo, { file: "atlas_api/packages/atlas.s2s.json" }, queryOptions),
+      baselineCommand: ["rg", "-n", "s2s\\.audio\\.speech_to_speech", "sample_api", "tests", "web/src"],
+      codexa: async () => impactQuery(repo, { file: "sample_api/packages/project.s2s.json" }, queryOptions),
       oracle: {
-        expectedFiles: ["atlas_api/packages/atlas.s2s.json", "atlas_api/adapters/s2s.py"],
+        expectedFiles: ["sample_api/packages/project.s2s.json", "sample_api/adapters/s2s.py"],
         expectedTests: ["tests/test_s2s_adapter.py"],
         minFileRecall: 0.5,
         minTestRecall: 0.5,
@@ -263,13 +263,13 @@ function atlasScenarios(repo: string, options: QueryOptions): EvalScenario[] {
       }
     });
   } else {
-    scenarios.push(missingRequiredAtlasScenario(repo, "atlas-s2s-manifest-impact", "atlas_api/packages/atlas.s2s.json"));
+    scenarios.push(missingRequiredProjectScenario(repo, "project-s2s-manifest-impact", "sample_api/packages/project.s2s.json"));
   }
 
   if (fileExists(path.join(repo, "web/src/components/ui/button.tsx"))) {
     scenarios.push({
-      id: "atlas-ts-alias-component-impact",
-      suite: "atlas",
+      id: "project-ts-alias-component-impact",
+      suite: "project",
       description: "TypeScript alias imports should resolve to the component file.",
       repoRoot: repo,
       baselineCommand: ["rg", "-n", "@/components/ui/button", "web/src"],
@@ -284,8 +284,8 @@ function atlasScenarios(repo: string, options: QueryOptions): EvalScenario[] {
   }
 
   scenarios.push({
-    id: "atlas-diff-test-plan",
-    suite: "atlas",
+    id: "project-diff-test-plan",
+    suite: "project",
     description: "Current dirty diff test plan should expose grouped changes and test candidates.",
     repoRoot: repo,
     baselineCommand: ["git", "status", "--short"],
@@ -309,20 +309,20 @@ function atlasScenarios(repo: string, options: QueryOptions): EvalScenario[] {
     }
   });
 
-  scenarios.push(...historicalAtlasScenarios(repo, queryOptions));
+  scenarios.push(...historicalProjectScenarios(repo, queryOptions));
   return scenarios;
 }
 
-function missingRequiredAtlasScenario(repo: string, id: string, missingPath: string): EvalScenario {
+function missingRequiredProjectScenario(repo: string, id: string, missingPath: string): EvalScenario {
   return {
     id,
-    suite: "atlas",
-    description: `Required Atlas benchmark file is missing: ${missingPath}`,
+    suite: "project",
+    description: `Required Project benchmark file is missing: ${missingPath}`,
     repoRoot: repo,
     codexa: async () => ({
       freshness: {
         schemaVersion: 1,
-        snapshotId: "missing-required-atlas-file",
+        snapshotId: "missing-required-project-file",
         repoRoot: repo,
         gitRoot: repo,
         headCommit: null,
@@ -336,7 +336,7 @@ function missingRequiredAtlasScenario(repo: string, id: string, missingPath: str
         reason: "missing-index",
         parserErrorCount: 0
       },
-      text: `Missing required Atlas benchmark file: ${missingPath}`,
+      text: `Missing required Project benchmark file: ${missingPath}`,
       data: {},
       refresh: { refreshed: false }
     }),
@@ -347,16 +347,16 @@ function missingRequiredAtlasScenario(repo: string, id: string, missingPath: str
   };
 }
 
-function historicalAtlasScenarios(repo: string, queryOptions: QueryOptions): EvalScenario[] {
-  const reportPath = path.join(repo, "reports/evaluations/historical-atlas-tasks.json");
+function historicalProjectScenarios(repo: string, queryOptions: QueryOptions): EvalScenario[] {
+  const reportPath = path.join(repo, "reports/evaluations/historical-project-tasks.json");
   if (!existsSync(reportPath)) {
-    return [missingRequiredAtlasScenario(repo, "atlas-historical-tasks", "reports/evaluations/historical-atlas-tasks.json")];
+    return [missingRequiredProjectScenario(repo, "project-historical-tasks", "reports/evaluations/historical-project-tasks.json")];
   }
   let parsed: unknown;
   try {
     parsed = JSON.parse(readFileSync(reportPath, "utf8"));
   } catch {
-    return [missingRequiredAtlasScenario(repo, "atlas-historical-tasks-valid-json", "reports/evaluations/historical-atlas-tasks.json")];
+    return [missingRequiredProjectScenario(repo, "project-historical-tasks-valid-json", "reports/evaluations/historical-project-tasks.json")];
   }
   const entries = Array.isArray(parsed) ? parsed : Array.isArray((parsed as { scenarios?: unknown }).scenarios) ? (parsed as { scenarios: unknown[] }).scenarios : [];
   return entries.flatMap((entry) => historicalScenarioFromEntry(repo, queryOptions, entry));
@@ -382,7 +382,7 @@ function historicalScenarioFromEntry(repo: string, queryOptions: QueryOptions, e
   return [
     {
       id: `historical-${id}`,
-      suite: "atlas",
+      suite: "project",
       description,
       repoRoot: repo,
       baselineCommand,
@@ -539,7 +539,7 @@ async function syntheticScenarios(seed: string): Promise<EvalScenario[]> {
     {
       id: "synthetic-manifest-impact",
       suite: "synthetic",
-      description: "Randomized Atlas-style manifest should link node id references without hardcoded Atlas names.",
+      description: "Randomized Project-style manifest should link node id references without hardcoded Project names.",
       repoRoot: fixture.repoRoot,
       baselineCommand: ["rg", "-n", fixture.manifest.typeId, "."],
       codexa: async () => impactQuery(fixture.repoRoot, { file: fixture.manifest.path }, queryOptions),
@@ -1195,7 +1195,7 @@ async function createSyntheticRepo(seed: string): Promise<SyntheticRepo> {
     helperSymbol: pyHelper
   };
   const manifest = {
-    path: `atlas_api/packages/atlas.${token}.json`,
+    path: `sample_api/packages/project.${token}.json`,
     webReferencePath: `web/src/${token}_node.ts`,
     decoyPath: `web/src/${token}_node_decoy.ts`,
     typeId
@@ -1215,7 +1215,7 @@ async function createSyntheticRepo(seed: string): Promise<SyntheticRepo> {
   await mkdir(path.join(repo, `service_${token}`), { recursive: true });
   await mkdir(path.join(repo, "tests"), { recursive: true });
   await mkdir(path.join(repo, "web/src"), { recursive: true });
-  await mkdir(path.join(repo, "atlas_api/packages"), { recursive: true });
+  await mkdir(path.join(repo, "sample_api/packages"), { recursive: true });
   await writeFile(path.join(repo, "package.json"), JSON.stringify({ scripts: { test: "vitest run" } }, null, 2), "utf8");
   await writeFile(path.join(repo, "pyproject.toml"), `[project]\ndependencies = ["pytest>=8"]\n[tool.pytest.ini_options]\ntestpaths = ["tests"]\n`, "utf8");
   await writeFile(path.join(repo, ts.helperPath), `export function ${tsHelper}() {\n  return "${token}"\n}\n`, "utf8");

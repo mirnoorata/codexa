@@ -14,9 +14,10 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "lint": "node scripts/verify-source-hygiene.mjs",
+    "privacy": "node scripts/verify-public-hygiene.mjs",
     "test": "vitest run",
     "test:schema": "vitest run tests/schema.test.ts",
-    "check": "npm run typecheck && npm run lint && npm test && npm run build",
+    "check": "npm run typecheck && npm run lint && npm run privacy && npm test && npm run build",
     "dev": "tsx src/cli.ts"
   },
   "dependencies": {

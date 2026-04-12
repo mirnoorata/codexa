@@ -61,7 +61,7 @@ export function recommendTests(index: CodexaIndex, paths: string[], repoRoot = i
     }
   }
 
-  const broadPackageRoots = new Set(["atlas_api", "src", "web", "tests", "scripts"]);
+  const broadPackageRoots = new Set(["sample_api", "src", "web", "tests", "scripts"]);
   for (const file of paths.filter((candidate) => sourceKindForPath(candidate) === "python")) {
     const packageRoot = file.split("/")[0];
     if (!packageRoot || broadPackageRoots.has(packageRoot)) {
@@ -191,7 +191,7 @@ function sourceKindForPath(filePath: string): "python" | "typescript" | "manifes
   if (/\.[cm]?[jt]sx?$/.test(filePath)) {
     return "typescript";
   }
-  if (/\.json$/.test(filePath) || filePath.startsWith("atlas_api/packages/")) {
+  if (/\.json$/.test(filePath) || filePath.startsWith("sample_api/packages/")) {
     return "manifest";
   }
   if (/\.(sh|service)$/.test(filePath) || filePath.startsWith("scripts/")) {

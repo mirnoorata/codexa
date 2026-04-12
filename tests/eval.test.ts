@@ -4,8 +4,8 @@ import type { QueryResult } from "../src/types.js";
 
 describe("Codexa eval benchmark", () => {
   it("runs randomized synthetic holdouts with structured scoring", async () => {
-    const result = await runEval("/srv/atlas", { autoRefresh: false }, { suite: "synthetic", seed: "unit-seed", failOnRefresh: true });
-    const second = await runEval("/srv/atlas", { autoRefresh: false }, { suite: "synthetic", seed: "unit-seed-alt", failOnRefresh: true });
+    const result = await runEval("/tmp/codexa-eval-target", { autoRefresh: false }, { suite: "synthetic", seed: "unit-seed", failOnRefresh: true });
+    const second = await runEval("/tmp/codexa-eval-target", { autoRefresh: false }, { suite: "synthetic", seed: "unit-seed-alt", failOnRefresh: true });
 
     expect(result.passed).toBe(true);
     expect(second.passed).toBe(true);
@@ -24,8 +24,8 @@ describe("Codexa eval benchmark", () => {
   });
 
   it("uses a fresh synthetic seed by default to reduce fixture memorization", async () => {
-    const first = await runEval("/srv/atlas", { autoRefresh: false }, { suite: "synthetic", failOnRefresh: true });
-    const second = await runEval("/srv/atlas", { autoRefresh: false }, { suite: "synthetic", failOnRefresh: true });
+    const first = await runEval("/tmp/codexa-eval-target", { autoRefresh: false }, { suite: "synthetic", failOnRefresh: true });
+    const second = await runEval("/tmp/codexa-eval-target", { autoRefresh: false }, { suite: "synthetic", failOnRefresh: true });
 
     expect(first.data.seed).not.toBe(second.data.seed);
     expect(first.text).toContain(first.data.seed);

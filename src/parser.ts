@@ -120,7 +120,7 @@ export async function parseFile(input: ParseFileInput): Promise<ParseResult> {
       addTypeScriptCompilerAssist(ctx);
     }
 
-    extractAtlasStringReferences(ctx);
+    extractProjectStringReferences(ctx);
     extractEndpointStringReferences(ctx);
 
     if (tree.rootNode.hasError) {
@@ -173,8 +173,8 @@ function languageForParser(language: LanguageId, filePath: string): TreeSitterLa
 
 function parseJsonManifest(input: ParseFileInput, sourceText: string, empty: ParseResult): ParseResult {
   const basename = path.posix.basename(input.relativePath);
-  const isAtlasPackage = input.relativePath.startsWith("atlas_api/packages/") && basename.endsWith(".json");
-  if (basename !== "package.json" && basename !== "tsconfig.json" && !isAtlasPackage) {
+  const isProjectPackage = input.relativePath.startsWith("sample_api/packages/") && basename.endsWith(".json");
+  if (basename !== "package.json" && basename !== "tsconfig.json" && !isProjectPackage) {
     return empty;
   }
   try {
@@ -332,7 +332,7 @@ function parseJsonManifest(input: ParseFileInput, sourceText: string, empty: Par
         });
       }
     }
-    if (isAtlasPackage && Array.isArray(parsed.nodes)) {
+    if (isProjectPackage && Array.isArray(parsed.nodes)) {
       for (const node of parsed.nodes) {
         const typeId = typeof node.type_id === "string" ? node.type_id : "";
         if (!typeId) {
@@ -340,7 +340,7 @@ function parseJsonManifest(input: ParseFileInput, sourceText: string, empty: Par
         }
         const title = typeof node.title === "string" ? node.title : typeId;
         const adapterKey = typeof node.adapter_key === "string" ? node.adapter_key : "";
-        const id = stableId("atlas-node", input.relativePath, typeId);
+        const id = stableId("project-node", input.relativePath, typeId);
         symbols.push({
           id,
           type: "Symbol",
@@ -350,14 +350,14 @@ function parseJsonManifest(input: ParseFileInput, sourceText: string, empty: Par
           snapshotId,
           indexedAt,
           name: typeId,
-          qualifiedName: `atlas node ${typeId}`,
+          qualifiedName: `project node ${typeId}`,
           kind: "node",
           language: "json",
           exported: true,
           decorators: []
         });
         usageSites.push({
-          id: stableId("atlas-node-usage", input.relativePath, typeId),
+          id: stableId("project-node-usage", input.relativePath, typeId),
           type: "UsageSite",
           path: input.relativePath,
           source: "manifest",
@@ -370,7 +370,7 @@ function parseJsonManifest(input: ParseFileInput, sourceText: string, empty: Par
         });
         if (adapterKey) {
           usageSites.push({
-            id: stableId("atlas-node-adapter-usage", input.relativePath, typeId, adapterKey),
+            id: stableId("project-node-adapter-usage", input.relativePath, typeId, adapterKey),
             type: "UsageSite",
             path: input.relativePath,
             source: "manifest",
@@ -382,9 +382,9 @@ function parseJsonManifest(input: ParseFileInput, sourceText: string, empty: Par
             text: `adapter_key ${adapterKey}`
           });
         }
-        for (const manifestValue of atlasManifestReferenceValues(node)) {
+        for (const manifestValue of projectManifestReferenceValues(node)) {
           usageSites.push({
-            id: stableId("atlas-node-field-usage", input.relativePath, typeId, manifestValue),
+            id: stableId("project-node-field-usage", input.relativePath, typeId, manifestValue),
             type: "UsageSite",
             path: input.relativePath,
             source: "manifest",
@@ -397,14 +397,14 @@ function parseJsonManifest(input: ParseFileInput, sourceText: string, empty: Par
           });
         }
         risks.push({
-          id: stableId("atlas-node-risk", input.relativePath, typeId),
+          id: stableId("project-node-risk", input.relativePath, typeId),
           type: "RiskSignal",
           path: input.relativePath,
           source: "manifest",
           confidence: "authoritative",
           snapshotId,
           indexedAt,
-          signal: "atlas-node-manifest",
+          signal: "project-node-manifest",
           score: 1.5,
           reason: typeId
         });
@@ -430,7 +430,7 @@ function parseJsonManifest(input: ParseFileInput, sourceText: string, empty: Par
   }
 }
 
-function atlasManifestReferenceValues(node: Record<string, unknown>): string[] {
+function projectManifestReferenceValues(node: Record<string, unknown>): string[] {
   const values = new Set<string>();
   const visit = (value: unknown) => {
     if (typeof value === "string") {
@@ -453,7 +453,7 @@ function atlasManifestReferenceValues(node: Record<string, unknown>): string[] {
   return [...values].sort();
 }
 
-function extractAtlasStringReferences(ctx: ExtractContext): void {
+function extractProjectStringReferences(ctx: ExtractContext): void {
   const seen = new Set<string>();
   const pattern = /\b[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*){2,}\b/g;
   for (const match of ctx.sourceText.matchAll(pattern)) {
@@ -466,7 +466,7 @@ function extractAtlasStringReferences(ctx: ExtractContext): void {
     seen.add(key);
     ctx.usageSites.push({
       ...baseFact("UsageSite", ctx.path, ctx.snapshotId, ctx.indexedAt, "heuristic", "heuristic", rangeFromOffsets(ctx.sourceText, start, start + name.length)),
-      id: stableId("atlas-string-reference", ctx.path, name, start),
+      id: stableId("project-string-reference", ctx.path, name, start),
       type: "UsageSite",
       path: ctx.path,
       name,
@@ -1486,10 +1486,10 @@ function addCommonRisks(ctx: ExtractContext): void {
     ctx.risks.push(riskFact(ctx, undefined, "public-surface", 2, "entrypoint, API, adapter, package, or index file"));
   }
   if (ctx.path.includes("/adapters/")) {
-    ctx.risks.push(riskFact(ctx, undefined, "atlas-adapter", 2, "Atlas adapter runtime boundary"));
+    ctx.risks.push(riskFact(ctx, undefined, "project-adapter", 2, "Project adapter runtime boundary"));
   }
   if (ctx.path.includes("/packages/")) {
-    ctx.risks.push(riskFact(ctx, undefined, "atlas-package-manifest", 1.5, "Atlas node package manifest"));
+    ctx.risks.push(riskFact(ctx, undefined, "project-package-manifest", 1.5, "Project node package manifest"));
   }
   if (/^scripts\/(service|release|preview)-control\.sh$/.test(ctx.path) || ctx.path.endsWith(".service")) {
     ctx.risks.push(riskFact(ctx, undefined, "operator-runtime", 2, "service or release control surface"));
@@ -1540,8 +1540,8 @@ function addEcmaFrameworkHints(ctx: ExtractContext, node: SyntaxNode, symbol: Sy
   if (/\.(tsx|jsx)$/.test(ctx.path) && /^[A-Z]/.test(symbol.name)) {
     ctx.risks.push(riskFact(ctx, node, "react-component", 1, `${symbol.name} follows React component naming`));
   }
-  if (ctx.path.includes("atlas-generator-node-template")) {
-    ctx.risks.push(riskFact(ctx, node, "atlas-generator-template", 1.5, "Atlas generator node template contract"));
+  if (ctx.path.includes("project-generator-node-template")) {
+    ctx.risks.push(riskFact(ctx, node, "project-generator-template", 1.5, "Project generator node template contract"));
   }
 }
 

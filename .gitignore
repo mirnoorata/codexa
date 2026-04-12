@@ -4,6 +4,7 @@
 /cache
 /backups
 .env
+.local/
 .codex/codebase/
 .codex/cache/
 .codex/.codebase.*

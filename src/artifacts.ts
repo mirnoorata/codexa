@@ -170,7 +170,7 @@ function renderConventions(index: CodexaIndex): string {
 - Use \`focus_brief\` for broad natural-language tasks before falling back to
   top-ranked files. Use \`workflow_path\` for route/job/process changes and
   \`dependency_path\` for explicit source-to-target relationship questions.
-- Atlas rule signals cover queue/run lifecycle, generator-node invariants,
+- Project rule signals cover queue/run lifecycle, generator-node invariants,
   manifest/adapter contracts, managed output, frontend polling, and
   release/service-control boundaries when those facts are present.
 `;

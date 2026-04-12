@@ -157,9 +157,9 @@ describe("Codexa indexer", () => {
     expect(storeAdapterEdges).toHaveLength(1);
     expect(storeAdapterEdges[0].confidence).not.toBe("authoritative");
     expect(index.graphEdges.some((edge) => edge.edgeKind === "STORE_DISPATCHES_ADAPTER" && edge.fromPath === "service/models/app.py")).toBe(false);
-    expect(index.graphEdges.some((edge) => edge.edgeKind === "ADAPTER_REFERENCED_BY_MANIFEST" && edge.fromPath === "atlas_api/packages/atlas.s2s.json" && edge.toPath === "atlas_api/adapters/s2s.py")).toBe(true);
-    const imageManifestEdges = index.graphEdges.filter((edge) => edge.edgeKind === "ADAPTER_REFERENCED_BY_MANIFEST" && edge.fromPath === "atlas_api/packages/atlas.image.json");
-    expect(imageManifestEdges.map((edge) => edge.toPath)).toEqual(["atlas_api/adapters/image_generate.py"]);
+    expect(index.graphEdges.some((edge) => edge.edgeKind === "ADAPTER_REFERENCED_BY_MANIFEST" && edge.fromPath === "sample_api/packages/project.s2s.json" && edge.toPath === "sample_api/adapters/s2s.py")).toBe(true);
+    const imageManifestEdges = index.graphEdges.filter((edge) => edge.edgeKind === "ADAPTER_REFERENCED_BY_MANIFEST" && edge.fromPath === "sample_api/packages/project.image.json");
+    expect(imageManifestEdges.map((edge) => edge.toPath)).toEqual(["sample_api/adapters/image_generate.py"]);
     expect(index.graphEdges.some((edge) => edge.edgeKind === "TEST_COVERS_WORKFLOW" && edge.fromPath === "tests/test_app.py" && edge.toPath === "service/app.py")).toBe(true);
     expect(index.workflows.some((workflow) => workflow.title.includes("route route_thing") && workflow.relatedFiles.includes("service/helpers.py"))).toBe(true);
     expect(index.workflows.some((workflow) => workflow.title.includes("route route_thing") && workflow.relatedFiles.includes("web/src/api-client.ts"))).toBe(true);
@@ -391,7 +391,7 @@ describe("Codexa indexer", () => {
     const repo = await createFixtureRepo();
     await buildIndex({ repoRoot: repo });
 
-    const manifestImpact = await impactQuery(repo, { file: "atlas_api/packages/atlas.s2s.json" }, { autoRefresh: false });
+    const manifestImpact = await impactQuery(repo, { file: "sample_api/packages/project.s2s.json" }, { autoRefresh: false });
     expect(manifestImpact.text).toContain("Authoritative read first:");
     expect(manifestImpact.text).toContain("Heuristic expansion:");
     const impactData = manifestImpact.data as {
@@ -401,7 +401,7 @@ describe("Codexa indexer", () => {
       quality: { level: string };
       value: { value: string };
     };
-    expect(impactData.evidenceTiers.authoritative.some((entry) => entry.file.path === "atlas_api/packages/atlas.s2s.json")).toBe(true);
+    expect(impactData.evidenceTiers.authoritative.some((entry) => entry.file.path === "sample_api/packages/project.s2s.json")).toBe(true);
     expect(impactData.evidenceTiers.heuristic.length).toBeGreaterThan(0);
     expect(impactData.selectedFiles.length).toBeLessThanOrEqual(impactData.affectedFiles.length);
     expect(impactData.value.value).not.toBe("high");
@@ -904,8 +904,8 @@ async function createFixtureRepo(): Promise<string> {
   await mkdirp(path.join(repo, "src/generated"));
   await mkdirp(path.join(repo, "web"));
   await mkdirp(path.join(repo, "web/src/lib"));
-  await mkdirp(path.join(repo, "atlas_api/packages"));
-  await mkdirp(path.join(repo, "atlas_api/adapters"));
+  await mkdirp(path.join(repo, "sample_api/packages"));
+  await mkdirp(path.join(repo, "sample_api/adapters"));
   await mkdirp(path.join(repo, ".codex/static-analysis"));
   await mkdirp(path.join(repo, "reports"));
   await mkdirp(path.join(repo, "service"));
@@ -1021,26 +1021,26 @@ async function createFixtureRepo(): Promise<string> {
   await writeFile(path.join(repo, "web/src/query-client.ts"), "export function loadQuery() { return fetch('/api/query?limit=25') }\n", "utf8");
   await writeFile(path.join(repo, "web/src/api-constant.ts"), "export const sampleEndpoint = '/api/not-a-route'\n", "utf8");
   await writeFile(
-    path.join(repo, "atlas_api/packages/atlas.s2s.json"),
+    path.join(repo, "sample_api/packages/project.s2s.json"),
     JSON.stringify({ nodes: [{ type_id: "s2s.audio.speech_to_speech", title: "Speech to Speech", adapter_key: "s2s.speech_to_speech" }] }, null, 2),
     "utf8"
   );
   await writeFile(
-    path.join(repo, "atlas_api/packages/atlas.image.json"),
+    path.join(repo, "sample_api/packages/project.image.json"),
     JSON.stringify({ nodes: [{ type_id: "image.generate", title: "Image Generate", adapter_key: "image.generate" }] }, null, 2),
     "utf8"
   );
-  await writeFile(path.join(repo, "atlas_api/adapters/s2s.py"), "class S2SAdapter:\n    pass\n", "utf8");
-  await writeFile(path.join(repo, "atlas_api/adapters/image_generate.py"), "class ImageGenerateAdapter:\n    pass\n", "utf8");
-  await writeFile(path.join(repo, "atlas_api/adapters/image.py"), "class ImageAdapter:\n    pass\n", "utf8");
-  await writeFile(path.join(repo, "atlas_api/adapters/generate.py"), "class GenerateAdapter:\n    pass\n", "utf8");
+  await writeFile(path.join(repo, "sample_api/adapters/s2s.py"), "class S2SAdapter:\n    pass\n", "utf8");
+  await writeFile(path.join(repo, "sample_api/adapters/image_generate.py"), "class ImageGenerateAdapter:\n    pass\n", "utf8");
+  await writeFile(path.join(repo, "sample_api/adapters/image.py"), "class ImageAdapter:\n    pass\n", "utf8");
+  await writeFile(path.join(repo, "sample_api/adapters/generate.py"), "class GenerateAdapter:\n    pass\n", "utf8");
   await writeFile(path.join(repo, "service/helpers.py"), "def normalize(value):\n    return value.strip()\n", "utf8");
   await writeFile(path.join(repo, "service/adapters/s2s.py"), "def dispatch(value):\n    return value\n", "utf8");
-  await writeFile(path.join(repo, "service/store.py"), "from .adapters.s2s import dispatch\n\nclass AtlasStore:\n    def normalize_value(self, value):\n        return dispatch(value)\n", "utf8");
+  await writeFile(path.join(repo, "service/store.py"), "from .adapters.s2s import dispatch\n\nclass ProjectStore:\n    def normalize_value(self, value):\n        return dispatch(value)\n", "utf8");
   await writeFile(path.join(repo, "service/__init__.py"), "from .helpers import normalize\n", "utf8");
   await writeFile(
     path.join(repo, "service/app.py"),
-    "from .helpers import normalize\nfrom .store import AtlasStore\n\nstore = AtlasStore()\n\n@router.get('/api/thing')\ndef route_thing(value):\n    store = AtlasStore()\n    return store.normalize_value(normalize(value))\n\n@router.get('/api/global-store')\ndef route_global_store(value):\n    return store.normalize_value(normalize(value))\n\n@router.get('/api' + '/concat')\ndef route_concat(value):\n    return normalize(value)\n\n@router.api_route('/api/items', methods=['GET', 'POST'])\ndef route_items(value):\n    return normalize(value)\n\n@router.get(\n    '/api/multiline'\n)\ndef route_multiline_endpoint(value):\n    return normalize(value)\n\n@router.get('/api/default-fetch')\ndef route_default_get(value):\n    return normalize(value)\n\n@router.post('/api/default-fetch')\ndef route_default_post(value):\n    return normalize(value)\n\n@router.get('/api/query')\ndef route_query(value):\n    return normalize(value)\n\n@app.on_event('startup')\ndef on_startup():\n    return None\n\n@router.post('/async')\nasync def route_async(value):\n    return normalize(value)\n\nclass ThingService:\n    def compute(self, value):\n        return normalize(value)\n",
+    "from .helpers import normalize\nfrom .store import ProjectStore\n\nstore = ProjectStore()\n\n@router.get('/api/thing')\ndef route_thing(value):\n    store = ProjectStore()\n    return store.normalize_value(normalize(value))\n\n@router.get('/api/global-store')\ndef route_global_store(value):\n    return store.normalize_value(normalize(value))\n\n@router.get('/api' + '/concat')\ndef route_concat(value):\n    return normalize(value)\n\n@router.api_route('/api/items', methods=['GET', 'POST'])\ndef route_items(value):\n    return normalize(value)\n\n@router.get(\n    '/api/multiline'\n)\ndef route_multiline_endpoint(value):\n    return normalize(value)\n\n@router.get('/api/default-fetch')\ndef route_default_get(value):\n    return normalize(value)\n\n@router.post('/api/default-fetch')\ndef route_default_post(value):\n    return normalize(value)\n\n@router.get('/api/query')\ndef route_query(value):\n    return normalize(value)\n\n@app.on_event('startup')\ndef on_startup():\n    return None\n\n@router.post('/async')\nasync def route_async(value):\n    return normalize(value)\n\nclass ThingService:\n    def compute(self, value):\n        return normalize(value)\n",
     "utf8"
   );
   await writeFile(

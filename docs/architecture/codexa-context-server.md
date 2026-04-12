@@ -4,13 +4,13 @@
 
 Codexa V1 is a Codex-first context compiler plus an MCP context server. It is not a GitNexus clone and has no GitNexus dependency.
 
-The first milestone used `/srv/atlas` as the acceptance project, but Codexa is not Atlas-specialized. It optimizes for generic blast-radius analysis and keeps the implementation intentionally small: TypeScript CLI, Tree-sitter parsing for TypeScript/TSX/Python, offline TypeScript/Python static assists, an in-memory graph, JSON/NDJSON persistence, concise Codex-native artifacts, and a focused MCP context surface.
+The first milestone used a private application repository as the acceptance project, but Codexa is not project-specialized. It optimizes for generic blast-radius analysis and keeps the implementation intentionally small: TypeScript CLI, Tree-sitter parsing for TypeScript/TSX/Python, offline TypeScript/Python static assists, an in-memory graph, JSON/NDJSON persistence, concise Codex-native artifacts, and a focused MCP context surface.
 
 ## Key Decisions
 
 - No GitNexus install, runtime dependency, or invasive generated agent setup.
 - Static artifacts are the primary product; MCP is only for focused dynamic queries.
-- Necessary correction after Atlas automation work: V1 MCP has no manual mutation or reindex tool, but context tools may auto-refresh the generated `.codex/codebase/` cache when freshness checks prove the stored snapshot is missing or stale. This keeps Codex from silently reasoning over stale Atlas context after edits.
+- Necessary correction after Project automation work: V1 MCP has no manual mutation or reindex tool, but context tools may auto-refresh the generated `.codex/codebase/` cache when freshness checks prove the stored snapshot is missing or stale. This keeps Codex from silently reasoning over stale Project context after edits.
 - Dirty working trees are supported from day one because Codex works inside active edits.
 - Artifacts are Codex-first: short, ranked, actionable, and provenance-backed.
 - Python support is included for simple structure, imports, decorators, tests, and direct usage sites, but dynamic/framework behavior is marked heuristic.
@@ -141,7 +141,7 @@ next step should be `continue`, `run_tests`, `inspect`, or `replan`. This is a
 cache-only loop: it never edits source files and it does not regenerate indexes
 except through the same optional auto-refresh used by other context queries.
 
-`eval` runs a structured benchmark using raw `rg`/`git status` as baseline-noise measurements and Codexa impact/context/test planning as the system under test. It scores structured `QueryResult.data`, not prose. The default benchmark disables auto-refresh and can fail any scenario that refreshes during scoring. Synthetic holdouts use seed-generated names plus decoy files so the benchmark cannot be satisfied by hardcoded Atlas strings.
+`eval` runs a structured benchmark using raw `rg`/`git status` as baseline-noise measurements and Codexa impact/context/test planning as the system under test. It scores structured `QueryResult.data`, not prose. The default benchmark disables auto-refresh and can fail any scenario that refreshes during scoring. Synthetic holdouts use seed-generated names plus decoy files so the benchmark cannot be satisfied by hardcoded Project strings.
 
 ### Indexer
 
@@ -161,7 +161,7 @@ alone. TypeScript ESM imports that name `.js`, `.mjs`, `.cjs`, or `.jsx` outputs
 can resolve back to `.ts`/`.tsx` source files, which keeps source-first projects
 like Codexa linked before build output exists.
 
-Atlas package manifests under `atlas_api/packages/*.json` produce `node` symbols for each `type_id`. Literal node type references across Python, TypeScript, JSON, and tests are linked back to those manifest symbols with heuristic confidence unless they come directly from the manifest.
+Project package manifests under `sample_api/packages/*.json` produce `node` symbols for each `type_id`. Literal node type references across Python, TypeScript, JSON, and tests are linked back to those manifest symbols with heuristic confidence unless they come directly from the manifest.
 
 Generic framework detectors stay heuristic unless the relationship is explicit
 in source:
@@ -170,7 +170,7 @@ in source:
 - React hook/component naming hints.
 - Pydantic models, SQLAlchemy/SQLModel models, Celery/shared-task registrations, and framework wiring calls.
 - Operator-risk files such as service units and service/release/preview control scripts.
-- Optional local-rule packs can add project-specific hints, such as Atlas adapters, generator template files, package manifests, and node type string references, without making the core graph Atlas-specific.
+- Optional local-rule packs can add project-specific hints, such as Project adapters, generator template files, package manifests, and node type string references, without making the core graph Project-specific.
 
 Codexa also ships a tiny inspectable structural rule pack. It is deliberately not
 a replacement for Semgrep, ast-grep, or CodeQL. The rules only add bounded
@@ -215,7 +215,7 @@ Graph tools return bounded edge lists and file sets with freshness and evidence
 quality labels. They are intended for follow-up precision after a task brief, not
 for dumping the entire graph into context.
 
-`WorkflowTrace` facts model route, job, and Atlas manifest flows. A trace has an
+`WorkflowTrace` facts model route, job, and Project manifest flows. A trace has an
 entry, ordered steps, related files, tests, summary, rank, source, and confidence.
 Tree-sitter-derived calls/imports are higher confidence; framework registry and
 string-reference links remain heuristic. Natural-language workflow queries only
@@ -393,7 +393,7 @@ The eval benchmark avoids false confidence by design:
 
 - structured scoring uses returned `data`, not text snippets
 - randomized synthetic holdouts generate new paths, symbols, and decoys from a seed
-- Atlas scenarios remain operational regressions, not the only quality signal
+- Project scenarios remain operational regressions, not the only quality signal
 - no-refresh mode is the default for scoring retrieval quality
 - refresh events are measured and can fail the run
 - metrics include recall, precision at K, selected tests, text size, baseline line count, selected/baseline compression, and failures
@@ -424,4 +424,4 @@ Unit tests cover TS/TSX/Python parsing, Python imports/decorators/pytest fixture
 
 Integration tests index a mixed TS/Python fixture repo, run status before and after edits, run impact for TS and Python symbols/files, run `test-plan --diff`, exercise live watch debouncing, start `serve`, call each MCP tool through a test client, and verify stdout stays JSON-RPC protocol-only.
 
-Atlas acceptance runs `codexa index /srv/atlas`, inspects `/srv/atlas/.codex/codebase/`, confirms Python backend and TypeScript frontend hotspots are represented, confirms Python route/helper/test relationships carry correct confidence labels, and checks impact/test-plan output on a real dirty or historical diff.
+Acceptance runs `codexa index /path/to/project`, inspects `/path/to/project/.codex/codebase/`, confirms Python backend and TypeScript frontend hotspots are represented, confirms route/helper/test relationships carry correct confidence labels, and checks impact/test-plan output on a real dirty or historical diff.

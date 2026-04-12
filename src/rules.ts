@@ -75,43 +75,43 @@ export const CODE_PATTERN_RULES: CodePatternRule[] = [
     languages: ["python"]
   },
   {
-    id: "atlas-queue-lifecycle",
-    reason: "Atlas queue/run lifecycle changes must preserve polling, recovery, cancellation, and terminal-state semantics",
+    id: "project-queue-lifecycle",
+    reason: "Project queue/run lifecycle changes must preserve polling, recovery, cancellation, and terminal-state semantics",
     score: 2,
     pattern: /\b(run_id|queue|polling|queued|running|completed|failed|cancelled|recover|terminal)\b/i,
     languages: ["typescript", "javascript", "python"],
-    path: /(^|\/)(atlas_api|web\/src\/features\/atlas|web\/src\/lib|tests)\//
+    path: /(^|\/)(sample_api|web\/src\/features\/project|web\/src\/lib|tests)\//
   },
   {
-    id: "atlas-generator-node-invariant",
-    reason: "Atlas generator nodes should stay on the shared generator template path and preserve run/lock/runtime identity behavior",
+    id: "project-generator-node-invariant",
+    reason: "Project generator nodes should stay on the shared generator template path and preserve run/lock/runtime identity behavior",
     score: 2,
-    pattern: /\b(generator|runtime_identity|managed_output|prompt_builder|run_status|atlas-generator-node-template)\b/i,
+    pattern: /\b(generator|runtime_identity|managed_output|prompt_builder|run_status|project-generator-node-template)\b/i,
     languages: ["typescript", "javascript", "json"],
-    path: /(^|\/)(web\/src|atlas_api\/packages)\//
+    path: /(^|\/)(web\/src|sample_api\/packages)\//
   },
   {
-    id: "atlas-manifest-adapter-contract",
-    reason: "Atlas manifest adapter keys must stay aligned with backend adapter registration and tests",
+    id: "project-manifest-adapter-contract",
+    reason: "Project manifest adapter keys must stay aligned with backend adapter registration and tests",
     score: 2,
     pattern: /\b(type_id|adapter_key|inputs|outputs|managed_output|node_type)\b/i,
     languages: ["json", "python", "typescript", "javascript"],
-    path: /(^|\/)(atlas_api\/packages|atlas_api\/adapters|web\/src)\//
+    path: /(^|\/)(sample_api\/packages|sample_api\/adapters|web\/src)\//
   },
   {
-    id: "atlas-frontend-polling-boundary",
-    reason: "Atlas frontend polling changes can affect queue visibility, silent error surfacing, and run state hydration",
+    id: "project-frontend-polling-boundary",
+    reason: "Project frontend polling changes can affect queue visibility, silent error surfacing, and run state hydration",
     score: 1.8,
     pattern: /\b(useRunPolling|pollInterval|setInterval|refetch|queue|runStatus|last_error|silent)\b/,
     languages: ["typescript", "javascript"],
     path: /(^|\/)web\/src\//
   },
   {
-    id: "atlas-release-service-boundary",
-    reason: "Atlas release/service control changes can affect live symlink, staged releases, user-systemd, or off-port verification",
+    id: "project-release-service-boundary",
+    reason: "Project release/service control changes can affect live symlink, staged releases, user-systemd, or off-port verification",
     score: 2,
-    pattern: /\b(release|promote|rollback|systemctl|atlas-app\.service|ATLAS_RUN_COORDINATOR_ENABLED|ATLAS_BACKGROUND_INGEST_ENABLED)\b/,
+    pattern: /\b(release|promote|rollback|systemctl|project-app\.service|PROJECT_RUN_COORDINATOR_ENABLED|PROJECT_BACKGROUND_INGEST_ENABLED)\b/,
     languages: ["typescript", "javascript", "python"],
-    path: /(^|\/)(scripts|atlas_api|web\/src)\//
+    path: /(^|\/)(scripts|sample_api|web\/src)\//
   }
 ];

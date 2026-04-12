@@ -7,16 +7,16 @@ import { buildGithubSyncNextSteps, buildGithubSyncWarnings, checkGithubSync, par
 
 describe("GitHub sync diagnostics", () => {
   it("parses common GitHub remote URL forms", () => {
-    expect(parseGithubRemote("https://github.com/mirnoorata/codexa.git")).toBe("mirnoorata/codexa");
-    expect(parseGithubRemote("https://token@github.com/mirnoorata/codexa")).toBe("mirnoorata/codexa");
-    expect(parseGithubRemote("git@github.com:mirnoorata/codexa.git")).toBe("mirnoorata/codexa");
-    expect(parseGithubRemote("ssh://git@github.com/mirnoorata/codexa.git")).toBe("mirnoorata/codexa");
-    expect(parseGithubRemote("https://example.com/mirnoorata/codexa.git")).toBeNull();
+    expect(parseGithubRemote("https://github.com/example-owner/codexa.git")).toBe("example-owner/codexa");
+    expect(parseGithubRemote("https://token@github.com/example-owner/codexa")).toBe("example-owner/codexa");
+    expect(parseGithubRemote("git@github.com:example-owner/codexa.git")).toBe("example-owner/codexa");
+    expect(parseGithubRemote("ssh://git@github.com/example-owner/codexa.git")).toBe("example-owner/codexa");
+    expect(parseGithubRemote("https://example.com/example-owner/codexa.git")).toBeNull();
   });
 
   it("reports a deterministic no-network source sync plan for a GitHub repo", async () => {
     const repo = await createGitRepo();
-    execFileSync("git", ["remote", "add", "origin", "https://github.com/mirnoorata/codexa.git"], { cwd: repo });
+    execFileSync("git", ["remote", "add", "origin", "https://github.com/example-owner/codexa.git"], { cwd: repo });
 
     const result = await checkGithubSync(repo, {
       skipNetwork: true,
@@ -25,7 +25,7 @@ describe("GitHub sync diagnostics", () => {
 
     expect(result.data.repoRoot).toBe(repo);
     expect(result.data.branch).toBe("main");
-    expect(result.data.repoFullName).toBe("mirnoorata/codexa");
+    expect(result.data.repoFullName).toBe("example-owner/codexa");
     expect(result.data.remoteChecked).toBe(false);
     expect(result.data.pushDryRunChecked).toBe(false);
     expect(result.data.nextSteps.join("\n")).toContain("push --dry-run");
@@ -48,11 +48,11 @@ describe("GitHub sync diagnostics", () => {
 
   it("does not recommend pushing when the remote head already matches local head", async () => {
     const nextSteps = buildGithubSyncNextSteps({
-      repoRoot: "/srv/codexa",
+      repoRoot: "/tmp/codexa",
       branch: "main",
       remoteName: "origin",
-      remoteUrl: "git@github.com:mirnoorata/codexa.git",
-      repoFullName: "mirnoorata/codexa",
+      remoteUrl: "git@github.com:example-owner/codexa.git",
+      repoFullName: "example-owner/codexa",
       localHead: "876ddf19ea32e5ceb7f852f36121a6e6d11a83e1",
       remoteHead: "876ddf19ea32e5ceb7f852f36121a6e6d11a83e1",
       pushDryRunChecked: true,
@@ -109,8 +109,8 @@ describe("GitHub sync diagnostics", () => {
       branch: "main",
       dirtyFileCount: 0,
       localHead: "69ce4b6a95dae12815f4070a7974b0a7bc37c972",
-      remoteUrl: "git@github.com:mirnoorata/codexa.git",
-      repoFullName: "mirnoorata/codexa",
+      remoteUrl: "git@github.com:example-owner/codexa.git",
+      repoFullName: "example-owner/codexa",
       remoteHead: "69ce4b6a95dae12815f4070a7974b0a7bc37c972",
       remoteChecked: true,
       pushDryRunChecked: true,
@@ -139,6 +139,6 @@ async function createGitRepo(): Promise<string> {
 
 async function createGitRepoWithSshRemote(): Promise<string> {
   const repo = await createGitRepo();
-  execFileSync("git", ["remote", "add", "origin", "git@github.com:mirnoorata/codexa.git"], { cwd: repo });
+  execFileSync("git", ["remote", "add", "origin", "git@github.com:example-owner/codexa.git"], { cwd: repo });
   return repo;
 }

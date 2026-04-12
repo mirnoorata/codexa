@@ -311,7 +311,7 @@ export function verificationRecipes(index: CodexaIndex, paths: string[], changeT
     .filter(Boolean);
   const hasPython = files.some((file) => file.language === "python");
   const hasFrontend = files.some((file) => file.path.startsWith("web/src") || file.language === "typescript" || file.language === "javascript");
-  const hasManifest = files.some((file) => file.path.startsWith("atlas_api/packages/") || file.path.endsWith(".json"));
+  const hasManifest = files.some((file) => file.path.startsWith("sample_api/packages/") || file.path.endsWith(".json"));
   const hasAdapter = files.some((file) => /(^|\/)adapters\/.+\.py$/.test(file.path) || file.path.includes("adapter"));
   const hasRoute = files.some((file) => index.symbols.some((symbol) => symbol.path === file.path && symbol.kind === "route"));
   const hasOperator = files.some((file) => /\.(sh|service)$/.test(file.path) || file.path.startsWith("scripts/"));
@@ -323,7 +323,7 @@ export function verificationRecipes(index: CodexaIndex, paths: string[], changeT
     recipes.add("Run the nearest Vitest/TypeScript check for touched frontend files and read importers before API-shaped edits.");
   }
   if (hasManifest) {
-    recipes.add("Validate Atlas package manifest loading and node type references across backend registry and frontend node definitions.");
+    recipes.add("Validate Project package manifest loading and node type references across backend registry and frontend node definitions.");
   }
   if (hasAdapter) {
     recipes.add("Exercise adapter contract tests or at least import/load the adapter package after changes.");

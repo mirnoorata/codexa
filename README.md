@@ -1,6 +1,4 @@
-# /srv/codexa
-
-Project root: `/srv/codexa`
+# Codexa
 
 Codexa is a Codex-native codebase intelligence compiler. It indexes a target
 repository, writes concise `.codex/codebase/` artifacts for Codex to read, and
@@ -23,8 +21,8 @@ serves focused MCP context tools over stdio.
   review, workflow tracing, dependency checks, and final test planning.
 - Generic relationship hints for package manifests, TypeScript project/path
   configuration, changed symbols, route/job/test surfaces, and candidate test
-  commands with provenance. Atlas-specific rule patterns exist only as a local
-  rules pack and regression target, not as the core architecture.
+  commands with provenance. Project-specific rules belong in local fixtures or
+  private forks, not in public setup instructions.
 - Import-aware symbol binding for TypeScript/Python aliases and namespace/member
   calls so impact analysis can follow `import { x as y }`, `import * as ns`, and
   `from .module import x as y` usage without treating every match as a raw string.
@@ -95,28 +93,28 @@ npm install
 npm run build
 npm test
 
-node dist/cli.js init /srv/atlas
-node dist/cli.js index /srv/atlas
-node dist/cli.js watch /srv/atlas
-node dist/cli.js static-analysis /srv/atlas --semgrep-report /tmp/semgrep.json --codeql-report /tmp/codeql.sarif
-node dist/cli.js status /srv/atlas
-node dist/cli.js repo-map /srv/atlas --budget 1200
-node dist/cli.js explain /srv/atlas --file atlas_api/app.py
-node dist/cli.js search /srv/atlas --query useRunPolling
-node dist/cli.js impact /srv/atlas --file atlas_api/app.py --change-type api
-node dist/cli.js test-plan /srv/atlas --diff
-node dist/cli.js brief /srv/atlas --task "Update S2S safely" --change-type behavior
-node dist/cli.js context-pack /srv/atlas --task "Update S2S safely" --change-type behavior
-node dist/cli.js focus-brief /srv/atlas --task "How does queue polling work?"
-node dist/cli.js callers /srv/atlas --symbol useRunPolling
-node dist/cli.js callees /srv/atlas --file web/src/App.tsx
-node dist/cli.js dependency-path /srv/atlas --from-file web/src/App.tsx --to-file web/src/features/atlas/use-run-polling.ts
-node dist/cli.js workflow-path /srv/atlas --query "queue workflow"
-node dist/cli.js change-plan /srv/atlas --task "Change polling behavior safely" --file web/src/features/atlas/use-run-polling.ts --save-snapshot --task-id polling-update
-node dist/cli.js post-edit-review /srv/atlas --task-id polling-update --ran-test web/src/features/atlas/use-run-polling.test.tsx
-node dist/cli.js eval /srv/atlas --suite all --seed codexa-v1-benchmark
-node dist/cli.js github-sync-check /srv/codexa
-node dist/cli.js serve /srv/atlas
+node dist/cli.js init /path/to/project
+node dist/cli.js index /path/to/project
+node dist/cli.js watch /path/to/project
+node dist/cli.js static-analysis /path/to/project --semgrep-report /tmp/semgrep.json --codeql-report /tmp/codeql.sarif
+node dist/cli.js status /path/to/project
+node dist/cli.js repo-map /path/to/project --budget 1200
+node dist/cli.js explain /path/to/project --file src/app.ts
+node dist/cli.js search /path/to/project --query usePolling
+node dist/cli.js impact /path/to/project --file src/app.ts --change-type api
+node dist/cli.js test-plan /path/to/project --diff
+node dist/cli.js brief /path/to/project --task "Update polling safely" --change-type behavior
+node dist/cli.js context-pack /path/to/project --task "Update polling safely" --change-type behavior
+node dist/cli.js focus-brief /path/to/project --task "How does queue polling work?"
+node dist/cli.js callers /path/to/project --symbol usePolling
+node dist/cli.js callees /path/to/project --file src/App.tsx
+node dist/cli.js dependency-path /path/to/project --from-file src/App.tsx --to-file src/features/use-polling.ts
+node dist/cli.js workflow-path /path/to/project --query "queue workflow"
+node dist/cli.js change-plan /path/to/project --task "Change polling behavior safely" --file src/features/use-polling.ts --save-snapshot --task-id polling-update
+node dist/cli.js post-edit-review /path/to/project --task-id polling-update --ran-test src/features/use-polling.test.ts
+node dist/cli.js eval /path/to/project --suite all --seed codexa-v1-benchmark
+node dist/cli.js github-sync-check /path/to/codexa
+node dist/cli.js serve /path/to/project
 ```
 
 Context commands refresh stale or missing `.codex/codebase/` artifacts by default
@@ -133,7 +131,7 @@ After `npm link`, the same commands are available as `codexa ...`.
 For active Codex edit sessions, run:
 
 ```bash
-codexa watch /srv/atlas
+codexa watch /path/to/project
 ```
 
 The watcher performs an initial index by default, then debounces filesystem
@@ -146,9 +144,9 @@ does not expose a manual mutation/reindex tool.
 Useful automation flags:
 
 ```bash
-codexa watch /srv/atlas --no-initial
-codexa watch /srv/atlas --debounce-ms 500 --poll-ms 2000
-codexa watch /srv/atlas --initial --max-runs 1
+codexa watch /path/to/project --no-initial
+codexa watch /path/to/project --debounce-ms 500 --poll-ms 2000
+codexa watch /path/to/project --initial --max-runs 1
 ```
 
 Use `--max-runs 1` for hooks or smoke tests that need one refresh and then exit.
@@ -165,7 +163,7 @@ usage compliance with the tool installation that produced the report.
 Import existing reports and reindex:
 
 ```bash
-codexa static-analysis /srv/atlas \
+codexa static-analysis /path/to/project \
   --semgrep-report /tmp/semgrep.json \
   --codeql-report /tmp/codeql.sarif
 ```
@@ -173,8 +171,8 @@ codexa static-analysis /srv/atlas \
 Optionally run locally installed scanners:
 
 ```bash
-codexa static-analysis /srv/atlas --run-semgrep --semgrep-config p/default
-codexa static-analysis /srv/atlas --run-codeql --codeql-language javascript-typescript python
+codexa static-analysis /path/to/project --run-semgrep --semgrep-config p/default
+codexa static-analysis /path/to/project --run-codeql --codeql-language javascript-typescript python
 ```
 
 Those scanner runs are opt-in because they may be slow, may contact external
@@ -206,8 +204,8 @@ Run this diagnostic when a local Codexa repository and GitHub repository appear
 out of sync:
 
 ```bash
-codexa github-sync-check /srv/codexa
-codexa github-sync-check /srv/codexa --no-network
+codexa github-sync-check /path/to/codexa
+codexa github-sync-check /path/to/codexa --no-network
 ```
 
 The command checks the current branch, local HEAD, GitHub remote URL, remote
@@ -221,6 +219,27 @@ small GitHub API changes, but it does not provide shell credentials for local
 credential manager, or `gh auth login`, then push from the shell. If the remote
 branch contains only a bootstrap placeholder commit, inspect it first and replace
 it intentionally with `git push --force-with-lease`.
+
+## Public Release Hygiene
+
+Codexa is designed to work without publishing machine-local paths, private
+project names, service URLs, credentials, generated indexes, or session memory.
+Run the privacy gate before any release-oriented push:
+
+```bash
+npm run privacy
+npm run check
+```
+
+The privacy gate scans tracked files for publish-blocking environment markers
+such as local workspace paths, local home paths, non-example Codexa GitHub
+remotes, GitHub tokens, and private key blocks. It deliberately scans tracked
+files only; ignored generated artifacts and local caches should stay ignored.
+
+If sensitive identifiers were already pushed to a private remote, a clean public
+release requires rewriting git history before the repository is made public.
+Adding a sanitizing commit is not enough because old commits remain visible once
+the repository visibility changes.
 
 ## Codex Setup
 
@@ -244,12 +263,6 @@ The SessionStart hook prints the compact Codex contract instead of a generic
 graph preview, so Codex knows the next tool to call without loading noisy
 project context.
 
-In the `/srv` workspace, the intended chat flow is:
-
-```text
-focus on the atlas project
-```
-
 If the project is already wired, Codex should run the lightweight Codexa
 session-start check automatically. If a project is not wired yet, say:
 
@@ -266,9 +279,9 @@ check.
 entry looks like:
 
 ```toml
-[mcp_servers.codexa-atlas]
+[mcp_servers.codexa-project]
 command = "node"
-args = ["/srv/codexa/dist/cli.js", "serve", "/srv/atlas", "--auto-refresh"]
+args = ["/path/to/codexa/dist/cli.js", "serve", "/path/to/project", "--auto-refresh"]
 startup_timeout_sec = 10
 tool_timeout_sec = 60
 ```
@@ -294,10 +307,10 @@ instead of inventing one.
 
 ## Eval Harness
 
-Run a structured benchmark against Atlas plus randomized synthetic holdouts:
+Run a structured benchmark against a target project plus randomized synthetic holdouts:
 
 ```bash
-node dist/cli.js eval /srv/atlas --suite all --seed "$(date +%s)"
+node dist/cli.js eval /path/to/project --suite all --seed "$(date +%s)"
 ```
 
 The harness scores structured `QueryResult.data` rather than prose substrings.
@@ -315,13 +328,9 @@ precision@K, selected-file compression, and refresh behavior.
 status by default; a bounded no-refresh context-pack preview is available by
 setting `CODEXA_SESSIONSTART_CONTEXT=1`.
 
-## Storage Layout
+## Local State
 
-- `storage/` -> `/srv/storage/apps/codexa/storage`
-- `data/` -> `/srv/storage/apps/codexa/data`
-- `models/` -> `/srv/storage/models/codexa`
-- `cache/` -> `/srv/storage/cache/codexa`
-- `backups/` -> `/srv/storage/backups/codexa`
-
-Keep source code, tests, docs, and configs in the repo tree. Keep large mutable
-state in the linked storage paths above.
+Keep source code, tests, docs, and configs in the repo tree. Keep generated
+artifacts, caches, private reports, local storage, and machine-specific config
+out of git. Use ignored paths such as `.codex/cache/`, `.codex/codebase/`, and
+`.local/` for local-only state.

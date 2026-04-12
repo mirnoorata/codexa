@@ -639,7 +639,7 @@ program
 program
   .command("eval")
   .argument("<repo>", "repository root")
-  .option("--suite <suite>", "eval suite: all, atlas, synthetic", "all")
+  .option("--suite <suite>", "eval suite: all, project, synthetic", "all")
   .option("--seed <seed>", "seed for randomized synthetic holdouts")
   .option("--json", "emit machine-readable JSON")
   .option("--auto-refresh", "allow eval queries to refresh stale artifacts", false)
@@ -647,7 +647,7 @@ program
   .option("--fail-on-refresh", "fail a scenario if a query auto-refreshes during scoring", true)
   .option("--no-fail-on-refresh", "record refreshes without failing the scenario")
   .description("Run a structured Codexa quality benchmark with randomized anti-cheat holdouts.")
-  .action(async (repo: string, opts: { suite: "all" | "atlas" | "synthetic"; seed?: string; json?: boolean; autoRefresh: boolean; failOnRefresh: boolean }) => {
+  .action(async (repo: string, opts: { suite: "all" | "project" | "synthetic"; seed?: string; json?: boolean; autoRefresh: boolean; failOnRefresh: boolean }) => {
     const result = await runEval(
       path.resolve(repo),
       { autoRefresh: opts.autoRefresh },
