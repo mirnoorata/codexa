@@ -3,7 +3,7 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildGithubSyncNextSteps, buildGithubSyncWarnings, checkGithubSync, parseGithubRemote } from "../src/github-sync.js";
+import { buildGithubSyncNextSteps, buildGithubSyncWarnings, checkGithubSync, parseGithubRemote, redactRemoteUrl } from "../src/github-sync.js";
 
 describe("GitHub sync diagnostics", () => {
   it("parses common GitHub remote URL forms", () => {
@@ -12,6 +12,25 @@ describe("GitHub sync diagnostics", () => {
     expect(parseGithubRemote("git@github.com:example-owner/codexa.git")).toBe("example-owner/codexa");
     expect(parseGithubRemote("ssh://git@github.com/example-owner/codexa.git")).toBe("example-owner/codexa");
     expect(parseGithubRemote("https://example.com/example-owner/codexa.git")).toBeNull();
+  });
+
+  it("redacts credentials from remote URLs and structured diagnostic output", async () => {
+    const repo = await createGitRepo();
+    const token = `gh${"p"}_${"a".repeat(36)}`;
+    const remote = `https://diagnostic-user:${token}@github.com/example-owner/codexa.git`;
+    execFileSync("git", ["remote", "add", "origin", remote], { cwd: repo });
+
+    const result = await checkGithubSync(repo, {
+      skipNetwork: true,
+      checkGh: false
+    });
+
+    expect(redactRemoteUrl(remote)).toBe("https://github.com/example-owner/codexa.git");
+    expect(result.data.remoteUrlRedacted).toBe("https://github.com/example-owner/codexa.git");
+    expect(JSON.stringify(result.data)).not.toContain(token);
+    expect(result.text).not.toContain(token);
+    expect(result.text).not.toContain("diagnostic-user");
+    expect(result.text).toContain("https://github.com/example-owner/codexa.git");
   });
 
   it("reports a deterministic no-network source sync plan for a GitHub repo", async () => {
@@ -41,7 +60,7 @@ describe("GitHub sync diagnostics", () => {
       checkGh: false
     });
 
-    expect(result.data.remoteUrl).toBeNull();
+    expect(result.data.remoteUrlRedacted).toBeNull();
     expect(result.data.warnings).toContain("no origin remote URL is configured");
     expect(result.data.nextSteps[0]).toContain("remote add origin");
   });
@@ -75,7 +94,7 @@ describe("GitHub sync diagnostics", () => {
       branch: result.data.branch,
       dirtyFileCount: result.data.dirtyFileCount,
       localHead: result.data.localHead,
-      remoteUrl: result.data.remoteUrl,
+      remoteUrl: result.data.remoteUrlRedacted,
       repoFullName: result.data.repoFullName,
       remoteHead: result.data.localHead,
       remoteChecked: true,
@@ -89,7 +108,7 @@ describe("GitHub sync diagnostics", () => {
       repoRoot: result.data.repoRoot,
       branch: result.data.branch,
       remoteName: result.data.remoteName,
-      remoteUrl: result.data.remoteUrl,
+      remoteUrl: result.data.remoteUrlRedacted,
       repoFullName: result.data.repoFullName,
       localHead: result.data.localHead,
       remoteHead: result.data.localHead,

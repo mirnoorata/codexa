@@ -23,7 +23,7 @@ export interface GithubSyncCheck {
   branch: string | null;
   localHead: string | null;
   remoteName: string;
-  remoteUrl: string | null;
+  remoteUrlRedacted: string | null;
   repoFullName: string | null;
   dirtyFileCount: number;
   remoteHead: string | null;
@@ -160,7 +160,7 @@ export async function checkGithubSync(repoInput: string, options: GithubSyncChec
     branch,
     localHead,
     remoteName,
-    remoteUrl,
+    remoteUrlRedacted: remoteUrl ? redactRemoteUrl(remoteUrl) : null,
     repoFullName,
     dirtyFileCount,
     remoteHead,
@@ -303,7 +303,7 @@ function renderGithubSyncCheck(data: GithubSyncCheck): string {
     `Repo: ${data.repoRoot}`,
     `Branch: ${data.branch ?? "unknown"}`,
     `Local HEAD: ${data.localHead ? shortSha(data.localHead) : "unknown"}`,
-    `Remote: ${data.remoteName}${data.remoteUrl ? ` (${data.remoteUrl})` : " (missing)"}`,
+    `Remote: ${data.remoteName}${data.remoteUrlRedacted ? ` (${data.remoteUrlRedacted})` : " (missing)"}`,
     `GitHub repo: ${data.repoFullName ?? "unknown"}`,
     `Remote branch HEAD: ${data.remoteHead ? shortSha(data.remoteHead) : data.remoteChecked ? "not found or inaccessible" : "not checked"}`,
     `Working tree dirty files: ${data.dirtyFileCount}`,
@@ -365,7 +365,7 @@ function summarizeCommandMessage(result: CommandResult): string | undefined {
   if (result.truncated) {
     return "output truncated";
   }
-  const text = `${result.stderr}\n${result.stdout}`.trim().replace(/\s+/gu, " ");
+  const text = redactSensitiveText(`${result.stderr}\n${result.stdout}`).trim().replace(/\s+/gu, " ");
   if (text) {
     return text.slice(0, 220);
   }
@@ -386,6 +386,29 @@ function looksAuthBlocked(result: CommandResult): boolean {
     text.includes("gh auth login") ||
     text.includes("terminal prompts disabled")
   );
+}
+
+export function redactRemoteUrl(remoteUrl: string): string {
+  const trimmed = remoteUrl.trim();
+  try {
+    const parsed = new URL(trimmed);
+    if ((parsed.protocol === "http:" || parsed.protocol === "https:") && (parsed.username || parsed.password)) {
+      parsed.username = "";
+      parsed.password = "";
+      return parsed.toString();
+    }
+  } catch {
+    // Fall through to conservative string redaction.
+  }
+  return trimmed.replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/iu, "$1").replace(/\bgh[opsu]_[A-Za-z0-9_]{8,}/gu, "[REDACTED_TOKEN]");
+}
+
+function redactSensitiveText(value: string): string {
+  return value
+    .split(/\r?\n/u)
+    .map((line) => line.replace(/https:\/\/[^/@\s]+@github\.com\//giu, "https://github.com/"))
+    .join("\n")
+    .replace(/\b(?:gh[opsu]_|github_pat_)[A-Za-z0-9_]{8,}\b/gu, "[REDACTED_TOKEN]");
 }
 
 function noPromptEnv(): NodeJS.ProcessEnv {

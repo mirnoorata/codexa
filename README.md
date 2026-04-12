@@ -178,6 +178,10 @@ codexa static-analysis /path/to/project --run-codeql --codeql-language javascrip
 Those scanner runs are opt-in because they may be slow, may contact external
 rule/query registries depending on tool configuration, and are governed by the
 user's Semgrep/CodeQL installation and license terms.
+Codexa runs these optional scanner commands with a scrubbed environment:
+credentials and service tokens from the Codexa shell are not forwarded. If a
+scanner needs authenticated cloud behavior, run that scanner yourself and import
+the generated report instead.
 
 Supported report locations include:
 
@@ -240,6 +244,27 @@ If sensitive identifiers were already pushed to a private remote, a clean public
 release requires rewriting git history before the repository is made public.
 Adding a sanitizing commit is not enough because old commits remain visible once
 the repository visibility changes.
+
+Use this stricter gate before changing repository visibility:
+
+```bash
+npm run privacy:release
+```
+
+`privacy:release` includes `privacy:history`, which scans every reachable
+commit. It is expected to fail until the private development history has been
+replaced by sanitized public history.
+
+Before creating a public source archive, remove local generated artifacts and
+export from git rather than from the working directory:
+
+```bash
+npm run clean:private-artifacts
+npm run release:archive
+```
+
+`release:archive` uses `git archive HEAD`, so ignored local files are not
+included in the package.
 
 ## Codex Setup
 

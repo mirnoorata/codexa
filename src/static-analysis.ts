@@ -183,6 +183,7 @@ async function runExternal(command: string, args: string[], options: { cwd: stri
   try {
     await execFileAsync(command, args, {
       cwd: options.cwd,
+      env: externalScannerEnv(),
       timeout: options.timeoutMs,
       maxBuffer: 16 * 1024 * 1024
     });
@@ -194,6 +195,34 @@ async function runExternal(command: string, args: string[], options: { cwd: stri
     const details = [record.stderr, record.stdout].filter(Boolean).join("\n").trim();
     throw new Error(`${command} failed${details ? `: ${details.slice(0, 2000)}` : ""}`);
   }
+}
+
+function externalScannerEnv(): NodeJS.ProcessEnv {
+  const allowed = [
+    "PATH",
+    "HOME",
+    "USER",
+    "LOGNAME",
+    "SHELL",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "LANG",
+    "LC_ALL",
+    "SYSTEMROOT",
+    "ComSpec"
+  ];
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of allowed) {
+    const value = process.env[key];
+    if (value) {
+      env[key] = value;
+    }
+  }
+  env.GIT_TERMINAL_PROMPT = "0";
+  env.GCM_INTERACTIVE = "never";
+  env.CODEXA_EXTERNAL_SCANNER = "1";
+  return env;
 }
 
 function reportFileName(kind: StaticAnalysisReport["kind"], source: string): string {
