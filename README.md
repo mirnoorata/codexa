@@ -240,6 +240,19 @@ such as local workspace paths, local home paths, non-example Codexa GitHub
 remotes, GitHub tokens, and private key blocks. It deliberately scans tracked
 files only; ignored generated artifacts and local caches should stay ignored.
 
+Push CI runs the deterministic development gate:
+
+```bash
+npm run check
+```
+
+Release-oriented security checks remain available locally and should be run
+before publication or visibility changes:
+
+```bash
+npm run security:check
+```
+
 If sensitive identifiers were already pushed to a private remote, a clean public
 release requires rewriting git history before the repository is made public.
 Adding a sanitizing commit is not enough because old commits remain visible once
