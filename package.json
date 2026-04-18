@@ -1,0 +1,61 @@
+{
+  "name": "@mirnoorata/codexa",
+  "version": "0.1.0",
+  "description": "Codex-native codebase intelligence context compiler and query-only MCP server.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mirnoorata/codexa.git"
+  },
+  "bugs": {
+    "url": "https://github.com/mirnoorata/codexa/issues"
+  },
+  "homepage": "https://github.com/mirnoorata/codexa#readme",
+  "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "bin": {
+    "codexa": "./dist/cli.js"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "node scripts/verify-source-hygiene.mjs",
+    "audit": "npm audit --audit-level=moderate",
+    "privacy": "node scripts/verify-public-hygiene.mjs",
+    "privacy:history": "node scripts/verify-public-hygiene.mjs --history",
+    "privacy:release": "npm run privacy && npm run privacy:history",
+    "public:snapshot-check": "node scripts/verify-public-snapshot.mjs",
+    "clean:private-artifacts": "node scripts/clean-private-artifacts.mjs",
+    "prepare:codera-parking": "node scripts/prepare-codera-parking-package.mjs",
+    "prepack": "npm run build",
+    "prepublishOnly": "npm run security:check",
+    "release:archive": "npm run check && git archive --format=tar.gz --output codexa-public-head.tar.gz HEAD",
+    "test": "npm run build && vitest run",
+    "test:schema": "vitest run tests/schema.test.ts",
+    "check": "npm run typecheck && npm run lint && npm run privacy && npm test",
+    "security:check": "npm run check && npm run audit && npm run public:snapshot-check",
+    "dev": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.29.0",
+    "commander": "14.0.3",
+    "tree-sitter": "0.21.1",
+    "tree-sitter-python": "0.21.0",
+    "tree-sitter-typescript": "0.23.2",
+    "typescript": "5.9.3",
+    "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.17",
+    "tsx": "4.21.0",
+    "vitest": "4.1.4"
+  },
+  "engines": {
+    "node": ">=22"
+  }
+}

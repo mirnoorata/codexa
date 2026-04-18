@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/mirnoorata/codexa/security/advisories/new
+    about: Use GitHub's private security advisory flow. Do NOT file a public issue.
+  - name: Question or usage help
+    url: https://github.com/mirnoorata/codexa/discussions
+    about: For "how do I" or "is this the right tool" questions. Discussions tab must be enabled.

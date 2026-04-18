@@ -1,0 +1,42 @@
+name: Codexa Check
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codexa-check-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    # Skip fork PRs by default — prevents drive-by Actions-minute abuse.
+    # Belt-and-braces with GitHub's "Require approval for all outside
+    # collaborators" setting; do not rely on either alone.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Enforce clean-runner parity
+        run: rm -rf dist .codex/codebase .codex/cache
+
+      - name: Run Codexa gates
+        run: npm run check

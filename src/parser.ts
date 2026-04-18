@@ -1,0 +1,2072 @@
+import { promises as fs } from "node:fs";
+import path from "node:path";
+import Parser from "tree-sitter";
+import Python from "tree-sitter-python";
+import TypeScriptGrammars from "tree-sitter-typescript";
+import ts from "typescript";
+import { isGeneratedPath, isPublicSurfacePath, isTestPath, languageForPath } from "./language.js";
+import { CODE_PATTERN_RULES } from "./rules.js";
+import type {
+  BaseFact,
+  Confidence,
+  FactSource,
+  ImportEdgeFact,
+  LanguageId,
+  ParseResult,
+  ParserErrorFact,
+  Range,
+  RiskSignalFact,
+  SymbolFact,
+  TestEdgeFact,
+  UsageSiteFact
+} from "./types.js";
+import { stableId } from "./util.js";
+
+type SyntaxNode = Parser.SyntaxNode;
+type TreeSitterLanguage = Parameters<Parser["setLanguage"]>[0];
+
+const tsGrammar = TypeScriptGrammars as unknown as { typescript: TreeSitterLanguage; tsx: TreeSitterLanguage };
+const PYTHON_DEFINITION_TYPES = new Set(["class_definition", "function_definition", "async_function_definition"]);
+
+export interface ParseFileInput {
+  repoRoot: string;
+  relativePath: string;
+  absolutePath: string;
+  dirty: boolean;
+  sizeBytes: number;
+  sourceText?: string;
+  snapshotId: string;
+  indexedAt: string;
+}
+
+export async function parseFile(input: ParseFileInput): Promise<ParseResult> {
+  const language = languageForPath(input.relativePath);
+  const generated = isGeneratedPath(input.relativePath);
+  const test = isTestPath(input.relativePath);
+  const baseFile = {
+    id: stableId("file", input.relativePath),
+    type: "File" as const,
+    path: input.relativePath,
+    source: "git" as FactSource,
+    confidence: "authoritative" as Confidence,
+    snapshotId: input.snapshotId,
+    indexedAt: input.indexedAt,
+    language,
+    sizeBytes: input.sizeBytes,
+    dirty: input.dirty,
+    generated,
+    test
+  };
+
+  const empty: ParseResult = {
+    file: baseFile,
+    symbols: [],
+    usageSites: [],
+    imports: [],
+    testEdges: [],
+    risks: [],
+    parserErrors: []
+  };
+
+  const sourceText = input.sourceText ?? (await fs.readFile(input.absolutePath, "utf8"));
+
+  if (language === "json") {
+    return parseJsonManifest(input, sourceText, empty);
+  }
+  if (language === "markdown") {
+    return parseMarkdownDocument(input, sourceText, empty);
+  }
+
+  try {
+    if (!["typescript", "javascript", "python"].includes(language)) {
+      const ctx: ExtractContext = {
+        path: input.relativePath,
+        language,
+        sourceText,
+        snapshotId: input.snapshotId,
+        indexedAt: input.indexedAt,
+        test,
+        symbols: [],
+        usageSites: [],
+        imports: [],
+        testEdges: [],
+        risks: [],
+        parserErrors: []
+      };
+      addCommonRisks(ctx);
+      addPatternRisks(ctx);
+      return { ...empty, ...ctx, file: baseFile };
+    }
+
+    const parser = new Parser();
+    parser.setLanguage(languageForParser(language, input.relativePath));
+    const tree = parser.parse((index) => (index < sourceText.length ? sourceText.slice(index, index + 4096) : null));
+    const ctx: ExtractContext = {
+      path: input.relativePath,
+      language,
+      sourceText,
+      snapshotId: input.snapshotId,
+      indexedAt: input.indexedAt,
+      test,
+      symbols: [],
+      usageSites: [],
+      imports: [],
+      testEdges: [],
+      risks: [],
+      parserErrors: []
+    };
+
+    if (language === "python") {
+      extractPython(tree.rootNode, ctx);
+    } else {
+      extractEcma(tree.rootNode, ctx);
+      addTypeScriptCompilerAssist(ctx);
+    }
+
+    extractDottedStringReferences(ctx);
+    extractEndpointStringReferences(ctx);
+
+    if (tree.rootNode.hasError) {
+      ctx.parserErrors.push(...syntaxErrorFacts(ctx, tree.rootNode));
+    }
+
+    addCommonRisks(ctx);
+    addPatternRisks(ctx);
+    return { ...empty, ...ctx, file: baseFile };
+  } catch (error) {
+    return {
+      ...empty,
+      parserErrors: [
+        {
+          ...baseFact("ParserError", input.relativePath, input.snapshotId, input.indexedAt, "tree-sitter", "heuristic"),
+          id: stableId("parser-error", input.relativePath, String(error)),
+          type: "ParserError",
+          path: input.relativePath,
+          message: error instanceof Error ? error.message : String(error)
+        }
+      ]
+    };
+  }
+}
+
+function parseMarkdownDocument(input: ParseFileInput, sourceText: string, empty: ParseResult): ParseResult {
+  const ctx: ExtractContext = {
+    path: input.relativePath,
+    language: "markdown",
+    sourceText,
+    snapshotId: input.snapshotId,
+    indexedAt: input.indexedAt,
+    test: false,
+    symbols: [],
+    usageSites: [],
+    imports: [],
+    testEdges: [],
+    risks: [],
+    parserErrors: []
+  };
+  extractMarkdown(ctx);
+  addCommonRisks(ctx);
+  addPatternRisks(ctx);
+  return { ...empty, ...ctx, file: empty.file };
+}
+
+interface ExtractContext {
+  path: string;
+  language: LanguageId;
+  sourceText: string;
+  snapshotId: string;
+  indexedAt: string;
+  test: boolean;
+  symbols: SymbolFact[];
+  usageSites: UsageSiteFact[];
+  imports: ImportEdgeFact[];
+  testEdges: TestEdgeFact[];
+  risks: RiskSignalFact[];
+  parserErrors: ParserErrorFact[];
+}
+
+interface JsonManifestRecord extends Record<string, unknown> {
+  scripts?: Record<string, string>;
+  nodes?: unknown;
+  namespace?: string;
+  name?: string;
+  compilerOptions?: { baseUrl?: string; paths?: Record<string, string[]> };
+  references?: Array<{ path?: unknown }>;
+  extends?: unknown;
+}
+
+function languageForParser(language: LanguageId, filePath: string): TreeSitterLanguage {
+  if (language === "python") {
+    return Python as unknown as TreeSitterLanguage;
+  }
+  if (filePath.endsWith(".tsx") || filePath.endsWith(".jsx")) {
+    return tsGrammar.tsx;
+  }
+  return tsGrammar.typescript;
+}
+
+function parseJsonManifest(input: ParseFileInput, sourceText: string, empty: ParseResult): ParseResult {
+  const basename = path.posix.basename(input.relativePath);
+  const isNodePackageManifest = isPlausibleNodeManifestPath(input.relativePath);
+  if (basename !== "package.json" && basename !== "tsconfig.json" && !isNodePackageManifest) {
+    return empty;
+  }
+  try {
+    const parsed = JSON.parse(sourceText) as unknown;
+    if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+      return empty;
+    }
+    const record = parsed as JsonManifestRecord;
+    const symbols: SymbolFact[] = [];
+    const usageSites: UsageSiteFact[] = [];
+    const risks: RiskSignalFact[] = [];
+    const snapshotId = input.snapshotId;
+    const indexedAt = input.indexedAt;
+    if (basename === "package.json" && record.scripts && typeof record.scripts === "object") {
+      for (const [name, command] of Object.entries(record.scripts)) {
+        const id = stableId("manifest-script", input.relativePath, name);
+        symbols.push({
+          id,
+          type: "Symbol",
+          path: input.relativePath,
+          source: "manifest",
+          confidence: "authoritative",
+          snapshotId,
+          indexedAt,
+          name,
+          qualifiedName: `npm script ${name}`,
+          kind: "variable",
+          language: "json",
+          exported: false,
+          decorators: []
+        });
+        usageSites.push({
+          id: stableId("manifest-usage", input.relativePath, name),
+          type: "UsageSite",
+          path: input.relativePath,
+          source: "manifest",
+          confidence: "authoritative",
+          snapshotId,
+          indexedAt,
+          name: `npm script ${name}`,
+          kind: "reference",
+          text: String(command).slice(0, 240)
+        });
+        if (name.includes("test")) {
+          risks.push({
+            id: stableId("manifest-risk", input.relativePath, name),
+            type: "RiskSignal",
+            path: input.relativePath,
+            source: "manifest",
+            confidence: "authoritative",
+            snapshotId,
+            indexedAt,
+            signal: "test-command",
+            score: 0.5,
+            reason: `${name}: ${command}`
+          });
+        }
+      }
+    }
+    if (basename === "tsconfig.json") {
+      const projectName = input.relativePath === "tsconfig.json" ? "root" : path.posix.dirname(input.relativePath);
+      symbols.push({
+        id: stableId("tsconfig-project", input.relativePath, projectName),
+        type: "Symbol",
+        path: input.relativePath,
+        source: "manifest",
+        confidence: "authoritative",
+        snapshotId,
+        indexedAt,
+        name: projectName,
+        qualifiedName: `typescript project ${projectName}`,
+        kind: "module",
+        language: "json",
+        exported: false,
+        decorators: []
+      });
+      const compilerOptions = record.compilerOptions ?? {};
+      if (compilerOptions.baseUrl || (compilerOptions.paths && Object.keys(compilerOptions.paths).length > 0)) {
+        usageSites.push({
+          id: stableId("tsconfig-baseurl", input.relativePath, compilerOptions.baseUrl ?? "."),
+          type: "UsageSite",
+          path: input.relativePath,
+          source: "manifest",
+          confidence: "authoritative",
+          snapshotId,
+          indexedAt,
+          name: compilerOptions.baseUrl ? `baseUrl ${compilerOptions.baseUrl}` : "baseUrl .",
+          kind: "reference",
+          text: `baseUrl ${compilerOptions.baseUrl ?? "."}`
+        });
+      }
+      const pathEntries = Object.entries(compilerOptions.paths ?? {}) as Array<[string, string[]]>;
+      for (const [alias, targets] of pathEntries) {
+        const target = targets[0];
+        if (!target) {
+          continue;
+        }
+        usageSites.push({
+          id: stableId("tsconfig-path-alias", input.relativePath, alias, target),
+          type: "UsageSite",
+          path: input.relativePath,
+          source: "manifest",
+          confidence: "authoritative",
+          snapshotId,
+          indexedAt,
+          name: alias,
+          kind: "reference",
+          text: `path alias ${alias} -> ${target}`
+        });
+      }
+      for (const reference of record.references ?? []) {
+        if (typeof reference.path !== "string" || !reference.path.trim()) {
+          continue;
+        }
+        usageSites.push({
+          id: stableId("tsconfig-project-reference", input.relativePath, reference.path),
+          type: "UsageSite",
+          path: input.relativePath,
+          source: "manifest",
+          confidence: "authoritative",
+          snapshotId,
+          indexedAt,
+          name: reference.path,
+          kind: "reference",
+          text: `project reference ${reference.path}`
+        });
+        risks.push({
+          id: stableId("tsconfig-project-reference-risk", input.relativePath, reference.path),
+          type: "RiskSignal",
+          path: input.relativePath,
+          source: "manifest",
+          confidence: "authoritative",
+          snapshotId,
+          indexedAt,
+          signal: "typescript-project-reference",
+          score: 1.5,
+          reason: `project reference ${reference.path}`
+        });
+      }
+      if (typeof record.extends === "string" && record.extends.trim()) {
+        usageSites.push({
+          id: stableId("tsconfig-extends", input.relativePath, record.extends),
+          type: "UsageSite",
+          path: input.relativePath,
+          source: "manifest",
+          confidence: "authoritative",
+          snapshotId,
+          indexedAt,
+          name: record.extends,
+          kind: "reference",
+          text: `extends ${record.extends}`
+        });
+      }
+    }
+    const nodeManifestNodes = isNodePackageManifest ? validNodeManifestNodes(record.nodes) : [];
+    if (nodeManifestNodes.length > 0) {
+      for (const node of nodeManifestNodes) {
+        const typeId = node.type_id;
+        const title = typeof node.title === "string" ? node.title : typeId;
+        const adapterKey = typeof node.adapter_key === "string" ? node.adapter_key : "";
+        const id = stableId("node-manifest", input.relativePath, typeId);
+        symbols.push({
+          id,
+          type: "Symbol",
+          path: input.relativePath,
+          source: "manifest",
+          confidence: "authoritative",
+          snapshotId,
+          indexedAt,
+          name: typeId,
+          qualifiedName: `node ${typeId}`,
+          kind: "node",
+          language: "json",
+          exported: true,
+          decorators: []
+        });
+        usageSites.push({
+          id: stableId("node-manifest-usage", input.relativePath, typeId),
+          type: "UsageSite",
+          path: input.relativePath,
+          source: "manifest",
+          confidence: "authoritative",
+          snapshotId,
+          indexedAt,
+          name: typeId,
+          kind: "reference",
+          text: `${title}${adapterKey ? ` adapter ${adapterKey}` : ""}`.slice(0, 240)
+        });
+        if (adapterKey) {
+          usageSites.push({
+            id: stableId("node-manifest-adapter-usage", input.relativePath, typeId, adapterKey),
+            type: "UsageSite",
+            path: input.relativePath,
+            source: "manifest",
+            confidence: "derived",
+            snapshotId,
+            indexedAt,
+            name: adapterKey,
+            kind: "reference",
+            text: `adapter_key ${adapterKey}`
+          });
+        }
+        for (const manifestValue of nodeManifestReferenceValues(node)) {
+          usageSites.push({
+            id: stableId("node-manifest-field-usage", input.relativePath, typeId, manifestValue),
+            type: "UsageSite",
+            path: input.relativePath,
+            source: "manifest",
+            confidence: "heuristic",
+            snapshotId,
+            indexedAt,
+            name: manifestValue,
+            kind: "reference",
+            text: manifestValue.slice(0, 240)
+          });
+        }
+        risks.push({
+          id: stableId("node-manifest-risk", input.relativePath, typeId),
+          type: "RiskSignal",
+          path: input.relativePath,
+          source: "manifest",
+          confidence: "authoritative",
+          snapshotId,
+          indexedAt,
+          signal: "node-manifest",
+          score: 1.5,
+          reason: typeId
+        });
+      }
+    }
+    return { ...empty, symbols, usageSites, risks };
+  } catch (error) {
+    return {
+      ...empty,
+      parserErrors: [
+        {
+          id: stableId("json-parser-error", input.relativePath, String(error)),
+          type: "ParserError",
+          path: input.relativePath,
+          source: "manifest",
+          confidence: "heuristic",
+          snapshotId: input.snapshotId,
+          indexedAt: input.indexedAt,
+          message: error instanceof Error ? error.message : String(error)
+        }
+      ]
+    };
+  }
+}
+
+function isPlausibleNodeManifestPath(filePath: string): boolean {
+  if (!/\.json$/iu.test(filePath)) {
+    return false;
+  }
+  const parts = filePath.split("/").filter(Boolean);
+  const basename = parts.at(-1) ?? "";
+  if (basename === "tsconfig.json") {
+    return false;
+  }
+  const hasManifestLayout = parts.some((part) => /^manifests?$/iu.test(part));
+  if (hasManifestLayout) {
+    return true;
+  }
+  const packageIndex = parts.findIndex((part) => /^packages?$/iu.test(part));
+  if (packageIndex < 0) {
+    return false;
+  }
+  if (basename === "package.json") {
+    return parts.length > packageIndex + 2;
+  }
+  return /^(?:[^./][^/]*)\.[^.\/]+\.json$/iu.test(basename);
+}
+
+function validNodeManifestNodes(nodes: unknown): Array<Record<string, unknown> & { type_id: string }> {
+  if (!Array.isArray(nodes)) {
+    return [];
+  }
+  return nodes.filter((node): node is Record<string, unknown> & { type_id: string } => typeof node === "object" && node !== null && typeof (node as { type_id?: unknown }).type_id === "string");
+}
+
+function nodeManifestReferenceValues(node: Record<string, unknown>): string[] {
+  const values = new Set<string>();
+  const visit = (value: unknown) => {
+    if (typeof value === "string") {
+      if (/\b[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*){1,}\b/.test(value)) {
+        values.add(value);
+      }
+      return;
+    }
+    if (Array.isArray(value)) {
+      value.forEach(visit);
+      return;
+    }
+    if (value && typeof value === "object") {
+      for (const child of Object.values(value as Record<string, unknown>)) {
+        visit(child);
+      }
+    }
+  };
+  visit(node);
+  return [...values].sort();
+}
+
+function extractMarkdown(ctx: ExtractContext): void {
+  const lines = ctx.sourceText.split(/\r?\n/);
+  const lineOffsets: number[] = [];
+  let cursor = 0;
+  for (const line of lines) {
+    lineOffsets.push(cursor);
+    cursor += line.length + 1;
+  }
+
+  const paragraphLines: string[] = [];
+  let paragraphStart = 0;
+  let paragraphCount = 0;
+  const flushParagraph = (endLineIndex: number) => {
+    const raw = paragraphLines.join(" ").replace(/\s+/g, " ").trim();
+    if (raw.length >= 24 && paragraphCount < 80) {
+      const startByte = lineOffsets[paragraphStart] ?? 0;
+      const endByte = (lineOffsets[Math.max(paragraphStart, endLineIndex - 1)] ?? startByte) + (lines[Math.max(paragraphStart, endLineIndex - 1)]?.length ?? 0);
+      const text = stripMarkdownInline(raw).slice(0, 240);
+      ctx.usageSites.push(markdownUsageFact(ctx, "document text", "reference", text, startByte, endByte, "derived"));
+      paragraphCount += 1;
+    }
+    paragraphLines.length = 0;
+  };
+
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
+    const startByte = lineOffsets[index] ?? 0;
+    const endByte = startByte + line.length;
+    const heading = /^(#{1,6})\s+(.+?)\s*#*\s*$/u.exec(line);
+    if (heading) {
+      flushParagraph(index);
+      const title = stripMarkdownInline(heading[2]).trim();
+      if (title) {
+        ctx.symbols.push(markdownHeadingFact(ctx, title, heading[1].length, startByte, endByte));
+        ctx.usageSites.push(markdownUsageFact(ctx, title, "reference", `heading ${title}`, startByte, endByte, "authoritative"));
+      }
+      continue;
+    }
+    if (/^\s*(```|~~~)/u.test(line) || line.trim() === "" || /^\s{0,3}[-*+]\s+/u.test(line) || /^\s{0,3}\d+[.)]\s+/u.test(line)) {
+      flushParagraph(index);
+    } else {
+      if (paragraphLines.length === 0) {
+        paragraphStart = index;
+      }
+      paragraphLines.push(line);
+    }
+    extractMarkdownLinksFromLine(ctx, line, startByte);
+    extractMarkdownCodeReferencesFromLine(ctx, line, startByte);
+  }
+  flushParagraph(lines.length);
+}
+
+function markdownHeadingFact(ctx: ExtractContext, title: string, level: number, startByte: number, endByte: number): SymbolFact {
+  const slug = title
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, "-")
+    .replace(/^-|-$/gu, "");
+  return {
+    ...baseFact("Symbol", ctx.path, ctx.snapshotId, ctx.indexedAt, "markdown", "authoritative", rangeFromOffsets(ctx.sourceText, startByte, endByte)),
+    id: stableId("markdown-heading", ctx.path, slug || title, startByte),
+    type: "Symbol",
+    path: ctx.path,
+    name: title,
+    qualifiedName: `${ctx.path}#${slug || title}`,
+    kind: "module",
+    language: "markdown",
+    exported: level <= 2,
+    decorators: [`h${level}`]
+  };
+}
+
+function markdownUsageFact(
+  ctx: ExtractContext,
+  name: string,
+  kind: UsageSiteFact["kind"],
+  text: string,
+  startByte: number,
+  endByte: number,
+  confidence: Confidence
+): UsageSiteFact {
+  return {
+    ...baseFact("UsageSite", ctx.path, ctx.snapshotId, ctx.indexedAt, "markdown", confidence, rangeFromOffsets(ctx.sourceText, startByte, endByte)),
+    id: stableId("markdown-usage", ctx.path, name, kind, startByte),
+    type: "UsageSite",
+    path: ctx.path,
+    name,
+    kind,
+    text: text.replace(/\s+/g, " ").slice(0, 240)
+  };
+}
+
+function markdownImportFact(ctx: ExtractContext, specifier: string, startByte: number, endByte: number): ImportEdgeFact {
+  return {
+    ...baseFact("ImportEdge", ctx.path, ctx.snapshotId, ctx.indexedAt, "markdown", "derived", rangeFromOffsets(ctx.sourceText, startByte, endByte)),
+    id: stableId("markdown-link-import", ctx.path, specifier, startByte),
+    type: "ImportEdge",
+    path: ctx.path,
+    specifier,
+    reExport: false,
+    typeOnly: false
+  };
+}
+
+function extractMarkdownLinksFromLine(ctx: ExtractContext, line: string, lineStartByte: number): void {
+  const pattern = /!?\[([^\]]{1,160})\]\(([^)\s]+)(?:\s+"[^"]*")?\)/gu;
+  for (const match of line.matchAll(pattern)) {
+    const full = match[0];
+    if (full.startsWith("!")) {
+      continue;
+    }
+    const label = stripMarkdownInline(match[1]).trim();
+    const target = match[2].trim();
+    const startByte = lineStartByte + (match.index ?? 0);
+    const endByte = startByte + full.length;
+    ctx.usageSites.push(markdownUsageFact(ctx, target, "reference", `link ${label || target} -> ${target}`, startByte, endByte, "derived"));
+    const specifier = markdownLocalLinkSpecifier(target);
+    if (specifier) {
+      ctx.imports.push(markdownImportFact(ctx, specifier, startByte, endByte));
+    }
+  }
+}
+
+function extractMarkdownCodeReferencesFromLine(ctx: ExtractContext, line: string, lineStartByte: number): void {
+  const pattern = /`([^`\n]{2,180})`/gu;
+  for (const match of line.matchAll(pattern)) {
+    const value = match[1].trim();
+    if (!looksLikePathReference(value) && !looksLikeCommandReference(value)) {
+      continue;
+    }
+    const startByte = lineStartByte + (match.index ?? 0);
+    const endByte = startByte + match[0].length;
+    ctx.usageSites.push(markdownUsageFact(ctx, value, "reference", `inline reference ${value}`, startByte, endByte, "derived"));
+    if (looksLikePathReference(value)) {
+      const specifier = markdownLocalLinkSpecifier(value);
+      if (specifier) {
+        ctx.imports.push(markdownImportFact(ctx, specifier, startByte, endByte));
+      }
+    }
+  }
+}
+
+function stripMarkdownInline(value: string): string {
+  return value
+    .replace(/`([^`]+)`/gu, "$1")
+    .replace(/\[([^\]]+)\]\([^)]+\)/gu, "$1")
+    .replace(/[*_~]/gu, "")
+    .trim();
+}
+
+function markdownLocalLinkSpecifier(target: string): string | undefined {
+  const clean = target.split(/[?#]/u, 1)[0]?.trim();
+  if (!clean || clean.startsWith("#") || /^[a-z][a-z0-9+.-]*:/iu.test(clean)) {
+    return undefined;
+  }
+  if (clean.startsWith("/")) {
+    return clean;
+  }
+  if (clean.startsWith("./") || clean.startsWith("../")) {
+    return clean;
+  }
+  if (!looksLikePathReference(clean)) {
+    return undefined;
+  }
+  return `./${clean}`;
+}
+
+function looksLikePathReference(value: string): boolean {
+  return /(^|\/)[A-Za-z0-9_.-]+\.(?:[cm]?[jt]sx?|py|json|mdx?|rst|txt|toml|ya?ml|sh|service)$/u.test(value) || /^(?:\.{1,2}\/|\/)/u.test(value);
+}
+
+function looksLikeCommandReference(value: string): boolean {
+  return /^(?:npm|pnpm|yarn|node|python3?|pytest|vitest|cargo|go|git|npx)\s+/u.test(value);
+}
+
+function extractDottedStringReferences(ctx: ExtractContext): void {
+  const seen = new Set<string>();
+  const pattern = /\b[a-z][a-z0-9_-]*(?:\.[a-z][a-z0-9_-]*)+\b/gi;
+  for (const match of ctx.sourceText.matchAll(pattern)) {
+    const name = match[0];
+    const start = match.index ?? 0;
+    const end = start + name.length;
+    if (!shouldIndexDottedStringReference(name) || !isStandaloneQuotedDottedStringReference(ctx.sourceText, start, end)) {
+      continue;
+    }
+    const key = `${name}:${start}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    ctx.usageSites.push({
+      ...baseFact("UsageSite", ctx.path, ctx.snapshotId, ctx.indexedAt, "heuristic", "heuristic", rangeFromOffsets(ctx.sourceText, start, start + name.length)),
+      id: stableId("dotted-string-reference", ctx.path, name, start),
+      type: "UsageSite",
+      path: ctx.path,
+      name,
+      kind: "reference",
+      text: name
+    });
+  }
+}
+
+function isStandaloneQuotedDottedStringReference(sourceText: string, start: number, end: number): boolean {
+  const quote = sourceText[start - 1];
+  return (quote === "'" || quote === "\"" || quote === "`") && sourceText[end] === quote;
+}
+
+function shouldIndexDottedStringReference(value: string): boolean {
+  const normalized = value.trim();
+  if (!normalized || normalized.split(".").length < 2) {
+    return false;
+  }
+  if (/^(?:https?:\/\/|www\.)/iu.test(normalized)) {
+    return false;
+  }
+  if (/^\d+(?:\.\d+)+$/u.test(normalized) || /^v\d+(?:\.\d+)+$/iu.test(normalized) || /^\d+\.\d+$/u.test(normalized)) {
+    return false;
+  }
+  if (/^\d{1,3}(?:\.\d{1,3}){3}$/u.test(normalized)) {
+    return false;
+  }
+  if (/^\d{4}[./-]\d{2}[./-]\d{2}(?:[Tt _-]\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?$/u.test(normalized)) {
+    return false;
+  }
+  if (looksLikeCommonDomain(normalized)) {
+    return false;
+  }
+  return true;
+}
+
+function looksLikeCommonDomain(value: string): boolean {
+  const parts = value.split(".");
+  if (parts.length < 2 || parts.length > 6) {
+    return false;
+  }
+  const tld = parts.at(-1)?.toLowerCase();
+  if (!tld) {
+    return false;
+  }
+  const commonTlds = new Set([
+    "ai",
+    "app",
+    "biz",
+    "ca",
+    "ch",
+    "co",
+    "com",
+    "de",
+    "dev",
+    "edu",
+    "fr",
+    "gov",
+    "hk",
+    "info",
+    "io",
+    "jp",
+    "me",
+    "net",
+    "nl",
+    "no",
+    "org",
+    "pl",
+    "pt",
+    "ru",
+    "se",
+    "sg",
+    "uk",
+    "us",
+    "xyz"
+  ]);
+  if (!commonTlds.has(tld)) {
+    return false;
+  }
+  return parts.every((part, index) => (index === 0 ? /^[a-z][a-z0-9_-]*$/iu.test(part) : /^[a-z0-9-]+$/iu.test(part)));
+}
+
+function extractPython(root: SyntaxNode, ctx: ExtractContext): void {
+  const stack: Array<{
+    node: SyntaxNode;
+    parentSymbolId?: string;
+    className?: string;
+    decorators: string[];
+    scope: "module" | "class" | "function";
+    suppressDefinition?: boolean;
+  }> = [
+    { node: root, decorators: [], scope: "module" }
+  ];
+
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    const { node } = current;
+    let parentSymbolId = current.parentSymbolId;
+    let className = current.className;
+    let pendingDecorators = current.decorators;
+    let definition = node;
+    let decoratedDefinition: SyntaxNode | undefined;
+    let childScope = current.scope;
+
+    if (node.type === "decorated_definition") {
+      pendingDecorators = decoratorsForNode(node, ctx.sourceText);
+      const childDefinition = node.namedChildren.find((child) =>
+        PYTHON_DEFINITION_TYPES.has(child.type)
+      );
+      if (childDefinition) {
+        definition = childDefinition;
+        decoratedDefinition = childDefinition;
+      }
+    }
+
+    if (PYTHON_DEFINITION_TYPES.has(definition.type) && !current.suppressDefinition) {
+      const name = definition.childForFieldName("name")?.text;
+      if (name) {
+        const isMethod = definition.type === "function_definition" && className !== undefined;
+        const kind = pythonSymbolKind(name, definition.type, pendingDecorators, ctx.test, isMethod);
+        const qualifiedName = className && isMethod ? `${className}.${name}` : name;
+        const symbol = symbolFact(ctx, definition, name, qualifiedName, kind, pendingDecorators, parentSymbolId);
+        ctx.symbols.push(symbol);
+        parentSymbolId = symbol.id;
+        if (definition.type === "class_definition") {
+          className = name;
+          childScope = "class";
+          for (const baseName of pythonClassBaseNames(definition)) {
+            ctx.usageSites.push(usageFact(ctx, definition, baseName, "type_reference", `extends ${baseName}`, symbol.id, "derived"));
+          }
+        } else {
+          childScope = "function";
+        }
+        addPythonFrameworkHints(ctx, definition, symbol, pendingDecorators);
+        if (kind === "fixture") {
+          for (const param of pythonParameterNames(definition)) {
+            ctx.usageSites.push(usageFact(ctx, definition, param, "test_reference", `fixture dependency ${param}`, symbol.id, "derived"));
+          }
+        }
+        for (const decorator of pendingDecorators) {
+          if (isRouteDecorator(decorator) || isTaskDecorator(decorator)) {
+            ctx.usageSites.push(usageFact(ctx, definition, decoratorName(decorator), "decorator", decorator, symbol.id, "heuristic"));
+            for (const endpoint of routeEndpointsFromDecorator(decorator)) {
+              ctx.usageSites.push(usageFact(ctx, definition, endpoint, "route_handler", decorator, symbol.id, "derived"));
+            }
+            ctx.risks.push(riskFact(ctx, definition, isRouteDecorator(decorator) ? "route-handler" : "background-job", 2, decorator));
+          }
+          if (decorator.includes("fixture")) {
+            ctx.risks.push(riskFact(ctx, definition, "pytest-fixture", 1, decorator));
+          }
+        }
+      }
+    }
+
+    if (node.type === "assignment" && (current.scope === "module" || current.scope === "class")) {
+      for (const name of pythonAssignmentNames(node)) {
+        const qualifiedName = current.scope === "class" && className ? `${className}.${name}` : name;
+        ctx.symbols.push(symbolFact(ctx, node, name, qualifiedName, "variable", [], current.scope === "class" ? parentSymbolId : undefined, current.scope === "module"));
+      }
+    }
+
+    if (node.type === "import_statement" || node.type === "import_from_statement") {
+      for (const imp of pythonImports(node, ctx.sourceText)) {
+        ctx.imports.push(importFact(ctx, node, imp.specifier, imp.importedName, imp.localName));
+        ctx.usageSites.push(usageFact(ctx, node, imp.localName ?? imp.importedName ?? imp.specifier, "import", node.text, parentSymbolId, "authoritative"));
+        addPythonImportFrameworkHint(ctx, node, imp);
+      }
+    }
+
+    if (node.type === "call") {
+      const name = callName(node);
+      if (name) {
+        ctx.usageSites.push(usageFact(ctx, node, name, "call", node.text, parentSymbolId, "derived"));
+        addPythonCallFrameworkHint(ctx, node, name);
+      }
+    }
+
+    if (ctx.test && PYTHON_DEFINITION_TYPES.has(node.type)) {
+      const name = node.childForFieldName("name")?.text ?? "";
+      if (name.startsWith("test") || name.startsWith("Test")) {
+        ctx.testEdges.push({
+          ...baseFact("TestEdge", ctx.path, ctx.snapshotId, ctx.indexedAt, "heuristic", "derived", rangeOf(node)),
+          id: stableId("test-edge", ctx.path, name),
+          type: "TestEdge",
+          path: ctx.path,
+          reason: `pytest-style test ${name}`
+        });
+        for (const param of pythonParameterNames(node)) {
+          ctx.usageSites.push(usageFact(ctx, node, param, "test_reference", `fixture parameter ${param}`, parentSymbolId, "derived"));
+        }
+      }
+    }
+
+    for (let i = node.namedChildCount - 1; i >= 0; i -= 1) {
+      const child = node.namedChild(i);
+      if (child) {
+        stack.push({
+          node: child,
+          parentSymbolId,
+          className,
+          decorators: [],
+          scope: child === decoratedDefinition ? childScope : childScope,
+          suppressDefinition: child === decoratedDefinition
+        });
+      }
+    }
+  }
+}
+
+function extractEcma(root: SyntaxNode, ctx: ExtractContext): void {
+  const stack: Array<{ node: SyntaxNode; parentSymbolId?: string; className?: string; exported: boolean }> = [
+    { node: root, exported: false }
+  ];
+
+  while (stack.length > 0) {
+    const current = stack.pop()!;
+    let { node, parentSymbolId, className, exported } = current;
+    if (node.type === "export_statement") {
+      exported = true;
+    }
+    let emittedSymbol = false;
+
+    const symbolInfo = ecmaSymbolInfo(node, className, exported);
+    if (symbolInfo) {
+      const symbol = symbolFact(ctx, node, symbolInfo.name, symbolInfo.qualifiedName, symbolInfo.kind, [], parentSymbolId, exported);
+      ctx.symbols.push(symbol);
+      emittedSymbol = true;
+      parentSymbolId = symbol.id;
+      if (symbolInfo.kind === "class") {
+        className = symbolInfo.name;
+      }
+      addEcmaFrameworkHints(ctx, node, symbol);
+      if (ctx.test && /^test|should|it$|describe$/.test(symbolInfo.name)) {
+        ctx.testEdges.push({
+          ...baseFact("TestEdge", ctx.path, ctx.snapshotId, ctx.indexedAt, "heuristic", "derived", rangeOf(node)),
+          id: stableId("test-edge", ctx.path, symbolInfo.name, node.startIndex),
+          type: "TestEdge",
+          path: ctx.path,
+          reason: `test symbol ${symbolInfo.name}`
+        });
+      }
+    }
+
+    if (node.type === "import_statement") {
+      for (const imp of ecmaImports(node)) {
+        ctx.imports.push(importFact(ctx, node, imp.specifier, imp.importedName, imp.localName, false, imp.typeOnly));
+        ctx.usageSites.push(usageFact(ctx, node, imp.localName ?? imp.importedName ?? imp.specifier, "import", node.text, parentSymbolId, "authoritative"));
+      }
+    }
+
+    if (node.type === "export_statement") {
+      for (const imp of ecmaReExports(node)) {
+        ctx.imports.push(importFact(ctx, node, imp.specifier, imp.importedName, imp.localName, true, imp.typeOnly));
+        ctx.usageSites.push(usageFact(ctx, node, imp.localName ?? imp.importedName ?? imp.specifier, "import", node.text, parentSymbolId, "authoritative"));
+      }
+    }
+
+    if (node.type === "call_expression") {
+      const name = callName(node);
+      const dynamicSpecifier = dynamicImportSpecifier(node);
+      if (dynamicSpecifier) {
+        ctx.imports.push(importFact(ctx, node, dynamicSpecifier));
+      }
+      if (name) {
+        ctx.usageSites.push(usageFact(ctx, node, name, "call", node.text, parentSymbolId, "derived"));
+      }
+    }
+
+    if (node.type === "jsx_opening_element" || node.type === "jsx_self_closing_element") {
+      const name = jsxElementName(node);
+      if (name && /^[A-Z]/.test(name)) {
+        ctx.usageSites.push(usageFact(ctx, node, name, "reference", node.text, parentSymbolId, "derived"));
+      }
+    }
+
+    for (let i = node.namedChildCount - 1; i >= 0; i -= 1) {
+      const child = node.namedChild(i);
+      if (child) {
+        stack.push({ node: child, parentSymbolId, className, exported: emittedSymbol ? false : exported });
+      }
+    }
+  }
+}
+
+function addTypeScriptCompilerAssist(ctx: ExtractContext): void {
+  if (ctx.language !== "typescript" && ctx.language !== "javascript") {
+    return;
+  }
+  const sourceFile = ts.createSourceFile(ctx.path, ctx.sourceText, ts.ScriptTarget.Latest, true, scriptKindForPath(ctx.path));
+  const addSymbol = (node: ts.Node, name: string, qualifiedName: string, kind: SymbolFact["kind"], exported: boolean) => {
+    const range = rangeFromOffsets(ctx.sourceText, node.getStart(sourceFile), node.end);
+    if (
+      ctx.symbols.some(
+        (symbol) =>
+          symbol.path === ctx.path &&
+          symbol.name === name &&
+          symbol.qualifiedName === qualifiedName &&
+          symbol.kind === kind &&
+          Math.abs((symbol.range?.startByte ?? -1) - range.startByte) < 4
+      )
+    ) {
+      return;
+    }
+    ctx.symbols.push({
+      ...baseFact("Symbol", ctx.path, ctx.snapshotId, ctx.indexedAt, "typescript-syntax", "authoritative", range),
+      id: stableId("ts-symbol", ctx.path, qualifiedName, kind, range.startByte),
+      type: "Symbol",
+      path: ctx.path,
+      name,
+      qualifiedName,
+      kind,
+      language: ctx.language,
+      exported,
+      decorators: []
+    });
+  };
+  const addUsage = (node: ts.Node, name: string, kind: UsageSiteFact["kind"], text: string, usedBySymbolId?: string, confidence: Confidence = "derived") => {
+    const range = rangeFromOffsets(ctx.sourceText, node.getStart(sourceFile), node.end);
+    if (
+      ctx.usageSites.some(
+        (usage) =>
+          usage.path === ctx.path &&
+          usage.name === name &&
+          usage.kind === kind &&
+          Math.abs((usage.range?.startByte ?? -1) - range.startByte) < 4
+      )
+    ) {
+      return;
+    }
+    ctx.usageSites.push({
+      ...baseFact("UsageSite", ctx.path, ctx.snapshotId, ctx.indexedAt, "typescript-syntax", confidence, range),
+      id: stableId("ts-usage", ctx.path, name, kind, range.startByte),
+      type: "UsageSite",
+      path: ctx.path,
+      name,
+      kind,
+      usedBySymbolId,
+      text: text.replace(/\s+/g, " ").slice(0, 240)
+    });
+  };
+  const importedLocals = new Set(
+    ctx.imports
+      .filter((imp) => imp.path === ctx.path)
+      .map((imp) => imp.localName ?? imp.importedName)
+      .filter((name): name is string => Boolean(name) && name !== "*" && name !== "default")
+  );
+  const visit = (node: ts.Node) => {
+    if (ts.isFunctionDeclaration(node) && hasDefaultExport(node)) {
+      addSymbol(node, "default", "default export", "function", true);
+    }
+    if (ts.isClassDeclaration(node) && hasDefaultExport(node)) {
+      addSymbol(node, "default", "default export", "class", true);
+    }
+    if (ts.isExportAssignment(node) && !node.isExportEquals) {
+      const expression = node.expression.getText(sourceFile);
+      addUsage(node.expression, expression, "reference", `default export ${expression}`, undefined, "authoritative");
+      const wrapped = wrappedDefaultExportName(node.expression, sourceFile);
+      if (wrapped) {
+        addSymbol(node, "default", "default export", "function", true);
+        addSymbol(node.expression, wrapped, wrapped, "function", true);
+        if (/\.(tsx|jsx)$/.test(ctx.path) && /^[A-Z]/.test(wrapped)) {
+          ctx.risks.push(riskFact(ctx, undefined, "react-component", 1, `${wrapped} follows React component naming`));
+        }
+      }
+    }
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer && ts.isObjectLiteralExpression(node.initializer)) {
+      const exported = variableDeclarationExported(node);
+      for (const property of node.initializer.properties) {
+        const propertyName = objectLiteralPropertyName(property.name, sourceFile);
+        if (!propertyName) {
+          continue;
+        }
+        if (
+          ts.isMethodDeclaration(property) ||
+          (ts.isPropertyAssignment(property) &&
+            (ts.isFunctionExpression(property.initializer) || ts.isArrowFunction(property.initializer)))
+        ) {
+          addSymbol(property, propertyName, `${node.name.text}.${propertyName}`, "method", exported);
+        }
+      }
+    }
+    if ((ts.isClassDeclaration(node) || ts.isInterfaceDeclaration(node)) && node.name) {
+      const usedBySymbolId = findLocalSymbolId(ctx, node.name.text);
+      for (const clause of node.heritageClauses ?? []) {
+        const relationship = clause.token === ts.SyntaxKind.ExtendsKeyword ? "extends" : "implements";
+        for (const typeNode of clause.types) {
+          const name = heritageExpressionName(typeNode.expression.getText(sourceFile));
+          addUsage(typeNode.expression, name, "type_reference", `${relationship} ${name}`, usedBySymbolId, "authoritative");
+        }
+      }
+    }
+    if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
+      const name = node.tagName.getText(sourceFile);
+      if (/^[A-Z]/.test(name)) {
+        addUsage(node.tagName, name, "reference", `jsx component ${name}`, undefined, "derived");
+      }
+    }
+    if (ts.isCallExpression(node) && isReactCreateElementCall(node, sourceFile)) {
+      const firstArg = node.arguments[0];
+      if (firstArg && ts.isIdentifier(firstArg) && /^[A-Z]/.test(firstArg.text)) {
+        addUsage(firstArg, firstArg.text, "reference", `React.createElement ${firstArg.text}`, undefined, "derived");
+      }
+    }
+    if (ts.isIdentifier(node) && importedLocals.has(node.text) && isRuntimeReferenceIdentifier(node)) {
+      addUsage(node, node.text, "reference", `identifier reference ${node.text}`, undefined, "derived");
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+}
+
+function ecmaSymbolInfo(
+  node: SyntaxNode,
+  className?: string,
+  exported = false
+): { name: string; qualifiedName: string; kind: SymbolFact["kind"] } | null {
+  if (node.type === "class_declaration") {
+    const name = node.childForFieldName("name")?.text;
+    return name ? { name, qualifiedName: name, kind: "class" } : null;
+  }
+  if (node.type === "interface_declaration") {
+    const name = node.childForFieldName("name")?.text;
+    return name ? { name, qualifiedName: name, kind: "interface" } : null;
+  }
+  if (node.type === "type_alias_declaration") {
+    const name = node.childForFieldName("name")?.text;
+    return name ? { name, qualifiedName: name, kind: "type" } : null;
+  }
+  if (node.type === "enum_declaration") {
+    const name = node.childForFieldName("name")?.text;
+    return name ? { name, qualifiedName: name, kind: "enum" } : null;
+  }
+  if (node.type === "function_declaration") {
+    const name = node.childForFieldName("name")?.text;
+    return name ? { name, qualifiedName: name, kind: "function" } : null;
+  }
+  if (node.type === "method_definition" || node.type === "method_signature") {
+    const name = node.childForFieldName("name")?.text;
+    return name ? { name, qualifiedName: className ? `${className}.${name}` : name, kind: "method" } : null;
+  }
+  if (node.type === "variable_declarator") {
+    const name = node.childForFieldName("name")?.text;
+    const value = node.childForFieldName("value");
+    if (name && value && ["arrow_function", "function_expression"].includes(value.type)) {
+      return { name, qualifiedName: name, kind: "function" };
+    }
+    if (name && exported) {
+      return { name, qualifiedName: name, kind: "variable" };
+    }
+  }
+  return null;
+}
+
+function pythonSymbolKind(
+  name: string,
+  nodeType: string,
+  decorators: string[],
+  test: boolean,
+  isMethod: boolean
+): SymbolFact["kind"] {
+  if (nodeType === "class_definition") {
+    return test && name.startsWith("Test") ? "test" : "class";
+  }
+  if (decorators.some((decorator) => decorator.includes("fixture"))) {
+    return "fixture";
+  }
+  if (test && name.startsWith("test")) {
+    return "test";
+  }
+  if (decorators.some((decorator) => isRouteDecorator(decorator))) {
+    return "route";
+  }
+  return isMethod ? "method" : "function";
+}
+
+function pythonAssignmentNames(node: SyntaxNode): string[] {
+  const left = node.childForFieldName("left") ?? node.namedChild(0);
+  if (!left) {
+    return [];
+  }
+  if (left.type === "identifier") {
+    return [left.text];
+  }
+  if (left.type === "attribute") {
+    const name = left.namedChildren.at(-1)?.text;
+    return name ? [name] : [];
+  }
+  if (left.type === "pattern_list" || left.type === "tuple" || left.type === "list") {
+    return left.namedChildren.filter((child) => child.type === "identifier").map((child) => child.text);
+  }
+  return [];
+}
+
+function pythonParameterNames(node: SyntaxNode): string[] {
+  const parameters = node.childForFieldName("parameters") ?? node.namedChildren.find((child) => child.type === "parameters");
+  if (!parameters) {
+    return [];
+  }
+  const body = parameters.text.replace(/^\(/, "").replace(/\)$/, "");
+  const result: string[] = [];
+  for (const rawPart of splitTopLevel(body, ",")) {
+    const cleaned = rawPart
+      .trim()
+      .replace(/^[*/\s]+/, "")
+      .replace(/\s*=.*$/s, "")
+      .replace(/\s*:.*$/s, "")
+      .trim();
+    if (!cleaned || ["self", "cls"].includes(cleaned)) {
+      continue;
+    }
+    if (/^[A-Za-z_]\w*$/.test(cleaned)) {
+      result.push(cleaned);
+    }
+  }
+  return [...new Set(result)].sort();
+}
+
+function splitTopLevel(value: string, delimiter: string): string[] {
+  const result: string[] = [];
+  let current = "";
+  let depth = 0;
+  let quote: string | undefined;
+  for (let index = 0; index < value.length; index += 1) {
+    const char = value[index];
+    const previous = value[index - 1];
+    if (quote) {
+      current += char;
+      if (char === quote && previous !== "\\") {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      quote = char;
+      current += char;
+      continue;
+    }
+    if (char === "(" || char === "[" || char === "{") {
+      depth += 1;
+    } else if (char === ")" || char === "]" || char === "}") {
+      depth = Math.max(0, depth - 1);
+    }
+    if (char === delimiter && depth === 0) {
+      result.push(current);
+      current = "";
+      continue;
+    }
+    current += char;
+  }
+  result.push(current);
+  return result;
+}
+
+function pythonImports(node: SyntaxNode, sourceText: string): Array<{ specifier: string; importedName?: string; localName?: string }> {
+  const text = node.text
+    .trim()
+    .replace(/\\\r?\n/g, " ")
+    .replace(/\r?\n/g, " ")
+    .replace(/\s+/g, " ");
+  if (node.type === "import_statement") {
+    return text
+      .replace(/^import\s+/, "")
+      .split(",")
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .map((part) => {
+        const [specifier, alias] = part.split(/\s+as\s+/);
+        return { specifier, importedName: "*", localName: alias ?? specifier.split(".")[0] };
+      });
+  }
+  const match = /^from\s+([.\w]+)\s+import\s+(.+)$/.exec(text);
+  if (!match) {
+    return [{ specifier: sourceText.slice(node.startIndex, node.endIndex), importedName: undefined }];
+  }
+  const [, specifier, names] = match;
+  return names
+    .replace(/^\(/, "")
+    .replace(/\)$/, "")
+    .split(",")
+    .map((name) => name.trim())
+    .filter(Boolean)
+    .map((name) => {
+      const [importedName, alias] = name.split(/\s+as\s+/);
+      return { specifier, importedName, localName: alias ?? importedName };
+    });
+}
+
+function ecmaImports(node: SyntaxNode): Array<{ specifier: string; importedName?: string; localName?: string; typeOnly?: boolean }> {
+  const text = node.text;
+  const specifier = /from\s+["']([^"']+)["']/.exec(text)?.[1] ?? /^import\s+["']([^"']+)["']/.exec(text)?.[1];
+  if (!specifier) {
+    return [];
+  }
+  const statementTypeOnly = /^import\s+type\b/.test(text);
+  const imports: Array<{ specifier: string; importedName?: string; localName?: string; typeOnly?: boolean }> = [];
+  const namespaceName = /\*\s+as\s+([A-Za-z_$][\w$]*)/.exec(text)?.[1];
+  if (namespaceName) {
+    imports.push({ specifier, importedName: "*", localName: namespaceName, typeOnly: statementTypeOnly });
+  }
+  const named = /\{([^}]+)\}/.exec(text)?.[1];
+  if (named) {
+    for (const part of named.split(",")) {
+      const rawPart = part.trim();
+      const typeOnly = statementTypeOnly || rawPart.startsWith("type ");
+      const [name, alias] = rawPart.replace(/^type\s+/, "").split(/\s+as\s+/);
+      if (name) {
+        imports.push({ specifier, importedName: name, localName: alias ?? name, typeOnly });
+      }
+    }
+  }
+  const defaultName = /^import\s+([A-Za-z_$][\w$]*)/.exec(text)?.[1];
+  if (defaultName && defaultName !== "type") {
+    imports.push({ specifier, importedName: "default", localName: defaultName });
+  }
+  const typeDefaultName = /^import\s+type\s+([A-Za-z_$][\w$]*)/.exec(text)?.[1];
+  if (typeDefaultName) {
+    imports.push({ specifier, importedName: "default", localName: typeDefaultName, typeOnly: true });
+  }
+  return imports.length > 0 ? imports : [{ specifier }];
+}
+
+function ecmaReExports(node: SyntaxNode): Array<{ specifier: string; importedName?: string; localName?: string; typeOnly?: boolean }> {
+  const text = node.text;
+  const specifier = /from\s+["']([^"']+)["']/.exec(text)?.[1];
+  if (!specifier) {
+    return [];
+  }
+  const statementTypeOnly = /^export\s+type\b/.test(text);
+  const namespaceName = /export\s+\*\s+as\s+([A-Za-z_$][\w$]*)\s+from/u.exec(text)?.[1];
+  if (namespaceName) {
+    return [{ specifier, importedName: "*", localName: namespaceName, typeOnly: statementTypeOnly }];
+  }
+  if (/export\s+\*/.test(text)) {
+    return [{ specifier, importedName: "*", localName: "*", typeOnly: statementTypeOnly }];
+  }
+  const named = /\{([^}]+)\}/.exec(text)?.[1];
+  if (!named) {
+    return [{ specifier, typeOnly: statementTypeOnly }];
+  }
+  return named
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((part) => {
+      const typeOnly = statementTypeOnly || part.startsWith("type ");
+      const [name, alias] = part.replace(/^type\s+/, "").split(/\s+as\s+/);
+      return { specifier, importedName: name, localName: alias ?? name, typeOnly };
+    });
+}
+
+function decoratorsForNode(node: SyntaxNode, sourceText: string): string[] {
+  const decorators: string[] = [];
+  for (const child of node.namedChildren) {
+    if (child.type === "decorator") {
+      decorators.push(sourceText.slice(child.startIndex, child.endIndex).trim());
+    }
+  }
+  return decorators;
+}
+
+function callName(node: SyntaxNode): string | null {
+  const fn = node.childForFieldName("function") ?? node.namedChild(0);
+  if (!fn) {
+    return null;
+  }
+  const compact = compactCallableName(fn);
+  if (compact) {
+    return compact;
+  }
+  return fn.text.length <= 120 ? fn.text : truncateInline(fn.text, 120);
+}
+
+function dynamicImportSpecifier(node: SyntaxNode): string | undefined {
+  const fn = node.childForFieldName("function") ?? node.namedChild(0);
+  if (fn?.text !== "import") {
+    return undefined;
+  }
+  const argument = node.namedChildren.find((child) => child !== fn && child.type === "arguments")?.namedChild(0);
+  const text = argument?.text ?? "";
+  return /^["'][^"']+["']$/.test(text) ? text.slice(1, -1) : undefined;
+}
+
+function compactCallableName(node: SyntaxNode): string | null {
+  if (["identifier", "property_identifier"].includes(node.type)) {
+    return node.text;
+  }
+  if (["attribute", "member_expression"].includes(node.type)) {
+    const property = node.childForFieldName("property") ?? node.childForFieldName("attribute") ?? node.namedChildren.at(-1);
+    const object = node.childForFieldName("object");
+    const propertyName = property?.text;
+    if (!propertyName) {
+      return truncateInline(node.text, 120);
+    }
+    if (!object || ["call_expression", "subscript_expression"].includes(object.type)) {
+      return truncateInline(propertyName, 120);
+    }
+    const objectName = compactCallableName(object);
+    if (!objectName) {
+      return truncateInline(propertyName, 120);
+    }
+    return compactDottedName(`${objectName}.${propertyName}`);
+  }
+  if (node.type === "subscript_expression") {
+    const object = node.childForFieldName("object") ?? node.namedChild(0);
+    const objectName = object ? compactCallableName(object) : undefined;
+    return objectName ? `${objectName}[]` : truncateInline(node.text, 120);
+  }
+  return null;
+}
+
+function compactDottedName(value: string): string {
+  const parts = value.split(".").filter(Boolean);
+  return truncateInline(parts.slice(-3).join("."), 120);
+}
+
+function truncateInline(value: string, maxLength: number): string {
+  const compact = value.replace(/\s+/g, " ").trim();
+  if (compact.length <= maxLength) {
+    return compact;
+  }
+  return `${compact.slice(0, Math.max(0, maxLength - 3))}...`;
+}
+
+function jsxElementName(node: SyntaxNode): string | null {
+  const nameNode = node.childForFieldName("name") ?? node.namedChildren.find((child) => ["identifier", "nested_identifier", "member_expression"].includes(child.type));
+  if (!nameNode) {
+    return null;
+  }
+  return nameNode.text.length <= 120 ? nameNode.text : null;
+}
+
+function scriptKindForPath(filePath: string): ts.ScriptKind {
+  if (/\.tsx$/i.test(filePath)) {
+    return ts.ScriptKind.TSX;
+  }
+  if (/\.jsx$/i.test(filePath)) {
+    return ts.ScriptKind.JSX;
+  }
+  if (/\.[cm]?js$/i.test(filePath)) {
+    return ts.ScriptKind.JS;
+  }
+  return ts.ScriptKind.TS;
+}
+
+function variableDeclarationExported(node: ts.VariableDeclaration): boolean {
+  const statement = node.parent?.parent;
+  return Boolean(statement && ts.isVariableStatement(statement) && ts.getModifiers(statement)?.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword));
+}
+
+function objectLiteralPropertyName(name: ts.PropertyName | undefined, sourceFile: ts.SourceFile): string | undefined {
+  if (!name) {
+    return undefined;
+  }
+  if (ts.isIdentifier(name) || ts.isStringLiteral(name) || ts.isNumericLiteral(name)) {
+    return name.text;
+  }
+  const text = name.getText(sourceFile).replace(/^["']|["']$/g, "");
+  return /^[A-Za-z_$][\w$]*$/.test(text) ? text : undefined;
+}
+
+function isReactCreateElementCall(node: ts.CallExpression, sourceFile: ts.SourceFile): boolean {
+  const expression = node.expression.getText(sourceFile);
+  return expression === "React.createElement" || expression.endsWith(".createElement");
+}
+
+function hasDefaultExport(node: ts.Node): boolean {
+  return ts.canHaveModifiers(node) && Boolean(ts.getModifiers(node)?.some((modifier) => modifier.kind === ts.SyntaxKind.DefaultKeyword));
+}
+
+function wrappedDefaultExportName(node: ts.Expression, sourceFile: ts.SourceFile): string | undefined {
+  if (ts.isFunctionExpression(node) && node.name) {
+    return node.name.text;
+  }
+  if (ts.isIdentifier(node)) {
+    return node.text;
+  }
+  if (!ts.isCallExpression(node)) {
+    return undefined;
+  }
+  for (const arg of node.arguments) {
+    const name = wrappedDefaultExportName(arg, sourceFile);
+    if (name) {
+      return name;
+    }
+  }
+  const expression = node.expression.getText(sourceFile);
+  return /^[A-Za-z_$][\w$]*$/.test(expression) ? expression : undefined;
+}
+
+function isRuntimeReferenceIdentifier(node: ts.Identifier): boolean {
+  const parent = node.parent;
+  if (!parent) {
+    return true;
+  }
+  if (
+    ts.isImportSpecifier(parent) ||
+    ts.isImportClause(parent) ||
+    ts.isNamespaceImport(parent) ||
+    ts.isExportSpecifier(parent) ||
+    ts.isBindingElement(parent) ||
+    ts.isParameter(parent) ||
+    ts.isTypeReferenceNode(parent)
+  ) {
+    return false;
+  }
+  if (
+    (ts.isVariableDeclaration(parent) && parent.name === node) ||
+    (ts.isFunctionDeclaration(parent) && parent.name === node) ||
+    (ts.isClassDeclaration(parent) && parent.name === node) ||
+    (ts.isInterfaceDeclaration(parent) && parent.name === node) ||
+    (ts.isTypeAliasDeclaration(parent) && parent.name === node) ||
+    (ts.isEnumDeclaration(parent) && parent.name === node)
+  ) {
+    return false;
+  }
+  if (ts.isPropertyAccessExpression(parent) && parent.name === node) {
+    return false;
+  }
+  if (ts.isPropertyAssignment(parent) && parent.name === node) {
+    return false;
+  }
+  return true;
+}
+
+function heritageExpressionName(value: string): string {
+  return value
+    .replace(/<.*$/s, "")
+    .split(".")
+    .filter(Boolean)
+    .join(".");
+}
+
+function findLocalSymbolId(ctx: ExtractContext, name: string): string | undefined {
+  return ctx.symbols.find((symbol) => symbol.path === ctx.path && (symbol.name === name || symbol.qualifiedName === name))?.id;
+}
+
+function pythonClassBaseNames(node: SyntaxNode): string[] {
+  const match = /^class\s+[A-Za-z_][\w]*\s*\(([^)]*)\)/s.exec(node.text.trim());
+  if (!match) {
+    return [];
+  }
+  return match[1]
+    .split(",")
+    .map((part) =>
+      part
+        .trim()
+        .replace(/\[.*$/s, "")
+        .replace(/\(.*$/s, "")
+        .split(".")
+        .filter(Boolean)
+        .join(".")
+    )
+    .filter(Boolean)
+    .slice(0, 12);
+}
+
+function addPythonFrameworkHints(ctx: ExtractContext, node: SyntaxNode, symbol: SymbolFact, decorators: string[]): void {
+  if (ctx.language !== "python") {
+    return;
+  }
+  const bases = symbol.kind === "class" ? pythonClassBaseNames(node) : [];
+  if (symbol.kind === "route") {
+    ctx.risks.push(riskFact(ctx, node, "fastapi-route", 2, `${symbol.qualifiedName} is registered by a route decorator`));
+  }
+  if (decorators.some((decorator) => /(celery|shared_task|\.task|@task|@job)/i.test(decorator))) {
+    ctx.risks.push(riskFact(ctx, node, "celery-task", 2, `${symbol.qualifiedName} is registered as a background task`));
+  }
+  if (bases.some((base) => /\b(BaseModel|pydantic\.BaseModel)\b/.test(base))) {
+    ctx.risks.push(riskFact(ctx, node, "pydantic-model", 1.8, `${symbol.qualifiedName} inherits from Pydantic BaseModel`));
+  }
+  const importsSqlalchemy = /\bfrom\s+(sqlalchemy|sqlmodel)\b|\bimport\s+(sqlalchemy|sqlmodel)\b/i.test(ctx.sourceText);
+  const hasDeclarativeBase =
+    /\bclass\s+Base\s*\(\s*(DeclarativeBase|SQLModel)\s*\)/.test(ctx.sourceText) || /\bBase\s*=\s*declarative_base\s*\(/.test(ctx.sourceText);
+  if (
+    bases.some((base) => /\b(DeclarativeBase|SQLModel)\b/.test(base) || (importsSqlalchemy && hasDeclarativeBase && /\bBase\b/.test(base))) &&
+    /\b(Column|mapped_column|relationship|__tablename__)\b/.test(node.text)
+  ) {
+    ctx.risks.push(riskFact(ctx, node, "sqlalchemy-model", 1.8, `${symbol.qualifiedName} looks like a SQLAlchemy/SQLModel model`));
+  }
+}
+
+function addPythonImportFrameworkHint(
+  ctx: ExtractContext,
+  node: SyntaxNode,
+  imp: { specifier: string; importedName?: string; localName?: string }
+): void {
+  const value = `${imp.specifier}.${imp.importedName ?? ""}.${imp.localName ?? ""}`;
+  if (/\bfastapi\b/i.test(value)) {
+    ctx.risks.push(riskFact(ctx, node, "fastapi-framework", 1.5, `imports ${imp.importedName ?? imp.specifier}`));
+  }
+  if (/\b(celery|shared_task)\b/i.test(value)) {
+    ctx.risks.push(riskFact(ctx, node, "celery-framework", 1.5, `imports ${imp.importedName ?? imp.specifier}`));
+  }
+  if (/\bpydantic\b/i.test(value)) {
+    ctx.risks.push(riskFact(ctx, node, "pydantic-framework", 1.5, `imports ${imp.importedName ?? imp.specifier}`));
+  }
+  if (/\b(sqlalchemy|sqlmodel)\b/i.test(value)) {
+    ctx.risks.push(riskFact(ctx, node, "sqlalchemy-framework", 1.5, `imports ${imp.importedName ?? imp.specifier}`));
+  }
+}
+
+function addPythonCallFrameworkHint(ctx: ExtractContext, node: SyntaxNode, name: string): void {
+  if (/^(FastAPI|APIRouter|include_router|Depends)$|\.include_router$|\.dependency_overrides$/i.test(name)) {
+    ctx.risks.push(riskFact(ctx, node, "fastapi-runtime-wiring", 1.5, `FastAPI runtime wiring call ${name}`));
+  }
+  if (/^(Celery|shared_task)$|\.task$|\.send_task$|\.delay$|\.apply_async$/i.test(name)) {
+    ctx.risks.push(riskFact(ctx, node, "celery-runtime-wiring", 1.5, `background task call ${name}`));
+  }
+  if (/^(BaseModel|Field|model_validate|model_dump)$|\.model_validate$|\.model_dump$/i.test(name)) {
+    ctx.risks.push(riskFact(ctx, node, "pydantic-runtime-wiring", 1.2, `Pydantic call ${name}`));
+  }
+  if (/^(Column|mapped_column|relationship|select|Session)$|\.execute$|\.scalars$|\.commit$/i.test(name)) {
+    ctx.risks.push(riskFact(ctx, node, "sqlalchemy-runtime-wiring", 1.5, `SQLAlchemy call ${name}`));
+  }
+}
+
+function isRouteDecorator(decorator: string): boolean {
+  return /\.(get|post|put|patch|delete|route|websocket|api_route)\s*\(/.test(decorator);
+}
+
+function isTaskDecorator(decorator: string): boolean {
+  return /(task|job|worker|celery|rq|on_event)/i.test(decorator);
+}
+
+function decoratorName(decorator: string): string {
+  return decorator.replace(/^@/, "").split("(")[0];
+}
+
+function routeEndpointsFromDecorator(decorator: string): string[] {
+  const methodRaw = /\.(get|post|put|patch|delete|route|websocket|api_route)\s*\(/.exec(decorator)?.[1];
+  if (!methodRaw) {
+    return [];
+  }
+  const pathValue = routePathLiteralFromDecorator(decorator);
+  if (!pathValue) {
+    return [];
+  }
+  let method = methodRaw === "api_route" || methodRaw === "route" ? "ANY" : methodRaw.toUpperCase();
+  const methods = /methods\s*=\s*\[([^\]]+)\]/.exec(decorator)?.[1];
+  if (methods) {
+    const parsed = [...methods.matchAll(/["']([A-Za-z]+)["']/g)].map((match) => match[1].toUpperCase());
+    if (parsed.length > 0) {
+      return [...new Set(parsed)].sort().map((parsedMethod) => `${parsedMethod} ${normalizeEndpointPath(pathValue)}`);
+    }
+  }
+  if (methodRaw === "websocket") {
+    method = "WEBSOCKET";
+  }
+  return [`${method} ${normalizeEndpointPath(pathValue)}`];
+}
+
+function routePathLiteralFromDecorator(decorator: string): string | undefined {
+  const firstArg = firstDecoratorArgument(decorator);
+  const firstArgPath = firstArg ? routePathFromStringExpression(firstArg) : undefined;
+  if (firstArgPath) {
+    return firstArgPath;
+  }
+  const keywordPath = /(?:path|url_path)\s*=\s*((?:[rubfRUBF]*["'][^"']*["']\s*(?:\+\s*)?)+)/.exec(decorator)?.[1];
+  return keywordPath ? routePathFromStringExpression(keywordPath) : undefined;
+}
+
+function firstDecoratorArgument(decorator: string): string | undefined {
+  const open = decorator.indexOf("(");
+  if (open < 0) {
+    return undefined;
+  }
+  let depth = 0;
+  let quote: string | undefined;
+  let escaped = false;
+  for (let index = open + 1; index < decorator.length; index += 1) {
+    const char = decorator[index];
+    if (quote) {
+      if (escaped) {
+        escaped = false;
+      } else if (char === "\\") {
+        escaped = true;
+      } else if (char === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (char === "\"" || char === "'") {
+      quote = char;
+      continue;
+    }
+    if (char === "(" || char === "[" || char === "{") {
+      depth += 1;
+      continue;
+    }
+    if (char === ")" && depth === 0) {
+      return decorator.slice(open + 1, index).trim();
+    }
+    if (char === ")" || char === "]" || char === "}") {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (char === "," && depth === 0) {
+      return decorator.slice(open + 1, index).trim();
+    }
+  }
+  return decorator.slice(open + 1).trim();
+}
+
+function routePathFromStringExpression(expression: string): string | undefined {
+  if (!/^\s*[rubfRUBF]*["']/.test(expression)) {
+    return undefined;
+  }
+  const parts = [...expression.matchAll(/[rubfRUBF]*["']([^"']*)["']/g)].map((match) => match[1]);
+  if (parts.length === 0 || !parts[0].startsWith("/")) {
+    return undefined;
+  }
+  return parts.join("");
+}
+
+function extractEndpointStringReferences(ctx: ExtractContext): void {
+  const seen = new Set<string>();
+  const pattern = /(["'`])(\/[A-Za-z0-9_./:${}()?=&%+-]{1,180})\1/g;
+  for (const match of ctx.sourceText.matchAll(pattern)) {
+    const rawPath = match[2];
+    const start = match.index ?? 0;
+    if (!shouldKeepEndpointString(ctx, rawPath, start)) {
+      continue;
+    }
+    const method = inferEndpointMethod(ctx.sourceText, start);
+    const name = `${method} ${endpointPathForReference(ctx, rawPath, start)}`;
+    const key = `${name}:${start}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    ctx.usageSites.push({
+      ...baseFact("UsageSite", ctx.path, ctx.snapshotId, ctx.indexedAt, "heuristic", ctx.test ? "derived" : "heuristic", rangeFromOffsets(ctx.sourceText, start, start + match[0].length)),
+      id: stableId("endpoint-string-reference", ctx.path, name, start),
+      type: "UsageSite",
+      path: ctx.path,
+      name,
+      kind: "endpoint_reference",
+      text: ctx.sourceText.slice(Math.max(0, start - 80), Math.min(ctx.sourceText.length, start + match[0].length + 120)).replace(/\s+/g, " ").slice(0, 240)
+    });
+  }
+}
+
+function shouldKeepEndpointString(ctx: ExtractContext, rawPath: string, start: number): boolean {
+  const lineStart = ctx.sourceText.lastIndexOf("\n", start);
+  const linePrefix = ctx.sourceText.slice(lineStart + 1, start);
+  if (
+    ctx.language === "python" &&
+    (/@(?:router|app)\.(?:get|post|put|patch|delete|route|api_route|websocket)\s*\([^)]*$/i.test(linePrefix) || isInsidePythonRouteDecorator(ctx.sourceText, start))
+  ) {
+    return false;
+  }
+  const window = ctx.sourceText.slice(Math.max(0, start - 140), Math.min(ctx.sourceText.length, start + 220));
+  if (/@(?:router|app)\.(?:get|post|put|patch|delete|route|api_route|websocket)\s*\(/.test(window)) {
+    return true;
+  }
+  if (ctx.test && /(?:client|api|request|fetch)\.(?:get|post|put|patch|delete)\s*\(|fetch\s*\(|\bapi(?:<[^>]+>)?\s*\(/i.test(window)) {
+    return true;
+  }
+  return /(?:fetch|apiFetch|request|axios|client\.(?:get|post|put|patch|delete)|http\.(?:get|post|put|patch|delete))\s*\(|\bapi(?:<[^>]+>)?\s*\(/i.test(window);
+}
+
+function isInsidePythonRouteDecorator(sourceText: string, start: number): boolean {
+  const before = sourceText.slice(Math.max(0, start - 600), start);
+  const match = /@(?:router|app)\.(?:get|post|put|patch|delete|route|api_route|websocket)\s*\(/gi;
+  let last: RegExpExecArray | null = null;
+  for (let next = match.exec(before); next; next = match.exec(before)) {
+    last = next;
+  }
+  if (!last) {
+    return false;
+  }
+  const tail = before.slice(last.index);
+  return tail.lastIndexOf("(") > tail.lastIndexOf(")");
+}
+
+function inferEndpointMethod(sourceText: string, start: number): string {
+  const before = sourceText.slice(Math.max(0, start - 180), start);
+  const after = sourceText.slice(start, Math.min(sourceText.length, start + 240));
+  const afterLine = after.split(/\r?\n/, 1)[0] ?? after;
+  const callWindow = enclosingCallWindow(sourceText, start);
+  const decoratorMethod = /@(?:router|app)\.(get|post|put|patch|delete|websocket|api_route|route)\s*\([^@\n]*$/i.exec(before)?.[1];
+  if (decoratorMethod) {
+    if (/websocket/i.test(decoratorMethod)) {
+      return "WEBSOCKET";
+    }
+    if (/api_route|route/i.test(decoratorMethod)) {
+      const methods = /methods\s*=\s*\[([^\]]+)\]/i.exec(after)?.[1] ?? /methods\s*=\s*\[([^\]]+)\]/i.exec(before)?.[1];
+      const parsed = methods ? [...methods.matchAll(/["']([A-Za-z]+)["']/g)].map((match) => match[1].toUpperCase()) : [];
+      return parsed.length === 1 ? parsed[0] : "ANY";
+    }
+    return decoratorMethod.toUpperCase();
+  }
+  const clientMethod = /\.(get|post|put|patch|delete)\s*\([^.\n]*$/i.exec(before)?.[1];
+  if (clientMethod) {
+    return clientMethod.toUpperCase();
+  }
+  const explicitMethod =
+    /method\s*:\s*["']([A-Za-z]+)["']/i.exec(callWindow)?.[1] ??
+    /method\s*:\s*["']([A-Za-z]+)["']/i.exec(afterLine)?.[1] ??
+    /method\s*:\s*["']([A-Za-z]+)["']/i.exec(before)?.[1];
+  if (explicitMethod) {
+    return explicitMethod.toUpperCase();
+  }
+  return /fetch\s*\([^)\n]*$/i.test(before) ? "GET" : "ANY";
+}
+
+function enclosingCallWindow(sourceText: string, start: number): string {
+  const before = sourceText.slice(Math.max(0, start - 220), start);
+  const callPattern = /(?:fetch|apiFetch|request|axios|client\.(?:get|post|put|patch|delete)|http\.(?:get|post|put|patch|delete)|\bapi(?:<[^>]+>)?)\s*\(/gi;
+  let last: RegExpExecArray | null = null;
+  for (let next = callPattern.exec(before); next; next = callPattern.exec(before)) {
+    last = next;
+  }
+  if (!last) {
+    return "";
+  }
+  const callStart = start - before.length + last.index;
+  return sourceText.slice(callStart, Math.min(sourceText.length, start + 800));
+}
+
+function endpointPathForReference(ctx: ExtractContext, rawPath: string, start: number): string {
+  const before = ctx.sourceText.slice(Math.max(0, start - 140), start);
+  const shouldPrefixApi = ctx.language !== "python" && !rawPath.startsWith("/api/") && /\bapi(?:<[^>]+>)?\s*\([^)\n]*$/i.test(before);
+  return normalizeEndpointPath(shouldPrefixApi ? `/api${rawPath}` : rawPath);
+}
+
+function normalizeEndpointPath(value: string): string {
+  return value.replace(/\/+/g, "/").replace(/\/$/, "") || "/";
+}
+
+function addCommonRisks(ctx: ExtractContext): void {
+  if (isPublicSurfacePath(ctx.path)) {
+    ctx.risks.push(riskFact(ctx, undefined, "public-surface", 2, "entrypoint, API, adapter, package, or index file"));
+  }
+  if (ctx.path.includes("/adapters/")) {
+    ctx.risks.push(riskFact(ctx, undefined, "adapter-runtime", 2, "adapter runtime boundary"));
+  }
+  if (ctx.path.includes("/packages/")) {
+    ctx.risks.push(riskFact(ctx, undefined, "package-manifest", 1.5, "package or node manifest"));
+  }
+  if (/^scripts\/(service|release|preview)-control\.sh$/.test(ctx.path) || ctx.path.endsWith(".service")) {
+    ctx.risks.push(riskFact(ctx, undefined, "operator-runtime", 2, "service or release control surface"));
+  }
+  if (ctx.path.includes("migration") || ctx.path.includes("config") || ctx.path.endsWith(".service")) {
+    ctx.risks.push(riskFact(ctx, undefined, "config-or-migration", 1.5, "configuration or migration-like path"));
+  }
+  if (ctx.test) {
+    ctx.risks.push(riskFact(ctx, undefined, "test-file", 0.5, "test file"));
+  }
+}
+
+function addPatternRisks(ctx: ExtractContext): void {
+  const seen = new Set<string>();
+  for (const rule of CODE_PATTERN_RULES) {
+    if (rule.languages && !rule.languages.includes(ctx.language)) {
+      continue;
+    }
+    if (rule.path && !rule.path.test(ctx.path)) {
+      continue;
+    }
+    const flags = rule.pattern.flags.includes("g") ? rule.pattern.flags : `${rule.pattern.flags}g`;
+    const pattern = new RegExp(rule.pattern.source, flags);
+    let count = 0;
+    for (const match of ctx.sourceText.matchAll(pattern)) {
+      const start = match.index ?? 0;
+      const key = `${rule.id}:${start}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      ctx.risks.push(patternRiskFact(ctx, rule.id, rule.score, rule.reason, start, start + match[0].length));
+      count += 1;
+      if (count >= 5) {
+        break;
+      }
+    }
+  }
+}
+
+function addEcmaFrameworkHints(ctx: ExtractContext, node: SyntaxNode, symbol: SymbolFact): void {
+  if (ctx.language !== "typescript" && ctx.language !== "javascript") {
+    return;
+  }
+  if (/^use[A-Z0-9]/.test(symbol.name)) {
+    ctx.risks.push(riskFact(ctx, node, "react-hook", 1.5, `${symbol.name} follows React hook naming`));
+  }
+  if (/\.(tsx|jsx)$/.test(ctx.path) && /^[A-Z]/.test(symbol.name)) {
+    ctx.risks.push(riskFact(ctx, node, "react-component", 1, `${symbol.name} follows React component naming`));
+  }
+  if (ctx.path.includes("generator-node-template")) {
+    ctx.risks.push(riskFact(ctx, node, "generator-template", 1.5, "generator node template contract"));
+  }
+}
+
+function symbolFact(
+  ctx: ExtractContext,
+  node: SyntaxNode,
+  name: string,
+  qualifiedName: string,
+  kind: SymbolFact["kind"],
+  decorators: string[],
+  parentSymbolId?: string,
+  exported = false
+): SymbolFact {
+  return {
+    ...baseFact("Symbol", ctx.path, ctx.snapshotId, ctx.indexedAt, "tree-sitter", "authoritative", rangeOf(node)),
+    id: stableId("symbol", ctx.path, qualifiedName, kind, node.startIndex),
+    type: "Symbol",
+    path: ctx.path,
+    name,
+    qualifiedName,
+    kind,
+    language: ctx.language,
+    exported,
+    decorators,
+    parentSymbolId
+  };
+}
+
+function usageFact(
+  ctx: ExtractContext,
+  node: SyntaxNode,
+  name: string,
+  kind: UsageSiteFact["kind"],
+  text: string,
+  usedBySymbolId?: string,
+  confidence: Confidence = "derived"
+): UsageSiteFact {
+  return {
+    ...baseFact("UsageSite", ctx.path, ctx.snapshotId, ctx.indexedAt, "tree-sitter", confidence, rangeOf(node)),
+    id: stableId("usage", ctx.path, name, kind, node.startIndex),
+    type: "UsageSite",
+    path: ctx.path,
+    name,
+    kind,
+    usedBySymbolId,
+    text: text.replace(/\s+/g, " ").slice(0, 240)
+  };
+}
+
+function importFact(ctx: ExtractContext, node: SyntaxNode, specifier: string, importedName?: string, localName?: string, reExport = false, typeOnly = false): ImportEdgeFact {
+  return {
+    ...baseFact("ImportEdge", ctx.path, ctx.snapshotId, ctx.indexedAt, "tree-sitter", "authoritative", rangeOf(node)),
+    id: stableId("import", ctx.path, specifier, importedName, localName, node.startIndex),
+    type: "ImportEdge",
+    path: ctx.path,
+    specifier,
+    importedName,
+    localName,
+    reExport,
+    typeOnly
+  };
+}
+
+function riskFact(ctx: ExtractContext, node: SyntaxNode | undefined, signal: string, score: number, reason: string): RiskSignalFact {
+  return {
+    ...baseFact("RiskSignal", ctx.path, ctx.snapshotId, ctx.indexedAt, "heuristic", "heuristic", node ? rangeOf(node) : undefined),
+    id: stableId("risk", ctx.path, signal, reason, node?.startIndex ?? 0),
+    type: "RiskSignal",
+    path: ctx.path,
+    signal,
+    score,
+    reason
+  };
+}
+
+function patternRiskFact(ctx: ExtractContext, signal: string, score: number, reason: string, start: number, end: number): RiskSignalFact {
+  return {
+    ...baseFact("RiskSignal", ctx.path, ctx.snapshotId, ctx.indexedAt, "heuristic", "heuristic", rangeFromOffsets(ctx.sourceText, start, end)),
+    id: stableId("risk", ctx.path, signal, start),
+    type: "RiskSignal",
+    path: ctx.path,
+    signal,
+    score,
+    reason
+  };
+}
+
+function syntaxErrorFacts(ctx: ExtractContext, root: SyntaxNode): ParserErrorFact[] {
+  const errors: SyntaxNode[] = [];
+  const stack = [root];
+  while (stack.length > 0 && errors.length < 8) {
+    const node = stack.pop()!;
+    if (node.type === "ERROR") {
+      errors.push(node);
+    }
+    for (let i = node.childCount - 1; i >= 0; i -= 1) {
+      const child = node.child(i);
+      if (child?.hasError || child?.type === "ERROR") {
+        stack.push(child);
+      }
+    }
+  }
+  if (errors.length === 0) {
+    return [parserError(ctx, root, "Tree-sitter reported syntax errors")];
+  }
+  return errors.map((node, index) => parserError(ctx, node, `Tree-sitter syntax error ${index + 1}${snippetNear(ctx.sourceText, node.startIndex)}`));
+}
+
+function parserError(ctx: ExtractContext, node: SyntaxNode, message: string): ParserErrorFact {
+  return {
+    ...baseFact("ParserError", ctx.path, ctx.snapshotId, ctx.indexedAt, "tree-sitter", "heuristic", rangeOf(node)),
+    id: stableId("parser-error", ctx.path, message, node.startIndex),
+    type: "ParserError",
+    path: ctx.path,
+    message
+  };
+}
+
+function baseFact(
+  type: BaseFact["type"],
+  path: string,
+  snapshotId: string,
+  indexedAt: string,
+  source: FactSource,
+  confidence: Confidence,
+  range?: Range
+): BaseFact {
+  return {
+    id: stableId(type, path, range?.startByte ?? 0),
+    type,
+    path,
+    range,
+    source,
+    confidence,
+    snapshotId,
+    indexedAt
+  };
+}
+
+function rangeOf(node: SyntaxNode): Range {
+  return {
+    startLine: node.startPosition.row + 1,
+    endLine: node.endPosition.row + 1,
+    startByte: node.startIndex,
+    endByte: node.endIndex
+  };
+}
+
+function rangeFromOffsets(sourceText: string, startByte: number, endByte: number): Range {
+  const startLine = lineForOffset(sourceText, startByte);
+  return {
+    startLine,
+    endLine: lineForOffset(sourceText, endByte),
+    startByte,
+    endByte
+  };
+}
+
+function lineForOffset(sourceText: string, offset: number): number {
+  let line = 1;
+  for (let i = 0; i < offset && i < sourceText.length; i += 1) {
+    if (sourceText.charCodeAt(i) === 10) {
+      line += 1;
+    }
+  }
+  return line;
+}
+
+function snippetNear(sourceText: string, offset: number): string {
+  const lineStart = sourceText.lastIndexOf("\n", Math.max(0, offset - 1)) + 1;
+  const lineEnd = sourceText.indexOf("\n", offset);
+  const raw = sourceText.slice(lineStart, lineEnd === -1 ? undefined : lineEnd).trim().replace(/\s+/g, " ");
+  return raw ? ` near "${raw.slice(0, 120)}"` : "";
+}

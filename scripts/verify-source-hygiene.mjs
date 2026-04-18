@@ -1,0 +1,86 @@
+#!/usr/bin/env node
+import { promises as fs } from "node:fs";
+import path from "node:path";
+
+const repoRoot = process.cwd();
+const failures = [];
+
+await requireIgnoredPaths(["node_modules/", "dist/", ".codex/codebase/", ".codex/cache/"]);
+await requireThinQueriesBarrel();
+await forbidSyncShellInQueryPath();
+await forbidHeavyRuntimeDependencies();
+
+if (failures.length > 0) {
+  for (const failure of failures) {
+    console.error(`source-hygiene: ${failure}`);
+  }
+  process.exit(1);
+}
+
+async function requireIgnoredPaths(required) {
+  const gitignore = await readText(".gitignore");
+  for (const entry of required) {
+    if (!gitignore.split(/\r?\n/u).includes(entry)) {
+      failures.push(`.gitignore must include ${entry}`);
+    }
+  }
+}
+
+async function requireThinQueriesBarrel() {
+  const text = await readText("src/queries.ts");
+  const lines = text.trim().split(/\r?\n/u);
+  if (lines.length > 80) {
+    failures.push(`src/queries.ts must stay a thin barrel; found ${lines.length} lines`);
+  }
+  const nonExportLines = lines.filter((line) => line.trim() && !line.trim().startsWith("export "));
+  if (nonExportLines.length > 0) {
+    failures.push("src/queries.ts must contain only export lines");
+  }
+}
+
+async function forbidSyncShellInQueryPath() {
+  const files = [
+    "src/queries.ts",
+    ...(await listFiles("src/query", ".ts")),
+    "src/mcp.ts",
+    "src/command.ts",
+    "src/repo-files.ts"
+  ];
+  const forbidden = /\b(execFileSync|spawnSync|execSync)\b/u;
+  for (const file of files) {
+    const text = await readText(file);
+    if (forbidden.test(text)) {
+      failures.push(`${file} must not use synchronous shell execution in MCP/query paths`);
+    }
+  }
+}
+
+async function forbidHeavyRuntimeDependencies() {
+  const pkg = JSON.parse(await readText("package.json"));
+  const deps = { ...(pkg.dependencies ?? {}), ...(pkg.optionalDependencies ?? {}) };
+  const forbiddenRuntimeDependency = /^(?:kuzu(?:[-_].*)?|neo4j(?:[-_].*)?|@neo4j\/.+|semgrep(?:[-_].*)?|codeql(?:[-_].*)?)$/iu;
+  for (const name of Object.keys(deps)) {
+    if (forbiddenRuntimeDependency.test(name)) {
+      failures.push(`runtime dependency ${name} violates Codexa's simple local architecture boundary`);
+    }
+  }
+}
+
+async function listFiles(dir, suffix) {
+  const absolute = path.join(repoRoot, dir);
+  const entries = await fs.readdir(absolute, { withFileTypes: true });
+  const files = [];
+  for (const entry of entries) {
+    const relative = path.posix.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      files.push(...(await listFiles(relative, suffix)));
+    } else if (entry.isFile() && relative.endsWith(suffix)) {
+      files.push(relative);
+    }
+  }
+  return files.sort();
+}
+
+async function readText(relativePath) {
+  return fs.readFile(path.join(repoRoot, relativePath), "utf8");
+}

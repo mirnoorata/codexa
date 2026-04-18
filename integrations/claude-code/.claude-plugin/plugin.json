@@ -1,0 +1,9 @@
+{
+  "name": "codexa",
+  "version": "0.1.0",
+  "description": "Codexa for Claude Code. SessionStart injects repo context, PreToolUse nudges a change-plan snapshot before edits, Stop runs the post-edit drift review. Slash commands wrap the codexa CLI.",
+  "author": {
+    "name": "Codexa"
+  },
+  "keywords": ["codexa", "context", "impact", "edit-safety"]
+}
