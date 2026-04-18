@@ -51,19 +51,55 @@ PY
   return 0
 }
 
-# Find the nearest codexa-wired repo walking up from PWD. Writes the repo
-# root to stdout and returns 0 on success. On failure writes a diagnostic
-# to stderr and returns 1 — callers use `|| exit 1` in command substitution
-# so the parent script actually exits.
+# Resolve the target codexa-wired repo for a slash command.
+#
+# Resolution order:
+#   (1) Walk up from PWD looking for .codex/config.toml (existing behavior).
+#   (2) If no ancestor is wired, scan direct children of PWD for wired repos.
+#       If exactly one, auto-pick it and note the choice on stderr so the
+#       user sees which repo the command ran against. If more than one,
+#       error with the list so the user can disambiguate by cd-ing in.
+#
+# Writes the repo root to stdout and returns 0 on success. On failure writes
+# a diagnostic to stderr and returns 1 — callers use `|| exit 1` in command
+# substitution so the parent script actually exits.
 cmd_require_codexa_repo() {
   local repo
   repo="$(claudio_find_codexa_repo "$PWD")"
-  if [[ -z "$repo" ]]; then
-    printf 'No codexa-wired repo (.codex/config.toml) found from %s.\n' "$PWD" >&2
-    return 1
+  if [[ -n "$repo" ]]; then
+    printf '%s' "$repo"
+    return 0
   fi
-  printf '%s' "$repo"
-  return 0
+
+  local -a children=()
+  local line
+  while IFS= read -r line; do
+    [[ -z "$line" ]] && continue
+    children+=("$line")
+  done < <(claudio_list_child_codexa_repos "$PWD")
+
+  case "${#children[@]}" in
+    0)
+      printf 'No codexa-wired repo (.codex/config.toml) found from %s.\n' "$PWD" >&2
+      return 1
+      ;;
+    1)
+      printf '[codexa] no wired repo at %s; auto-selected sole child: %s\n' \
+        "$PWD" "${children[0]}" >&2
+      printf '%s' "${children[0]}"
+      return 0
+      ;;
+    *)
+      printf 'Ambiguous codexa target: %s has %d wired child repos.\n' \
+        "$PWD" "${#children[@]}" >&2
+      printf 'cd into one of these and re-run:\n' >&2
+      local child
+      for child in "${children[@]}"; do
+        printf '  - %s\n' "$child" >&2
+      done
+      return 1
+      ;;
+  esac
 }
 
 # Require a usable codexa CLI and print a clear error if missing.

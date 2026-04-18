@@ -89,11 +89,52 @@ else
   fail "status invokes codexa status with absolute repo root" "rc=$LAST_RC stdout='$LAST_STDOUT'"
 fi
 
-run_cmd "status.sh" "" "$TMP"
+EMPTY_PARENT="$TMP/empty"
+mkdir -p "$EMPTY_PARENT"
+run_cmd "status.sh" "" "$EMPTY_PARENT"
 if [[ $LAST_RC -ne 0 ]] && printf '%s' "$LAST_STDERR" | grep -q "No codexa-wired"; then
   pass "status exits non-zero outside a wired repo"
 else
   fail "status exits non-zero outside a wired repo" "rc=$LAST_RC stderr='$LAST_STDERR'"
+fi
+
+# Parent with exactly one wired child: auto-pick.
+SOLO_PARENT="$TMP/solo"
+mkdir -p "$SOLO_PARENT"
+make_wired_repo "$SOLO_PARENT/only-child"
+run_cmd "status.sh" "" "$SOLO_PARENT"
+if [[ $LAST_RC -eq 0 ]] \
+   && printf '%s' "$LAST_STDOUT" | grep -Fxq "ARG: status" \
+   && printf '%s' "$LAST_STDOUT" | grep -Fxq "ARG: $SOLO_PARENT/only-child"; then
+  pass "status auto-picks sole wired child of PWD"
+else
+  fail "status auto-picks sole wired child of PWD" "rc=$LAST_RC stdout='$LAST_STDOUT'"
+fi
+
+# Parent with multiple wired children: fan out, run status on each.
+FAN_PARENT="$TMP/fan"
+mkdir -p "$FAN_PARENT"
+make_wired_repo "$FAN_PARENT/alpha"
+make_wired_repo "$FAN_PARENT/beta"
+run_cmd "status.sh" "" "$FAN_PARENT"
+alpha_hits=$(printf '%s\n' "$LAST_STDOUT" | grep -Fc "ARG: $FAN_PARENT/alpha")
+beta_hits=$(printf '%s\n' "$LAST_STDOUT" | grep -Fc "ARG: $FAN_PARENT/beta")
+status_hits=$(printf '%s\n' "$LAST_STDOUT" | grep -Fxc "ARG: status")
+if [[ $LAST_RC -eq 0 && $alpha_hits -eq 1 && $beta_hits -eq 1 && $status_hits -eq 2 ]] \
+   && printf '%s' "$LAST_STDERR" | grep -q "fanning out status across 2"; then
+  pass "status fans out across multiple wired children"
+else
+  fail "status fans out across multiple wired children" \
+    "rc=$LAST_RC alpha=$alpha_hits beta=$beta_hits status=$status_hits stdout='$LAST_STDOUT' stderr='$LAST_STDERR'"
+fi
+
+# Fan-out must propagate a non-zero exit if any child fails.
+run_cmd "status.sh" "" "$FAN_PARENT" "$FAIL_NODE"
+if [[ $LAST_RC -ne 0 ]] && printf '%s' "$LAST_STDERR" | grep -q "simulated failure"; then
+  pass "status fan-out propagates non-zero exit when a child fails"
+else
+  fail "status fan-out propagates non-zero exit when a child fails" \
+    "rc=$LAST_RC stderr='$LAST_STDERR'"
 fi
 
 # ---------- brief ----------
