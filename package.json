@@ -37,7 +37,8 @@
     "release:archive": "npm run check && git archive --format=tar.gz --output codexa-public-head.tar.gz HEAD",
     "test": "npm run build && vitest run",
     "test:schema": "vitest run tests/schema.test.ts",
-    "check": "npm run typecheck && npm run lint && npm run privacy && npm test",
+    "test:claude-code": "bash integrations/claude-code/tests/cmd-smoke.sh && bash integrations/claude-code/tests/hook-smoke.sh",
+    "check": "npm run typecheck && npm run lint && npm run privacy && npm run test:claude-code && npm test",
     "security:check": "npm run check && npm run audit && npm run public:snapshot-check",
     "dev": "tsx src/cli.ts"
   },

@@ -498,6 +498,9 @@ export async function postEditReviewQuery(
   const driftReasons = [
     !snapshot ? `missing task snapshot${loadedSnapshot.missingReason ? `: ${loadedSnapshot.missingReason}` : ""}` : undefined,
     loadedSnapshot.missingReason === "invalid-json" ? loadedSnapshot.error : undefined,
+    session.worktreeDegradationReasons.length > 0
+      ? `worktree state unavailable (${session.worktreeDegradationReasons.join("; ")}); treat empty change set as unknown, not clean`
+      : undefined,
     headChanged ? "git head changed since snapshot" : undefined,
     unplannedEditedFiles.length > 0 ? `${unplannedEditedFiles.length} edited file(s) outside planned scope` : undefined,
     unplannedChangedSymbols.length > 0 ? `${unplannedChangedSymbols.length} changed symbol(s) outside requested symbol target` : undefined,
@@ -522,6 +525,7 @@ export async function postEditReviewQuery(
     headChanged || unplannedEditedFiles.length >= 3 || contextData.quality?.level === "low"
       ? "replan"
       : !snapshot ||
+          session.worktreeDegradationReasons.length > 0 ||
           unplannedEditedFiles.length > 0 ||
           unplannedChangedSymbols.length > 0 ||
           workflowChecks.some((check) => check.status === "missing") ||

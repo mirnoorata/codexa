@@ -20,6 +20,15 @@ export interface QuerySession {
   maxResults: number;
   warnings: string[];
   provenance: string[];
+  /**
+   * Reasons git-based worktree inspection could not complete. Each entry
+   * names a specific command that failed (rev-parse / status / diff) plus
+   * the failure mode (timeout, truncated, non-zero exit). Callers that act
+   * on an empty change set MUST check this — an empty `getChangedFileEntries`
+   * result paired with a non-empty `worktreeDegradationReasons` means
+   * "don't know", NOT "clean tree".
+   */
+  worktreeDegradationReasons: string[];
   runCommand(command: string, args: string[], options?: RunCommandOptions): Promise<CommandResult>;
   getChangedFileEntries(): Promise<ChangedFileEntry[]>;
   getChangedFiles(): Promise<string[]>;
@@ -49,6 +58,15 @@ export async function createQuerySession(repoRoot: string, options: QueryOptions
 
   let changedEntriesPromise: Promise<ChangedFileEntry[]> | undefined;
   let changedSymbolsPromise: Promise<ChangedSymbol[]> | undefined;
+  const worktreeDegradationReasons: string[] = [];
+  const recordWorktreeDegradation = (reason: string | null, subject: string) => {
+    if (!reason) {
+      return;
+    }
+    worktreeDegradationReasons.push(reason);
+    warnings.push(`worktree ${subject} unavailable: ${reason}`);
+    provenance.push(`worktree-degraded:${subject}:${reason}`);
+  };
   const session: QuerySession = {
     repoRoot: repo,
     options,
@@ -64,19 +82,22 @@ export async function createQuerySession(repoRoot: string, options: QueryOptions
     maxResults: positiveInt(options.maxResults, DEFAULT_MAX_RESULTS),
     warnings,
     provenance,
+    worktreeDegradationReasons,
     runCommand: async (command, args, runOptions = {}) => runCommand(command, args, { ...runOptions, budget: runOptions.budget ?? commandBudget }),
     getChangedFileEntries: async () => {
-      changedEntriesPromise ??= getChangedFileEntries(repo, session.runCommand).then((entries) => {
-        provenance.push(`changed-files:${entries.length}`);
-        return entries;
+      changedEntriesPromise ??= getChangedFileEntries(repo, session.runCommand).then((result) => {
+        recordWorktreeDegradation(result.degradedReason, "status");
+        provenance.push(`changed-files:${result.entries.length}`);
+        return result.entries;
       });
       return changedEntriesPromise;
     },
     getChangedFiles: async () => (await session.getChangedFileEntries()).map((entry) => entry.path),
     getChangedSymbols: async () => {
-      changedSymbolsPromise ??= getChangedSymbols(repo, index, session.runCommand).then((symbols) => {
-        provenance.push(`changed-symbols:${symbols.length}`);
-        return symbols;
+      changedSymbolsPromise ??= getChangedSymbols(repo, index, session.runCommand).then((result) => {
+        recordWorktreeDegradation(result.degradedReason, "diff");
+        provenance.push(`changed-symbols:${result.symbols.length}`);
+        return result.symbols;
       });
       return changedSymbolsPromise;
     }

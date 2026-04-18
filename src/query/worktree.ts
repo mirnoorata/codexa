@@ -7,14 +7,30 @@ const GIT_TIMEOUT_MS = 5_000;
 const GIT_MAX_BUFFER_BYTES = 1024 * 1024;
 type WorktreeCommandRunner = (command: string, args: string[], options?: RunCommandOptions) => Promise<CommandResult>;
 
-export async function getChangedFileEntries(repoRoot: string, commandRunner: WorktreeCommandRunner = runCommand): Promise<ChangedFileEntry[]> {
+// A degraded worktree is one where git couldn't report state reliably
+// (rev-parse failure, timeout, truncated output, etc.). Empty `entries`
+// paired with a non-null `degradedReason` means "we don't know", which
+// is NOT the same as "the tree is clean". Callers that act on emptiness
+// (e.g. post-edit review) must surface the degradation rather than
+// treating it as a clean state.
+export interface ChangedFilesResult {
+  entries: ChangedFileEntry[];
+  degradedReason: string | null;
+}
+
+export interface ChangedSymbolsResult {
+  symbols: ChangedSymbol[];
+  degradedReason: string | null;
+}
+
+export async function getChangedFileEntries(repoRoot: string, commandRunner: WorktreeCommandRunner = runCommand): Promise<ChangedFilesResult> {
   const resolvedRepo = path.resolve(repoRoot);
   const gitRootResult = await commandRunner("git", ["-C", resolvedRepo, "rev-parse", "--show-toplevel"], {
     timeoutMs: 2_000,
     maxBufferBytes: 64 * 1024
   });
   if (!gitRootResult.ok) {
-    return [];
+    return { entries: [], degradedReason: commandFailureReason("git rev-parse --show-toplevel", gitRootResult) };
   }
   const gitRoot = gitRootResult.stdout.trim();
   const relativePrefix = normalizePath(path.relative(gitRoot, resolvedRepo));
@@ -23,7 +39,7 @@ export async function getChangedFileEntries(repoRoot: string, commandRunner: Wor
     maxBufferBytes: GIT_MAX_BUFFER_BYTES
   });
   if (!statusResult.ok) {
-    return [];
+    return { entries: [], degradedReason: commandFailureReason("git status --porcelain", statusResult) };
   }
   const entries = statusResult.stdout.split("\0").filter(Boolean);
   const files: ChangedFileEntry[] = [];
@@ -47,13 +63,16 @@ export async function getChangedFileEntries(repoRoot: string, commandRunner: Wor
       files.push(changedEntry(pathValue, status));
     }
   }
-  return files.filter((entry) => !isCodexaControlPath(entry.path)).sort((a, b) => a.path.localeCompare(b.path) || a.status.localeCompare(b.status));
+  return {
+    entries: files.filter((entry) => !isCodexaControlPath(entry.path)).sort((a, b) => a.path.localeCompare(b.path) || a.status.localeCompare(b.status)),
+    degradedReason: null
+  };
 }
 
-export async function getChangedSymbols(repoRoot: string, index: CodexaIndex, commandRunner: WorktreeCommandRunner = runCommand): Promise<ChangedSymbol[]> {
-  const rangesByPath = await getChangedRanges(repoRoot, commandRunner);
+export async function getChangedSymbols(repoRoot: string, index: CodexaIndex, commandRunner: WorktreeCommandRunner = runCommand): Promise<ChangedSymbolsResult> {
+  const { rangesByPath, degradedReason } = await getChangedRanges(repoRoot, commandRunner);
   if (rangesByPath.size === 0) {
-    return [];
+    return { symbols: [], degradedReason };
   }
   const changed: ChangedSymbol[] = [];
   for (const symbol of index.symbols) {
@@ -72,12 +91,15 @@ export async function getChangedSymbols(repoRoot: string, index: CodexaIndex, co
       });
     }
   }
-  return changed.sort(
-    (a, b) =>
-      a.symbol.path.localeCompare(b.symbol.path) ||
-      (a.symbol.range?.startLine ?? 0) - (b.symbol.range?.startLine ?? 0) ||
-      a.symbol.qualifiedName.localeCompare(b.symbol.qualifiedName)
-  );
+  return {
+    symbols: changed.sort(
+      (a, b) =>
+        a.symbol.path.localeCompare(b.symbol.path) ||
+        (a.symbol.range?.startLine ?? 0) - (b.symbol.range?.startLine ?? 0) ||
+        a.symbol.qualifiedName.localeCompare(b.symbol.qualifiedName)
+    ),
+    degradedReason
+  };
 }
 
 export function formatChangedEntry(entry: ChangedFileEntry): string {
@@ -133,12 +155,21 @@ function changedKind(status: string): ChangedFileEntry["kind"] {
   return "unknown";
 }
 
-async function getChangedRanges(repoRoot: string, commandRunner: WorktreeCommandRunner): Promise<Map<string, Array<{ startLine: number; endLine: number }>>> {
+async function getChangedRanges(
+  repoRoot: string,
+  commandRunner: WorktreeCommandRunner
+): Promise<{
+  rangesByPath: Map<string, Array<{ startLine: number; endLine: number }>>;
+  degradedReason: string | null;
+}> {
   const [worktreeDiff, stagedDiff] = await Promise.all([
     gitDiff(repoRoot, ["diff", "--unified=0", "--no-ext-diff"], commandRunner),
     gitDiff(repoRoot, ["diff", "--cached", "--unified=0", "--no-ext-diff"], commandRunner)
   ]);
-  const combined = [worktreeDiff, stagedDiff].filter(Boolean).join("\n");
+  const degradedReasons = [worktreeDiff.degradedReason, stagedDiff.degradedReason].filter(
+    (reason): reason is string => Boolean(reason)
+  );
+  const combined = [worktreeDiff.stdout, stagedDiff.stdout].filter(Boolean).join("\n");
   const ranges = new Map<string, Array<{ startLine: number; endLine: number }>>();
   let currentFile = "";
   for (const line of combined.split(/\r?\n/)) {
@@ -160,15 +191,41 @@ async function getChangedRanges(repoRoot: string, commandRunner: WorktreeCommand
     existing.push({ startLine, endLine });
     ranges.set(currentFile, existing);
   }
-  return ranges;
+  return {
+    rangesByPath: ranges,
+    degradedReason: degradedReasons.length > 0 ? degradedReasons.join("; ") : null
+  };
 }
 
-async function gitDiff(repoRoot: string, args: string[], commandRunner: WorktreeCommandRunner): Promise<string> {
+async function gitDiff(
+  repoRoot: string,
+  args: string[],
+  commandRunner: WorktreeCommandRunner
+): Promise<{ stdout: string; degradedReason: string | null }> {
   const result = await commandRunner("git", ["-C", path.resolve(repoRoot), ...args], {
     timeoutMs: GIT_TIMEOUT_MS,
     maxBufferBytes: GIT_MAX_BUFFER_BYTES
   });
-  return result.ok ? result.stdout : "";
+  if (result.ok) {
+    return { stdout: result.stdout, degradedReason: null };
+  }
+  return {
+    stdout: "",
+    degradedReason: commandFailureReason(`git ${args.join(" ")}`, result)
+  };
+}
+
+function commandFailureReason(label: string, result: CommandResult): string {
+  if (result.timedOut) {
+    return `${label} timed out`;
+  }
+  if (result.truncated) {
+    return `${label} output truncated`;
+  }
+  if (typeof result.exitCode === "number" && result.exitCode !== 0) {
+    return `${label} exited with code ${result.exitCode}`;
+  }
+  return `${label} failed`;
 }
 
 function rangesIntersect(startA: number, endA: number, startB: number, endB: number): boolean {

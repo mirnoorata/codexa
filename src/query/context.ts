@@ -245,7 +245,9 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     `Change type: ${changeType}`,
     `Budget: ${tokenBudget} tokens approx; focus files: ${focusEntries.length}; changed files: ${changed.length}`,
     baseline ? `Baseline search: ${baseline.command} returned ${baseline.lines} non-empty lines; Codexa selected ${focusEntries.length} focus files.` : undefined,
-    warnings.length > 0 ? `Warnings: ${uniqueSorted(warnings).join("; ")}` : undefined,
+    warnings.length + session.warnings.length > 0
+      ? `Warnings: ${uniqueSorted([...session.warnings, ...warnings]).join("; ")}`
+      : undefined,
     "",
     "Read first:",
     ...focusEntries.map((entry) => `- ${entry.file.path}: ${entry.tier}; rank ${entry.file.rank.toFixed(2)}, risk ${entry.file.riskScore.toFixed(1)}; ${formatReasons(entry.reasons)}`),
@@ -290,7 +292,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       groups: groups.slice(0, 20).map(compactDiffGroup),
       tests: tests.slice(0, 30),
       snippets,
-      warnings: uniqueSorted(warnings),
+      warnings: uniqueSorted([...session.warnings, ...warnings]),
       nextReads,
       baseline,
       retrieval: naturalRetrieval ? compactRetrievalResult(naturalRetrieval) : undefined,

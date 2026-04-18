@@ -5,10 +5,11 @@
 # and runs `codexa status` on it. That matches the common "terminal is inside
 # the repo" workflow.
 #
-# Multi-repo case: when PWD is above a set of wired children (e.g. VS Code
-# opened at `/srv` with `/srv/codexa` and `/srv/atlas` both wired), we fan
-# out and run `codexa status` on every wired child rather than erroring on
-# ambiguity. The IDE-workspace-root view is "show me everything."
+# Multi-repo case: when PWD is above a set of wired children (e.g. an IDE
+# opened at a workspace root with two sibling projects both wired via
+# `codexa init`), we fan out and run `codexa status` on every wired child
+# rather than erroring on ambiguity. The IDE-workspace-root view is
+# "show me everything."
 set -u
 CMD_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 # shellcheck source=lib.sh
