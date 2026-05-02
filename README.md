@@ -30,11 +30,13 @@ serves focused MCP context tools over stdio.
 - TypeScript CLI and MCP server.
 - Tree-sitter parsing for TypeScript, TSX, JavaScript, JSX, and Python.
 - In-memory relationship graph persisted as JSON/NDJSON.
-- Codex-first artifacts for repo maps, risk, tests, conventions, and freshness.
+- Codex-first artifacts for repo maps, risk, placeholder findings, tests,
+  conventions, and freshness.
 - MCP context tools: `repo_map`, `find_context`, `search`, `symbol_context`, `impact`,
-  `diff_impact`, `test_plan`, `task_brief`, `context_pack`, `focus_brief`,
-  `session_context`, `callers`, `callees`, `dependency_path`, `workflow_path`,
-  `change_plan`, `post_edit_review`, and `freshness`.
+  `diff_impact`, `placeholder_report`, `test_plan`, `task_brief`,
+  `context_pack`, `focus_brief`, `session_context`, `callers`, `callees`,
+  `dependency_path`, `workflow_path`, `change_plan`, `post_edit_review`, and
+  `freshness`.
 - MCP resources for generated `.codex/codebase/` artifacts and MCP prompts for
   common Codex workflows before edits, dirty-diff review, and test planning.
 - A generated `.codex/codebase/codex-contract.md` that gives Codex a deterministic
@@ -60,6 +62,10 @@ serves focused MCP context tools over stdio.
 - A small built-in structural rule pack that emits bounded risk signals for shell
   execution, filesystem writes, MCP tool surfaces, raw HTML sinks, and SQL
   execution boundaries without adding Semgrep/ast-grep as runtime dependencies.
+- Built-in placeholder/dummy detection that indexes TODO/stub comments,
+  not-implemented bodies, no-op bodies, dummy data, and placeholder literals as
+  bounded risk signals. Test, docs, and generated contexts are downweighted and
+  filtered from the default placeholder report.
 - Static-analysis report bridge for Semgrep JSON, CodeQL SARIF, generic SARIF,
   and Codexa risk JSON. Codexa can also run user-installed Semgrep/CodeQL CLIs
   on explicit request, then ingest the produced reports.
@@ -86,11 +92,14 @@ serves focused MCP context tools over stdio.
 - Task snapshots for the edit loop: `change_plan --save-snapshot` records the
   plan-time dirty baseline under `.codex/cache/`, and `post_edit_review`
   compares the actual post-edit dirty tree against that snapshot for drift,
-  unplanned files, risk/workflow signals, and tests still unaccounted for.
+  unplanned files, risk/workflow signals, placeholder risk deltas, and tests
+  still unaccounted for.
 - `codexa init` also writes lightweight edit hooks when supported by Codex
   hooks: `hook-pre-edit` reminds Codex when a non-trivial edit lacks a saved
   change-plan snapshot, and `hook-post-edit` runs a bounded post-edit review.
-  Each review writes a compact outcome record under
+  These hooks are advisory and fail open: setup/query errors print a bounded
+  unavailable message and exit successfully so editor tool calls are not
+  blocked. Each successful review writes a compact outcome record under
   `.codex/cache/codexa-outcomes/`; eval runs summarize those outcomes under
   `.codex/cache/codexa-evals/`.
 - Strict evidence tiers in query output: `authoritative`, `derived`,
@@ -125,6 +134,8 @@ node dist/cli.js status <repo>
 node dist/cli.js repo-map <repo> --budget 1200
 node dist/cli.js explain <repo> --file src/app.ts
 node dist/cli.js search <repo> --query usePolling
+node dist/cli.js placeholder-report <repo> --limit 20
+node dist/cli.js placeholder-report <repo> --include-tests --include-docs --include-generated
 node dist/cli.js impact <repo> --file src/app.ts --change-type api
 node dist/cli.js test-plan <repo> --diff
 node dist/cli.js brief <repo> --task "Update polling safely" --change-type behavior
@@ -454,7 +465,9 @@ precision@K, selected-file compression, and refresh behavior.
 `codexa init` wires a repo-local SessionStart hook in `.codex/hooks.json`. See
 `docs/guides/codex-sessionstart-hook.md` for details. The helper prints cheap
 status by default; a bounded no-refresh context-pack preview is available by
-setting `CODEXA_SESSIONSTART_CONTEXT=1`.
+setting `CODEXA_SESSIONSTART_CONTEXT=1`. Generated edit hooks are advisory:
+`hook-pre-edit` and `hook-post-edit` exit successfully even when their local
+context check is unavailable.
 
 ## Local State
 
