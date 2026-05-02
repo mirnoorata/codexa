@@ -273,6 +273,7 @@ describe("Codexa MCP server", () => {
         "repo_map",
         "find_context",
         "search",
+        "placeholder_report",
         "symbol_context",
         "impact",
         "diff_impact",
@@ -310,6 +311,7 @@ describe("Codexa MCP server", () => {
         "codexa://repo/codebase/README.md",
         "codexa://repo/codebase/codex-contract.md",
         "codexa://repo/codebase/repo-map.md",
+        "codexa://repo/codebase/placeholder-map.md",
         "codexa://repo/codebase/workflows.md",
         "codexa://repo/codebase/playbooks/README.md",
         "codexa://repo/codebase/freshness.json"
@@ -328,6 +330,8 @@ describe("Codexa MCP server", () => {
     expect(readme.contents?.[0]?.text).toContain("Codexa Codebase Context");
     const contract = await client.readResource({ uri: "codexa://repo/codebase/codex-contract.md" });
     expect(contract.contents?.[0]?.text).toContain("Automatic Use Rules");
+    const placeholderMap = await client.readResource({ uri: "codexa://repo/codebase/placeholder-map.md" });
+    expect(placeholderMap.contents?.[0]?.text).toContain("Placeholder Map");
 
     const prompts = await client.listPrompts();
     expect(prompts.prompts.map((prompt) => prompt.name)).toEqual(
@@ -418,6 +422,7 @@ describe("Codexa MCP server", () => {
     });
     expect(JSON.stringify(postEdit)).toContain("Codexa post-edit review");
     expect(JSON.stringify(postEdit)).toContain("Changed since snapshot");
+    expect(JSON.stringify(postEdit)).toContain("auto-refreshed");
     expect(JSON.stringify(postEdit)).toContain("verificationLedger");
     expect(JSON.stringify(postEdit)).toContain("ranCommands");
     expect(JSON.stringify(postEdit)).toContain('"persisted":false');
@@ -489,11 +494,44 @@ describe("Codexa MCP server", () => {
     };
     expect(waivedData.data.waivedVerification?.some((entry) => entry.kind === "test" && entry.target === "tests/index.test.ts" && entry.status === "waived")).toBe(true);
     expect(waivedData.data.outcome?.waivedVerification?.some((entry) => entry.kind === "test" && entry.target === "tests/index.test.ts" && entry.status === "waived")).toBe(true);
-    expect((await stat(path.join(repo, ".codex/codebase/index.json"))).mtimeMs).toBe(indexMtimeBeforePostEdit);
+    expect((await stat(path.join(repo, ".codex/codebase/index.json"))).mtimeMs).toBeGreaterThanOrEqual(indexMtimeBeforePostEdit);
     await expect(readdir(path.join(repo, ".codex/cache/codexa-outcomes"))).rejects.toThrow();
 
     await client.close();
     expect(Buffer.concat(stderrChunks).toString("utf8")).toContain("codexa MCP server ready");
+  });
+
+  it("serves placeholder report tool output and placeholder map resource", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-placeholder-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdir(path.join(repo, "src"), { recursive: true });
+    await mkdir(path.join(repo, "tests"), { recursive: true });
+    await writeFile(path.join(repo, "package.json"), JSON.stringify({ scripts: { test: "vitest run" } }, null, 2), "utf8");
+    await writeFile(path.join(repo, "src/index.ts"), "export function later() { throw new Error('not implemented') }\n", "utf8");
+    await writeFile(path.join(repo, "tests/index.test.ts"), "it('keeps fixture placeholder text', () => {}) // TODO fixture\n", "utf8");
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    await buildIndex({ repoRoot: repo });
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-placeholder-test", version: "0.1.0" });
+    await client.connect(transport);
+    const report = await client.callTool({ name: "placeholder_report", arguments: { limit: 10 } });
+    const data = (report.structuredContent as { data?: { findings?: Array<{ path: string; signal: string }>; filters?: { includeTests: boolean } } }).data;
+    expect(JSON.stringify(report)).toContain("Codexa placeholder report");
+    expect(data?.findings?.some((finding) => finding.path === "src/index.ts" && finding.signal === "placeholder.not-implemented")).toBe(true);
+    expect(data?.findings?.some((finding) => finding.path.startsWith("tests/"))).toBe(false);
+    expect(data?.filters?.includeTests).toBe(false);
+    const resource = await client.readResource({ uri: "codexa://repo/codebase/placeholder-map.md" });
+    expect(resource.contents?.[0]?.text).toContain("placeholder.not-implemented");
+    await client.close();
   });
 
   it("records truncation metadata when post-edit arrays are compacted", () => {

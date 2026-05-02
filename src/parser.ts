@@ -5,6 +5,7 @@ import Python from "tree-sitter-python";
 import TypeScriptGrammars from "tree-sitter-typescript";
 import ts from "typescript";
 import { isGeneratedPath, isPublicSurfacePath, isTestPath, languageForPath } from "./language.js";
+import { detectPlaceholderRisks } from "./placeholder-signals.js";
 import { CODE_PATTERN_RULES } from "./rules.js";
 import type {
   BaseFact,
@@ -95,6 +96,7 @@ export async function parseFile(input: ParseFileInput): Promise<ParseResult> {
       };
       addCommonRisks(ctx);
       addPatternRisks(ctx);
+      addPlaceholderRisks(ctx);
       return { ...empty, ...ctx, file: baseFile };
     }
 
@@ -132,6 +134,7 @@ export async function parseFile(input: ParseFileInput): Promise<ParseResult> {
 
     addCommonRisks(ctx);
     addPatternRisks(ctx);
+    addPlaceholderRisks(ctx);
     return { ...empty, ...ctx, file: baseFile };
   } catch (error) {
     return {
@@ -167,6 +170,7 @@ function parseMarkdownDocument(input: ParseFileInput, sourceText: string, empty:
   extractMarkdown(ctx);
   addCommonRisks(ctx);
   addPatternRisks(ctx);
+  addPlaceholderRisks(ctx);
   return { ...empty, ...ctx, file: empty.file };
 }
 
@@ -208,18 +212,26 @@ function languageForParser(language: LanguageId, filePath: string): TreeSitterLa
 function parseJsonManifest(input: ParseFileInput, sourceText: string, empty: ParseResult): ParseResult {
   const basename = path.posix.basename(input.relativePath);
   const isNodePackageManifest = isPlausibleNodeManifestPath(input.relativePath);
+  const placeholderRisks = detectPlaceholderRisks({
+    path: input.relativePath,
+    language: "json",
+    sourceText,
+    snapshotId: input.snapshotId,
+    indexedAt: input.indexedAt,
+    test: isTestPath(input.relativePath)
+  });
   if (basename !== "package.json" && basename !== "tsconfig.json" && !isNodePackageManifest) {
-    return empty;
+    return { ...empty, risks: placeholderRisks };
   }
   try {
     const parsed = JSON.parse(sourceText) as unknown;
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
-      return empty;
+      return { ...empty, risks: placeholderRisks };
     }
     const record = parsed as JsonManifestRecord;
     const symbols: SymbolFact[] = [];
     const usageSites: UsageSiteFact[] = [];
-    const risks: RiskSignalFact[] = [];
+    const risks: RiskSignalFact[] = [...placeholderRisks];
     const snapshotId = input.snapshotId;
     const indexedAt = input.indexedAt;
     if (basename === "package.json" && record.scripts && typeof record.scripts === "object") {
@@ -443,6 +455,7 @@ function parseJsonManifest(input: ParseFileInput, sourceText: string, empty: Par
   } catch (error) {
     return {
       ...empty,
+      risks: placeholderRisks,
       parserErrors: [
         {
           id: stableId("json-parser-error", input.relativePath, String(error)),
@@ -1882,6 +1895,19 @@ function addPatternRisks(ctx: ExtractContext): void {
       }
     }
   }
+}
+
+function addPlaceholderRisks(ctx: ExtractContext): void {
+  ctx.risks.push(
+    ...detectPlaceholderRisks({
+      path: ctx.path,
+      language: ctx.language,
+      sourceText: ctx.sourceText,
+      snapshotId: ctx.snapshotId,
+      indexedAt: ctx.indexedAt,
+      test: ctx.test
+    })
+  );
 }
 
 function addEcmaFrameworkHints(ctx: ExtractContext, node: SyntaxNode, symbol: SymbolFact): void {

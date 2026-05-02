@@ -20,6 +20,7 @@ import {
   findContextQuery,
   focusBriefQuery,
   impactQuery,
+  placeholderReportQuery,
   postEditReviewQuery,
   repoMapQuery,
   searchQuery,
@@ -289,6 +290,33 @@ program
       await searchQuery(
         path.resolve(repo),
         { query: opts.query, patterns: opts.pattern, limit: opts.limit, includeRaw: opts.raw },
+        { autoRefresh: opts.autoRefresh }
+      )
+    )
+  );
+
+program
+  .command("placeholder-report")
+  .argument("<repo>", "repository root")
+  .option("--include-tests", "include test files in placeholder findings", false)
+  .option("--include-docs", "include documentation files in placeholder findings", false)
+  .option("--include-generated", "include generated files in placeholder findings", false)
+  .option("--limit <n>", "maximum findings", parseIntOption, 40)
+  .option("--budget <tokens>", "approximate token budget", parseIntOption, 2400)
+  .option("--auto-refresh", "refresh a stale or missing index before querying", true)
+  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
+  .description("Report indexed placeholder, dummy, TODO, and stub code/data findings.")
+  .action(async (repo: string, opts: { includeTests: boolean; includeDocs: boolean; includeGenerated: boolean; limit: number; budget: number; autoRefresh: boolean }) =>
+    printQuery(
+      await placeholderReportQuery(
+        path.resolve(repo),
+        {
+          includeTests: opts.includeTests,
+          includeDocs: opts.includeDocs,
+          includeGenerated: opts.includeGenerated,
+          limit: opts.limit,
+          tokenBudget: opts.budget
+        },
         { autoRefresh: opts.autoRefresh }
       )
     )
