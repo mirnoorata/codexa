@@ -164,7 +164,9 @@ function renderPlaceholderMap(index: CodexaIndex): string {
   const topFiles = [...fileScores.entries()]
     .sort((a, b) => b[1].score - a[1].score || b[1].count - a[1].count || a[0].localeCompare(b[0]))
     .slice(0, 40);
-  const shownSignals = placeholderRisks.slice(0, 160);
+  const shownSignals = [...placeholderRisks]
+    .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path) || (a.range?.startLine ?? 0) - (b.range?.startLine ?? 0) || a.signal.localeCompare(b.signal))
+    .slice(0, 160);
   return `# Placeholder Map
 
 Freshness: ${index.freshness.stale ? `STALE (${index.freshness.reason})` : index.freshness.reason}

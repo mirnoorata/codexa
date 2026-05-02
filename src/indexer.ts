@@ -186,7 +186,7 @@ async function loadParseCache(repoRoot: string): Promise<ParseCache> {
       return {
         version: parsed.version,
         entries: Object.fromEntries(
-          Object.entries(parsed.entries).filter(([, entry]) => Boolean(entry?.contentHash && typeof entry.sizeBytes === "number" && isParseResult(entry.result)))
+          Object.entries(parsed.entries).filter(([filePath, entry]) => Boolean(entry?.contentHash && typeof entry.sizeBytes === "number" && isParseResult(entry.result) && parseResultMatchesPath(entry.result, filePath)))
         )
       };
     }
@@ -209,6 +209,18 @@ function isParseResult(value: unknown): value is ParseResult {
     Array.isArray(record.testEdges) &&
     Array.isArray(record.risks) &&
     Array.isArray(record.parserErrors)
+  );
+}
+
+function parseResultMatchesPath(result: ParseResult, filePath: string): boolean {
+  return (
+    result.file.path === filePath &&
+    result.symbols.every((fact) => fact.path === filePath) &&
+    result.usageSites.every((fact) => fact.path === filePath) &&
+    result.imports.every((fact) => fact.path === filePath) &&
+    result.testEdges.every((fact) => fact.path === filePath) &&
+    result.risks.every((fact) => fact.path === filePath) &&
+    result.parserErrors.every((fact) => fact.path === filePath)
   );
 }
 
@@ -445,9 +457,17 @@ export async function writeIndexBundle(index: CodexaIndex, outputDir: string): P
   }
 }
 
-export async function loadIndex(repoRoot: string): Promise<CodexaIndex | null> {
+export async function loadIndex(repoRoot: string, options: { recover?: boolean } = {}): Promise<CodexaIndex | null> {
   const outputDir = path.join(path.resolve(repoRoot), CODEBASE_DIR);
-  return (await readIndexBundle(outputDir)) ?? (await recoverIndexBundle(outputDir));
+  const index = await readIndexBundle(outputDir);
+  if (index || options.recover === false) {
+    return index;
+  }
+  return recoverIndexBundle(outputDir);
+}
+
+export async function loadIndexReadOnly(repoRoot: string): Promise<CodexaIndex | null> {
+  return loadIndex(repoRoot, { recover: false });
 }
 
 async function readIndexBundle(outputDir: string): Promise<CodexaIndex | null> {
@@ -512,10 +532,10 @@ function normalizeLoadedIndex(index: Partial<CodexaIndex>): CodexaIndex {
   };
 }
 
-export async function getFreshness(repoRoot: string, index?: CodexaIndex | null): Promise<FreshnessInfo> {
+export async function getFreshness(repoRoot: string, index?: CodexaIndex | null, options: { recover?: boolean } = {}): Promise<FreshnessInfo> {
   const repo = path.resolve(repoRoot);
   const current = await discoverRepoFreshness(repo);
-  const loaded = index ?? (await loadIndex(repo));
+  const loaded = index ?? (options.recover === false ? await loadIndexReadOnly(repo) : await loadIndex(repo));
   if (!loaded) {
     return {
       schemaVersion: 1,

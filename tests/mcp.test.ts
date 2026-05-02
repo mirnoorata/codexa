@@ -218,6 +218,8 @@ function buildChangePlanPacket() {
       plannedFiles: seq(41, (index) => `src/snapshot-file-${index}.ts`),
       focusFiles: seq(21, (index) => ({ path: `src/snapshot-focus-${index}.ts`, tier: "derived", reasons: [`reason-${index}`], rank: index, riskScore: index })),
       plannedTests: seq(21, (index) => ({ path: `tests/snapshot-${index}.test.ts`, reason: `reason-${index}`, rank: index })),
+      requiredWorkflowCheckCount: 7,
+      requiredDependencyCheckCount: 8,
       requiredWorkflowChecks: seq(2, (index) => ({ target: `workflow-${index}` })),
       requiredDependencyChecks: seq(2, (index) => ({ target: `dependency-${index}` })),
       recipes: seq(9, (index) => `recipe-${index}`),
@@ -352,9 +354,16 @@ describe("Codexa MCP server", () => {
     expect(JSON.stringify(repoMap)).toContain("src/index.ts");
 
     await writeFile(path.join(repo, "src/index.ts"), "export function changedSymbol() { return 2 }\n", "utf8");
+    const dirtyFreshness = await client.callTool({ name: "freshness", arguments: {} });
+    expect((dirtyFreshness.structuredContent as { freshness?: { stale?: boolean; reason?: string } }).freshness?.stale).toBe(true);
+    expect((dirtyFreshness.structuredContent as { freshness?: { reason?: string } }).freshness?.reason).toBe("dirty-files-changed");
+    const dirtyFreshnessResource = await client.readResource({ uri: "codexa://repo/codebase/freshness.json" });
+    expect(JSON.parse(String(dirtyFreshnessResource.contents?.[0]?.text)).stale).toBe(true);
     const refreshed = await client.callTool({ name: "find_context", arguments: { query: "changedSymbol", limit: 3 } });
     expect(JSON.stringify(refreshed)).toContain("auto-refreshed from dirty-files-changed");
     expect(JSON.stringify(refreshed)).toContain("changedSymbol");
+    const refreshedFreshnessResource = await client.readResource({ uri: "codexa://repo/codebase/freshness.json" });
+    expect(JSON.parse(String(refreshedFreshnessResource.contents?.[0]?.text)).stale).toBe(false);
 
     const search = await client.callTool({ name: "search", arguments: { query: "changedSymbol", patterns: ["changedSymbol", "changed_symbol"], limit: 3 } });
     expect(JSON.stringify(search)).toContain("Codexa value");
@@ -572,8 +581,10 @@ describe("Codexa MCP server", () => {
         waivedVerification: Array.from({ length: 35 }, (_, index) => ({ status: "waived", evidence: [`waiver ${index}`] })),
         workflowChecks: Array.from({ length: 25 }, (_, index) => ({ target: `workflow ${index}` })),
         dependencyChecks: Array.from({ length: 35 }, (_, index) => ({ target: `dependency ${index}` })),
-        snapshot: {
-          plannedFiles: Array.from({ length: 45 }, (_, index) => `src/planned-${index}.ts`)
+      snapshot: {
+          plannedFiles: Array.from({ length: 45 }, (_, index) => `src/planned-${index}.ts`),
+          requiredWorkflowCheckCount: 41,
+          requiredDependencyCheckCount: 42
         },
         outcome: {
           testsNotRun: Array.from({ length: 35 }, (_, index) => ({ path: `tests/missing-${index}.test.ts` })),
@@ -626,6 +637,8 @@ describe("Codexa MCP server", () => {
       };
       snapshot?: {
         plannedFiles: Array<unknown>;
+        requiredWorkflowCheckCount?: number;
+        requiredDependencyCheckCount?: number;
       };
       outcome?: {
         testsNotRun: Array<unknown>;
@@ -650,6 +663,8 @@ describe("Codexa MCP server", () => {
     expect(data.workflowChecks).toHaveLength(20);
     expect(data.dependencyChecks).toHaveLength(30);
     expect(data.snapshot?.plannedFiles).toHaveLength(40);
+    expect(data.snapshot?.requiredWorkflowCheckCount).toBe(41);
+    expect(data.snapshot?.requiredDependencyCheckCount).toBe(42);
     expect(data.truncation).toMatchObject({
       changedSinceSnapshot: { total: 45, returned: 40 },
       tests: { total: 35, returned: 30 },
@@ -785,7 +800,7 @@ describe("Codexa MCP server", () => {
       files?: unknown[];
       plannedEditTargets?: unknown[];
       tests?: unknown[];
-      snapshot?: { taskId?: string; plannedEditTargets?: unknown[]; plannedFiles?: unknown[]; plannedTests?: unknown[] };
+      snapshot?: { taskId?: string; plannedEditTargets?: unknown[]; plannedFiles?: unknown[]; plannedTests?: unknown[]; requiredWorkflowCheckCount?: number; requiredDependencyCheckCount?: number };
       truncation?: Record<string, { total: number; returned: number }>;
       mcp: { mode: string; returnedBytes: number; targetBytes: number; hardBudgetEnforced?: boolean; budgetCompaction?: string };
     };
@@ -799,6 +814,8 @@ describe("Codexa MCP server", () => {
     expect(data.snapshot?.taskId).toBe("snap-1");
     expect(data.snapshot?.plannedFiles?.length).toBeGreaterThan(0);
     expect(data.snapshot?.plannedTests?.length).toBeGreaterThan(0);
+    expect(data.snapshot?.requiredWorkflowCheckCount).toBe(7);
+    expect(data.snapshot?.requiredDependencyCheckCount).toBe(8);
     expect(Object.keys(data.truncation ?? {}).length).toBeGreaterThan(0);
   });
 

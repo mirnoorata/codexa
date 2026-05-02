@@ -152,12 +152,12 @@ export function buildPostEditOutcome(input: PostEditOutcomeInput, createdAt = ne
     recommendedTests: compactTests(input.tests, repoRoot),
     testsNotRun: compactTests(input.testsNotRun, repoRoot),
     missedLikelyTests: compactTests(input.missedLikelyTests, repoRoot),
-    ranTests: input.ranTests,
+    ranTests: input.ranTests.map((test) => sanitizeText(test, repoRoot) ?? ""),
     ranCommands: input.ranCommands.map((command) => sanitizeText(command, repoRoot) ?? ""),
     ranCommandReports: compactCommandReports(input.ranCommandReports, repoRoot),
     commandEnvelopes: compactCommandEnvelopes(input.commandEnvelopes, repoRoot),
-    waivedChecks: input.waivedChecks,
-    waivers: input.waivers,
+    waivedChecks: input.waivedChecks.map((check) => sanitizeText(check, repoRoot) ?? ""),
+    waivers: compactWaivers(input.waivers, repoRoot),
     verificationCoverage: compactCoverage(input.verificationCoverage, repoRoot),
     verificationLedger: compactLedger(input.verificationLedger, repoRoot),
     verificationProvenance: input.verificationProvenance ?? CURRENT_VERIFICATION_PROVENANCE,
@@ -250,6 +250,14 @@ function compactCommandEnvelopes(envelopes: VerificationCommandEnvelope[], repoR
     stderrSummary: sanitizeText(envelope.stderrSummary, repoRoot),
     outputSummary: sanitizeText(envelope.outputSummary, repoRoot),
     args: sanitizeArgs(envelope.args, repoRoot) ?? []
+  }));
+}
+
+function compactWaivers(waivers: VerificationWaiver[], repoRoot: string): VerificationWaiver[] {
+  return waivers.map((waiver) => ({
+    kind: waiver.kind,
+    target: sanitizeText(waiver.target, repoRoot) ?? "",
+    reason: sanitizeText(waiver.reason, repoRoot) ?? ""
   }));
 }
 

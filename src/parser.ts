@@ -220,15 +220,15 @@ function parseJsonManifest(input: ParseFileInput, sourceText: string, empty: Par
     indexedAt: input.indexedAt,
     test: isTestPath(input.relativePath)
   });
-  if (basename !== "package.json" && basename !== "tsconfig.json" && !isNodePackageManifest) {
-    return { ...empty, risks: placeholderRisks };
-  }
   try {
     const parsed = JSON.parse(sourceText) as unknown;
     if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
       return { ...empty, risks: placeholderRisks };
     }
     const record = parsed as JsonManifestRecord;
+    if (basename !== "package.json" && basename !== "tsconfig.json" && !isNodePackageManifest) {
+      return { ...empty, risks: placeholderRisks };
+    }
     const symbols: SymbolFact[] = [];
     const usageSites: UsageSiteFact[] = [];
     const risks: RiskSignalFact[] = [...placeholderRisks];

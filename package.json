@@ -29,9 +29,10 @@
     "privacy": "node scripts/verify-public-hygiene.mjs",
     "privacy:history": "node scripts/verify-public-hygiene.mjs --history",
     "privacy:release": "npm run privacy && npm run privacy:history",
+    "package:hygiene": "node scripts/verify-package-hygiene.mjs",
     "public:snapshot-check": "node scripts/verify-public-snapshot.mjs",
     "clean:private-artifacts": "node scripts/clean-private-artifacts.mjs",
-    "prepare:codera-parking": "node scripts/prepare-codera-parking-package.mjs",
+    "prepare:codera-parking": "node scripts/prepare-codera-parking-package.mjs && node scripts/verify-package-hygiene.mjs .local/release/codera",
     "prepack": "npm run build",
     "prepublishOnly": "npm run security:check",
     "release:archive": "npm run check && git archive --format=tar.gz --output codexa-public-head.tar.gz HEAD",
@@ -39,7 +40,7 @@
     "test:schema": "vitest run tests/schema.test.ts",
     "test:claude-code": "bash integrations/claude-code/tests/cmd-smoke.sh && bash integrations/claude-code/tests/hook-smoke.sh",
     "check": "npm run typecheck && npm run lint && npm run privacy && npm run test:claude-code && npm test",
-    "security:check": "npm run check && npm run audit && npm run public:snapshot-check",
+    "security:check": "npm run check && npm run audit && npm run public:snapshot-check && npm run package:hygiene",
     "dev": "tsx src/cli.ts"
   },
   "dependencies": {

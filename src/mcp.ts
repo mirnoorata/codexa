@@ -62,7 +62,9 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
     toToolResult(
       await safeQuery(async () => {
         const session = await createQuerySession(repoRoot, queryOptions);
-        return compactMcpResult(withSessionRuntime(await producer(session), session));
+        const result = compactMcpResult(withSessionRuntime(await producer(session), session));
+        await notifyResourceListChangedAfterRefresh(server, session);
+        return result;
       }, repoRoot)
     );
 
@@ -75,7 +77,7 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
       outputSchema,
       annotations: pureReadAnnotations
     },
-    async () => toToolResult(await safeQuery(() => statusQuery(repoRoot), repoRoot))
+    async () => toToolResult(await safeQuery(() => statusQuery(repoRoot, { recover: false }), repoRoot))
   );
 
   server.registerTool(
@@ -416,7 +418,9 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
       toToolResult(
         await safeQuery(async () => {
           const session = await createQuerySession(repoRoot, queryOptions);
-          return compactMcpResult(withSessionRuntime(await postEditReviewQuery(session, { ...input, persistOutcome: false }, queryOptions), session));
+          const result = compactMcpResult(withSessionRuntime(await postEditReviewQuery(session, { ...input, persistOutcome: false }, queryOptions), session));
+          await notifyResourceListChangedAfterRefresh(server, session);
+          return result;
         }, repoRoot)
       )
   );
@@ -609,8 +613,8 @@ function compactBudgetSnapshot(value: unknown, truncation: McpTruncation): unkno
     plannedEditTargets: compactSummaryArray("snapshot.plannedEditTargets", value.plannedEditTargets, 10, truncation),
     plannedFiles: compactSummaryArray("snapshot.plannedFiles", value.plannedFiles, 10, truncation),
     plannedTests: compactSummaryArray("snapshot.plannedTests", value.plannedTests, 10, truncation, compactTestRecommendation),
-    requiredWorkflowCheckCount: Array.isArray(value.requiredWorkflowChecks) ? value.requiredWorkflowChecks.length : undefined,
-    requiredDependencyCheckCount: Array.isArray(value.requiredDependencyChecks) ? value.requiredDependencyChecks.length : undefined
+    requiredWorkflowCheckCount: typeof value.requiredWorkflowCheckCount === "number" ? value.requiredWorkflowCheckCount : Array.isArray(value.requiredWorkflowChecks) ? value.requiredWorkflowChecks.length : undefined,
+    requiredDependencyCheckCount: typeof value.requiredDependencyCheckCount === "number" ? value.requiredDependencyCheckCount : Array.isArray(value.requiredDependencyChecks) ? value.requiredDependencyChecks.length : undefined
   };
 }
 
@@ -746,8 +750,8 @@ export function compactPostEditMcpResult(result: QueryResult): QueryResult {
             plannedEditTargets: limitArray(snapshot.plannedEditTargets, 30),
             plannedFiles: limitArray(snapshot.plannedFiles, 40),
             plannedTests: limitArray(snapshot.plannedTests, 20),
-            requiredWorkflowCheckCount: Array.isArray(snapshot.requiredWorkflowChecks) ? snapshot.requiredWorkflowChecks.length : 0,
-            requiredDependencyCheckCount: Array.isArray(snapshot.requiredDependencyChecks) ? snapshot.requiredDependencyChecks.length : 0
+            requiredWorkflowCheckCount: typeof snapshot.requiredWorkflowCheckCount === "number" ? snapshot.requiredWorkflowCheckCount : Array.isArray(snapshot.requiredWorkflowChecks) ? snapshot.requiredWorkflowChecks.length : 0,
+            requiredDependencyCheckCount: typeof snapshot.requiredDependencyCheckCount === "number" ? snapshot.requiredDependencyCheckCount : Array.isArray(snapshot.requiredDependencyChecks) ? snapshot.requiredDependencyChecks.length : 0
           }
         : undefined,
       outcome: outcome
@@ -908,8 +912,8 @@ function compactChangePlanData(data: Record<string, unknown>): McpCompactionResu
           plannedFiles: snapshotLimit("plannedFiles", snapshot.plannedFiles, 40),
           focusFiles: snapshotLimit("focusFiles", snapshot.focusFiles, 20, compactFileFact),
           plannedTests: snapshotLimit("plannedTests", snapshot.plannedTests, 20, compactTestRecommendation),
-          requiredWorkflowCheckCount: Array.isArray(snapshot.requiredWorkflowChecks) ? snapshot.requiredWorkflowChecks.length : 0,
-          requiredDependencyCheckCount: Array.isArray(snapshot.requiredDependencyChecks) ? snapshot.requiredDependencyChecks.length : 0,
+          requiredWorkflowCheckCount: typeof snapshot.requiredWorkflowCheckCount === "number" ? snapshot.requiredWorkflowCheckCount : Array.isArray(snapshot.requiredWorkflowChecks) ? snapshot.requiredWorkflowChecks.length : 0,
+          requiredDependencyCheckCount: typeof snapshot.requiredDependencyCheckCount === "number" ? snapshot.requiredDependencyCheckCount : Array.isArray(snapshot.requiredDependencyChecks) ? snapshot.requiredDependencyChecks.length : 0,
           recipes: snapshotLimit("recipes", snapshot.recipes, 12),
           gaps: snapshotLimit("gaps", snapshot.gaps, 20),
           warnings: snapshotLimit("warnings", snapshot.warnings, 20),
@@ -1651,7 +1655,7 @@ async function registerArtifactResources(server: McpServer, repoRoot: string): P
           {
             uri,
             mimeType,
-            text: await readArtifact(repoRoot, relativePath)
+            text: relativePath === ".codex/codebase/freshness.json" ? await readLiveFreshnessArtifact(repoRoot) : await readArtifact(repoRoot, relativePath)
           }
         ]
       })
@@ -1750,6 +1754,18 @@ async function readArtifact(repoRoot: string, relativePath: string): Promise<str
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Codexa artifact missing: ${relativePath}. Run: codexa index ${repoRoot}. ${message}`);
   }
+}
+
+async function readLiveFreshnessArtifact(repoRoot: string): Promise<string> {
+  const status = await statusQuery(repoRoot, { recover: false });
+  return `${JSON.stringify(status.data, null, 2)}\n`;
+}
+
+async function notifyResourceListChangedAfterRefresh(server: McpServer, session: QuerySession): Promise<void> {
+  if (!session.refresh?.refreshed) {
+    return;
+  }
+  await Promise.resolve(server.sendResourceListChanged());
 }
 
 async function listMarkdownArtifacts(

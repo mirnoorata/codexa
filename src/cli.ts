@@ -806,8 +806,12 @@ function hookErrorMessage(error: unknown): string {
 }
 
 function parseIntOption(value: string): number {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed)) {
+  const trimmed = value.trim();
+  if (!/^[+-]?\d+$/u.test(trimmed)) {
+    throw new Error(`Invalid integer: ${value}`);
+  }
+  const parsed = Number.parseInt(trimmed, 10);
+  if (!Number.isSafeInteger(parsed)) {
     throw new Error(`Invalid integer: ${value}`);
   }
   return parsed;

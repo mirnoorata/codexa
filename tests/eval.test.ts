@@ -96,6 +96,13 @@ describe("Codexa eval benchmark", () => {
       await expect(runEval(repo, { autoRefresh: false }, { suite: "task-pack", seed: "unit-unsafe-pack", taskPackPath: unsafePackPath, failOnRefresh: true })).rejects.toThrow(
         "unsafe baseline argument"
       );
+
+      const unsafeRgFlagPackPath = path.join(repo, "unsafe-rg-flag-pack.json");
+      await writeFile(unsafeRgFlagPackPath, `${JSON.stringify(externalPack(commit, [["rg", "--pre", "sh -c bad", "makeExternalValue", "."]]), null, 2)}\n`, "utf8");
+
+      await expect(runEval(repo, { autoRefresh: false }, { suite: "task-pack", seed: "unit-unsafe-rg-flag-pack", taskPackPath: unsafeRgFlagPackPath, failOnRefresh: true })).rejects.toThrow(
+        /unsafe baseline argument|unsupported baseline executable/
+      );
     } finally {
       await rm(repo, { recursive: true, force: true });
     }

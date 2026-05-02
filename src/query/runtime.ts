@@ -1,5 +1,5 @@
 import path from "node:path";
-import { buildIndexLocked, getFreshness, loadIndex } from "../indexer.js";
+import { buildIndexLocked, getFreshness, loadIndex, loadIndexReadOnly } from "../indexer.js";
 import type { CodexaIndex, FileFact, FreshnessInfo, QueryOptions, QueryResult, RefreshInfo, SymbolFact } from "../types.js";
 
 const refreshLocks = new Map<string, Promise<CodexaIndex>>();
@@ -9,8 +9,8 @@ export async function requireIndex(
   options: QueryOptions = {}
 ): Promise<{ index: CodexaIndex; freshness: FreshnessInfo; refresh?: RefreshInfo }> {
   const repo = path.resolve(repoRoot);
-  let index = await loadIndex(repo);
-  let freshness = await getFreshness(repo, index);
+  let index = options.autoRefresh ? await loadIndex(repo) : await loadIndexReadOnly(repo);
+  let freshness = await getFreshness(repo, index, { recover: options.autoRefresh });
   if (options.autoRefresh && freshness.stale) {
     const refreshReason = freshness.reason;
     index = await refreshIndex(repo);
@@ -31,9 +31,10 @@ export async function requireIndex(
   return { index, freshness, refresh: { refreshed: false } };
 }
 
-export async function statusQuery(repoRoot: string): Promise<QueryResult> {
-  const index = await loadIndex(repoRoot);
-  const freshness = await getFreshness(repoRoot, index);
+export async function statusQuery(repoRoot: string, options: { recover?: boolean } = {}): Promise<QueryResult> {
+  const recover = options.recover ?? true;
+  const index = recover ? await loadIndex(repoRoot) : await loadIndexReadOnly(repoRoot);
+  const freshness = await getFreshness(repoRoot, index, { recover });
   const text = [
     `Codexa status: ${freshness.stale ? "stale" : "fresh"} (${freshness.reason})`,
     `Repo: ${freshness.repoRoot}`,

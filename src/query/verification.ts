@@ -840,8 +840,24 @@ function analyzeCommand(
 ): void {
   let cwd = initialCwd;
   let chainTruthiness: ShellTruthiness = "unknown";
+  let skipUntilFi = false;
   for (const segment of splitSimpleCommand(command, cwd, ctx.repoRoot)) {
     cwd = segment.cwd;
+    const words = stripLeadingEnvironment(shellWords(segment.text));
+    if (skipUntilFi) {
+      if (words.includes("fi")) {
+        skipUntilFi = false;
+      }
+      continue;
+    }
+    const ifTruthiness = ifConditionTruthiness(words);
+    if (ifTruthiness) {
+      if (ifTruthiness === "false") {
+        skipUntilFi = true;
+      }
+      chainTruthiness = ifTruthiness;
+      continue;
+    }
     if (segment.operator === "&&" && chainTruthiness === "false") {
       continue;
     }
@@ -851,6 +867,13 @@ function analyzeCommand(
     analyzeSegment(segment.text, cwd, chain, ctx);
     chainTruthiness = segmentTruthiness(segment.text);
   }
+}
+
+function ifConditionTruthiness(words: string[]): ShellTruthiness | undefined {
+  if (words[0] !== "if") {
+    return undefined;
+  }
+  return segmentTruthiness(words.slice(1).join(" "));
 }
 
 function analyzeSegment(

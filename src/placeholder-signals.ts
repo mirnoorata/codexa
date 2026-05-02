@@ -63,7 +63,13 @@ function executableStubCandidates(input: PlaceholderScanInput): PlaceholderCandi
       if (hasOutsideStringMatch(codeText, /\bfunction\s+[A-Za-z_$][\w$]*\s*\([^)]*\)\s*\{\s*\}/gu)) {
         candidates.push(candidate(input, line, "placeholder.no-op-body", 2.2, "derived", "empty function body"));
       }
+      if (hasOutsideStringMatch(codeText, /(?:^|[;{}\s])(?:async\s+)?(?!(?:if|for|while|switch|catch|function)\b)(?:constructor|[A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{\s*\}/gu)) {
+        candidates.push(candidate(input, line, "placeholder.no-op-body", 2.0, "heuristic", "empty method body"));
+      }
       if (hasOutsideStringMatch(codeText, /(?:^|[=(:,]\s*)(?:async\s*)?\([^)]*\)\s*=>\s*\{\s*\}/gu)) {
+        candidates.push(candidate(input, line, "placeholder.no-op-body", 1.8, "heuristic", "empty arrow function body"));
+      }
+      if (hasOutsideStringMatch(codeText, /(?:^|[=(:,]\s*)(?:async\s+)?[A-Za-z_$][\w$]*\s*=>\s*\{\s*\}/gu)) {
         candidates.push(candidate(input, line, "placeholder.no-op-body", 1.8, "heuristic", "empty arrow function body"));
       }
     }
@@ -80,7 +86,9 @@ function multilineEmptyBodyCandidates(input: PlaceholderScanInput, lines: Source
     const currentCode = stripInlineComment(input.language, lines[index].text);
     const startsEmptyFunction =
       hasOutsideStringMatch(currentCode, /\bfunction\s+[A-Za-z_$][\w$]*\s*\([^)]*\)\s*\{\s*$/gu) ||
-      hasOutsideStringMatch(currentCode, /(?:^|[=(:,]\s*)(?:async\s*)?\([^)]*\)\s*=>\s*\{\s*$/gu);
+      hasOutsideStringMatch(currentCode, /(?:^|[;{}\s])(?:async\s+)?(?!(?:if|for|while|switch|catch|function)\b)(?:constructor|[A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{\s*$/gu) ||
+      hasOutsideStringMatch(currentCode, /(?:^|[=(:,]\s*)(?:async\s*)?\([^)]*\)\s*=>\s*\{\s*$/gu) ||
+      hasOutsideStringMatch(currentCode, /(?:^|[=(:,]\s*)(?:async\s+)?[A-Za-z_$][\w$]*\s*=>\s*\{\s*$/gu);
     if (!startsEmptyFunction) {
       continue;
     }
@@ -130,8 +138,11 @@ function dummyDataCandidates(input: PlaceholderScanInput): PlaceholderCandidate[
 function commentCandidates(input: PlaceholderScanInput): PlaceholderCandidate[] {
   const candidates: PlaceholderCandidate[] = [];
   const lines = sourceLines(input.sourceText);
+  let inBlockComment = false;
   for (const line of lines) {
-    const comment = commentFragment(input.language, line.text);
+    const fragment = commentFragment(input.language, line.text, inBlockComment);
+    inBlockComment = fragment.inBlockComment;
+    const comment = fragment.comment;
     if (!comment) {
       continue;
     }
@@ -246,27 +257,37 @@ function sourceLines(sourceText: string): SourceLine[] {
   return lines;
 }
 
-function commentFragment(language: LanguageId, line: string): string | undefined {
+function commentFragment(language: LanguageId, line: string, inBlockComment: boolean): { comment?: string; inBlockComment: boolean } {
   const trimmed = line.trim();
   if (language === "python") {
     const index = lineCommentIndex(line, "#");
-    return index >= 0 ? line.slice(index + 1) : undefined;
+    return { comment: index >= 0 ? line.slice(index + 1) : undefined, inBlockComment: false };
   }
   if (language === "typescript" || language === "javascript" || language === "json") {
+    if (inBlockComment) {
+      const blockEnd = line.indexOf("*/");
+      return {
+        comment: blockEnd >= 0 ? line.slice(0, blockEnd) : line,
+        inBlockComment: blockEnd < 0
+      };
+    }
     const slash = lineCommentIndex(line, "//");
     if (slash >= 0) {
-      return line.slice(slash + 2);
+      return { comment: line.slice(slash + 2), inBlockComment: false };
     }
     const blockStart = lineCommentIndex(line, "/*");
     if (blockStart >= 0) {
       const blockEnd = line.indexOf("*/", blockStart + 2);
-      return blockEnd >= 0 ? line.slice(blockStart + 2, blockEnd) : line.slice(blockStart + 2);
+      return {
+        comment: blockEnd >= 0 ? line.slice(blockStart + 2, blockEnd) : line.slice(blockStart + 2),
+        inBlockComment: blockEnd < 0
+      };
     }
   }
   if (language === "markdown") {
-    return trimmed;
+    return { comment: trimmed, inBlockComment: false };
   }
-  return undefined;
+  return { inBlockComment: false };
 }
 
 function stripInlineComment(language: LanguageId, line: string): string {
@@ -376,7 +397,7 @@ function isPlaceholderLiteralValue(value: string): boolean {
     return false;
   }
   return (
-    /^(?:placeholder|dummy|fake|sample|stub|todo|tbd|fixme|replace[-_ ]?me|REPLACE_ME)$/u.test(value) ||
+    /^(?:placeholder|dummy|fake|sample|stub|todo|tbd|fixme|replace[-_ ]?me|REPLACE_ME)$/iu.test(value) ||
     /^YOUR_[A-Z0-9_]+$/u.test(value) ||
     /^(?:api[_-]?key[_-]?here|example@example\.com)$/iu.test(value) ||
     /\b(?:not implemented|unimplemented|lorem ipsum)\b/iu.test(value)

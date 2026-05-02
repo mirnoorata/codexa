@@ -491,9 +491,6 @@ export async function postEditReviewQuery(
   const dataWaivedVerification = dataVerificationLedger.filter((entry) => entry.status === "waived");
   const missedLikelyTests = testsNotRun;
   const hasTestVerificationAccounting =
-    ranTests.length > 0 ||
-    waivedChecks.length > 0 ||
-    waivers.some((waiver) => waiver.kind === "test") ||
     verificationLedger.some((entry) => entry.kind === "test" && (entry.status === "covered" || entry.status === "waived"));
   const driftReasons = [
     !snapshot ? `missing task snapshot${loadedSnapshot.missingReason ? `: ${loadedSnapshot.missingReason}` : ""}` : undefined,
@@ -794,19 +791,34 @@ function compareSnapshotRisks(
     .map((filePath) => {
       const before = snapshot.riskBaseline?.[filePath] ?? { riskScore: 0, signals: [] };
       const after = snapshotRiskBaseline(index, [filePath])[filePath] ?? { riskScore: 0, signals: [] };
-      const beforeSignals = new Set(before.signals);
-      const afterSignals = new Set(after.signals);
       return {
         path: filePath,
         before,
         after,
         delta: after.riskScore - before.riskScore,
-        newSignals: after.signals.filter((signal) => !beforeSignals.has(signal)),
-        removedSignals: before.signals.filter((signal) => !afterSignals.has(signal))
+        newSignals: multisetDifference(after.signals, before.signals),
+        removedSignals: multisetDifference(before.signals, after.signals)
       };
     })
     .filter((delta) => Math.abs(delta.delta) > 0.01 || delta.newSignals.length > 0 || delta.removedSignals.length > 0)
     .sort((a, b) => Math.abs(b.delta) - Math.abs(a.delta) || a.path.localeCompare(b.path));
+}
+
+function multisetDifference(values: string[], baseline: string[]): string[] {
+  const remaining = new Map<string, number>();
+  for (const value of baseline) {
+    remaining.set(value, (remaining.get(value) ?? 0) + 1);
+  }
+  const result: string[] = [];
+  for (const value of values) {
+    const count = remaining.get(value) ?? 0;
+    if (count > 0) {
+      remaining.set(value, count - 1);
+      continue;
+    }
+    result.push(value);
+  }
+  return result;
 }
 
 function symbolDeltaKey(symbol: TaskSnapshotSymbol): string {

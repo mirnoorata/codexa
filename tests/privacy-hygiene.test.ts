@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -7,6 +8,7 @@ import { describe, expect, it } from "vitest";
 
 const codexaRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const hygieneScript = path.join(codexaRoot, "scripts", "verify-public-hygiene.mjs");
+const packageHygieneScript = path.join(codexaRoot, "scripts", "verify-package-hygiene.mjs");
 
 describe("public hygiene scanner", () => {
   it("blocks machine-local runbook names outside the repository root", async () => {
@@ -58,6 +60,42 @@ describe("public hygiene scanner", () => {
     expect(historyResult.status).toBe(1);
     expect(historyResult.stderr).toContain("config.txt");
     expect(historyResult.stderr).toContain("workspace absolute path");
+  });
+
+  it("redacts sensitive matches from hygiene failures", async () => {
+    const repo = await createGitRepo();
+    const token = "npm_" + "A".repeat(31);
+    await writeFile(path.join(repo, ".npmrc"), `//registry.npmjs.org/:_authToken=${token}\n`, "utf8");
+    commitAll(repo, "add token fixture");
+
+    const result = runHygiene(repo);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("npm auth token assignment");
+    expect(result.stderr).toContain("<redacted>");
+    expect(result.stderr).not.toContain(token);
+  });
+
+  it("scans generated package contents without leaking matches", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "codexa-package-hygiene-"));
+    await mkdir(path.join(dir, "dist"), { recursive: true });
+    const token = "npm_" + "B".repeat(31);
+    await writeFile(path.join(dir, "dist", "cli.js"), `const value = "${token}"\n`, "utf8");
+
+    const result = spawnSync(process.execPath, [packageHygieneScript, dir], {
+      cwd: codexaRoot,
+      encoding: "utf8"
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("package-hygiene");
+    expect(result.stderr).toContain("<redacted>");
+    expect(result.stderr).not.toContain(token);
+  });
+
+  it("keeps generated static analysis imports ignored", () => {
+    const gitignore = readFileSync(path.join(codexaRoot, ".gitignore"), "utf8");
+    expect(gitignore).toContain(".codex/static-analysis/");
   });
 });
 

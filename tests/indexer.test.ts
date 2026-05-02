@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -247,6 +247,9 @@ describe("Codexa indexer", () => {
     await writeFile(path.join(repo, "package.json"), JSON.stringify({ scripts: { test: "vitest run" } }, null, 2), "utf8");
     await writeFile(path.join(repo, "src/ready.ts"), "export function ready() { return 1 }\n", "utf8");
     await writeFile(path.join(repo, "src/formatted-empty.ts"), "export function formattedEmpty() {\n}\n", "utf8");
+    await writeFile(path.join(repo, "src/methods.ts"), "export class Box { constructor() {} reset() {} }\nexport const oneArg = value => {}\n", "utf8");
+    await writeFile(path.join(repo, "src/block-comment.ts"), "/**\n * TODO: replace temporary parser fallback\n */\nexport const ready = true\n", "utf8");
+    await writeFile(path.join(repo, "src/uppercase.ts"), "export const token = 'TODO'\n", "utf8");
     await writeFile(path.join(repo, "src/url.ts"), "export const docsUrl = 'https://example.com/TODO'\n", "utf8");
     await writeFile(path.join(repo, "src/regex-detector.ts"), "export const marker = /['\"`](?:todo|placeholder|not implemented)['\"`]/giu\n", "utf8");
     await writeFile(path.join(repo, "src/generated/client.ts"), "export function generatedLater() { throw new Error('not implemented') }\n", "utf8");
@@ -273,6 +276,7 @@ describe("Codexa indexer", () => {
     await writeFile(path.join(repo, "service/work.py"), "def later():\n    raise NotImplementedError('not implemented yet')\n\ndef marker():\n    pass\n", "utf8");
     await writeFile(path.join(repo, "service/strings.py"), "docs_url = 'https://example.com/#TODO'\n# raise NotImplementedError('later')\nreal_value = 1\n", "utf8");
     await writeFile(path.join(repo, "config/seeds.json"), JSON.stringify({ placeholderToken: "REPLACE_ME", real: true }, null, 2), "utf8");
+    await writeFile(path.join(repo, "config/broken.json"), "{\"notManifest\": true,\n", "utf8");
     await writeFile(path.join(repo, "broken/package.json"), "{\"placeholderToken\":\"REPLACE_ME\",\n", "utf8");
     await writeFile(path.join(repo, "docs/todo.md"), "TODO document the placeholder report\n", "utf8");
     await writeFile(path.join(repo, "tests/stub.test.ts"), "it('keeps fixture placeholder text', () => {}) // TODO test fixture\n", "utf8");
@@ -286,10 +290,14 @@ describe("Codexa indexer", () => {
     expect(index.risks.some((risk) => risk.path === "src/existing.ts" && risk.signal === "placeholder.not-implemented" && risk.confidence === "derived")).toBe(true);
     expect(index.risks.some((risk) => risk.path === "src/existing.ts" && risk.signal === "placeholder.no-op-body")).toBe(true);
     expect(index.risks.some((risk) => risk.path === "src/formatted-empty.ts" && risk.signal === "placeholder.no-op-body")).toBe(true);
+    expect(index.risks.some((risk) => risk.path === "src/methods.ts" && risk.signal === "placeholder.no-op-body")).toBe(true);
+    expect(index.risks.some((risk) => risk.path === "src/block-comment.ts" && risk.signal === "placeholder.todo-comment")).toBe(true);
+    expect(index.risks.some((risk) => risk.path === "src/uppercase.ts" && risk.signal === "placeholder.dummy-literal")).toBe(true);
     expect(index.risks.some((risk) => risk.path === "src/existing.ts" && risk.signal === "placeholder.dummy-data")).toBe(true);
     expect(index.risks.some((risk) => risk.path === "service/work.py" && risk.signal === "placeholder.not-implemented")).toBe(true);
     expect(index.risks.some((risk) => risk.path === "config/seeds.json" && risk.signal === "placeholder.dummy-literal")).toBe(true);
     expect(index.risks.some((risk) => risk.path === "broken/package.json" && risk.signal === "placeholder.dummy-literal")).toBe(true);
+    expect(index.parserErrors.some((error) => error.path === "config/broken.json")).toBe(true);
     expect(index.parserErrors.some((error) => error.path === "broken/package.json")).toBe(true);
     expect(index.risks.some((risk) => risk.path === "src/url.ts" || risk.path === "src/regex-detector.ts" || risk.path === "service/strings.py")).toBe(false);
     expect(index.risks.some((risk) => risk.path === "src/commented.ts" && risk.signal === "placeholder.placeholder-comment")).toBe(true);
@@ -302,7 +310,7 @@ describe("Codexa indexer", () => {
     expect(defaultData.findings.some((finding) => finding.path.startsWith("tests/") || finding.path.startsWith("docs/") || finding.path.includes("/generated/"))).toBe(false);
     expect(defaultData.excludedByFilter).toBeGreaterThanOrEqual(3);
 
-    const report = await placeholderReportQuery(repo, { includeTests: true, includeDocs: true, includeGenerated: true, limit: 20 }, { autoRefresh: false });
+    const report = await placeholderReportQuery(repo, { includeTests: true, includeDocs: true, includeGenerated: true, limit: 50 }, { autoRefresh: false });
     const reportData = report.data as { findings: Array<{ path: string }>; categories: Record<string, number>; hiddenByLimit: number };
     expect(report.text).toContain("Codexa placeholder report");
     expect(report.text).toContain("placeholder.not-implemented");
@@ -327,7 +335,7 @@ describe("Codexa indexer", () => {
       },
       { autoRefresh: false }
     );
-    await writeFile(path.join(repo, "src/ready.ts"), "export function ready() { throw new Error('not implemented') }\n", "utf8");
+    await writeFile(path.join(repo, "src/ready.ts"), "export function ready() { throw new Error('not implemented') }\nexport function readyAgain() { throw new Error('not implemented') }\n", "utf8");
     const review = await postEditReviewQuery(repo, { taskId: "placeholder-tracking", ranTests: [] }, { autoRefresh: true });
     expect(review.text).toContain("placeholder.not-implemented");
     expect(review.text).toContain("src/ready.ts");
@@ -335,7 +343,7 @@ describe("Codexa indexer", () => {
     const readyDelta = reviewData.riskDeltas.find((delta) => delta.path === "src/ready.ts");
     expect(readyDelta?.before.riskScore).toBe(0);
     expect(readyDelta?.after.riskScore ?? 0).toBeGreaterThan(0);
-    expect(readyDelta?.newSignals.some((signal) => signal.includes("placeholder.not-implemented"))).toBe(true);
+    expect(readyDelta?.newSignals.filter((signal) => signal.includes("placeholder.not-implemented"))).toHaveLength(2);
 
     await changePlanQuery(repo, { task: "remove existing placeholders", files: ["src/existing.ts"], saveSnapshot: true, taskId: "placeholder-removal" }, { autoRefresh: true });
     await writeFile(path.join(repo, "src/existing.ts"), "export function finished() { return 'done' }\n", "utf8");
@@ -375,12 +383,73 @@ describe("Codexa indexer", () => {
     expect(reedited.freshness.reason).toBe("dirty-files-changed");
   });
 
+  it("does not follow symlinked source files outside the repository", async () => {
+    const repo = await createFixtureRepo();
+    const externalDir = await mkdtemp(path.join(os.tmpdir(), "codexa-outside-source-"));
+    const externalSource = path.join(externalDir, "outside.ts");
+    await writeFile(externalSource, "export const leakedOutsideSecret = 'do-not-index-this'\n", "utf8");
+    await symlink(externalSource, path.join(repo, "src/outside-link.ts"));
+
+    const index = await buildIndex({ repoRoot: repo });
+    const artifact = await readFile(path.join(repo, ".codex/codebase/index.json"), "utf8");
+
+    expect(index.files.some((file) => file.path === "src/outside-link.ts")).toBe(false);
+    expect(index.freshness.dirtyFiles).toContain("src/outside-link.ts");
+    expect(index.freshness.dirtyFileHashes["src/outside-link.ts"]).toBe("non-file");
+    expect(artifact).not.toContain("leakedOutsideSecret");
+    expect(artifact).not.toContain("do-not-index-this");
+  });
+
+  it("uses metadata hashes for large or non-source dirty files", async () => {
+    const repo = await createFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+
+    await writeFile(path.join(repo, "large-output.bin"), Buffer.alloc(2 * 1024 * 1024 + 1, "a"));
+    const status = await statusQuery(repo);
+
+    expect(status.freshness.dirtyFiles).toContain("large-output.bin");
+    expect(status.freshness.dirtyFileHashes["large-output.bin"]).toMatch(/^metadata:/u);
+  });
+
+  it("keeps high-severity placeholder findings in the bounded placeholder map", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-placeholder-map-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "docs"));
+    await mkdirp(path.join(repo, "zz"));
+    for (let index = 0; index < 170; index += 1) {
+      await writeFile(path.join(repo, "docs", `todo-${String(index).padStart(3, "0")}.md`), "TODO document this low-risk note\n", "utf8");
+    }
+    await writeFile(path.join(repo, "zz/high.ts"), "export function highRiskLatePath() { throw new Error('not implemented') }\n", "utf8");
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+
+    await buildIndex({ repoRoot: repo });
+    const placeholderMap = await readFile(path.join(repo, ".codex/codebase/placeholder-map.md"), "utf8");
+
+    expect(placeholderMap).toContain("zz/high.ts");
+    expect(placeholderMap).toContain("placeholder.not-implemented");
+  });
+
   it("writes and reuses a parse cache for unchanged files", async () => {
     const repo = await createFixtureRepo();
     await buildIndex({ repoRoot: repo });
     const cachePath = path.join(repo, ".codex/cache/codexa-parse-cache.json");
     const firstCache = JSON.parse(await readFile(cachePath, "utf8")) as { entries: Record<string, unknown> };
     expect(Object.keys(firstCache.entries)).toContain("src/api.ts");
+
+    const poisoned = firstCache as {
+      entries: Record<string, { result?: { symbols?: Array<{ path?: string }> } }>;
+    };
+    const firstApiSymbol = poisoned.entries["src/api.ts"]?.result?.symbols?.[0];
+    if (firstApiSymbol) {
+      firstApiSymbol.path = "src/poisoned.ts";
+    }
+    await writeFile(cachePath, `${JSON.stringify(poisoned)}\n`, "utf8");
+    const rebuilt = await buildIndex({ repoRoot: repo });
+    expect(rebuilt.symbols.some((symbol) => symbol.path === "src/poisoned.ts")).toBe(false);
 
     await buildIndex({ repoRoot: repo });
     const secondCache = JSON.parse(await readFile(cachePath, "utf8")) as { entries: Record<string, unknown> };
@@ -677,6 +746,7 @@ describe("Codexa indexer", () => {
     expect(index.usageSites.some((usage) => usage.path === "sample_api/packages/project.invalid.json" && usage.name === "fake.node")).toBe(false);
     expect(index.risks.some((risk) => risk.path === "docs/report.json" && risk.signal === "node-manifest")).toBe(false);
     expect(index.risks.some((risk) => risk.path === "sample_api/packages/project.invalid.json" && risk.signal === "node-manifest")).toBe(false);
+    expect(index.parserErrors.some((error) => error.path === "docs/broken.json")).toBe(true);
     expect(index.graphEdges.some((edge) => edge.fromPath === "docs/report.json" || edge.toPath === "docs/report.json")).toBe(false);
     expect(index.symbols.some((symbol) => symbol.path === "sample_api/packages/project.media.json" && symbol.kind === "node")).toBe(true);
   });
@@ -1347,6 +1417,20 @@ describe("Codexa indexer", () => {
     expect(waivedAllData.outcome.waivers).toHaveLength(2);
     expect(waivedAllData.outcome.calibrationLabels).toContain("waived-behavior-test");
 
+    const unrelatedWaiver = await postEditReviewQuery(
+      repo,
+      {
+        taskId: "verification-coverage",
+        ranTests: [],
+        ranCommands: [],
+        waivers: [{ kind: "dependency", target: "unrelated dependency", reason: "not touched" }]
+      },
+      { autoRefresh: false }
+    );
+    const unrelatedWaiverData = unrelatedWaiver.data as { testsNotRun: Array<{ path: string }>; driftReasons: string[] };
+    expect(unrelatedWaiverData.testsNotRun.map((test) => test.path)).toContain("tests/shared.test.ts");
+    expect(unrelatedWaiverData.driftReasons).toContain("recommended tests have not been accounted for");
+
     const aggregate = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["npm run check"] }, { autoRefresh: false });
     const aggregateData = aggregate.data as {
       testsNotRun: unknown[];
@@ -1443,6 +1527,21 @@ describe("Codexa indexer", () => {
     expect(serializedRelativeReport).not.toContain("./secret.json");
     expect(serializedRelativeReport).toContain("<outside-repo>");
     expect(serializedRelativeReport).toContain("<rel-path>");
+
+    const persistedSanitizationReport = await postEditReviewQuery(
+      repo,
+      {
+        taskId: "verification-coverage",
+        ranTests: [path.join(repo, "tests/shared.test.ts")],
+        waivedChecks: [`manual check at ${path.join(repo, "private-check.log")}`],
+        waivers: [{ kind: "test", target: path.join(repo, "tests/shared.test.ts"), reason: `manual run at ${path.join(repo, "private-report.log")}` }]
+      },
+      { autoRefresh: false }
+    );
+    const persistedSanitizationData = persistedSanitizationReport.data as { outcome: { path: string } };
+    const persistedSanitization = await readFile(path.join(repo, persistedSanitizationData.outcome.path), "utf8");
+    expect(persistedSanitization).not.toContain(repo);
+    expect(persistedSanitization).toContain("<repo>");
 
     const reportedEnvelope = await postEditReviewQuery(
       repo,
@@ -1744,6 +1843,9 @@ describe("Codexa indexer", () => {
 
     const simpleIfFlow = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["if true; then npm test; fi"] }, { autoRefresh: false });
     expect((simpleIfFlow.data as { testsNotRun: unknown[] }).testsNotRun).toEqual([]);
+
+    const falseIfFlow = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["if false; then npm test; fi"] }, { autoRefresh: false });
+    expect((falseIfFlow.data as { testsNotRun: Array<{ path: string }> }).testsNotRun.map((test) => test.path)).toContain("tests/shared.test.ts");
 
     const falseAndFallback = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["false && npm test"] }, { autoRefresh: false });
     expect((falseAndFallback.data as { testsNotRun: Array<{ path: string }> }).testsNotRun.map((test) => test.path)).toContain("tests/shared.test.ts");
@@ -2199,6 +2301,17 @@ describe("Codexa indexer", () => {
     const recoveredFromCorruptLive = await loadIndex(repo);
     expect(recoveredFromCorruptLive?.files.some((file) => file.path === "src/api.ts")).toBe(true);
     expect(await readFile(path.join(codebaseDir, "index.json"), "utf8")).toContain("\"schemaVersion\"");
+
+    await buildIndex({ repoRoot: repo });
+    const readOnlyBackupDir = path.join(repo, ".codex/.codebase.backup-readonly");
+    await rename(codebaseDir, readOnlyBackupDir);
+    await mkdir(codebaseDir, { recursive: true });
+    await writeFile(path.join(codebaseDir, "index.json"), "{still corrupt", "utf8");
+    const readOnlyStatus = await statusQuery(repo, { recover: false });
+    expect(readOnlyStatus.freshness.missing).toBe(true);
+    expect(await readFile(path.join(codebaseDir, "index.json"), "utf8")).toBe("{still corrupt");
+    const recoveredAfterReadOnly = await loadIndex(repo);
+    expect(recoveredAfterReadOnly?.files.some((file) => file.path === "src/api.ts")).toBe(true);
 
     const indexPath = path.join(repo, ".codex/codebase/index.json");
     const copied = JSON.parse(await readFile(indexPath, "utf8"));
@@ -2734,6 +2847,7 @@ async function createManifestGateFixtureRepo(): Promise<string> {
     ),
     "utf8"
   );
+  await writeFile(path.join(repo, "docs/broken.json"), "{\"notManifest\": true,\n", "utf8");
   await writeFile(
     path.join(repo, "sample_api/packages/project.invalid.json"),
     JSON.stringify(

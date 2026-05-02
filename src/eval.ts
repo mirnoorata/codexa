@@ -410,7 +410,7 @@ function historicalScenarioFromEntry(repo: string, queryOptions: QueryOptions, e
 async function syntheticScenarios(seed: string): Promise<EvalScenario[]> {
   const fixture = await createSyntheticRepo(seed);
   const queryOptions = { autoRefresh: false };
-  return [
+  const scenarios: EvalScenario[] = [
     {
       id: "synthetic-search-exact-raw-sufficient",
       suite: "synthetic",
@@ -697,6 +697,7 @@ async function syntheticScenarios(seed: string): Promise<EvalScenario[]> {
       }
     }
   ];
+  return scenarios.map((scenario) => ({ cleanupRepoRoot: fixture.repoRoot, ...scenario }));
 }
 
 interface BaselineRun {
@@ -919,7 +920,10 @@ function calibrationSummary(scenarios: ScoredEvalScenario[]): EvalResult["data"]
     postEditCalibrationLabels: uniqueInOrder(scenarios.flatMap((scenario) => scenario.calibration.postEditOutcome?.calibrationLabels ?? [])),
     postEditRequiredChecksMissingScenarios: uniqueInOrder(postEditRequiredChecksMissingScenarios),
     postEditAggregateCoverageScenarios: scenarios
-      .filter((scenario) => (scenario.calibration.postEditOutcome?.ranCommands.length ?? 0) > 0 && scenario.calibration.postEditOutcome?.calibrationLabels.includes("aggregate-command-coverage"))
+      .filter((scenario) => {
+        const outcome = scenario.calibration.postEditOutcome;
+        return Boolean(outcome?.calibrationLabels.includes("aggregate-command-coverage") && (outcome.ranCommands.length > 0 || outcome.commandEnvelopes.length > 0));
+      })
       .map((scenario) => scenario.id),
     postEditVerificationMissingScenarios: scenarios.filter((scenario) => (scenario.calibration.postEditOutcome?.verificationMissing ?? 0) > 0).map((scenario) => scenario.id),
     postEditVerdicts,
@@ -1500,7 +1504,7 @@ function assertAllowedBaseline(command: string[]): void {
       throw new Error(`baseline command contains unsafe argument: ${arg}`);
     }
   }
-  if (executable === "rg") {
+  if (executable === "rg" && isAllowedRipgrepBaseline(command.slice(1))) {
     return;
   }
   if (isAllowedGitStatusBaseline(command) || isAllowedGitGrepBaseline(command)) {
@@ -1528,6 +1532,10 @@ function isAllowedGitGrepBaseline(command: string[]): boolean {
     }
   }
   return true;
+}
+
+function isAllowedRipgrepBaseline(args: string[]): boolean {
+  return parseRipgrepBaselineArgs(args) !== undefined;
 }
 
 function isUnsafeBaselineArgument(value: string): boolean {
@@ -1574,9 +1582,15 @@ function parseRipgrepBaselineArgs(args: string[]): { pattern: string; paths: str
       continue;
     }
     if (arg === "-e") {
+      if (!args[i + 1]) {
+        return undefined;
+      }
       pattern = args[i + 1];
       i += 1;
       continue;
+    }
+    if (arg.startsWith("-")) {
+      return undefined;
     }
     if (!pattern) {
       pattern = arg;
@@ -1625,10 +1639,11 @@ function isMissingExecutable(error: unknown): boolean {
 
 function baselineFailureScenario(scenario: EvalScenario, error: unknown): ScoredEvalScenario {
   const message = error instanceof Error ? error.message : String(error);
+  const redactPrivate = scenario.privatePack ?? false;
   return {
     id: scenario.id,
     suite: scenario.suite,
-    description: scenario.description,
+    description: redactPrivate ? `External historical task: ${scenario.id}` : scenario.description,
     passed: false,
     score: 0,
     scored: scenario.scored ?? true,
@@ -1672,8 +1687,12 @@ function baselineFailureScenario(scenario: EvalScenario, error: unknown): Scored
       overBudgetedOutput: false,
       overBudgetedStructuredData: false
     },
-    failures: [`baseline command failed: ${formatBaselineCommands(scenario)}; ${message}`],
-    sample: ""
+    failures: [
+      redactPrivate
+        ? "baseline command failed for external historical task pack: details redacted"
+        : `baseline command failed: ${formatBaselineCommands(scenario)}; ${message}`
+    ],
+    sample: redactPrivate ? "[redacted for external historical task pack]" : ""
   };
 }
 
