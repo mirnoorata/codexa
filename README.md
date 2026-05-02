@@ -28,15 +28,22 @@ serves focused MCP context tools over stdio.
 ## V1 Scope
 
 - TypeScript CLI and MCP server.
-- Tree-sitter parsing for TypeScript, TSX, JavaScript, JSX, and Python.
-- In-memory relationship graph persisted as JSON/NDJSON.
-- Codex-first artifacts for repo maps, risk, tests, conventions, and freshness.
+- Tree-sitter parsing for TypeScript, TSX, JavaScript, JSX, and Python, plus
+  lightweight indexing for JSON manifests, Markdown/MDX/RST/text docs,
+  `scripts/*.sh`, and `.service` files.
+- In-memory relationship graph persisted as `.codex/codebase/index.json`,
+  `.codex/codebase/freshness.json`, and `.codex/codebase/facts.ndjson`.
+- Codex-first artifacts for repo maps, risk, placeholder findings, tests,
+  conventions, and freshness.
 - MCP context tools: `repo_map`, `find_context`, `search`, `symbol_context`, `impact`,
-  `diff_impact`, `test_plan`, `task_brief`, `context_pack`, `focus_brief`,
-  `session_context`, `callers`, `callees`, `dependency_path`, `workflow_path`,
-  `change_plan`, `post_edit_review`, and `freshness`.
-- MCP resources for generated `.codex/codebase/` artifacts and MCP prompts for
-  common Codex workflows before edits, dirty-diff review, and test planning.
+  `diff_impact`, `placeholder_report`, `test_plan`, `task_brief`,
+  `context_pack`, `focus_brief`, `session_context`, `callers`, `callees`,
+  `dependency_path`, `workflow_path`, `change_plan`, `post_edit_review`, and
+  `freshness`.
+- MCP resources for generated `.codex/codebase/` artifacts and MCP prompts
+  (`impact_before_edit`, `dirty_diff_review`, `snapshot_edit_loop`, and
+  `targeted_test_plan`) for common Codex workflows before edits,
+  dirty-diff review, and test planning.
 - A generated `.codex/codebase/codex-contract.md` that gives Codex a deterministic
   automatic-use contract for session start, pre-edit snapshots, post-edit drift
   review, workflow tracing, dependency checks, and final test planning.
@@ -60,6 +67,10 @@ serves focused MCP context tools over stdio.
 - A small built-in structural rule pack that emits bounded risk signals for shell
   execution, filesystem writes, MCP tool surfaces, raw HTML sinks, and SQL
   execution boundaries without adding Semgrep/ast-grep as runtime dependencies.
+- Built-in placeholder/dummy detection that indexes TODO/stub comments,
+  not-implemented bodies, no-op bodies, dummy data, and placeholder literals as
+  bounded risk signals. Test, docs, and generated contexts are downweighted and
+  filtered from the default placeholder report.
 - Static-analysis report bridge for Semgrep JSON, CodeQL SARIF, generic SARIF,
   and Codexa risk JSON. Codexa can also run user-installed Semgrep/CodeQL CLIs
   on explicit request, then ingest the produced reports.
@@ -86,11 +97,14 @@ serves focused MCP context tools over stdio.
 - Task snapshots for the edit loop: `change_plan --save-snapshot` records the
   plan-time dirty baseline under `.codex/cache/`, and `post_edit_review`
   compares the actual post-edit dirty tree against that snapshot for drift,
-  unplanned files, risk/workflow signals, and tests still unaccounted for.
+  unplanned files, risk/workflow signals, placeholder risk deltas, and tests
+  still unaccounted for.
 - `codexa init` also writes lightweight edit hooks when supported by Codex
   hooks: `hook-pre-edit` reminds Codex when a non-trivial edit lacks a saved
   change-plan snapshot, and `hook-post-edit` runs a bounded post-edit review.
-  Each review writes a compact outcome record under
+  These hooks are advisory and fail open: setup/query errors print a bounded
+  unavailable message and exit successfully so editor tool calls are not
+  blocked. Each successful review writes a compact outcome record under
   `.codex/cache/codexa-outcomes/`; eval runs summarize those outcomes under
   `.codex/cache/codexa-evals/`.
 - Strict evidence tiers in query output: `authoritative`, `derived`,
@@ -118,18 +132,27 @@ npm run build
 npm test
 
 node dist/cli.js init <repo>
+node dist/cli.js session-start <repo>
+node dist/cli.js hook-pre-edit <repo>
+node dist/cli.js hook-post-edit <repo>
 node dist/cli.js index <repo>
 node dist/cli.js watch <repo>
 node dist/cli.js static-analysis <repo> --semgrep-report /tmp/semgrep.json --codeql-report /tmp/codeql.sarif
 node dist/cli.js status <repo>
 node dist/cli.js repo-map <repo> --budget 1200
+node dist/cli.js find-context <repo> --query "auth middleware"
 node dist/cli.js explain <repo> --file src/app.ts
+node dist/cli.js explain <repo> --symbol usePolling
 node dist/cli.js search <repo> --query usePolling
+node dist/cli.js placeholder-report <repo> --limit 20
+node dist/cli.js placeholder-report <repo> --include-tests --include-docs --include-generated
 node dist/cli.js impact <repo> --file src/app.ts --change-type api
+node dist/cli.js diff-impact <repo>
 node dist/cli.js test-plan <repo> --diff
 node dist/cli.js brief <repo> --task "Update polling safely" --change-type behavior
 node dist/cli.js context-pack <repo> --task "Update polling safely" --change-type behavior
 node dist/cli.js focus-brief <repo> --task "How does queue polling work?"
+node dist/cli.js session-context <repo> --task "Start a Codex session"
 node dist/cli.js callers <repo> --symbol usePolling
 node dist/cli.js callees <repo> --file src/App.tsx
 node dist/cli.js dependency-path <repo> --from-file src/App.tsx --to-file src/features/use-polling.ts
@@ -158,11 +181,12 @@ In the commands above, substitute `<repo>` with the absolute path of the
 repository you are indexing.
 
 Context commands refresh stale or missing `.codex/codebase/` artifacts by default
-before answering. Use `--no-auto-refresh` on `repo-map`, `find-context`, `search`,
-`explain`, `impact`, `diff-impact`, `test-plan`, `brief`, `context-pack`,
-`focus-brief`, `session-context`, `callers`, `callees`, `dependency-path`,
-`workflow-path`, `change-plan`, `post-edit-review`, or `serve` when you need to inspect the stored
-index without rewriting it.
+before answering. Use `--no-auto-refresh` on `repo-map`, `find-context`,
+`search`, `placeholder-report`, `explain`, `impact`, `diff-impact`,
+`test-plan`, `brief`, `context-pack`, `focus-brief`, `session-context`,
+`callers`, `callees`, `dependency-path`, `workflow-path`, `change-plan`,
+`post-edit-review`, or `serve` when you need to inspect the stored index without
+rewriting it.
 
 After `npm link`, the same commands are available as `codexa ...`.
 
@@ -413,6 +437,21 @@ In that mode Codexa does not advertise context tools as `readOnlyHint: true`;
 use `--no-auto-refresh` when the MCP host needs strict filesystem-read-only
 tool metadata.
 
+Generated artifacts are also exposed as MCP resources:
+`codexa://repo/codebase/README.md`,
+`codexa://repo/codebase/codex-contract.md`,
+`codexa://repo/codebase/repo-map.md`,
+`codexa://repo/codebase/risk-map.md`,
+`codexa://repo/codebase/placeholder-map.md`,
+`codexa://repo/codebase/test-map.md`,
+`codexa://repo/codebase/conventions.md`,
+`codexa://repo/codebase/workflows.md`,
+`codexa://repo/codebase/playbooks/README.md`, and
+`codexa://repo/codebase/freshness.json`. Module and playbook entries are
+available through the `codexa://repo/codebase/modules`,
+`codexa://repo/codebase/modules/{name}`, and
+`codexa://repo/codebase/playbooks/{name}` resource paths.
+
 Candidate test commands include provenance such as `package.json` scripts or
 Python test metadata. If Codexa cannot find provenance, it omits the command
 instead of inventing one.
@@ -448,13 +487,22 @@ reindexing. Use an explicit `--seed` for reproducible trend lines and `--json`
 for machine-readable metrics. Each scenario reports both raw-baseline discovery
 and Codexa results against the same oracle: file recall, test recall,
 precision@K, selected-file compression, and refresh behavior.
+Suites are `all`, `project`, `synthetic`, `historical-fixture`, and `task-pack`;
+external historical fixtures can be passed with `--task-pack <path>`. By
+default, `--fail-on-refresh` marks a scenario failed if a query refreshes while
+scoring; use `--no-fail-on-refresh` only when refresh behavior is the thing you
+are measuring.
 
 ## SessionStart Hook
 
 `codexa init` wires a repo-local SessionStart hook in `.codex/hooks.json`. See
 `docs/guides/codex-sessionstart-hook.md` for details. The helper prints cheap
 status by default; a bounded no-refresh context-pack preview is available by
-setting `CODEXA_SESSIONSTART_CONTEXT=1`.
+setting `CODEXA_SESSIONSTART_CONTEXT=1`. Generated edit hooks are advisory:
+`hook-pre-edit` and `hook-post-edit` exit successfully even when their local
+context check is unavailable. The generated helper entry points are
+`session-start`, `hook-pre-edit`, and `hook-post-edit`; normal users usually
+reach them through Codex hooks rather than invoking them directly.
 
 ## Local State
 

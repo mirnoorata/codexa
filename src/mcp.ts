@@ -13,6 +13,7 @@ import {
   findContextQuery,
   focusBriefQuery,
   impactQuery,
+  placeholderReportQuery,
   postEditReviewQuery,
   repoMapQuery,
   searchQuery,
@@ -118,6 +119,24 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
     },
     async ({ query, patterns, limit, includeRaw }) =>
       runTool((session) => searchQuery(session, { query, patterns, limit: limit ?? 12, includeRaw: includeRaw ?? true }, queryOptions))
+  );
+
+  server.registerTool(
+    "placeholder_report",
+    {
+      title: "Codexa placeholder report",
+      description: "Report indexed placeholder, dummy, TODO, and stub code/data findings. Findings are tracked as risk signals and participate in post_edit_review deltas.",
+      inputSchema: {
+        includeTests: z.boolean().optional(),
+        includeDocs: z.boolean().optional(),
+        includeGenerated: z.boolean().optional(),
+        limit: z.number().int().positive().max(50).optional(),
+        tokenBudget: z.number().int().min(500).max(8000).optional()
+      },
+      outputSchema,
+      annotations: sourceContextAnnotations
+    },
+    async (input) => runTool((session) => placeholderReportQuery(session, input, queryOptions))
   );
 
   server.registerTool(
@@ -391,14 +410,13 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
           .optional()
       },
       outputSchema,
-      annotations: pureReadAnnotations
+      annotations: sourceContextAnnotations
     },
     async (input) =>
       toToolResult(
         await safeQuery(async () => {
-          const readOnlyOptions = { ...queryOptions, autoRefresh: false };
-          const session = await createQuerySession(repoRoot, readOnlyOptions);
-          return compactMcpResult(withSessionRuntime(await postEditReviewQuery(session, { ...input, persistOutcome: false }, readOnlyOptions), session));
+          const session = await createQuerySession(repoRoot, queryOptions);
+          return compactMcpResult(withSessionRuntime(await postEditReviewQuery(session, { ...input, persistOutcome: false }, queryOptions), session));
         }, repoRoot)
       )
   );
@@ -1611,6 +1629,7 @@ async function registerArtifactResources(server: McpServer, repoRoot: string): P
     ["codex-contract", "codexa://repo/codebase/codex-contract.md", ".codex/codebase/codex-contract.md", "text/markdown", "Codex automatic-use contract"],
     ["repo-map", "codexa://repo/codebase/repo-map.md", ".codex/codebase/repo-map.md", "text/markdown", "Ranked repository map"],
     ["risk-map", "codexa://repo/codebase/risk-map.md", ".codex/codebase/risk-map.md", "text/markdown", "Risk-ranked files and signals"],
+    ["placeholder-map", "codexa://repo/codebase/placeholder-map.md", ".codex/codebase/placeholder-map.md", "text/markdown", "Placeholder and dummy code/data signals"],
     ["test-map", "codexa://repo/codebase/test-map.md", ".codex/codebase/test-map.md", "text/markdown", "Detected test files and test edges"],
     ["conventions", "codexa://repo/codebase/conventions.md", ".codex/codebase/conventions.md", "text/markdown", "Detected project conventions"],
     ["workflows", "codexa://repo/codebase/workflows.md", ".codex/codebase/workflows.md", "text/markdown", "Detected workflow traces"],

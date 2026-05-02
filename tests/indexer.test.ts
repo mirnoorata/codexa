@@ -18,6 +18,7 @@ import {
   fileContextQuery,
   focusBriefQuery,
   impactQuery,
+  placeholderReportQuery,
   postEditReviewQuery,
   repoMapQuery,
   searchQuery,
@@ -231,6 +232,116 @@ describe("Codexa indexer", () => {
     expect(index.files.every((file) => Number.isFinite(file.rank))).toBe(true);
     expect(index.risks.some((risk) => risk.path === "src/ops.ts" && risk.signal === "sarif-shell")).toBe(true);
     expect(index.risks.some((risk) => risk.path.startsWith("..") || path.isAbsolute(risk.path))).toBe(false);
+  });
+
+  it("indexes placeholder and dummy code/data and tracks placeholder risk deltas", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-placeholder-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, "src/generated"));
+    await mkdirp(path.join(repo, "service"));
+    await mkdirp(path.join(repo, "config"));
+    await mkdirp(path.join(repo, "broken"));
+    await mkdirp(path.join(repo, "docs"));
+    await mkdirp(path.join(repo, "tests"));
+    await writeFile(path.join(repo, "package.json"), JSON.stringify({ scripts: { test: "vitest run" } }, null, 2), "utf8");
+    await writeFile(path.join(repo, "src/ready.ts"), "export function ready() { return 1 }\n", "utf8");
+    await writeFile(path.join(repo, "src/formatted-empty.ts"), "export function formattedEmpty() {\n}\n", "utf8");
+    await writeFile(path.join(repo, "src/url.ts"), "export const docsUrl = 'https://example.com/TODO'\n", "utf8");
+    await writeFile(path.join(repo, "src/regex-detector.ts"), "export const marker = /['\"`](?:todo|placeholder|not implemented)['\"`]/giu\n", "utf8");
+    await writeFile(path.join(repo, "src/generated/client.ts"), "export function generatedLater() { throw new Error('not implemented') }\n", "utf8");
+    await writeFile(
+      path.join(repo, "src/commented.ts"),
+      [
+        "// throw new Error('not implemented')",
+        "export const example = \"throw new Error('not implemented')\"",
+        "export const block = '/* TODO: example */'",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    await writeFile(
+      path.join(repo, "src/existing.ts"),
+      [
+        "export function unfinished() { throw new Error('TODO: implement real behavior') }",
+        "export function emptyHandler() {}",
+        "export const dummyUser = { email: 'example@example.com' }",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    await writeFile(path.join(repo, "service/work.py"), "def later():\n    raise NotImplementedError('not implemented yet')\n\ndef marker():\n    pass\n", "utf8");
+    await writeFile(path.join(repo, "service/strings.py"), "docs_url = 'https://example.com/#TODO'\n# raise NotImplementedError('later')\nreal_value = 1\n", "utf8");
+    await writeFile(path.join(repo, "config/seeds.json"), JSON.stringify({ placeholderToken: "REPLACE_ME", real: true }, null, 2), "utf8");
+    await writeFile(path.join(repo, "broken/package.json"), "{\"placeholderToken\":\"REPLACE_ME\",\n", "utf8");
+    await writeFile(path.join(repo, "docs/todo.md"), "TODO document the placeholder report\n", "utf8");
+    await writeFile(path.join(repo, "tests/stub.test.ts"), "it('keeps fixture placeholder text', () => {}) // TODO test fixture\n", "utf8");
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+
+    const index = await buildIndex({ repoRoot: repo });
+    expect(index.risks.some((risk) => risk.path === "src/existing.ts" && risk.signal === "placeholder.not-implemented" && risk.confidence === "derived")).toBe(true);
+    expect(index.risks.some((risk) => risk.path === "src/existing.ts" && risk.signal === "placeholder.no-op-body")).toBe(true);
+    expect(index.risks.some((risk) => risk.path === "src/formatted-empty.ts" && risk.signal === "placeholder.no-op-body")).toBe(true);
+    expect(index.risks.some((risk) => risk.path === "src/existing.ts" && risk.signal === "placeholder.dummy-data")).toBe(true);
+    expect(index.risks.some((risk) => risk.path === "service/work.py" && risk.signal === "placeholder.not-implemented")).toBe(true);
+    expect(index.risks.some((risk) => risk.path === "config/seeds.json" && risk.signal === "placeholder.dummy-literal")).toBe(true);
+    expect(index.risks.some((risk) => risk.path === "broken/package.json" && risk.signal === "placeholder.dummy-literal")).toBe(true);
+    expect(index.parserErrors.some((error) => error.path === "broken/package.json")).toBe(true);
+    expect(index.risks.some((risk) => risk.path === "src/url.ts" || risk.path === "src/regex-detector.ts" || risk.path === "service/strings.py")).toBe(false);
+    expect(index.risks.some((risk) => risk.path === "src/commented.ts" && risk.signal === "placeholder.placeholder-comment")).toBe(true);
+    expect(index.risks.some((risk) => risk.path === "src/commented.ts" && risk.signal === "placeholder.not-implemented")).toBe(false);
+    expect(index.files.find((file) => file.path === "src/existing.ts")?.riskScore ?? 0).toBeGreaterThan(index.files.find((file) => file.path === "tests/stub.test.ts")?.riskScore ?? 0);
+
+    const defaultReport = await placeholderReportQuery(repo, { limit: 20 }, { autoRefresh: false });
+    const defaultData = defaultReport.data as { findings: Array<{ path: string }>; excludedByFilter: number };
+    expect(defaultData.findings.some((finding) => finding.path === "src/existing.ts")).toBe(true);
+    expect(defaultData.findings.some((finding) => finding.path.startsWith("tests/") || finding.path.startsWith("docs/") || finding.path.includes("/generated/"))).toBe(false);
+    expect(defaultData.excludedByFilter).toBeGreaterThanOrEqual(3);
+
+    const report = await placeholderReportQuery(repo, { includeTests: true, includeDocs: true, includeGenerated: true, limit: 20 }, { autoRefresh: false });
+    const reportData = report.data as { findings: Array<{ path: string }>; categories: Record<string, number>; hiddenByLimit: number };
+    expect(report.text).toContain("Codexa placeholder report");
+    expect(report.text).toContain("placeholder.not-implemented");
+    expect(report.text).toContain("config/seeds.json");
+    expect(reportData.findings.some((finding) => finding.path === "src/generated/client.ts")).toBe(true);
+    expect(reportData.findings.some((finding) => finding.path === "docs/todo.md")).toBe(true);
+    expect(reportData.categories["not-implemented"]).toBeGreaterThanOrEqual(2);
+    expect(reportData.hiddenByLimit).toBe(0);
+    expect(await readFile(path.join(repo, ".codex/codebase/placeholder-map.md"), "utf8")).toContain("Placeholder Map");
+    const cliReport = execFileSync(process.execPath, [path.join(process.cwd(), "dist/cli.js"), "placeholder-report", repo, "--no-auto-refresh", "--limit", "5"], {
+      encoding: "utf8"
+    });
+    expect(cliReport).toContain("Codexa placeholder report");
+
+    await changePlanQuery(
+      repo,
+      {
+        task: "replace ready implementation",
+        files: ["src/ready.ts"],
+        saveSnapshot: true,
+        taskId: "placeholder-tracking"
+      },
+      { autoRefresh: false }
+    );
+    await writeFile(path.join(repo, "src/ready.ts"), "export function ready() { throw new Error('not implemented') }\n", "utf8");
+    const review = await postEditReviewQuery(repo, { taskId: "placeholder-tracking", ranTests: [] }, { autoRefresh: true });
+    expect(review.text).toContain("placeholder.not-implemented");
+    expect(review.text).toContain("src/ready.ts");
+    const reviewData = review.data as { riskDeltas: Array<{ path: string; before: { riskScore: number }; after: { riskScore: number }; newSignals: string[] }> };
+    const readyDelta = reviewData.riskDeltas.find((delta) => delta.path === "src/ready.ts");
+    expect(readyDelta?.before.riskScore).toBe(0);
+    expect(readyDelta?.after.riskScore ?? 0).toBeGreaterThan(0);
+    expect(readyDelta?.newSignals.some((signal) => signal.includes("placeholder.not-implemented"))).toBe(true);
+
+    await changePlanQuery(repo, { task: "remove existing placeholders", files: ["src/existing.ts"], saveSnapshot: true, taskId: "placeholder-removal" }, { autoRefresh: true });
+    await writeFile(path.join(repo, "src/existing.ts"), "export function finished() { return 'done' }\n", "utf8");
+    const removal = await postEditReviewQuery(repo, { taskId: "placeholder-removal", ranTests: [] }, { autoRefresh: true });
+    const removalData = removal.data as { riskDeltas: Array<{ path: string; removedSignals: string[] }> };
+    expect(removalData.riskDeltas.find((delta) => delta.path === "src/existing.ts")?.removedSignals.some((signal) => signal.includes("placeholder."))).toBe(true);
   });
 
   it("writes valid artifacts and reports dirty overlay freshness", async () => {

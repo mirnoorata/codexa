@@ -1,5 +1,6 @@
 export { statusQuery } from "./query/runtime.js";
 export { repoMapQuery, findContextQuery, searchQuery } from "./query/search.js";
+export { placeholderReportQuery } from "./query/placeholders.js";
 export { symbolContextQuery, fileContextQuery } from "./query/inspection.js";
 export { impactQuery, diffImpactQuery } from "./query/impact.js";
 export { testPlanQuery } from "./query/test-plan.js";

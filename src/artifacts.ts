@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { renderCodexUseContract } from "./codex-contract.js";
+import { isPlaceholderRisk, placeholderCategory } from "./placeholder-signals.js";
 import type { CodexaIndex, FileFact, ModuleClusterFact, SymbolFact } from "./types.js";
 import { escapeMarkdown, formatPathLine, topBy } from "./util.js";
 
@@ -12,6 +13,7 @@ export async function writeArtifacts(index: CodexaIndex, outputDir: string): Pro
     fs.writeFile(path.join(outputDir, "codex-contract.md"), renderCodexUseContract(index.freshness), "utf8"),
     fs.writeFile(path.join(outputDir, "repo-map.md"), renderRepoMap(index), "utf8"),
     fs.writeFile(path.join(outputDir, "risk-map.md"), renderRiskMap(index), "utf8"),
+    fs.writeFile(path.join(outputDir, "placeholder-map.md"), renderPlaceholderMap(index), "utf8"),
     fs.writeFile(path.join(outputDir, "test-map.md"), renderTestMap(index), "utf8"),
     fs.writeFile(path.join(outputDir, "conventions.md"), renderConventions(index), "utf8"),
     fs.writeFile(path.join(outputDir, "workflows.md"), renderWorkflows(index), "utf8"),
@@ -49,6 +51,7 @@ Use the Codexa MCP tools for focused live questions:
 - \`repo_map\`
 - \`find_context\`
 - \`symbol_context\`
+- \`placeholder_report\`
 - \`impact\`
 - \`diff_impact\`
 - \`test_plan\`
@@ -129,6 +132,76 @@ ${index.risks
   .slice(0, 120)
   .map((risk) => `- \`${formatPathLine(risk.path, risk.range?.startLine)}\` - ${risk.signal}: ${risk.reason} (${risk.confidence})`)
   .join("\n")}
+`;
+}
+
+function renderPlaceholderMap(index: CodexaIndex): string {
+  const placeholderRisks = index.risks.filter(isPlaceholderRisk);
+  const fileScores = new Map<string, { count: number; score: number }>();
+  for (const risk of placeholderRisks) {
+    const current = fileScores.get(risk.path) ?? { count: 0, score: 0 };
+    current.count += 1;
+    current.score += risk.score;
+    fileScores.set(risk.path, current);
+  }
+  const categoryCounts = [...placeholderRisks.reduce((map, risk) => {
+    const category = placeholderCategory(risk.signal);
+    map.set(category, (map.get(category) ?? 0) + 1);
+    return map;
+  }, new Map<string, number>()).entries()].sort(([a], [b]) => a.localeCompare(b));
+  const contextCounts = [...placeholderRisks.reduce((map, risk) => {
+    const file = index.files.find((candidate) => candidate.path === risk.path);
+    const context = file?.generated
+      ? "generated"
+      : file?.test
+        ? "test"
+        : file?.language === "markdown" || /(^|\/)docs?\//u.test(risk.path)
+          ? "docs"
+          : "production";
+    map.set(context, (map.get(context) ?? 0) + 1);
+    return map;
+  }, new Map<string, number>()).entries()].sort(([a], [b]) => a.localeCompare(b));
+  const topFiles = [...fileScores.entries()]
+    .sort((a, b) => b[1].score - a[1].score || b[1].count - a[1].count || a[0].localeCompare(b[0]))
+    .slice(0, 40);
+  const shownSignals = placeholderRisks.slice(0, 160);
+  return `# Placeholder Map
+
+Freshness: ${index.freshness.stale ? `STALE (${index.freshness.reason})` : index.freshness.reason}
+
+Placeholder findings are indexed as normal risk signals. \`change_plan\` stores
+their baseline, and \`post_edit_review\` reports newly introduced placeholder
+signals and removed signals within the saved baseline scope as risk deltas.
+
+## Summary
+
+- Total placeholder signals: ${placeholderRisks.length}
+- Files with placeholder signals: ${fileScores.size}
+
+## Categories
+
+${categoryCounts.length > 0 ? categoryCounts.map(([category, count]) => `- ${category}: ${count}`).join("\n") : "- none"}
+
+## Contexts
+
+${contextCounts.length > 0 ? contextCounts.map(([context, count]) => `- ${context}: ${count}`).join("\n") : "- none"}
+
+## Highest Placeholder Files
+
+${table(
+  ["File", "Findings", "Score"],
+  topFiles.map(([filePath, summary]) => [`\`${filePath}\``, String(summary.count), summary.score.toFixed(2)])
+)}
+
+## Placeholder Signals
+
+Showing ${shownSignals.length} of ${placeholderRisks.length}.
+
+${shownSignals.length > 0
+  ? shownSignals
+      .map((risk) => `- \`${formatPathLine(risk.path, risk.range?.startLine)}\` - ${risk.signal}: ${risk.reason} (${risk.confidence}, score ${risk.score.toFixed(2)})`)
+      .join("\n")
+  : "- none detected"}
 `;
 }
 
