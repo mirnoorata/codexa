@@ -94,13 +94,15 @@ program
   .argument("<repo>", "repository root")
   .description("Cheap hook helper that reminds Codex when no change-plan snapshot exists before an edit.")
   .action(async (repo: string) => {
-    const resolved = path.resolve(repo);
-    const snapshot = await loadTaskSnapshot(resolved);
-    if (!snapshot.snapshot) {
-      console.log("Codexa: no change-plan snapshot is available. For code edits, call change_plan with saveSnapshot=true before editing when the task is non-trivial.");
-      return;
-    }
-    console.log(`Codexa: change-plan snapshot ready (${snapshot.snapshot.taskId}). After edits, post_edit_review will compare planned vs actual work.`);
+    await runAdvisoryHook("change-plan snapshot check", async () => {
+      const resolved = path.resolve(repo);
+      const snapshot = await loadTaskSnapshot(resolved);
+      if (!snapshot.snapshot) {
+        console.log("Codexa: no change-plan snapshot is available. For code edits, call change_plan with saveSnapshot=true before editing when the task is non-trivial.");
+        return;
+      }
+      console.log(`Codexa: change-plan snapshot ready (${snapshot.snapshot.taskId}). After edits, post_edit_review will compare planned vs actual work.`);
+    });
   });
 
 program
@@ -108,16 +110,18 @@ program
   .argument("<repo>", "repository root")
   .description("Bounded hook helper that runs the post-edit review packet after edit tools.")
   .action(async (repo: string) => {
-    const result = await postEditReviewQuery(
-      path.resolve(repo),
-      {
-        tokenBudget: 1200,
-        limit: 5,
-        includeSnippets: false
-      },
-      { autoRefresh: true, commandBudgetMs: 15_000, maxResults: 6 }
-    );
-    console.log(compactHookOutput(result.text));
+    await runAdvisoryHook("post-edit review", async () => {
+      const result = await postEditReviewQuery(
+        path.resolve(repo),
+        {
+          tokenBudget: 1200,
+          limit: 5,
+          includeSnippets: false
+        },
+        { autoRefresh: true, commandBudgetMs: 15_000, maxResults: 6 }
+      );
+      console.log(compactHookOutput(result.text));
+    });
   });
 
 program
@@ -757,6 +761,20 @@ function compactHookOutput(text: string): string {
     }
   }
   return keep.length > 0 ? keep.join("\n") : lines.slice(0, 16).join("\n");
+}
+
+async function runAdvisoryHook(label: string, action: () => Promise<void>): Promise<void> {
+  try {
+    await action();
+  } catch (error) {
+    console.log(`Codexa: ${label} unavailable: ${hookErrorMessage(error)}`);
+    console.log("Codexa: hook is advisory; continuing without blocking the edit.");
+  }
+}
+
+function hookErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/\s+/gu, " ").trim() || "unknown error";
 }
 
 function parseIntOption(value: string): number {
