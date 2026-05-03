@@ -15,7 +15,7 @@ import { ensureQuerySession, type QuerySessionInput } from "./session.js";
 import { formatTestRecommendations, recommendTests } from "./tests.js";
 import { findFile, resolveFileTarget, resolveSymbolTarget } from "./targets.js";
 import { coverageForDisplay, formatVerificationCoverage, verificationCommandPlan, verificationCommandsForContext } from "./verification.js";
-import { retrieveForTask, type IntentConfidence, type RetrievalMatch } from "../retrieval.js";
+import { classifyTaskIntent, retrieveForTask, type IntentConfidence, type RetrievalMatch, type TaskIntent } from "../retrieval.js";
 import { compactChangedSymbol, compactDiffGroup, compactFileFact, compactRetrievalResult, compactWorkflowTrace } from "./compact-data.js";
 
 type FocusSelectionEntry = { file: FileFact; score: number; reasons: string[]; matchedTerms: string[]; tier: EvidenceTier };
@@ -79,11 +79,15 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
   }
 
   const explicitQuery = contextInput.query?.trim() ?? "";
-  const naturalRetrieval = contextInput.task ? retrieveForTask(index, contextInput.task, Math.max(limit * 2, 12)) : undefined;
   const explicitTargetProvided = requestedFiles.length > 0 || requestedSymbols.length > 0;
   const explicitConfigTarget = requestedResolvedPaths.some(isConfigExpansionPath);
+  const taskIntents = contextInput.task ? classifyTaskIntent(contextInput.task) : [];
   const derivedTaskQuery = explicitQuery || explicitTargetProvided ? "" : codeLikeQueryFromTask(contextInput.task);
   const queryText = explicitQuery || derivedTaskQuery;
+  const naturalRetrieval =
+    contextInput.task && shouldRunNaturalRetrieval(explicitTargetProvided, explicitConfigTarget, taskIntents)
+      ? retrieveForTask(index, contextInput.task, Math.max(limit * 2, 12))
+      : undefined;
   const naturalExpansionAllowed = Boolean(
     naturalRetrieval &&
       !queryText.trim() &&
@@ -206,10 +210,6 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
   const packetIntent = naturalRetrieval ? packetIntentConfidence(naturalRetrieval.intentConfidence, focusEntries, explicitTargetProvided) : undefined;
   const baseline = explicitQuery ? await baselineSearchSummary(repoRoot, queryText) : undefined;
   const gaps = indexGaps(index, freshness, unindexedChanged);
-  const recipes = verificationRecipes(index, contextSeedPaths, changeType).slice(0, 8);
-  const verificationCommands = verificationCommandsForContext(index, repoRoot, contextSeedPaths, tests, 16);
-  const verificationCoverage = coverageForDisplay(index, verificationCommands, repoRoot);
-  const commandPlan = verificationCommandPlan(verificationCoverage);
   const quality = assessContextQuality({
     freshness,
     gaps,
@@ -222,11 +222,17 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     packetVerdict: explicitTargetProvided ? undefined : packetIntent?.verdict,
     discardedAnchorCount: explicitTargetProvided ? 0 : packetIntent?.discardedAnchorCount
   });
+  const suppressActionGuidance = quality.level === "low";
+  const displayedTests = suppressActionGuidance ? [] : tests;
+  const recipes = suppressActionGuidance ? [] : verificationRecipes(index, contextSeedPaths, changeType).slice(0, 8);
+  const verificationCommands = suppressActionGuidance ? [] : verificationCommandsForContext(index, repoRoot, contextSeedPaths, displayedTests, 16);
+  const verificationCoverage = suppressActionGuidance ? [] : coverageForDisplay(index, verificationCommands, repoRoot);
+  const commandPlan = suppressActionGuidance ? [] : verificationCommandPlan(verificationCoverage);
   const value = valueEstimate("context_pack", {
     rawFileCount: baseline?.lines,
     codexaFileCount: focusEntries.length,
     exactTargetCount: requestedFiles.length + requestedSymbols.length,
-    testCount: tests.length,
+    testCount: displayedTests.length,
     parserErrors: index.parserErrors.length,
     affectedCount: changed.length,
     quality
@@ -256,16 +262,16 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     ...formatDiffGroups(groups),
     "",
     "Likely tests:",
-    ...formatTestRecommendations(tests),
+    ...(suppressActionGuidance ? ["- deferred until Codexa has an explicit file, symbol, or higher-confidence packet."] : formatTestRecommendations(displayedTests)),
     "",
     "Known gaps:",
     ...formatGaps(gaps),
-    "",
-    "If run, these commands would cover:",
-    ...formatVerificationCoverage(verificationCoverage),
-    "",
-    "Verification recipes:",
-    ...formatRecipes(recipes),
+    suppressActionGuidance ? undefined : "",
+    suppressActionGuidance ? undefined : "If run, these commands would cover:",
+    ...(suppressActionGuidance ? [] : formatVerificationCoverage(verificationCoverage)),
+    suppressActionGuidance ? undefined : "",
+    suppressActionGuidance ? undefined : "Verification recipes:",
+    ...(suppressActionGuidance ? [] : formatRecipes(recipes)),
     snippets.length > 0 ? "" : undefined,
     snippets.length > 0 ? "Evidence snippets:" : undefined,
     ...snippets,
@@ -290,7 +296,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       changedSymbols: changedSymbols.slice(0, 80).map(compactChangedSymbol),
       unindexedChanged: unindexedChanged.slice(0, 80),
       groups: groups.slice(0, 20).map(compactDiffGroup),
-      tests: tests.slice(0, 30),
+      tests: displayedTests.slice(0, 30),
       snippets,
       warnings: uniqueSorted([...session.warnings, ...warnings]),
       nextReads,
@@ -299,6 +305,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       intentConfidence: packetIntent,
       packetVerdict: packetIntent?.verdict,
       diagnostics: naturalRetrieval?.diagnostics ?? [],
+      actionGuidanceSuppressed: suppressActionGuidance,
       recipes,
       verificationCommands,
       verificationCoverage,
@@ -309,6 +316,16 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       session: { commandBudgetMs: session.commandBudgetMs, maxResultBytes: session.maxResultBytes, maxResults: session.maxResults, provenance: session.provenance }
     }
   };
+}
+
+function shouldRunNaturalRetrieval(explicitTargetProvided: boolean, explicitConfigTarget: boolean, taskIntents: TaskIntent[]): boolean {
+  if (!explicitTargetProvided) {
+    return true;
+  }
+  if (!explicitConfigTarget) {
+    return false;
+  }
+  return taskIntents.some((intent) => intent === "configuration" || intent === "testing" || intent === "implementation");
 }
 
 export async function taskBriefQuery(input: QuerySessionInput, contextInput: ContextPackInput = {}, options: QueryOptions = {}): Promise<QueryResult> {

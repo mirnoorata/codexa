@@ -137,6 +137,7 @@ ${index.risks
 
 function renderPlaceholderMap(index: CodexaIndex): string {
   const placeholderRisks = index.risks.filter(isPlaceholderRisk);
+  const fileByPath = new Map(index.files.map((file) => [file.path, file]));
   const fileScores = new Map<string, { count: number; score: number }>();
   for (const risk of placeholderRisks) {
     const current = fileScores.get(risk.path) ?? { count: 0, score: 0 };
@@ -150,7 +151,7 @@ function renderPlaceholderMap(index: CodexaIndex): string {
     return map;
   }, new Map<string, number>()).entries()].sort(([a], [b]) => a.localeCompare(b));
   const contextCounts = [...placeholderRisks.reduce((map, risk) => {
-    const file = index.files.find((candidate) => candidate.path === risk.path);
+    const file = fileByPath.get(risk.path);
     const context = file?.generated
       ? "generated"
       : file?.test

@@ -25,11 +25,15 @@ import {
 } from "./queries.js";
 import { CURRENT_VERIFICATION_PROVENANCE } from "./types.js";
 import type { FreshnessInfo, QueryOptions, QueryResult } from "./types.js";
-import { createQuerySession, type QuerySession } from "./query/session.js";
+import { getFreshness } from "./indexer.js";
+import { requireIndex } from "./query/runtime.js";
+import { createQuerySessionFromIndexState, type QuerySession, type QuerySessionIndexState } from "./query/session.js";
 import { RAW_SEARCH_EXPLICIT_PATTERN_LIMIT } from "./query/raw-search.js";
 
 export async function serveMcp(repoRoot: string, options: QueryOptions = { autoRefresh: true }): Promise<void> {
   const queryOptions = { autoRefresh: options.autoRefresh ?? true };
+  let cachedIndexState: QuerySessionIndexState | undefined;
+  let indexStateInflight: Promise<QuerySessionIndexState> | undefined;
   const server = new McpServer({
     name: "codexa",
     version: "0.1.0"
@@ -61,12 +65,38 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
   const runTool = async (producer: (session: QuerySession) => Promise<QueryResult>) =>
     toToolResult(
       await safeQuery(async () => {
-        const session = await createQuerySession(repoRoot, queryOptions);
+        const session = await createMcpQuerySession();
         const result = compactMcpResult(withSessionRuntime(await producer(session), session));
         await notifyResourceListChangedAfterRefresh(server, session);
         return result;
       }, repoRoot)
     );
+
+  const createMcpQuerySession = async (): Promise<QuerySession> => {
+    const state = await loadMcpIndexState();
+    return createQuerySessionFromIndexState(repoRoot, state, queryOptions);
+  };
+
+  const loadMcpIndexState = async (): Promise<QuerySessionIndexState> => {
+    if (indexStateInflight) {
+      return indexStateInflight;
+    }
+    indexStateInflight = (async () => {
+      if (cachedIndexState) {
+        const freshness = await getFreshness(repoRoot, cachedIndexState.index, { recover: false });
+        if (!freshness.stale || !queryOptions.autoRefresh) {
+          cachedIndexState = { ...cachedIndexState, freshness, refresh: { refreshed: false } };
+          return cachedIndexState;
+        }
+      }
+      const loaded = await requireIndex(repoRoot, queryOptions);
+      cachedIndexState = loaded;
+      return loaded;
+    })().finally(() => {
+      indexStateInflight = undefined;
+    });
+    return indexStateInflight;
+  };
 
   server.registerTool(
     "freshness",
@@ -417,7 +447,7 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
     async (input) =>
       toToolResult(
         await safeQuery(async () => {
-          const session = await createQuerySession(repoRoot, queryOptions);
+          const session = await createMcpQuerySession();
           const result = compactMcpResult(withSessionRuntime(await postEditReviewQuery(session, { ...input, persistOutcome: false }, queryOptions), session));
           await notifyResourceListChangedAfterRefresh(server, session);
           return result;

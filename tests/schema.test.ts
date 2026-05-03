@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildIndex, buildIndexLocked, loadIndex } from "../src/indexer.js";
+import { statusQuery } from "../src/queries.js";
 
 describe("Codexa schema contracts", () => {
   it("writes versioned index, freshness, and NDJSON fact artifacts", async () => {
@@ -38,6 +39,18 @@ describe("Codexa schema contracts", () => {
     expect(loaded?.schemaVersion).toBe(1);
     expect(loaded?.graphEdges).toEqual([]);
     expect(loaded?.workflows).toEqual([]);
+  });
+
+  it("reports status from freshness metadata without parsing the full index bundle", async () => {
+    const repo = await createSchemaFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+
+    await writeFile(path.join(repo, ".codex/codebase/index.json"), "{ corrupt index\n", "utf8");
+
+    const status = await statusQuery(repo, { recover: false });
+    expect(status.freshness.missing).toBe(false);
+    expect(status.freshness.reason).toBe("fresh");
+    expect(status.text).toContain("Parser errors: 0");
   });
 
   it("rejects a future live schema and recovers the newest valid backup", async () => {

@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildIndex } from "../src/indexer.js";
+import { contextPackQuery } from "../src/queries.js";
 import { createQuerySession } from "../src/query/session.js";
 import { getChangedFileEntries } from "../src/query/worktree.js";
 
@@ -74,6 +75,49 @@ describe("QuerySession", () => {
     const filesResult = await getChangedFileEntries(repo);
     expect(filesResult.entries).toEqual([]);
     expect(filesResult.degradedReason).toMatch(/rev-parse/);
+  });
+
+  it("does not run natural-language retrieval when explicit files already define context", async () => {
+    const repo = await createSessionFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+
+    const result = await contextPackQuery(
+      repo,
+      {
+        task: "audit broad performance behavior",
+        files: ["src/main.ts"],
+        diff: false,
+        includeSnippets: false
+      },
+      { autoRefresh: false }
+    );
+    const data = result.data as { retrieval?: unknown; focusFiles?: Array<{ file: { path: string } }> };
+
+    expect(data.retrieval).toBeUndefined();
+    expect(data.focusFiles?.[0]?.file.path).toBe("src/main.ts");
+  });
+
+  it("suppresses test and command guidance for low-quality fallback packets", async () => {
+    const repo = await createSessionFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+
+    const result = await contextPackQuery(
+      repo,
+      {
+        task: "zzzzzzzzzz unmatched context target",
+        diff: false,
+        includeSnippets: false,
+        limit: 5
+      },
+      { autoRefresh: false }
+    );
+    const data = result.data as { actionGuidanceSuppressed?: boolean; tests?: unknown[]; verificationCommands?: unknown[] };
+
+    expect(data.actionGuidanceSuppressed).toBe(true);
+    expect(data.tests).toEqual([]);
+    expect(data.verificationCommands).toEqual([]);
+    expect(result.text).toContain("Likely tests:\n- deferred until Codexa has an explicit file, symbol, or higher-confidence packet.");
+    expect(result.text).not.toContain("If run, these commands would cover:");
   });
 });
 

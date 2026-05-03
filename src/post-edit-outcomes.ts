@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { CURRENT_VERIFICATION_PROVENANCE } from "./types.js";
@@ -18,6 +19,7 @@ import { stableId } from "./util.js";
 
 const OUTCOME_DIR = ".codex/cache/codexa-outcomes";
 const LATEST_FILE = "latest.json";
+const LATEST_HOOK_REVIEW_FILE = "latest-hook-review.json";
 
 export type PostEditVerdict = "continue" | "run_tests" | "inspect" | "replan";
 
@@ -124,6 +126,15 @@ export interface PostEditOutcome {
   calibrationLabels: string[];
 }
 
+export interface PostEditHookReviewState {
+  schemaVersion: 1;
+  signature: string;
+  createdAt: string;
+  outcomeId?: string;
+  taskId?: string;
+  verdict?: PostEditVerdict;
+}
+
 export function buildPostEditOutcome(input: PostEditOutcomeInput, createdAt = new Date().toISOString()): PostEditOutcome {
   const repoRoot = path.resolve(input.repoRoot);
   const outcomeId = stableOutcomeId(repoRoot, input, createdAt);
@@ -188,10 +199,62 @@ export async function savePostEditOutcome(input: PostEditOutcomeInput): Promise<
   return { outcome, path: outcomePath, relativePath: path.posix.join(OUTCOME_DIR, `${outcome.outcomeId}.json`) };
 }
 
+export function postEditHookReviewSignature(input: { freshness: FreshnessInfo; taskId?: string }): string {
+  return createHash("sha1")
+    .update(
+      JSON.stringify({
+        taskId: input.taskId ?? null,
+        snapshotId: input.freshness.snapshotId,
+        indexedAt: input.freshness.indexedAt,
+        headCommit: input.freshness.headCommit,
+        dirtyFiles: input.freshness.dirtyFiles,
+        dirtyFileHashes: input.freshness.dirtyFileHashes
+      })
+    )
+    .digest("hex");
+}
+
+export async function loadPostEditHookReviewState(repoRoot: string): Promise<PostEditHookReviewState | null> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(path.join(path.resolve(repoRoot), OUTCOME_DIR, LATEST_HOOK_REVIEW_FILE), "utf8")) as Partial<PostEditHookReviewState>;
+    if (parsed.schemaVersion === 1 && typeof parsed.signature === "string" && typeof parsed.createdAt === "string") {
+      return {
+        schemaVersion: 1,
+        signature: parsed.signature,
+        createdAt: parsed.createdAt,
+        outcomeId: typeof parsed.outcomeId === "string" ? parsed.outcomeId : undefined,
+        taskId: typeof parsed.taskId === "string" ? parsed.taskId : undefined,
+        verdict: isPostEditVerdict(parsed.verdict) ? parsed.verdict : undefined
+      };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+export async function savePostEditHookReviewState(repoRoot: string, input: { signature: string; outcome?: PostEditOutcome }): Promise<void> {
+  const repo = path.resolve(repoRoot);
+  const dir = path.join(repo, OUTCOME_DIR);
+  await fs.mkdir(dir, { recursive: true });
+  await atomicJsonWrite(path.join(dir, LATEST_HOOK_REVIEW_FILE), {
+    schemaVersion: 1,
+    signature: input.signature,
+    createdAt: new Date().toISOString(),
+    outcomeId: input.outcome?.outcomeId,
+    taskId: input.outcome?.taskId,
+    verdict: input.outcome?.verdict
+  });
+}
+
 function stableOutcomeId(repoRoot: string, input: PostEditOutcomeInput, createdAt: string): string {
   const task = (input.taskId ?? input.task).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "post-edit";
   const suffix = stableId("post-edit-outcome", repoRoot, input.taskId, input.task, input.verdict, input.changedFiles.join("\n"), createdAt);
   return `${task}-${createdAt.replace(/[-:TZ.]/g, "").slice(0, 14)}-${suffix}`.slice(0, 120);
+}
+
+function isPostEditVerdict(value: unknown): value is PostEditVerdict {
+  return value === "continue" || value === "run_tests" || value === "inspect" || value === "replan";
 }
 
 function compactTests(tests: TestRecommendation[], repoRoot: string): PostEditOutcome["recommendedTests"] {

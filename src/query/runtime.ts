@@ -33,8 +33,7 @@ export async function requireIndex(
 
 export async function statusQuery(repoRoot: string, options: { recover?: boolean } = {}): Promise<QueryResult> {
   const recover = options.recover ?? true;
-  const index = recover ? await loadIndex(repoRoot) : await loadIndexReadOnly(repoRoot);
-  const freshness = await getFreshness(repoRoot, index, { recover });
+  const freshness = await getFreshness(repoRoot, undefined, { recover });
   const text = [
     `Codexa status: ${freshness.stale ? "stale" : "fresh"} (${freshness.reason})`,
     `Repo: ${freshness.repoRoot}`,

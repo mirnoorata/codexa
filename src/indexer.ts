@@ -415,12 +415,9 @@ function normalizeAliasTarget(configDir: string, baseUrl: string, targetPattern:
 
 export async function persistIndex(index: CodexaIndex, outputDir: string): Promise<void> {
   await fs.mkdir(path.join(outputDir, "modules"), { recursive: true });
-  await fs.writeFile(path.join(outputDir, "index.json"), `${JSON.stringify(index, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(outputDir, "index.json"), `${JSON.stringify(index)}\n`, "utf8");
   await fs.writeFile(path.join(outputDir, "freshness.json"), `${JSON.stringify(index.freshness, null, 2)}\n`, "utf8");
-  const facts = allFacts(index)
-    .map((fact) => JSON.stringify(fact))
-    .join("\n");
-  await fs.writeFile(path.join(outputDir, "facts.ndjson"), `${facts}\n`, "utf8");
+  await writeFactsNdjson(path.join(outputDir, "facts.ndjson"), allFacts(index));
 }
 
 export async function buildIndexLocked(options: IndexOptions): Promise<CodexaIndex> {
@@ -470,9 +467,21 @@ export async function loadIndexReadOnly(repoRoot: string): Promise<CodexaIndex |
   return loadIndex(repoRoot, { recover: false });
 }
 
+export async function loadFreshnessReadOnly(repoRoot: string): Promise<FreshnessInfo | null> {
+  return readFreshnessBundle(path.join(path.resolve(repoRoot), CODEBASE_DIR));
+}
+
 async function readIndexBundle(outputDir: string): Promise<CodexaIndex | null> {
   try {
     return normalizeLoadedIndex(JSON.parse(await fs.readFile(path.join(outputDir, "index.json"), "utf8")) as Partial<CodexaIndex>);
+  } catch {
+    return null;
+  }
+}
+
+async function readFreshnessBundle(outputDir: string): Promise<FreshnessInfo | null> {
+  try {
+    return normalizeLoadedFreshness(JSON.parse(await fs.readFile(path.join(outputDir, "freshness.json"), "utf8")) as Partial<FreshnessInfo>);
   } catch {
     return null;
   }
@@ -532,10 +541,56 @@ function normalizeLoadedIndex(index: Partial<CodexaIndex>): CodexaIndex {
   };
 }
 
+function normalizeLoadedFreshness(freshness: Partial<FreshnessInfo>): FreshnessInfo {
+  if (
+    freshness.schemaVersion !== 1 ||
+    typeof freshness.snapshotId !== "string" ||
+    typeof freshness.repoRoot !== "string" ||
+    typeof freshness.indexedAt !== "string" ||
+    !Array.isArray(freshness.dirtyFiles) ||
+    !Array.isArray(freshness.indexedDirtyFiles) ||
+    !freshness.dirtyFileHashes ||
+    typeof freshness.dirtyFileHashes !== "object" ||
+    !freshness.indexedDirtyFileHashes ||
+    typeof freshness.indexedDirtyFileHashes !== "object" ||
+    typeof freshness.missing !== "boolean" ||
+    typeof freshness.stale !== "boolean" ||
+    typeof freshness.reason !== "string" ||
+    typeof freshness.parserErrorCount !== "number"
+  ) {
+    throw new Error("Codexa freshness bundle is incomplete or unsupported");
+  }
+  return freshness as FreshnessInfo;
+}
+
 export async function getFreshness(repoRoot: string, index?: CodexaIndex | null, options: { recover?: boolean } = {}): Promise<FreshnessInfo> {
   const repo = path.resolve(repoRoot);
   const current = await discoverRepoFreshness(repo);
-  const loaded = index ?? (options.recover === false ? await loadIndexReadOnly(repo) : await loadIndex(repo));
+  if (index !== undefined) {
+    return freshnessFromStored(repo, current, index?.freshness ?? null);
+  }
+
+  const stored = await loadFreshnessReadOnly(repo);
+  if (stored) {
+    const freshness = freshnessFromStored(repo, current, stored);
+    if (!freshness.stale && options.recover !== false && (await indexBundleNewerThanFreshness(repo))) {
+      const loaded = await loadIndex(repo);
+      if (loaded) {
+        return freshnessFromStored(repo, current, loaded.freshness);
+      }
+    }
+    return freshness;
+  }
+
+  const loaded = options.recover === false ? null : await loadIndex(repo);
+  return freshnessFromStored(repo, current, loaded?.freshness ?? null);
+}
+
+function freshnessFromStored(
+  repo: string,
+  current: Awaited<ReturnType<typeof discoverRepoFreshness>>,
+  loaded: FreshnessInfo | null
+): FreshnessInfo {
   if (!loaded) {
     return {
       schemaVersion: 1,
@@ -556,13 +611,13 @@ export async function getFreshness(repoRoot: string, index?: CodexaIndex | null,
   }
 
   const dirtyChanged =
-    current.git.dirtyFiles.join("\n") !== loaded.freshness.indexedDirtyFiles.join("\n") ||
-    stableJson(current.dirtyFileHashes) !== stableJson(loaded.freshness.indexedDirtyFileHashes ?? {});
-  const commitChanged = current.git.headCommit !== loaded.freshness.headCommit;
-  const repoRootChanged = path.resolve(loaded.freshness.repoRoot) !== repo || loaded.freshness.gitRoot !== current.git.gitRoot;
+    current.git.dirtyFiles.join("\n") !== loaded.indexedDirtyFiles.join("\n") ||
+    stableJson(current.dirtyFileHashes) !== stableJson(loaded.indexedDirtyFileHashes ?? {});
+  const commitChanged = current.git.headCommit !== loaded.headCommit;
+  const repoRootChanged = path.resolve(loaded.repoRoot) !== repo || loaded.gitRoot !== current.git.gitRoot;
   const stale = dirtyChanged || commitChanged || repoRootChanged;
   return {
-    ...loaded.freshness,
+    ...loaded,
     repoRoot: repo,
     gitRoot: current.git.gitRoot,
     dirtyFiles: current.git.dirtyFiles,
@@ -575,7 +630,7 @@ export async function getFreshness(repoRoot: string, index?: CodexaIndex | null,
         : repoRootChanged
           ? "repo-root-changed"
           : "dirty-files-changed"
-      : loaded.freshness.reason
+      : loaded.reason
   };
 }
 
@@ -669,6 +724,17 @@ function allFacts(index: CodexaIndex): CodexaFact[] {
     ...index.risks,
     ...index.parserErrors
   ];
+}
+
+async function writeFactsNdjson(filePath: string, facts: CodexaFact[]): Promise<void> {
+  const handle = await fs.open(filePath, "w");
+  try {
+    for (const fact of facts) {
+      await handle.write(`${JSON.stringify(fact)}\n`);
+    }
+  } finally {
+    await handle.close();
+  }
 }
 
 async function acquireIndexLock(repoRoot: string): Promise<() => Promise<void>> {
@@ -832,6 +898,19 @@ async function pathExists(candidate: string): Promise<boolean> {
   try {
     await fs.stat(candidate);
     return true;
+  } catch {
+    return false;
+  }
+}
+
+async function indexBundleNewerThanFreshness(repoRoot: string): Promise<boolean> {
+  try {
+    const outputDir = path.join(repoRoot, CODEBASE_DIR);
+    const [indexStat, freshnessStat] = await Promise.all([
+      fs.stat(path.join(outputDir, "index.json")),
+      fs.stat(path.join(outputDir, "freshness.json"))
+    ]);
+    return indexStat.mtimeMs > freshnessStat.mtimeMs;
   } catch {
     return false;
   }

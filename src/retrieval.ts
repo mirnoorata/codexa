@@ -68,6 +68,13 @@ interface LaneEntry {
   matchedTerms: string[];
 }
 
+interface RetrievalRuntime {
+  docs: Document[];
+  docFreq: Map<string, number>;
+  avgLength: number;
+  fileByPath: Map<string, FileFact>;
+}
+
 const STOP_WORDS = new Set([
   "a",
   "about",
@@ -151,20 +158,20 @@ const LANE_WEIGHTS: Record<RetrievalLane, number> = {
   test: 2.5,
   dirty: 1.7
 };
+const RETRIEVAL_RUNTIME_CACHE_LIMIT = 4;
+const retrievalRuntimeCache = new Map<string, RetrievalRuntime>();
 
 export function retrieveForTask(index: CodexaIndex, query: string, limit = 12): RetrievalResult {
   const rawTerms = tokenize(query);
   const terms = expandedQueryTerms(query);
   const intents = classifyTaskIntent(query, terms);
   const allowDecoys = queryAllowsDecoy(query);
-  const docs = buildDocuments(index);
-  const docFreq = documentFrequency(docs);
-  const avgLength = docs.length > 0 ? docs.reduce((sum, doc) => sum + doc.length, 0) / docs.length : 1;
-  const bm25Entries = docs
-    .map((doc) => scoreDocument(doc, terms, intents, docFreq, docs.length, avgLength))
+  const runtime = retrievalRuntimeForIndex(index);
+  const bm25Entries = runtime.docs
+    .map((doc) => scoreDocument(doc, terms, intents, runtime.docFreq, runtime.docs.length, runtime.avgLength))
     .filter((entry): entry is LaneEntry => entry !== null && entry.score > 0);
   const exactEntries = exactLaneEntries(index, query);
-  const symbolEntries = symbolLaneEntries(index, query);
+  const symbolEntries = symbolLaneEntries(index, query, runtime.fileByPath);
   const preliminaryMatches = fuseLaneRankings(index, [
     ["exact", exactEntries],
     ["symbol", symbolEntries],
@@ -173,8 +180,8 @@ export function retrieveForTask(index: CodexaIndex, query: string, limit = 12): 
     .filter((match) => allowDecoys || !isDecoyLikePath(match.file.path))
     .slice(0, Math.max(limit * 2, 20));
   const workflows = rankWorkflows(index, terms, preliminaryMatches).slice(0, Math.max(3, Math.min(10, limit)));
-  const workflowEntries = workflowLaneEntries(index, workflows, query);
-  const testEntries = testLaneEntries(index, [...preliminaryMatches.map((match) => match.file.path), ...workflowEntries.map((entry) => entry.file.path)], workflows, query);
+  const workflowEntries = workflowLaneEntries(index, workflows, query, runtime.fileByPath);
+  const testEntries = testLaneEntries(index, [...preliminaryMatches.map((match) => match.file.path), ...workflowEntries.map((entry) => entry.file.path)], workflows, query, runtime.fileByPath);
   const dirtyEntries = dirtyLaneEntries(index, intents);
   const graphEntries = graphLaneEntries(index, intents, [
     ...bm25Entries,
@@ -183,7 +190,7 @@ export function retrieveForTask(index: CodexaIndex, query: string, limit = 12): 
     ...workflowEntries,
     ...testEntries,
     ...dirtyEntries
-  ]);
+  ], runtime.fileByPath);
   const matches = fuseLaneRankings(index, [
     ["exact", exactEntries],
     ["symbol", symbolEntries],
@@ -200,6 +207,41 @@ export function retrieveForTask(index: CodexaIndex, query: string, limit = 12): 
   const intentConfidence = analyzeIntentConfidence(query, intents, terms, matches, workflows, broad);
   const diagnostics = retrievalDiagnostics(index, matches, workflows, broad, intentConfidence);
   return { query, intents, terms, matches, workflows, modules, broad, intentConfidence, diagnostics };
+}
+
+function retrievalRuntimeForIndex(index: CodexaIndex): RetrievalRuntime {
+  const key = [
+    index.snapshot.snapshotId,
+    index.freshness.indexedAt,
+    index.files.length,
+    index.symbols.length,
+    index.usageSites.length,
+    index.imports.length,
+    index.risks.length,
+    index.workflows.length
+  ].join(":");
+  const cached = retrievalRuntimeCache.get(key);
+  if (cached) {
+    retrievalRuntimeCache.delete(key);
+    retrievalRuntimeCache.set(key, cached);
+    return cached;
+  }
+  const docs = buildDocuments(index);
+  const runtime: RetrievalRuntime = {
+    docs,
+    docFreq: documentFrequency(docs),
+    avgLength: docs.length > 0 ? docs.reduce((sum, doc) => sum + doc.length, 0) / docs.length : 1,
+    fileByPath: new Map(index.files.map((file) => [file.path, file]))
+  };
+  retrievalRuntimeCache.set(key, runtime);
+  while (retrievalRuntimeCache.size > RETRIEVAL_RUNTIME_CACHE_LIMIT) {
+    const oldestKey = retrievalRuntimeCache.keys().next().value;
+    if (!oldestKey) {
+      break;
+    }
+    retrievalRuntimeCache.delete(oldestKey);
+  }
+  return runtime;
 }
 
 export function classifyTaskIntent(query: string, terms = expandedQueryTerms(query)): TaskIntent[] {
@@ -349,10 +391,10 @@ function exactLaneEntries(index: CodexaIndex, query: string): LaneEntry[] {
   return entries.sort(sortLaneEntry);
 }
 
-function symbolLaneEntries(index: CodexaIndex, query: string): LaneEntry[] {
+function symbolLaneEntries(index: CodexaIndex, query: string, fileByPath: Map<string, FileFact>): LaneEntry[] {
   const byPath = new Map<string, LaneEntry>();
   const add = (filePath: string, score: number, reason: string, haystack: string) => {
-    const file = index.files.find((candidate) => candidate.path === filePath);
+    const file = fileByPath.get(filePath);
     if (!file || score <= 0) {
       return;
     }
@@ -386,13 +428,13 @@ function symbolLaneEntries(index: CodexaIndex, query: string): LaneEntry[] {
     .sort(sortLaneEntry);
 }
 
-function workflowLaneEntries(index: CodexaIndex, workflows: WorkflowTraceFact[], query: string): LaneEntry[] {
+function workflowLaneEntries(index: CodexaIndex, workflows: WorkflowTraceFact[], query: string, fileByPath: Map<string, FileFact>): LaneEntry[] {
   const byPath = new Map<string, LaneEntry>();
   const add = (filePath: string | undefined, score: number, reason: string) => {
     if (!filePath) {
       return;
     }
-    const file = index.files.find((candidate) => candidate.path === filePath);
+    const file = fileByPath.get(filePath);
     if (!file) {
       return;
     }
@@ -429,7 +471,7 @@ function workflowLaneEntries(index: CodexaIndex, workflows: WorkflowTraceFact[],
     .sort(sortLaneEntry);
 }
 
-function testLaneEntries(index: CodexaIndex, seedPaths: string[], workflows: WorkflowTraceFact[], query: string): LaneEntry[] {
+function testLaneEntries(index: CodexaIndex, seedPaths: string[], workflows: WorkflowTraceFact[], query: string, fileByPath: Map<string, FileFact>): LaneEntry[] {
   const seeds = new Set(seedPaths);
   for (const workflow of workflows) {
     for (const file of workflow.relatedFiles) {
@@ -444,7 +486,7 @@ function testLaneEntries(index: CodexaIndex, seedPaths: string[], workflows: Wor
   }
   const byPath = new Map<string, LaneEntry>();
   const add = (filePath: string, score: number, reason: string) => {
-    const file = index.files.find((candidate) => candidate.path === filePath);
+    const file = fileByPath.get(filePath);
     if (!file?.test && !isTestPath(filePath)) {
       return;
     }
@@ -488,7 +530,7 @@ function dirtyLaneEntries(index: CodexaIndex, intents: TaskIntent[]): LaneEntry[
     .sort(sortLaneEntry);
 }
 
-function graphLaneEntries(index: CodexaIndex, intents: TaskIntent[], anchoredEntries: LaneEntry[]): LaneEntry[] {
+function graphLaneEntries(index: CodexaIndex, intents: TaskIntent[], anchoredEntries: LaneEntry[], fileByPath: Map<string, FileFact>): LaneEntry[] {
   const anchored = new Set(anchoredEntries.map((entry) => entry.file.path));
   const anchorScores = new Map<string, number>();
   for (const entry of anchoredEntries) {
@@ -500,7 +542,7 @@ function graphLaneEntries(index: CodexaIndex, intents: TaskIntent[], anchoredEnt
     if (!filePath) {
       return;
     }
-    const file = index.files.find((candidate) => candidate.path === filePath);
+    const file = fileByPath.get(filePath);
     if (!file) {
       return;
     }

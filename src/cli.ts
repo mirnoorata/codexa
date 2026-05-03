@@ -2,7 +2,7 @@
 import { Command } from "commander";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildIndexLocked } from "./indexer.js";
+import { buildIndexLocked, getFreshness } from "./indexer.js";
 import { checkGithubSync } from "./github-sync.js";
 import { initializeProject, sessionStartSummary } from "./init.js";
 import { runLiveIndexer, type LiveIndexEvent } from "./live-index.js";
@@ -31,6 +31,7 @@ import {
   workflowPathQuery
 } from "./queries.js";
 import { RAW_SEARCH_EXPLICIT_PATTERN_LIMIT } from "./query/raw-search.js";
+import { loadPostEditHookReviewState, postEditHookReviewSignature, savePostEditHookReviewState, type PostEditOutcome } from "./post-edit-outcomes.js";
 import type { ChangeType, VerificationCommandReport, VerificationWaiver } from "./types.js";
 import { runEval } from "./eval.js";
 
@@ -112,8 +113,18 @@ program
   .description("Bounded hook helper that runs the post-edit review packet after edit tools.")
   .action(async (repo: string) => {
     await runAdvisoryHook("post-edit review", async () => {
+      const resolved = path.resolve(repo);
+      const snapshot = await loadTaskSnapshot(resolved);
+      const freshness = await getFreshness(resolved, undefined, { recover: false });
+      const signature = postEditHookReviewSignature({ freshness, taskId: snapshot.snapshot?.taskId ?? snapshot.latestTaskId });
+      const previous = await loadPostEditHookReviewState(resolved);
+      if (previous?.signature === signature) {
+        const verdict = previous.verdict ? `; last verdict ${previous.verdict}` : "";
+        console.log(`Codexa: post-edit review unchanged since last hook run${verdict}.`);
+        return;
+      }
       const result = await postEditReviewQuery(
-        path.resolve(repo),
+        resolved,
         {
           tokenBudget: 1200,
           limit: 5,
@@ -122,6 +133,10 @@ program
         { autoRefresh: true, commandBudgetMs: 15_000, maxResults: 6 }
       );
       console.log(compactHookOutput(result.text));
+      await savePostEditHookReviewState(resolved, {
+        signature: postEditHookReviewSignature({ freshness: result.freshness, taskId: snapshot.snapshot?.taskId ?? snapshot.latestTaskId }),
+        outcome: postEditOutcomeFromQueryResult(result.data)
+      });
     });
   });
 
@@ -789,6 +804,18 @@ function compactHookOutput(text: string): string {
     }
   }
   return keep.length > 0 ? keep.join("\n") : lines.slice(0, 16).join("\n");
+}
+
+function postEditOutcomeFromQueryResult(data: unknown): PostEditOutcome | undefined {
+  if (!data || typeof data !== "object") {
+    return undefined;
+  }
+  const outcome = (data as { outcome?: unknown }).outcome;
+  if (!outcome || typeof outcome !== "object") {
+    return undefined;
+  }
+  const record = outcome as Partial<PostEditOutcome>;
+  return record.schemaVersion === 1 && typeof record.outcomeId === "string" ? (record as PostEditOutcome) : undefined;
 }
 
 async function runAdvisoryHook(label: string, action: () => Promise<void>): Promise<void> {
