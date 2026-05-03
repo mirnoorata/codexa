@@ -130,6 +130,8 @@ absolute path of the repository you want Codexa to index.
 npm install
 npm run build
 npm test
+npm run smoke:package
+npm run benchmark:ci
 
 node dist/cli.js init <repo>
 node dist/cli.js session-start <repo>
@@ -316,11 +318,21 @@ such as local workspace paths, local home paths, non-example Codexa GitHub
 remotes, GitHub tokens, and private key blocks. It deliberately scans tracked
 files only; ignored generated artifacts and local caches should stay ignored.
 
-Push CI runs the deterministic development gate:
+Push CI runs the deterministic development gate, verifies the packed npm
+tarball from a temporary install, and records a hot-path benchmark artifact:
 
 ```bash
 npm run check
+npm run smoke:package
+npm run benchmark:ci
 ```
+
+`smoke:package` runs `npm pack --json`, installs the generated tarball into a
+temporary consumer project, then exercises the installed `codexa` binary,
+repo initialization, advisory hooks, and MCP startup. `benchmark:ci` rebuilds
+`dist/`, indexes the checkout, measures CLI and MCP hot paths with generous
+CI thresholds, writes `.codex/cache/codexa-benchmarks/latest.json`, and appends
+a Markdown summary when `GITHUB_STEP_SUMMARY` is available.
 
 Release-oriented security checks remain available locally and should be run
 before publication or visibility changes:
