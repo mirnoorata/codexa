@@ -1,6 +1,6 @@
 export type LanguageId = "typescript" | "javascript" | "python" | "json" | "markdown" | "unknown";
 
-export type FactSource = "tree-sitter" | "typescript-syntax" | "typescript-compiler" | "git" | "manifest" | "markdown" | "heuristic" | "static-analysis";
+export type FactSource = "tree-sitter" | "typescript-syntax" | "typescript-compiler" | "git" | "manifest" | "markdown" | "heuristic" | "static-analysis" | "lsp";
 
 export type Confidence = "authoritative" | "derived" | "heuristic";
 
@@ -278,6 +278,19 @@ export interface QueryOptions {
   commandBudgetMs?: number;
   maxResultBytes?: number;
   maxResults?: number;
+  lsp?: boolean;
+  lspTimeoutMs?: number;
+  lspMaxFiles?: number;
+  lspServers?: Partial<Record<LanguageId, { command: string; args?: string[]; cwd?: string }>>;
+  semantic?: boolean;
+  semanticProvider?: "openai" | "local-command";
+  semanticModel?: string;
+  semanticDimensions?: number;
+  semanticCommand?: string;
+  semanticArgs?: string[];
+  semanticTimeoutMs?: number;
+  semanticBatchSize?: number;
+  semanticMaxFiles?: number;
 }
 
 export type ChangeType = "style" | "api" | "behavior" | "rename" | "delete" | "unknown";

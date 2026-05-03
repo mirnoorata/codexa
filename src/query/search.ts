@@ -8,6 +8,7 @@ import { ensureQuerySession, type QuerySessionInput } from "./session.js";
 import { formatTestRecommendations, recommendTests } from "./tests.js";
 import { findFile } from "./targets.js";
 import { retrieveForTask } from "../retrieval.js";
+import { semanticOptionsFromQueryOptions } from "../semantic-retrieval.js";
 import type { CodexaIndex, FileFact, QueryOptions, QueryResult, SymbolFact, UsageSiteFact } from "../types.js";
 import { limitText, uniqueSorted } from "../util.js";
 
@@ -60,9 +61,9 @@ export async function repoMapQuery(input: QuerySessionInput, limit = 20, options
 
 export async function findContextQuery(input: QuerySessionInput, query: string, limit = 12, options: QueryOptions = {}): Promise<QueryResult> {
   const session = await ensureQuerySession(input, options);
-  const { index, freshness, refresh } = session;
+  const { index, freshness, refresh, repoRoot } = session;
   const needle = query.toLowerCase();
-  const retrieval = retrieveForTask(index, query, limit);
+  const retrieval = await retrieveForTask(index, query, limit, semanticOptionsFromQueryOptions(repoRoot, options));
   const symbolHits = index.symbols
     .filter((symbol) => [symbol.name, symbol.qualifiedName, symbol.path].some((value) => value.toLowerCase().includes(needle)))
     .slice(0, limit);
@@ -94,7 +95,7 @@ export async function searchQuery(
   const rawPatterns = rawSearchPatternsForQuery(queryInput.query, queryInput.patterns);
   const raw = await rawSearch(repoRoot, rawPatterns, Math.max(limit * 4, 20));
   const interpreted = rankedSearch(index, queryInput.query, limit);
-  const retrieval = retrieveForTask(index, queryInput.query, Math.max(limit * 2, 12));
+  const retrieval = await retrieveForTask(index, queryInput.query, Math.max(limit * 2, 12), semanticOptionsFromQueryOptions(repoRoot, options));
   const rawIndexedFiles = raw.files.map((filePath) => findFile(index, filePath)).filter((file): file is FileFact => Boolean(file));
   for (const file of rawIndexedFiles) {
     const existing = interpreted.reasons.get(file.path) ?? [];

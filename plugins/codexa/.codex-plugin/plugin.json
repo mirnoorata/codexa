@@ -1,0 +1,38 @@
+{
+  "name": "codexa",
+  "version": "0.1.0",
+  "description": "Codex-native codebase intelligence workflows, MCP setup, and edit accountability for repositories indexed by Codexa.",
+  "author": {
+    "name": "Codexa maintainers",
+    "url": "https://github.com/mirnoorata/codexa"
+  },
+  "homepage": "https://github.com/mirnoorata/codexa#readme",
+  "repository": "https://github.com/mirnoorata/codexa",
+  "license": "MIT",
+  "keywords": [
+    "codex",
+    "mcp",
+    "codebase-intelligence",
+    "task-brief",
+    "post-edit-review"
+  ],
+  "skills": "./skills/",
+  "mcpServers": "./.mcp.json",
+  "interface": {
+    "displayName": "Codexa",
+    "shortDescription": "Use Codexa context packets, change plans, and post-edit reviews inside Codex.",
+    "longDescription": "Codexa packages a repository-focused Codex workflow: load task briefs before edits, save change-plan snapshots for non-trivial work, review drift after edits, and request targeted verification from the local Codexa MCP server.",
+    "developerName": "Codexa maintainers",
+    "category": "Productivity",
+    "capabilities": [
+      "Read"
+    ],
+    "websiteURL": "https://github.com/mirnoorata/codexa",
+    "defaultPrompt": [
+      "Use Codexa to brief this code change before editing.",
+      "Use Codexa to review the dirty tree against the saved change plan.",
+      "Use Codexa to recommend targeted tests for this task."
+    ],
+    "brandColor": "#2563EB"
+  }
+}

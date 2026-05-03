@@ -939,6 +939,31 @@ describe("Codexa MCP server", () => {
     await client.close();
   });
 
+  it("marks semantic OpenAI-capable MCP tools as open-world, including change_plan", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-semantic-openworld-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdir(path.join(repo, "src"), { recursive: true });
+    await writeFile(path.join(repo, "src/index.ts"), "export function main() { return 1 }\n", "utf8");
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    await buildIndex({ repoRoot: repo });
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh", "--semantic", "--semantic-provider", "openai"],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-test", version: "0.1.0" });
+    await client.connect(transport);
+    const tools = await client.listTools();
+    expect(tools.tools.find((tool) => tool.name === "search")?.annotations?.openWorldHint).toBe(true);
+    expect(tools.tools.find((tool) => tool.name === "change_plan")?.annotations?.openWorldHint).toBe(true);
+    await client.close();
+  });
+
   it("surfaces missing advertised artifacts as resource errors", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-missing-artifact-"));
     execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });

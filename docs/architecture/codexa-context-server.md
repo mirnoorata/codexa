@@ -25,7 +25,10 @@ The first milestone used a private application repository as the acceptance proj
   exactly when to call `task_brief`, `change_plan`, `workflow_path`,
   `dependency_path`, `post_edit_review`, and `test_plan`, avoiding a noisy
   generic graph preview at startup.
-- The v1 graph is in-memory and serialized to JSON/NDJSON. No graph DB, vector DB, embeddings, LSP daemon orchestration, formal solver, web UI, or generated skill/wiki subsystem ships in v1.
+- The v1 graph is in-memory and serialized to JSON/NDJSON. No graph DB, vector
+  DB, always-on LSP daemon, formal solver, web UI, or generated wiki subsystem
+  ships in v1. Embeddings and LSP are optional side lanes that are disabled by
+  default, fail open, and never mutate source files.
 - Every relationship carries an explicit source and confidence label.
 - Freshness is a gate. Stale or dirty state must be visible in artifacts and MCP responses.
 
@@ -35,6 +38,9 @@ The first milestone used a private application repository as the acceptance proj
 
 Codexa is packaged for public npm distribution as `@mirnoorata/codexa`; the installed
 binary remains `codexa` so existing Codex workflows do not need to change.
+The package also includes `plugins/codexa/`, a Codex plugin bundle with a
+manifest, skill, and MCP wrapper that launches the same npm `codexa serve`
+entrypoint for the focused git repository.
 
 ```bash
 npm install -g @mirnoorata/codexa
@@ -49,6 +55,8 @@ The `codexa` CLI exposes:
 ```bash
 codexa init [repo]
 codexa index <repo>
+codexa semantic-index <repo> --provider openai
+codexa semantic-index <repo> --provider local-command --command <embed-jsonl-command>
 codexa watch <repo>
 codexa static-analysis <repo>
 codexa status <repo>
@@ -83,7 +91,12 @@ stdout protocol-clean; logs go to stderr.
 
 Artifact writes are staged in a temporary directory and then swapped into place so a failed write does not leave a partially updated live index.
 
-Context commands (`repo-map`, `find-context`, `explain`, `impact`, `diff-impact`, `test-plan`, `brief`, `context-pack`, and `serve`) auto-refresh stale or missing artifacts by default. `status` remains a cheap freshness check and does not refresh. `--no-auto-refresh` disables automatic refresh for inspection or debugging.
+Context commands (`repo-map`, `find-context`, `explain`, `impact`,
+`diff-impact`, `test-plan`, `brief`, `context-pack`, `focus-brief`,
+`session-context`, `workflow-path`, `change-plan`, and `serve`) auto-refresh
+stale or missing artifacts by default. `status` remains a cheap freshness check
+and does not refresh. `--no-auto-refresh` disables automatic refresh for
+inspection or debugging.
 
 `watch` is intentionally CLI-only. It never runs inside MCP and it does not add
 an MCP reindex tool. Each rebuild goes through the same cross-process lock,
@@ -103,6 +116,31 @@ under `.codex/` only; it does not edit source code.
 then overlays Codexa ranking, likely tests, freshness, and known gaps. If raw
 search already returns a narrow exact result, the response says so instead of
 pretending Codexa added high value.
+
+`semantic-index` builds an optional embedding cache under
+`.codex/cache/codexa-semantic-v1/`. The cache stores manifest metadata plus JSONL
+vectors tied to the current Codexa snapshot id and provider settings. Once the
+cache exists, query commands automatically use the lane when the snapshot
+matches and the provider can embed the query; `--semantic` only forces the lane
+for diagnostics and `--no-semantic` disables it for one call. Stale, missing, or
+provider-mismatched caches produce diagnostics only when forced and otherwise
+fall back to the normal exact/symbol/BM25/graph retrieval lanes. Providers are
+`openai` and `local-command`. OpenAI uses the standard embeddings endpoint and
+`OPENAI_API_KEY`; `local-command` receives JSONL `{id,text,model,dimensions}`
+records on stdin and returns `{id,embedding}` records as JSON, JSONL, or
+`{embeddings:[...]}`. MCP can use an already configured semantic lane without
+tool-by-tool prompting, but arbitrary local embedding commands are configured at
+server startup or through environment variables rather than accepted from tool
+calls.
+
+Optional LSP assist is read-only and bounded. `--lsp` on `explain`, `brief`,
+`context-pack`, `change-plan`, or `serve` starts a stdio language server for at
+most a few TypeScript, JavaScript, or Python files, sends `initialize` and
+`didOpen`, then asks for document symbols, definitions, references, and
+diagnostics. Codexa discovers `typescript-language-server --stdio`,
+`basedpyright-langserver --stdio`, or `pyright-langserver --stdio`, and also
+honors `CODEXA_LSP_*_COMMAND` plus JSON args environment overrides. Failures are
+reported as warnings in the packet; source files are never edited.
 
 `impact` and `context-pack` accept a small `change-type` hint: `style`, `api`,
 `behavior`, `rename`, `delete`, or `unknown`. Style-shaped changes collapse
@@ -259,7 +297,9 @@ Python confidence rules:
 - `derived`: simple import resolution, direct call/reference links, test proximity, and route/job handler hints.
 - `heuristic`: dynamic dispatch, dependency injection, monkey patching, framework registry behavior, string-based imports, plugin loading, and cross-language endpoint matching.
 
-V1 does not attempt full Python type checking, full LSP integration, runtime tracing, dynamic import resolution, deep framework plugins, or deep cross-language linking.
+V1 does not attempt full Python type checking, runtime tracing, dynamic import
+resolution, deep framework plugins, or deep cross-language linking. LSP assist is
+an optional query-time supplement, not a required indexing dependency.
 
 ### Data Model
 
@@ -341,14 +381,25 @@ freshness
 Tool responses are bounded and include freshness, provenance, confidence labels,
 and a value estimate where the query can be compared with raw search. MCP tools
 expose `outputSchema` for their structured result wrapper. Tool annotations are
-non-destructive and closed-world. When auto-refresh is disabled, context tools
-are strict filesystem reads and advertise `readOnlyHint: true`. With auto-refresh
+non-destructive and closed-world unless the server is configured for OpenAI
+semantic embeddings. When auto-refresh is disabled, context tools are strict
+filesystem reads and advertise `readOnlyHint: true`. With auto-refresh
 enabled, they advertise non-destructive but not read-only semantics because they
 may update generated Codexa cache artifacts under `.codex/codebase/` before
 answering. `change_plan` also advertises cache-write semantics because
 `saveSnapshot=true` writes `.codex/cache/codexa-tasks/` and reads the legacy
 `.codex/cache/codexa-task-snapshots/` path only as a migration fallback. They never
 mutate source files.
+
+When the MCP server starts with semantic retrieval forced, inputs for
+`find_context`, `search`, `task_brief`, `context_pack`, `focus_brief`,
+`session_context`, `workflow_path`, and `change_plan` include an optional
+`semantic` flag plus provider/model/dimension/time-budget fields. Automatic
+semantic use does not require these fields. Inputs for
+`symbol_context`, `task_brief`, `context_pack`, and `change_plan` always include
+optional LSP flags and bounded time/file limits. Both lanes are best-effort
+context enrichments: a failed semantic provider or language server is reported
+in diagnostics rather than failing the whole context tool.
 
 The server also exposes MCP resources for the generated artifact set:
 
@@ -428,8 +479,9 @@ After implementation, check for forbidden scope creep:
 
 - no external graph-intelligence runtime dependency
 - no graph DB
-- no vector DB or embeddings
-- no LSP daemon orchestration
+- no vector DB
+- no mandatory embeddings
+- no always-on LSP daemon orchestration
 - no formal solver
 - no web UI
 - no generated skill/wiki subsystem

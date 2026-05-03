@@ -29,9 +29,22 @@ import { getFreshness } from "./indexer.js";
 import { requireIndex } from "./query/runtime.js";
 import { createQuerySessionFromIndexState, type QuerySession, type QuerySessionIndexState } from "./query/session.js";
 import { RAW_SEARCH_EXPLICIT_PATTERN_LIMIT } from "./query/raw-search.js";
+import { semanticMayUseOpenWorldProvider } from "./semantic-retrieval.js";
+
+type McpOptionalQueryInput = Record<string, unknown> & {
+  semantic?: boolean;
+  semanticProvider?: "openai" | "local-command";
+  semanticModel?: string;
+  semanticDimensions?: number;
+  semanticTimeoutMs?: number;
+  semanticBatchSize?: number;
+  lsp?: boolean;
+  lspTimeoutMs?: number;
+  lspMaxFiles?: number;
+};
 
 export async function serveMcp(repoRoot: string, options: QueryOptions = { autoRefresh: true }): Promise<void> {
-  const queryOptions = { autoRefresh: options.autoRefresh ?? true };
+  const queryOptions: QueryOptions = { ...options, autoRefresh: options.autoRefresh ?? true };
   let cachedIndexState: QuerySessionIndexState | undefined;
   let indexStateInflight: Promise<QuerySessionIndexState> | undefined;
   const server = new McpServer({
@@ -47,7 +60,7 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
     readOnlyHint: !queryOptions.autoRefresh,
     destructiveHint: false,
     idempotentHint: !queryOptions.autoRefresh,
-    openWorldHint: false
+    openWorldHint: semanticMayUseOpenWorldProvider(repoRoot, queryOptions)
   };
   const pureReadAnnotations = {
     readOnlyHint: true,
@@ -59,9 +72,36 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
     readOnlyHint: false,
     destructiveHint: false,
     idempotentHint: false,
-    openWorldHint: false
+    openWorldHint: semanticMayUseOpenWorldProvider(repoRoot, queryOptions)
   };
   const changeTypeSchema = z.enum(["style", "api", "behavior", "rename", "delete", "unknown"]);
+  const semanticQuerySchema: Record<string, z.ZodTypeAny> = semanticEnabledForServer(queryOptions)
+    ? {
+        semantic: z.boolean().optional(),
+        semanticProvider: z.enum(["openai", "local-command"]).optional(),
+        semanticModel: z.string().min(1).max(120).optional(),
+        semanticDimensions: z.number().int().positive().max(8192).optional(),
+        semanticTimeoutMs: z.number().int().positive().max(120_000).optional(),
+        semanticBatchSize: z.number().int().positive().max(256).optional()
+      }
+    : {};
+  const lspQuerySchema: Record<string, z.ZodTypeAny> = {
+    lsp: z.boolean().optional(),
+    lspTimeoutMs: z.number().int().positive().max(60_000).optional(),
+    lspMaxFiles: z.number().int().positive().max(12).optional()
+  };
+  const toolQueryOptions = (input: McpOptionalQueryInput = {}): QueryOptions => ({
+    ...queryOptions,
+    semantic: input.semantic ?? queryOptions.semantic,
+    semanticProvider: input.semanticProvider ?? queryOptions.semanticProvider,
+    semanticModel: input.semanticModel ?? queryOptions.semanticModel,
+    semanticDimensions: input.semanticDimensions ?? queryOptions.semanticDimensions,
+    semanticTimeoutMs: input.semanticTimeoutMs ?? queryOptions.semanticTimeoutMs,
+    semanticBatchSize: input.semanticBatchSize ?? queryOptions.semanticBatchSize,
+    lsp: input.lsp ?? queryOptions.lsp,
+    lspTimeoutMs: input.lspTimeoutMs ?? queryOptions.lspTimeoutMs,
+    lspMaxFiles: input.lspMaxFiles ?? queryOptions.lspMaxFiles
+  });
   const runTool = async (producer: (session: QuerySession) => Promise<QueryResult>) =>
     toToolResult(
       await safeQuery(async () => {
@@ -127,11 +167,11 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
     {
       title: "Codexa find context",
       description: "Find matching files, symbols, and usage sites, refreshing stale Codexa artifacts first when auto-refresh is enabled.",
-      inputSchema: { query: z.string().min(1), limit: z.number().int().positive().max(30).optional() },
+      inputSchema: { query: z.string().min(1), limit: z.number().int().positive().max(30).optional(), ...semanticQuerySchema },
       outputSchema,
       annotations: sourceContextAnnotations
     },
-    async ({ query, limit }) => runTool((session) => findContextQuery(session, query, limit ?? 12, queryOptions))
+    async (input) => runTool((session) => findContextQuery(session, input.query, input.limit ?? 12, toolQueryOptions(input)))
   );
 
   server.registerTool(
@@ -144,13 +184,14 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
         query: z.string().min(1),
         patterns: z.array(z.string().min(1)).max(RAW_SEARCH_EXPLICIT_PATTERN_LIMIT).optional(),
         limit: z.number().int().positive().max(50).optional(),
-        includeRaw: z.boolean().optional()
+        includeRaw: z.boolean().optional(),
+        ...semanticQuerySchema
       },
       outputSchema,
       annotations: sourceContextAnnotations
     },
-    async ({ query, patterns, limit, includeRaw }) =>
-      runTool((session) => searchQuery(session, { query, patterns, limit: limit ?? 12, includeRaw: includeRaw ?? true }, queryOptions))
+    async (input) =>
+      runTool((session) => searchQuery(session, { query: input.query, patterns: input.patterns, limit: input.limit ?? 12, includeRaw: input.includeRaw ?? true }, toolQueryOptions(input)))
   );
 
   server.registerTool(
@@ -176,11 +217,11 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
     {
       title: "Codexa symbol context",
       description: "Return compact context and usage sites for a symbol id or name, refreshing stale Codexa artifacts first when auto-refresh is enabled.",
-      inputSchema: { symbol: z.string().min(1) },
+      inputSchema: { symbol: z.string().min(1), ...lspQuerySchema },
       outputSchema,
       annotations: sourceContextAnnotations
     },
-    async ({ symbol }) => runTool((session) => symbolContextQuery(session, symbol, queryOptions))
+    async (input) => runTool((session) => symbolContextQuery(session, input.symbol, toolQueryOptions(input)))
   );
 
   server.registerTool(
@@ -239,12 +280,14 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
         diff: z.boolean().optional(),
         tokenBudget: z.number().int().min(500).max(12000).optional(),
         limit: z.number().int().positive().max(40).optional(),
-        includeSnippets: z.boolean().optional()
+        includeSnippets: z.boolean().optional(),
+        ...semanticQuerySchema,
+        ...lspQuerySchema
       },
       outputSchema,
       annotations: sourceContextAnnotations
     },
-    async (input) => runTool((session) => taskBriefQuery(session, input, queryOptions))
+    async (input) => runTool((session) => taskBriefQuery(session, input, toolQueryOptions(input)))
   );
 
   server.registerTool(
@@ -261,12 +304,14 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
         diff: z.boolean().optional(),
         tokenBudget: z.number().int().min(500).max(12000).optional(),
         limit: z.number().int().positive().max(40).optional(),
-        includeSnippets: z.boolean().optional()
+        includeSnippets: z.boolean().optional(),
+        ...semanticQuerySchema,
+        ...lspQuerySchema
       },
       outputSchema,
       annotations: sourceContextAnnotations
     },
-    async (input) => runTool((session) => contextPackQuery(session, input, queryOptions))
+    async (input) => runTool((session) => contextPackQuery(session, input, toolQueryOptions(input)))
   );
 
   server.registerTool(
@@ -278,12 +323,13 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
         task: z.string().optional(),
         tokenBudget: z.number().int().min(600).max(8000).optional(),
         limit: z.number().int().positive().max(30).optional(),
-        diff: z.boolean().optional()
+        diff: z.boolean().optional(),
+        ...semanticQuerySchema
       },
       outputSchema,
       annotations: sourceContextAnnotations
     },
-    async (input) => runTool((session) => focusBriefQuery(session, input, queryOptions))
+    async (input) => runTool((session) => focusBriefQuery(session, input, toolQueryOptions(input)))
   );
 
   server.registerTool(
@@ -295,12 +341,13 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
         task: z.string().optional(),
         tokenBudget: z.number().int().min(600).max(8000).optional(),
         limit: z.number().int().positive().max(30).optional(),
-        diff: z.boolean().optional()
+        diff: z.boolean().optional(),
+        ...semanticQuerySchema
       },
       outputSchema,
       annotations: sourceContextAnnotations
     },
-    async (input) => runTool((session) => focusBriefQuery(session, input, queryOptions))
+    async (input) => runTool((session) => focusBriefQuery(session, input, toolQueryOptions(input)))
   );
 
   const graphTargetSchema = {
@@ -360,12 +407,13 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
         query: z.string().optional(),
         file: z.string().optional(),
         symbol: z.string().optional(),
-        limit: z.number().int().positive().max(30).optional()
+        limit: z.number().int().positive().max(30).optional(),
+        ...semanticQuerySchema
       },
       outputSchema,
       annotations: sourceContextAnnotations
     },
-    async (input) => runTool((session) => workflowPathQuery(session, input, queryOptions))
+    async (input) => runTool((session) => workflowPathQuery(session, input, toolQueryOptions(input)))
   );
 
   server.registerTool(
@@ -384,12 +432,14 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
         limit: z.number().int().positive().max(40).optional(),
         includeSnippets: z.boolean().optional(),
         saveSnapshot: z.boolean().optional(),
-        taskId: z.string().optional()
+        taskId: z.string().optional(),
+        ...semanticQuerySchema,
+        ...lspQuerySchema
       },
       outputSchema,
       annotations: cacheWriteAnnotations
     },
-    async (input) => runTool((session) => changePlanQuery(session, input, queryOptions))
+    async (input) => runTool((session) => changePlanQuery(session, input, toolQueryOptions(input)))
   );
 
   server.registerTool(
@@ -460,6 +510,10 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
 
   await server.connect(new StdioServerTransport());
   console.error(`codexa MCP server ready for ${repoRoot} (autoRefresh=${queryOptions.autoRefresh})`);
+}
+
+function semanticEnabledForServer(options: QueryOptions): boolean {
+  return options.semantic === true || process.env.CODEXA_SEMANTIC === "1";
 }
 
 const MCP_STRUCTURED_DATA_TARGET_BYTES = 96_000;

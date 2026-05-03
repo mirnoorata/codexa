@@ -19,7 +19,8 @@
     "codexa": "./dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "plugins/codexa"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
@@ -29,7 +30,8 @@
     "privacy": "node scripts/verify-public-hygiene.mjs",
     "privacy:history": "node scripts/verify-public-hygiene.mjs --history",
     "privacy:release": "npm run privacy && npm run privacy:history",
-    "package:hygiene": "node scripts/verify-package-hygiene.mjs",
+    "plugin:hygiene": "node scripts/verify-plugin-package.mjs",
+    "package:hygiene": "node scripts/verify-package-hygiene.mjs && npm run plugin:hygiene",
     "smoke:package": "node scripts/package-install-smoke.mjs",
     "benchmark:ci": "npm run build && node scripts/benchmark-hot-paths.mjs --output .codex/cache/codexa-benchmarks/latest.json",
     "ci:extended": "npm run smoke:package && npm run benchmark:ci",

@@ -1,5 +1,6 @@
 import path from "node:path";
 import { isTestPath, moduleNameForPath } from "./language.js";
+import { semanticLaneEntriesForQuery, type SemanticQueryOptions, type SemanticRetrievalSummary } from "./semantic-retrieval.js";
 import type { CodexaIndex, FileFact, GraphEdgeFact, WorkflowTraceFact } from "./types.js";
 import { uniqueSorted } from "./util.js";
 
@@ -15,7 +16,7 @@ export type TaskIntent =
   | "implementation"
   | "unknown";
 
-export type RetrievalLane = "exact" | "symbol" | "bm25" | "graph" | "workflow" | "test" | "dirty";
+export type RetrievalLane = "exact" | "symbol" | "bm25" | "semantic" | "graph" | "workflow" | "test" | "dirty";
 export type PromptMode = "orientation" | "edit";
 export type PacketVerdict = "edit-ready" | "orientation-only" | "needs-target" | "raw-search-better";
 
@@ -51,6 +52,7 @@ export interface RetrievalResult {
   broad: boolean;
   intentConfidence: IntentConfidence;
   diagnostics: string[];
+  semantic: SemanticRetrievalSummary;
 }
 
 interface Document {
@@ -153,6 +155,7 @@ const LANE_WEIGHTS: Record<RetrievalLane, number> = {
   exact: 4,
   symbol: 3.2,
   bm25: 2,
+  semantic: 1.15,
   graph: 0.65,
   workflow: 2.8,
   test: 2.5,
@@ -161,7 +164,7 @@ const LANE_WEIGHTS: Record<RetrievalLane, number> = {
 const RETRIEVAL_RUNTIME_CACHE_LIMIT = 4;
 const retrievalRuntimeCache = new Map<string, RetrievalRuntime>();
 
-export function retrieveForTask(index: CodexaIndex, query: string, limit = 12): RetrievalResult {
+export async function retrieveForTask(index: CodexaIndex, query: string, limit = 12, semanticOptions?: SemanticQueryOptions): Promise<RetrievalResult> {
   const rawTerms = tokenize(query);
   const terms = expandedQueryTerms(query);
   const intents = classifyTaskIntent(query, terms);
@@ -172,10 +175,17 @@ export function retrieveForTask(index: CodexaIndex, query: string, limit = 12): 
     .filter((entry): entry is LaneEntry => entry !== null && entry.score > 0);
   const exactEntries = exactLaneEntries(index, query);
   const symbolEntries = symbolLaneEntries(index, query, runtime.fileByPath);
+  const semanticResult = semanticOptions
+    ? await semanticLaneEntriesForQuery(index, query, runtime.fileByPath, semanticOptions)
+    : {
+        entries: [],
+        summary: { enabled: false, status: "disabled" as const, diagnostics: [] }
+      };
   const preliminaryMatches = fuseLaneRankings(index, [
     ["exact", exactEntries],
     ["symbol", symbolEntries],
-    ["bm25", bm25Entries]
+    ["bm25", bm25Entries],
+    ["semantic", semanticResult.entries]
   ])
     .filter((match) => allowDecoys || !isDecoyLikePath(match.file.path))
     .slice(0, Math.max(limit * 2, 20));
@@ -195,6 +205,7 @@ export function retrieveForTask(index: CodexaIndex, query: string, limit = 12): 
     ["exact", exactEntries],
     ["symbol", symbolEntries],
     ["bm25", bm25Entries],
+    ["semantic", semanticResult.entries],
     ["workflow", workflowEntries],
     ["test", testEntries],
     ["dirty", dirtyEntries],
@@ -205,8 +216,8 @@ export function retrieveForTask(index: CodexaIndex, query: string, limit = 12): 
   const modules = rankModules(index, matches, terms).slice(0, Math.max(3, Math.min(8, limit)));
   const broad = rawTerms.length <= 2 || intents.includes("architecture") || intents.includes("workflow");
   const intentConfidence = analyzeIntentConfidence(query, intents, terms, matches, workflows, broad);
-  const diagnostics = retrievalDiagnostics(index, matches, workflows, broad, intentConfidence);
-  return { query, intents, terms, matches, workflows, modules, broad, intentConfidence, diagnostics };
+  const diagnostics = uniqueSorted([...retrievalDiagnostics(index, matches, workflows, broad, intentConfidence), ...semanticResult.summary.diagnostics.map((diagnostic) => `semantic: ${diagnostic}`)]);
+  return { query, intents, terms, matches, workflows, modules, broad, intentConfidence, diagnostics, semantic: semanticResult.summary };
 }
 
 function retrievalRuntimeForIndex(index: CodexaIndex): RetrievalRuntime {

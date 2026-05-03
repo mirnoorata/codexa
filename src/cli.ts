@@ -8,6 +8,7 @@ import { runDoctor } from "./doctor.js";
 import { initializeProject, sessionStartSummary } from "./init.js";
 import { runLiveIndexer, type LiveIndexEvent } from "./live-index.js";
 import { serveMcp } from "./mcp.js";
+import { buildSemanticIndex, semanticProviderFromValue, type SemanticProviderKind } from "./semantic-retrieval.js";
 import { updateStaticAnalysisReports } from "./static-analysis.js";
 import { loadTaskSnapshot } from "./task-snapshots.js";
 import {
@@ -41,7 +42,7 @@ import {
   type CodexaHookName,
   type PostEditOutcome
 } from "./post-edit-outcomes.js";
-import type { ChangeType, VerificationCommandReport, VerificationWaiver } from "./types.js";
+import type { ChangeType, QueryOptions, VerificationCommandReport, VerificationWaiver } from "./types.js";
 import { runEval } from "./eval.js";
 
 const program = new Command();
@@ -162,6 +163,51 @@ program
     console.log(`Indexed ${index.files.length} files, ${index.symbols.length} symbols, ${index.usageSites.length} usage sites.`);
     console.log(`Artifacts: ${path.join(path.resolve(repo), ".codex/codebase")}`);
   });
+
+program
+  .command("semantic-index")
+  .argument("<repo>", "repository root to embed for optional semantic retrieval")
+  .requiredOption("--provider <provider>", "embedding provider: openai or local-command", parseSemanticProvider)
+  .option("--model <model>", "embedding model name; defaults to provider-specific default")
+  .option("--dimensions <n>", "embedding dimensions when the provider supports it", parseIntOption)
+  .option("--command <command>", "local embedding command for --provider local-command")
+  .option("--arg <arg...>", "argument for the local embedding command; repeat or pass multiple values")
+  .option("--timeout-ms <n>", "embedding provider timeout in milliseconds", parseIntOption, 60_000)
+  .option("--batch-size <n>", "number of chunks to send per provider request", parseIntOption, 64)
+  .option("--max-files <n>", "maximum indexed files to embed", parseIntOption, 750)
+  .description("Build the opt-in semantic retrieval cache under .codex/cache/codexa-semantic-v1.")
+  .action(
+    async (
+      repo: string,
+      opts: {
+        provider: SemanticProviderKind;
+        model?: string;
+        dimensions?: number;
+        command?: string;
+        arg?: string[];
+        timeoutMs: number;
+        batchSize: number;
+        maxFiles: number;
+      }
+    ) => {
+      const repoRoot = path.resolve(repo);
+      const index = await buildIndexLocked({ repoRoot, writeArtifacts: true });
+      const result = await buildSemanticIndex(repoRoot, index, {
+        provider: opts.provider,
+        model: opts.model,
+        dimensions: opts.dimensions,
+        command: opts.command,
+        args: opts.arg,
+        timeoutMs: opts.timeoutMs,
+        batchSize: opts.batchSize,
+        maxFiles: opts.maxFiles
+      });
+      console.log(`Codexa semantic index built for ${result.repoRoot}`);
+      console.log(`Provider: ${result.provider}; model: ${result.model}; dimensions: ${result.dimensions}`);
+      console.log(`Chunks: ${result.chunkCount}`);
+      console.log(`Cache: ${result.cacheDir}`);
+    }
+  );
 
 program
   .command("watch")
@@ -308,11 +354,20 @@ program
   .argument("<repo>", "repository root")
   .requiredOption("--query <query>", "search query")
   .option("--limit <n>", "maximum matches", parseIntOption, 12)
+  .option("--semantic", "force the semantic retrieval lane even when auto-detection would skip it")
+  .option("--no-semantic", "disable automatic semantic retrieval for this query")
+  .option("--semantic-provider <provider>", "semantic query provider: openai or local-command", parseSemanticProvider)
+  .option("--semantic-model <model>", "semantic embedding model name")
+  .option("--semantic-dimensions <n>", "semantic embedding dimensions", parseIntOption)
+  .option("--semantic-command <command>", "local semantic embedding command for --semantic-provider local-command")
+  .option("--semantic-arg <arg...>", "argument for the local semantic embedding command")
+  .option("--semantic-timeout-ms <n>", "semantic query timeout in milliseconds", parseIntOption)
+  .option("--semantic-batch-size <n>", "semantic query batch size", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Find matching files, symbols, and usage sites.")
-  .action(async (repo: string, opts: { query: string; limit: number; autoRefresh: boolean }) =>
-    printQuery(await findContextQuery(path.resolve(repo), opts.query, opts.limit, { autoRefresh: opts.autoRefresh }))
+  .action(async (repo: string, opts: { query: string; limit: number } & CliQueryOptions) =>
+    printQuery(await findContextQuery(path.resolve(repo), opts.query, opts.limit, queryOptionsFromCli(opts)))
   );
 
 program
@@ -323,15 +378,24 @@ program
   .option("--limit <n>", "maximum matches", parseIntOption, 12)
   .option("--raw", "include raw hit lines", true)
   .option("--no-raw", "summarize raw hit files without lines")
+  .option("--semantic", "force the semantic retrieval lane even when auto-detection would skip it")
+  .option("--no-semantic", "disable automatic semantic retrieval for this query")
+  .option("--semantic-provider <provider>", "semantic query provider: openai or local-command", parseSemanticProvider)
+  .option("--semantic-model <model>", "semantic embedding model name")
+  .option("--semantic-dimensions <n>", "semantic embedding dimensions", parseIntOption)
+  .option("--semantic-command <command>", "local semantic embedding command for --semantic-provider local-command")
+  .option("--semantic-arg <arg...>", "argument for the local semantic embedding command")
+  .option("--semantic-timeout-ms <n>", "semantic query timeout in milliseconds", parseIntOption)
+  .option("--semantic-batch-size <n>", "semantic query batch size", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Compare raw search with Codexa-ranked targets, tests, and known gaps.")
-  .action(async (repo: string, opts: { query: string; pattern?: string[]; limit: number; raw: boolean; autoRefresh: boolean }) =>
+  .action(async (repo: string, opts: { query: string; pattern?: string[]; limit: number; raw: boolean } & CliQueryOptions) =>
     printQuery(
       await searchQuery(
         path.resolve(repo),
         { query: opts.query, patterns: opts.pattern, limit: opts.limit, includeRaw: opts.raw },
-        { autoRefresh: opts.autoRefresh }
+        queryOptionsFromCli(opts)
       )
     )
   );
@@ -368,11 +432,14 @@ program
   .argument("<repo>", "repository root")
   .option("--file <path>", "file to explain")
   .option("--symbol <symbol>", "symbol id or name to explain")
+  .option("--lsp", "include optional read-only LSP assist for TypeScript, JavaScript, or Python")
+  .option("--lsp-timeout-ms <n>", "LSP request timeout in milliseconds", parseIntOption)
+  .option("--lsp-max-files <n>", "maximum files to inspect with LSP assist", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Return compact evidence for a file or symbol.")
-  .action(async (repo: string, opts: { file?: string; symbol?: string; autoRefresh: boolean }) => {
-    const queryOptions = { autoRefresh: opts.autoRefresh };
+  .action(async (repo: string, opts: { file?: string; symbol?: string } & CliQueryOptions) => {
+    const queryOptions = queryOptionsFromCli(opts);
     if (opts.symbol) {
       printQuery(await symbolContextQuery(path.resolve(repo), opts.symbol, queryOptions));
       return;
@@ -442,6 +509,18 @@ program
   .option("--limit <n>", "maximum focus items", parseIntOption, 10)
   .option("--snippets", "include source snippets", true)
   .option("--no-snippets", "omit source snippets")
+  .option("--semantic", "force the semantic retrieval lane even when auto-detection would skip it")
+  .option("--no-semantic", "disable automatic semantic retrieval for this query")
+  .option("--semantic-provider <provider>", "semantic query provider: openai or local-command", parseSemanticProvider)
+  .option("--semantic-model <model>", "semantic embedding model name")
+  .option("--semantic-dimensions <n>", "semantic embedding dimensions", parseIntOption)
+  .option("--semantic-command <command>", "local semantic embedding command for --semantic-provider local-command")
+  .option("--semantic-arg <arg...>", "argument for the local semantic embedding command")
+  .option("--semantic-timeout-ms <n>", "semantic query timeout in milliseconds", parseIntOption)
+  .option("--semantic-batch-size <n>", "semantic query batch size", parseIntOption)
+  .option("--lsp", "include optional read-only LSP assist for selected focus files")
+  .option("--lsp-timeout-ms <n>", "LSP request timeout in milliseconds", parseIntOption)
+  .option("--lsp-max-files <n>", "maximum files to inspect with LSP assist", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Build the default Codex-first task brief with bounded impact, risks, tests, freshness, and snippets.")
@@ -458,8 +537,7 @@ program
         budget: number;
         limit: number;
         snippets: boolean;
-        autoRefresh: boolean;
-      }
+      } & CliQueryOptions
     ) =>
       printQuery(
         await taskBriefQuery(
@@ -475,7 +553,7 @@ program
             limit: opts.limit,
             includeSnippets: opts.snippets
           },
-          { autoRefresh: opts.autoRefresh }
+          queryOptionsFromCli(opts)
         )
       )
   );
@@ -494,6 +572,18 @@ program
   .option("--limit <n>", "maximum focus items", parseIntOption, 12)
   .option("--snippets", "include source snippets", true)
   .option("--no-snippets", "omit source snippets")
+  .option("--semantic", "force the semantic retrieval lane even when auto-detection would skip it")
+  .option("--no-semantic", "disable automatic semantic retrieval for this query")
+  .option("--semantic-provider <provider>", "semantic query provider: openai or local-command", parseSemanticProvider)
+  .option("--semantic-model <model>", "semantic embedding model name")
+  .option("--semantic-dimensions <n>", "semantic embedding dimensions", parseIntOption)
+  .option("--semantic-command <command>", "local semantic embedding command for --semantic-provider local-command")
+  .option("--semantic-arg <arg...>", "argument for the local semantic embedding command")
+  .option("--semantic-timeout-ms <n>", "semantic query timeout in milliseconds", parseIntOption)
+  .option("--semantic-batch-size <n>", "semantic query batch size", parseIntOption)
+  .option("--lsp", "include optional read-only LSP assist for selected focus files")
+  .option("--lsp-timeout-ms <n>", "LSP request timeout in milliseconds", parseIntOption)
+  .option("--lsp-max-files <n>", "maximum files to inspect with LSP assist", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Build a compact task-shaped Codexa context pack.")
@@ -510,8 +600,7 @@ program
         budget: number;
         limit: number;
         snippets: boolean;
-        autoRefresh: boolean;
-      }
+      } & CliQueryOptions
     ) =>
       printQuery(
         await contextPackQuery(
@@ -527,7 +616,7 @@ program
             limit: opts.limit,
             includeSnippets: opts.snippets
           },
-          { autoRefresh: opts.autoRefresh }
+          queryOptionsFromCli(opts)
         )
       )
   );
@@ -540,11 +629,20 @@ program
   .option("--limit <n>", "maximum focus items", parseIntOption, 10)
   .option("--diff", "include current dirty git diff", true)
   .option("--no-diff", "ignore current dirty git diff")
+  .option("--semantic", "force the semantic retrieval lane even when auto-detection would skip it")
+  .option("--no-semantic", "disable automatic semantic retrieval for this query")
+  .option("--semantic-provider <provider>", "semantic query provider: openai or local-command", parseSemanticProvider)
+  .option("--semantic-model <model>", "semantic embedding model name")
+  .option("--semantic-dimensions <n>", "semantic embedding dimensions", parseIntOption)
+  .option("--semantic-command <command>", "local semantic embedding command for --semantic-provider local-command")
+  .option("--semantic-arg <arg...>", "argument for the local semantic embedding command")
+  .option("--semantic-timeout-ms <n>", "semantic query timeout in milliseconds", parseIntOption)
+  .option("--semantic-batch-size <n>", "semantic query batch size", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Classify a broad task, choose likely subsystems, and recommend the next Codexa call.")
-  .action(async (repo: string, opts: { task?: string; budget: number; limit: number; diff: boolean; autoRefresh: boolean }) =>
-    printQuery(await focusBriefQuery(path.resolve(repo), { task: opts.task, tokenBudget: opts.budget, limit: opts.limit, diff: opts.diff }, { autoRefresh: opts.autoRefresh }))
+  .action(async (repo: string, opts: { task?: string; budget: number; limit: number; diff: boolean } & CliQueryOptions) =>
+    printQuery(await focusBriefQuery(path.resolve(repo), { task: opts.task, tokenBudget: opts.budget, limit: opts.limit, diff: opts.diff }, queryOptionsFromCli(opts)))
   );
 
 program
@@ -555,11 +653,20 @@ program
   .option("--limit <n>", "maximum focus items", parseIntOption, 10)
   .option("--diff", "include current dirty git diff", true)
   .option("--no-diff", "ignore current dirty git diff")
+  .option("--semantic", "force the semantic retrieval lane even when auto-detection would skip it")
+  .option("--no-semantic", "disable automatic semantic retrieval for this query")
+  .option("--semantic-provider <provider>", "semantic query provider: openai or local-command", parseSemanticProvider)
+  .option("--semantic-model <model>", "semantic embedding model name")
+  .option("--semantic-dimensions <n>", "semantic embedding dimensions", parseIntOption)
+  .option("--semantic-command <command>", "local semantic embedding command for --semantic-provider local-command")
+  .option("--semantic-arg <arg...>", "argument for the local semantic embedding command")
+  .option("--semantic-timeout-ms <n>", "semantic query timeout in milliseconds", parseIntOption)
+  .option("--semantic-batch-size <n>", "semantic query batch size", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Print the Codexa focus/session packet used when Codex focuses a project.")
-  .action(async (repo: string, opts: { task?: string; budget: number; limit: number; diff: boolean; autoRefresh: boolean }) =>
-    printQuery(await focusBriefQuery(path.resolve(repo), { task: opts.task, tokenBudget: opts.budget, limit: opts.limit, diff: opts.diff }, { autoRefresh: opts.autoRefresh }))
+  .action(async (repo: string, opts: { task?: string; budget: number; limit: number; diff: boolean } & CliQueryOptions) =>
+    printQuery(await focusBriefQuery(path.resolve(repo), { task: opts.task, tokenBudget: opts.budget, limit: opts.limit, diff: opts.diff }, queryOptionsFromCli(opts)))
   );
 
 program
@@ -610,11 +717,20 @@ program
   .option("--file <path>", "target file")
   .option("--symbol <symbol>", "target symbol")
   .option("--limit <n>", "maximum workflow traces", parseIntOption, 8)
+  .option("--semantic", "force the semantic retrieval lane even when auto-detection would skip it")
+  .option("--no-semantic", "disable automatic semantic retrieval for this query")
+  .option("--semantic-provider <provider>", "semantic query provider: openai or local-command", parseSemanticProvider)
+  .option("--semantic-model <model>", "semantic embedding model name")
+  .option("--semantic-dimensions <n>", "semantic embedding dimensions", parseIntOption)
+  .option("--semantic-command <command>", "local semantic embedding command for --semantic-provider local-command")
+  .option("--semantic-arg <arg...>", "argument for the local semantic embedding command")
+  .option("--semantic-timeout-ms <n>", "semantic query timeout in milliseconds", parseIntOption)
+  .option("--semantic-batch-size <n>", "semantic query batch size", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Show route/job/manifest workflow traces related to a task, file, or symbol.")
-  .action(async (repo: string, opts: { query?: string; file?: string; symbol?: string; limit: number; autoRefresh: boolean }) =>
-    printQuery(await workflowPathQuery(path.resolve(repo), opts, { autoRefresh: opts.autoRefresh }))
+  .action(async (repo: string, opts: { query?: string; file?: string; symbol?: string; limit: number } & CliQueryOptions) =>
+    printQuery(await workflowPathQuery(path.resolve(repo), opts, queryOptionsFromCli(opts)))
   );
 
 program
@@ -631,6 +747,18 @@ program
   .option("--limit <n>", "maximum focus items", parseIntOption, 10)
   .option("--save-snapshot", "save a plan-time task snapshot for post-edit review", false)
   .option("--task-id <id>", "optional id for the saved task snapshot")
+  .option("--semantic", "force the semantic retrieval lane even when auto-detection would skip it")
+  .option("--no-semantic", "disable automatic semantic retrieval for this query")
+  .option("--semantic-provider <provider>", "semantic query provider: openai or local-command", parseSemanticProvider)
+  .option("--semantic-model <model>", "semantic embedding model name")
+  .option("--semantic-dimensions <n>", "semantic embedding dimensions", parseIntOption)
+  .option("--semantic-command <command>", "local semantic embedding command for --semantic-provider local-command")
+  .option("--semantic-arg <arg...>", "argument for the local semantic embedding command")
+  .option("--semantic-timeout-ms <n>", "semantic query timeout in milliseconds", parseIntOption)
+  .option("--semantic-batch-size <n>", "semantic query batch size", parseIntOption)
+  .option("--lsp", "include optional read-only LSP assist for selected focus files")
+  .option("--lsp-timeout-ms <n>", "LSP request timeout in milliseconds", parseIntOption)
+  .option("--lsp-max-files <n>", "maximum files to inspect with LSP assist", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Build a Codex edit plan from focus, graph/workflow context, risks, tests, and gaps.")
@@ -648,8 +776,7 @@ program
         limit: number;
         saveSnapshot: boolean;
         taskId?: string;
-        autoRefresh: boolean;
-      }
+      } & CliQueryOptions
     ) =>
       printQuery(
         await changePlanQuery(
@@ -666,7 +793,7 @@ program
             saveSnapshot: opts.saveSnapshot,
             taskId: opts.taskId
           },
-          { autoRefresh: opts.autoRefresh }
+          queryOptionsFromCli(opts)
         )
       )
   );
@@ -784,11 +911,23 @@ program
 program
   .command("serve")
   .argument("<repo>", "repository root")
+  .option("--semantic", "force semantic retrieval for MCP task queries when auto-detection would skip it")
+  .option("--no-semantic", "disable automatic semantic retrieval for MCP task queries")
+  .option("--semantic-provider <provider>", "semantic query provider: openai or local-command", parseSemanticProvider)
+  .option("--semantic-model <model>", "semantic embedding model name")
+  .option("--semantic-dimensions <n>", "semantic embedding dimensions", parseIntOption)
+  .option("--semantic-command <command>", "local semantic embedding command for --semantic-provider local-command")
+  .option("--semantic-arg <arg...>", "argument for the local semantic embedding command")
+  .option("--semantic-timeout-ms <n>", "semantic query timeout in milliseconds", parseIntOption)
+  .option("--semantic-batch-size <n>", "semantic query batch size", parseIntOption)
+  .option("--lsp", "enable optional read-only LSP assist for MCP symbol/file/context calls")
+  .option("--lsp-timeout-ms <n>", "LSP request timeout in milliseconds", parseIntOption)
+  .option("--lsp-max-files <n>", "maximum files to inspect with LSP assist", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before answering MCP context tools", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before answering MCP context tools")
   .description("Start the stdio MCP server.")
-  .action(async (repo: string, opts: { autoRefresh: boolean }) => {
-    await serveMcp(path.resolve(repo), { autoRefresh: opts.autoRefresh });
+  .action(async (repo: string, opts: CliQueryOptions) => {
+    await serveMcp(path.resolve(repo), queryOptionsFromCli(opts));
   });
 
 program.parseAsync(process.argv).catch((error) => {
@@ -803,6 +942,38 @@ function printQuery(result: { text: string }) {
 function invokedCliName(): string {
   const basename = path.basename(process.argv[1] ?? "codexa").replace(/\.[cm]?[jt]sx?$/u, "");
   return basename && basename !== "cli" ? basename : "codexa";
+}
+
+type CliQueryOptions = {
+  autoRefresh?: boolean;
+  semantic?: boolean;
+  semanticProvider?: SemanticProviderKind;
+  semanticModel?: string;
+  semanticDimensions?: number;
+  semanticCommand?: string;
+  semanticArg?: string[];
+  semanticTimeoutMs?: number;
+  semanticBatchSize?: number;
+  lsp?: boolean;
+  lspTimeoutMs?: number;
+  lspMaxFiles?: number;
+};
+
+function queryOptionsFromCli(opts: CliQueryOptions): QueryOptions {
+  return {
+    autoRefresh: opts.autoRefresh,
+    semantic: opts.semantic,
+    semanticProvider: opts.semanticProvider,
+    semanticModel: opts.semanticModel,
+    semanticDimensions: opts.semanticDimensions,
+    semanticCommand: opts.semanticCommand,
+    semanticArgs: opts.semanticArg,
+    semanticTimeoutMs: opts.semanticTimeoutMs,
+    semanticBatchSize: opts.semanticBatchSize,
+    lsp: opts.lsp,
+    lspTimeoutMs: opts.lspTimeoutMs,
+    lspMaxFiles: opts.lspMaxFiles
+  };
 }
 
 function compactHookOutput(text: string): string {
@@ -916,6 +1087,14 @@ function parseChangeType(value: string): ChangeType {
     return value as ChangeType;
   }
   throw new Error(`Invalid change type: ${value}`);
+}
+
+function parseSemanticProvider(value: string): SemanticProviderKind {
+  const provider = semanticProviderFromValue(value);
+  if (!provider) {
+    throw new Error(`Invalid semantic provider: ${value}`);
+  }
+  return provider;
 }
 
 function parseWaiverOptions(values: string[] | undefined): VerificationWaiver[] | undefined {

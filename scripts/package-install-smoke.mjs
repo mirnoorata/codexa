@@ -32,6 +32,10 @@ try {
   const packageFiles = new Set((packageEntry.files ?? []).map((entry) => entry.path));
   requirePackedFile(packageFiles, "dist/cli.js");
   requirePackedFile(packageFiles, "dist/mcp.js");
+  requirePackedFile(packageFiles, "plugins/codexa/.codex-plugin/plugin.json");
+  requirePackedFile(packageFiles, "plugins/codexa/.mcp.json");
+  requirePackedFile(packageFiles, "plugins/codexa/scripts/codexa-mcp.js");
+  requirePackedFile(packageFiles, "plugins/codexa/skills/codexa/SKILL.md");
   rejectPackedPrefix(packageFiles, "src/");
   rejectPackedPrefix(packageFiles, ".codex/");
 

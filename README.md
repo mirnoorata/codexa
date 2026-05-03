@@ -60,6 +60,10 @@ serves focused MCP context tools over stdio.
   re-exports, type-only exports, JSX/createElement references, object literal
   methods, project references, and path alias metadata without running an LSP
   daemon.
+- Optional read-only LSP assist for TypeScript, JavaScript, and Python can be
+  enabled with `--lsp` or `CODEXA_LSP=1`. It queries a stdio language server for
+  document symbols, definitions, references, and diagnostics, fails open when no
+  server is configured, and never edits source files.
 - Python package/static analysis resolves relative imports, `__init__.py`
   re-exports, pytest fixture dependencies, class base references, and generic
   FastAPI/Celery/Pydantic/SQLAlchemy hints with heuristic labels where runtime
@@ -85,6 +89,14 @@ serves focused MCP context tools over stdio.
   intent rules. Broad prompts such as "how does queue polling work?" classify
   likely subsystems, explain why, and recommend the next MCP call instead of
   falling back to top-ranked files.
+- Automatic semantic retrieval stores embeddings in
+  `.codex/cache/codexa-semantic-v1/` after `codexa semantic-index <repo>`.
+  After that one-time setup, normal query commands decide whether to use the
+  semantic lane from cache/provider readiness; `--semantic` is only a
+  force/debug override. Providers are OpenAI embeddings or an explicit local
+  JSONL embedding command. Codexa still ships no vector database and does not
+  call embedding providers unless a semantic cache and provider configuration
+  are present, or semantic retrieval is explicitly forced.
 - Explicit graph queries over persisted typed edges: `DEFINES`, `IMPORTS`,
   `CALLS`, `REFERENCES`, `TESTS`, `ROUTE`, `JOB`, and `RISK`.
 - Workflow traces for route/job/manifest execution paths plus generated
@@ -121,7 +133,10 @@ serves focused MCP context tools over stdio.
 - Live indexing via `codexa watch <repo>`: a debounced filesystem watcher plus
   git freshness poll keeps `.codex/codebase/` artifacts updated through the
   same locked, atomic, parse-cache-backed index path as manual indexing.
-- No graph DB, vector DB, embeddings, web UI, formal solver, LSP daemon, or
+- Codex plugin packaging under `plugins/codexa/`: the package includes a Codexa
+  skill, plugin manifest, and MCP wrapper so Codex plugin installs can discover
+  the same local context workflow.
+- No graph DB, vector DB, web UI, formal solver, always-on LSP daemon, or
   source-mutating MCP tools.
 
 ## Commands
@@ -141,6 +156,8 @@ node dist/cli.js session-start <repo>
 node dist/cli.js hook-pre-edit <repo>
 node dist/cli.js hook-post-edit <repo>
 node dist/cli.js index <repo>
+node dist/cli.js semantic-index <repo> --provider openai
+node dist/cli.js semantic-index <repo> --provider local-command --command ./embed-jsonl
 node dist/cli.js watch <repo>
 node dist/cli.js static-analysis <repo> --semgrep-report /tmp/semgrep.json --codeql-report /tmp/codeql.sarif
 node dist/cli.js doctor <repo>
@@ -148,8 +165,8 @@ node dist/cli.js doctor <repo> --json
 node dist/cli.js status <repo>
 node dist/cli.js repo-map <repo> --budget 1200
 node dist/cli.js find-context <repo> --query "auth middleware"
-node dist/cli.js explain <repo> --file src/app.ts
-node dist/cli.js explain <repo> --symbol usePolling
+node dist/cli.js explain <repo> --file src/app.ts --lsp
+node dist/cli.js explain <repo> --symbol usePolling --lsp
 node dist/cli.js search <repo> --query usePolling
 node dist/cli.js placeholder-report <repo> --limit 20
 node dist/cli.js placeholder-report <repo> --include-tests --include-docs --include-generated
@@ -164,7 +181,7 @@ node dist/cli.js callers <repo> --symbol usePolling
 node dist/cli.js callees <repo> --file src/App.tsx
 node dist/cli.js dependency-path <repo> --from-file src/App.tsx --to-file src/features/use-polling.ts
 node dist/cli.js workflow-path <repo> --query "queue workflow"
-node dist/cli.js change-plan <repo> --task "Change polling behavior safely" --file src/features/use-polling.ts --save-snapshot --task-id polling-update
+node dist/cli.js change-plan <repo> --task "Change polling behavior safely" --file src/features/use-polling.ts --save-snapshot --task-id polling-update --lsp
 node dist/cli.js post-edit-review <repo> --task-id polling-update --ran-command "npm run check"
 node dist/cli.js post-edit-review <repo> --task-id polling-update --ran-command-report '{"command":"npm run check","exitCode":0,"cwd":"<repo>","packageManager":"npm","packageRoot":".","scriptName":"check","args":[],"durationMs":1200,"stdoutSummary":"typecheck and tests passed"}'
 node dist/cli.js post-edit-review <repo> --task-id polling-update --ran-test src/features/use-polling.test.ts
@@ -196,6 +213,33 @@ before answering. Use `--no-auto-refresh` on `repo-map`, `find-context`,
 rewriting it.
 
 After `npm link`, the same commands are available as `codexa ...`.
+
+Semantic retrieval is a two-step installed capability. First build the cache:
+
+```bash
+codexa semantic-index <repo> --provider openai
+codexa semantic-index <repo> --provider local-command --command ./embed-jsonl
+```
+
+After that, `find-context`, `search`, `brief`, `context-pack`, `focus-brief`,
+`session-context`, `workflow-path`, `change-plan`, and `serve` use the semantic
+lane automatically when the cache snapshot matches and the provider can embed
+the query. OpenAI uses `OPENAI_API_KEY` and defaults to
+`text-embedding-3-small`. `local-command` receives JSONL on stdin with
+`{id,text,model,dimensions}` and must return JSON, JSONL, or
+`{embeddings:[...]}` records containing `{id,embedding}`. Use `--semantic` only
+to force diagnostics when auto-detection would skip the lane, and
+`--no-semantic` to disable it for a single call. If the cache is missing, stale,
+or provider settings do not match during forced use, Codexa reports the semantic
+lane as unavailable and returns normal non-semantic context.
+
+LSP assist is also opt-in. Pass `--lsp` to `explain`, `brief`, `context-pack`,
+`change-plan`, or `serve`, or set `CODEXA_LSP=1`. Codexa discovers
+`typescript-language-server --stdio`, `basedpyright-langserver --stdio`, or
+`pyright-langserver --stdio` when available. You can override discovery with
+`CODEXA_LSP_TYPESCRIPT_COMMAND`, `CODEXA_LSP_TYPESCRIPT_ARGS_JSON`,
+`CODEXA_LSP_JAVASCRIPT_COMMAND`, `CODEXA_LSP_JAVASCRIPT_ARGS_JSON`,
+`CODEXA_LSP_PYTHON_COMMAND`, and `CODEXA_LSP_PYTHON_ARGS_JSON`.
 
 To prepare a functional `codera` package for name parking, run:
 
@@ -416,6 +460,12 @@ codexa init
 Codex should initialize the current focused repo, then run the session-start
 check.
 
+The npm package also ships a Codex plugin bundle at `plugins/codexa/`. The
+plugin contains the Codexa skill, plugin manifest, and a small MCP wrapper that
+resolves the focused git repository from `CODEXA_REPO`, Codex workspace
+environment variables, or the current directory, then launches
+`npx -y @mirnoorata/codexa serve <repo>`.
+
 ## MCP Configuration
 
 `codexa init` writes the local Codex MCP entry automatically. The generated
@@ -452,7 +502,8 @@ When auto-refresh is enabled, tools are source-read-only but not strictly
 filesystem-read-only because they may update generated Codexa cache artifacts.
 In that mode Codexa does not advertise context tools as `readOnlyHint: true`;
 use `--no-auto-refresh` when the MCP host needs strict filesystem-read-only
-tool metadata.
+tool metadata. If OpenAI semantic embeddings are enabled for the MCP server,
+semantic-capable context tools advertise `openWorldHint: true`.
 
 Generated artifacts are also exposed as MCP resources:
 `codexa://repo/codebase/README.md`,

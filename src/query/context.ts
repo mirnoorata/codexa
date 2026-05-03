@@ -5,6 +5,7 @@ import type { ChangedSymbol, CodexaIndex, ContextPackInput, EvidenceTier, FileFa
 import { limitText, uniqueSorted } from "../util.js";
 import { formatDiffGroups, formatGaps, groupDiffImpact, indexGaps } from "./diff.js";
 import { addContextPackImpactExpansion, verificationRecipes } from "./impact.js";
+import { lspAssistForFiles, lspOptionsFromQueryOptions } from "../lsp/assist.js";
 import { betterTier, clampInt, confidenceTier, fitLinesToTokenBudget, focusTierCounts, formatReasons, formatRecipes, limitTextToTokens, tierScore } from "./formatting.js";
 import { formatWorkflowSummary, recommendNextCodexaCall } from "./graph.js";
 import { assessContextQuality, formatContextQuality, formatValueEstimate, type ContextQuality, valueEstimate } from "./quality.js";
@@ -15,7 +16,8 @@ import { ensureQuerySession, type QuerySessionInput } from "./session.js";
 import { formatTestRecommendations, recommendTests } from "./tests.js";
 import { findFile, resolveFileTarget, resolveSymbolTarget } from "./targets.js";
 import { coverageForDisplay, formatVerificationCoverage, verificationCommandPlan, verificationCommandsForContext } from "./verification.js";
-import { classifyTaskIntent, retrieveForTask, type IntentConfidence, type RetrievalMatch, type TaskIntent } from "../retrieval.js";
+import { classifyTaskIntent, retrieveForTask, type IntentConfidence, type RetrievalMatch, type RetrievalResult, type TaskIntent } from "../retrieval.js";
+import { semanticOptionsFromQueryOptions } from "../semantic-retrieval.js";
 import { compactChangedSymbol, compactDiffGroup, compactFileFact, compactRetrievalResult, compactWorkflowTrace } from "./compact-data.js";
 
 type FocusSelectionEntry = { file: FileFact; score: number; reasons: string[]; matchedTerms: string[]; tier: EvidenceTier };
@@ -86,7 +88,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
   const queryText = explicitQuery || derivedTaskQuery;
   const naturalRetrieval =
     contextInput.task && shouldRunNaturalRetrieval(explicitTargetProvided, explicitConfigTarget, taskIntents)
-      ? retrieveForTask(index, contextInput.task, Math.max(limit * 2, 12))
+      ? await retrieveForTask(index, contextInput.task, Math.max(limit * 2, 12), semanticOptionsFromQueryOptions(repoRoot, options))
       : undefined;
   const naturalExpansionAllowed = Boolean(
     naturalRetrieval &&
@@ -237,6 +239,14 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     affectedCount: changed.length,
     quality
   });
+  const lspAssist =
+    options.lsp || process.env.CODEXA_LSP === "1"
+      ? await lspAssistForFiles(
+          repoRoot,
+          focusEntries.map((entry) => entry.file),
+          lspOptionsFromQueryOptions(options)
+        )
+      : [];
 
   const text = [
     freshnessBanner(freshness, refresh),
@@ -266,6 +276,12 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     "",
     "Known gaps:",
     ...formatGaps(gaps),
+    lspAssist.length > 0 ? "" : undefined,
+    lspAssist.length > 0 ? "LSP assist:" : undefined,
+    ...lspAssist.flatMap((assist) => [
+      `- ${assist.file ?? "unknown"}: ${assist.status}${assist.server ? ` via ${assist.server}` : ""}; symbols ${assist.documentSymbols.length}; diagnostics ${assist.diagnostics.length}`,
+      ...assist.warnings.slice(0, 3).map((warning) => `  warning: ${warning}`)
+    ]),
     suppressActionGuidance ? undefined : "",
     suppressActionGuidance ? undefined : "If run, these commands would cover:",
     ...(suppressActionGuidance ? [] : formatVerificationCoverage(verificationCoverage)),
@@ -302,6 +318,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       nextReads,
       baseline,
       retrieval: naturalRetrieval ? compactRetrievalResult(naturalRetrieval) : undefined,
+      lspAssist,
       intentConfidence: packetIntent,
       packetVerdict: packetIntent?.verdict,
       diagnostics: naturalRetrieval?.diagnostics ?? [],
@@ -355,7 +372,7 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
   const task = focusInput.task?.trim() || "Session start: identify project focus, current changes, workflows, and next Codexa call";
   const limit = clampInt(focusInput.limit ?? 10, 3, session.maxResults);
   const tokenBudget = clampInt(focusInput.tokenBudget ?? 2400, 600, 8000);
-  const retrieval = retrieveForTask(index, task, limit);
+  const retrieval = await retrieveForTask(index, task, limit, semanticOptionsFromQueryOptions(repoRoot, options));
   const includeDiff = focusInput.diff ?? true;
   const changedEntries = includeDiff ? await session.getChangedFileEntries() : [];
   const changed = changedEntries.map((entry) => entry.path);
@@ -511,7 +528,7 @@ function focusMatchTier(file: FileFact, task: string, match?: RetrievalMatch): E
 
 function workflowFocusEntries(
   index: CodexaIndex,
-  workflows: NonNullable<ReturnType<typeof retrieveForTask>["workflows"]>,
+  workflows: RetrievalResult["workflows"],
   task: string,
   limit: number
 ): FocusSelectionEntry[] {
@@ -565,9 +582,9 @@ function workflowFocusEntries(
 }
 
 function preferredWorkflowsForTask(
-  workflows: NonNullable<ReturnType<typeof retrieveForTask>["workflows"]>,
+  workflows: RetrievalResult["workflows"],
   task: string
-): NonNullable<ReturnType<typeof retrieveForTask>["workflows"]> {
+): RetrievalResult["workflows"] {
   const lower = task.toLowerCase();
   const preferredKinds = new Set<string>();
   if (/\b(route|routes|endpoint|endpoints|api|request|handler|backend)\b/u.test(lower)) {
