@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildIndexLocked, getFreshness } from "./indexer.js";
 import { checkGithubSync } from "./github-sync.js";
+import { runDoctor } from "./doctor.js";
 import { initializeProject, sessionStartSummary } from "./init.js";
 import { runLiveIndexer, type LiveIndexEvent } from "./live-index.js";
 import { serveMcp } from "./mcp.js";
@@ -31,7 +32,15 @@ import {
   workflowPathQuery
 } from "./queries.js";
 import { RAW_SEARCH_EXPLICIT_PATTERN_LIMIT } from "./query/raw-search.js";
-import { loadPostEditHookReviewState, postEditHookReviewSignature, savePostEditHookReviewState, type PostEditOutcome } from "./post-edit-outcomes.js";
+import {
+  loadPostEditHookReviewState,
+  postEditHookReviewSignature,
+  recordCodexaHookEvent,
+  savePostEditHookReviewState,
+  type CodexaHookEventInput,
+  type CodexaHookName,
+  type PostEditOutcome
+} from "./post-edit-outcomes.js";
 import type { ChangeType, VerificationCommandReport, VerificationWaiver } from "./types.js";
 import { runEval } from "./eval.js";
 
@@ -96,14 +105,15 @@ program
   .argument("<repo>", "repository root")
   .description("Cheap hook helper that reminds Codex when no change-plan snapshot exists before an edit.")
   .action(async (repo: string) => {
-    await runAdvisoryHook("change-plan snapshot check", async () => {
-      const resolved = path.resolve(repo);
+    const resolved = path.resolve(repo);
+    await runAdvisoryHook(resolved, "pre-edit", "change-plan snapshot check", async () => {
       const snapshot = await loadTaskSnapshot(resolved);
       if (!snapshot.snapshot) {
         console.log("Codexa: no change-plan snapshot is available. For code edits, call change_plan with saveSnapshot=true before editing when the task is non-trivial.");
-        return;
+        return { status: "skipped", reason: "missing-change-plan-snapshot", taskId: snapshot.latestTaskId };
       }
       console.log(`Codexa: change-plan snapshot ready (${snapshot.snapshot.taskId}). After edits, post_edit_review will compare planned vs actual work.`);
+      return { status: "ok", reason: "snapshot-ready", taskId: snapshot.snapshot.taskId };
     });
   });
 
@@ -112,8 +122,8 @@ program
   .argument("<repo>", "repository root")
   .description("Bounded hook helper that runs the post-edit review packet after edit tools.")
   .action(async (repo: string) => {
-    await runAdvisoryHook("post-edit review", async () => {
-      const resolved = path.resolve(repo);
+    const resolved = path.resolve(repo);
+    await runAdvisoryHook(resolved, "post-edit", "post-edit review", async () => {
       const snapshot = await loadTaskSnapshot(resolved);
       const freshness = await getFreshness(resolved, undefined, { recover: false });
       const signature = postEditHookReviewSignature({ freshness, taskId: snapshot.snapshot?.taskId ?? snapshot.latestTaskId });
@@ -121,7 +131,7 @@ program
       if (previous?.signature === signature) {
         const verdict = previous.verdict ? `; last verdict ${previous.verdict}` : "";
         console.log(`Codexa: post-edit review unchanged since last hook run${verdict}.`);
-        return;
+        return { status: "skipped", reason: "duplicate-dirty-tree", signature, taskId: snapshot.snapshot?.taskId ?? snapshot.latestTaskId, verdict: previous.verdict, outcomeId: previous.outcomeId };
       }
       const result = await postEditReviewQuery(
         resolved,
@@ -133,10 +143,13 @@ program
         { autoRefresh: true, commandBudgetMs: 15_000, maxResults: 6 }
       );
       console.log(compactHookOutput(result.text));
+      const outcome = postEditOutcomeFromQueryResult(result.data);
+      const reviewedSignature = postEditHookReviewSignature({ freshness: result.freshness, taskId: snapshot.snapshot?.taskId ?? snapshot.latestTaskId });
       await savePostEditHookReviewState(resolved, {
-        signature: postEditHookReviewSignature({ freshness: result.freshness, taskId: snapshot.snapshot?.taskId ?? snapshot.latestTaskId }),
-        outcome: postEditOutcomeFromQueryResult(result.data)
+        signature: reviewedSignature,
+        outcome
       });
+      return { status: "ok", reason: "reviewed", signature: reviewedSignature, taskId: snapshot.snapshot?.taskId ?? snapshot.latestTaskId, verdict: outcome?.verdict, outcomeId: outcome?.outcomeId };
     });
   });
 
@@ -258,6 +271,19 @@ program
       console.log(opts.json ? JSON.stringify(result.data, null, 2) : result.text);
     }
   );
+
+program
+  .command("doctor")
+  .argument("[repo]", "repository root; defaults to the current directory", process.cwd())
+  .option("--json", "emit structured JSON")
+  .description("Diagnose local Codexa wiring, index freshness, hooks, and generated state.")
+  .action(async (repo: string, opts: { json?: boolean }) => {
+    const result = await runDoctor(path.resolve(repo), { json: opts.json });
+    console.log(result.text);
+    if (!result.ok) {
+      process.exitCode = 1;
+    }
+  });
 
 program
   .command("status")
@@ -741,7 +767,18 @@ program
   .option("--no-auto-refresh", "do not refresh a stale or missing index before rendering the context preview")
   .description("Print the lightweight Codexa SessionStart summary used by Codex hooks.")
   .action(async (repo: string | undefined, opts: { context: boolean; autoRefresh: boolean }) => {
-    console.log(await sessionStartSummary(repo, opts.context || process.env.CODEXA_SESSIONSTART_CONTEXT === "1", opts.autoRefresh));
+    const resolved = path.resolve(repo ?? process.cwd());
+    const startedAt = Date.now();
+    const summary = await sessionStartSummary(repo, opts.context || process.env.CODEXA_SESSIONSTART_CONTEXT === "1", opts.autoRefresh);
+    console.log(summary);
+    const unavailable = summary.includes("Codexa status unavailable:");
+    await safeRecordHookEvent(resolved, {
+      hook: "session-start",
+      status: unavailable ? "failed" : "ok",
+      durationMs: Date.now() - startedAt,
+      reason: opts.context || process.env.CODEXA_SESSIONSTART_CONTEXT === "1" ? "context-preview" : "status",
+      error: unavailable ? summary.split(/\r?\n/u).find((line) => line.includes("Codexa status unavailable:")) : undefined
+    });
   });
 
 program
@@ -806,6 +843,8 @@ function compactHookOutput(text: string): string {
   return keep.length > 0 ? keep.join("\n") : lines.slice(0, 16).join("\n");
 }
 
+type HookActionResult = Omit<CodexaHookEventInput, "hook" | "durationMs"> | void;
+
 function postEditOutcomeFromQueryResult(data: unknown): PostEditOutcome | undefined {
   if (!data || typeof data !== "object") {
     return undefined;
@@ -818,12 +857,39 @@ function postEditOutcomeFromQueryResult(data: unknown): PostEditOutcome | undefi
   return record.schemaVersion === 1 && typeof record.outcomeId === "string" ? (record as PostEditOutcome) : undefined;
 }
 
-async function runAdvisoryHook(label: string, action: () => Promise<void>): Promise<void> {
+async function runAdvisoryHook(repoRoot: string, hook: CodexaHookName, label: string, action: () => Promise<HookActionResult>): Promise<void> {
+  const startedAt = Date.now();
   try {
-    await action();
+    const result = await action();
+    await safeRecordHookEvent(repoRoot, {
+      hook,
+      status: result?.status ?? "ok",
+      durationMs: Date.now() - startedAt,
+      reason: result?.reason,
+      taskId: result?.taskId,
+      verdict: result?.verdict,
+      outcomeId: result?.outcomeId,
+      signature: result?.signature
+    });
   } catch (error) {
-    console.log(`Codexa: ${label} unavailable: ${hookErrorMessage(error)}`);
+    const message = hookErrorMessage(error);
+    console.log(`Codexa: ${label} unavailable: ${message}`);
     console.log("Codexa: hook is advisory; continuing without blocking the edit.");
+    await safeRecordHookEvent(repoRoot, {
+      hook,
+      status: "failed",
+      durationMs: Date.now() - startedAt,
+      reason: "unavailable",
+      error: message
+    });
+  }
+}
+
+async function safeRecordHookEvent(repoRoot: string, event: CodexaHookEventInput): Promise<void> {
+  try {
+    await recordCodexaHookEvent(repoRoot, event);
+  } catch {
+    // Hook telemetry is local diagnostics only; it must never make advisory hooks block.
   }
 }
 

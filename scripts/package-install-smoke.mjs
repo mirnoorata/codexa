@@ -61,6 +61,12 @@ try {
   });
   assertIncludes(status.stdout, "Codexa status", "status should render from installed package");
 
+  const doctor = run(codexa, ["doctor", targetRepo], {
+    cwd: consumerRoot,
+    label: "installed codexa doctor"
+  });
+  assertIncludes(doctor.stdout, "Codexa doctor", "doctor should render from installed package");
+
   const repoMap = run(codexa, ["repo-map", targetRepo, "--no-auto-refresh", "--budget", "900", "--limit", "5"], {
     cwd: consumerRoot,
     label: "installed codexa repo-map"

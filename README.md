@@ -99,14 +99,17 @@ serves focused MCP context tools over stdio.
   compares the actual post-edit dirty tree against that snapshot for drift,
   unplanned files, risk/workflow signals, placeholder risk deltas, and tests
   still unaccounted for.
+- Local diagnostics: `codexa doctor` checks repo wiring, index freshness,
+  generated artifacts, hook setup, and the latest structured hook event.
 - `codexa init` also writes lightweight edit hooks when supported by Codex
   hooks: `hook-pre-edit` reminds Codex when a non-trivial edit lacks a saved
   change-plan snapshot, and `hook-post-edit` runs a bounded post-edit review.
   These hooks are advisory and fail open: setup/query errors print a bounded
   unavailable message and exit successfully so editor tool calls are not
-  blocked. Each successful review writes a compact outcome record under
-  `.codex/cache/codexa-outcomes/`; eval runs summarize those outcomes under
-  `.codex/cache/codexa-evals/`.
+  blocked. Hook runs write compact local JSONL diagnostics under ignored
+  `.codex/cache/codexa-hooks/` state. Each successful review writes a compact
+  outcome record under `.codex/cache/codexa-outcomes/`; eval runs summarize
+  those outcomes under `.codex/cache/codexa-evals/`.
 - Strict evidence tiers in query output: `authoritative`, `derived`,
   `heuristic`, and `fallback`, including test recommendations.
 - Deterministic context quality checks that can warn when a packet is
@@ -140,6 +143,8 @@ node dist/cli.js hook-post-edit <repo>
 node dist/cli.js index <repo>
 node dist/cli.js watch <repo>
 node dist/cli.js static-analysis <repo> --semgrep-report /tmp/semgrep.json --codeql-report /tmp/codeql.sarif
+node dist/cli.js doctor <repo>
+node dist/cli.js doctor <repo> --json
 node dist/cli.js status <repo>
 node dist/cli.js repo-map <repo> --budget 1200
 node dist/cli.js find-context <repo> --query "auth middleware"
@@ -515,6 +520,11 @@ setting `CODEXA_SESSIONSTART_CONTEXT=1`. Generated edit hooks are advisory:
 context check is unavailable. The generated helper entry points are
 `session-start`, `hook-pre-edit`, and `hook-post-edit`; normal users usually
 reach them through Codex hooks rather than invoking them directly.
+
+Hook diagnostics are written locally to `.codex/cache/codexa-hooks/events.ndjson`
+and summarized by `codexa doctor <repo>`. The log is ignored state, bounded, and
+intended for answering whether a hook ran, skipped a duplicate tree, or failed
+open.
 
 ## Local State
 

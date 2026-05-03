@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readdir, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -27,6 +27,7 @@ describe("Codexa hook CLI", () => {
     expect(result.stderr).toBe("");
     expect(result.stdout).toContain("Codexa: post-edit review unavailable:");
     expect(result.stdout).toContain("Codexa: hook is advisory; continuing without blocking the edit.");
+    await expect(readFile(path.join(repo, ".codex/cache/codexa-hooks/events.ndjson"), "utf8")).rejects.toThrow();
   });
 
   it("keeps session-start advisory when query setup fails", async () => {
@@ -72,6 +73,60 @@ describe("Codexa hook CLI", () => {
       (entry) => entry.endsWith(".json") && entry !== "latest.json" && entry !== "latest-hook-review.json"
     );
     expect(outcomeFiles).toHaveLength(1);
+
+    const hookEvents = (await readFile(path.join(repo, ".codex/cache/codexa-hooks/events.ndjson"), "utf8"))
+      .trim()
+      .split(/\r?\n/u)
+      .map((line) => JSON.parse(line) as { hook: string; status: string; reason?: string });
+    expect(hookEvents).toMatchObject([
+      { hook: "post-edit", status: "ok", reason: "reviewed" },
+      { hook: "post-edit", status: "skipped", reason: "duplicate-dirty-tree" }
+    ]);
+    const latestHook = JSON.parse(await readFile(path.join(repo, ".codex/cache/codexa-hooks/latest.json"), "utf8")) as { status: string; reason?: string };
+    expect(latestHook).toMatchObject({ status: "skipped", reason: "duplicate-dirty-tree" });
+  });
+
+  it("reports doctor diagnostics for installed wiring and latest hook events", async () => {
+    const repo = await createHookFixtureRepo();
+    const cli = path.resolve(process.cwd(), "dist/cli.js");
+
+    const init = spawnSync(process.execPath, [cli, "init", repo], {
+      cwd: process.cwd(),
+      encoding: "utf8"
+    });
+    expect(init.status).toBe(0);
+
+    const sessionStart = spawnSync(process.execPath, [cli, "session-start", repo], {
+      cwd: process.cwd(),
+      encoding: "utf8"
+    });
+    expect(sessionStart.status).toBe(0);
+
+    const doctorJson = spawnSync(process.execPath, [cli, "doctor", repo, "--json"], {
+      cwd: process.cwd(),
+      encoding: "utf8"
+    });
+    expect(doctorJson.status).toBe(0);
+    const data = JSON.parse(doctorJson.stdout) as {
+      config: { mcpServerConfigured: boolean; codexHooksEnabled: boolean };
+      hooks: { sessionStart: boolean; preEdit: boolean; postEdit: boolean };
+      index: { missing: boolean } | null;
+      latestHookEvent: { hook: string; status: string } | null;
+      hookEventsPath: string;
+    };
+    expect(data.config).toMatchObject({ mcpServerConfigured: true, codexHooksEnabled: true });
+    expect(data.hooks).toMatchObject({ sessionStart: true, preEdit: true, postEdit: true });
+    expect(data.index?.missing).toBe(false);
+    expect(data.latestHookEvent).toMatchObject({ hook: "session-start", status: "ok" });
+    expect(data.hookEventsPath).toBe(".codex/cache/codexa-hooks/events.ndjson");
+
+    const doctorText = spawnSync(process.execPath, [cli, "doctor", repo], {
+      cwd: process.cwd(),
+      encoding: "utf8"
+    });
+    expect(doctorText.status).toBe(0);
+    expect(doctorText.stdout).toContain("Codexa doctor");
+    expect(doctorText.stdout).toContain("Latest hook: session-start ok");
   });
 });
 
