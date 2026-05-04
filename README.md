@@ -463,8 +463,8 @@ check.
 The npm package also ships a Codex plugin bundle at `plugins/codexa/`. The
 plugin contains the Codexa skill, plugin manifest, and a small MCP wrapper that
 resolves the focused git repository from `CODEXA_REPO`, Codex workspace
-environment variables, or the current directory, then launches
-`npx -y @mirnoorata/codexa serve <repo>`.
+environment variables, the current directory, or a workspace root with
+`.codex/WORKING.md`, then launches `npx -y @mirnoorata/codexa serve <repo>`.
 
 ## MCP Configuration
 
@@ -488,6 +488,17 @@ args = ["<codexa-checkout>/dist/cli.js", "serve", "<repo>", "--auto-refresh"]
 startup_timeout_sec = 10
 tool_timeout_sec = 60
 ```
+
+If an MCP host starts Codexa from a workspace root, `codexa serve
+<workspace-root>` resolves the active repository from a `Focused project:
+/absolute/path/to/repo` line in `<workspace-root>/.codex/WORKING.md`. The
+resolver is checked on each tool/resource call, so changing the focused project
+updates MCP routing without restarting the server. Use `--workspace-focus-file
+<path>` or `CODEXA_WORKSPACE_FOCUS_FILE` when the focus marker lives somewhere
+else. Focus-file targets must stay inside the configured workspace root.
+`CODEXA_REPO` and `CODEXA_FOCUSED_REPO` are fallback inputs for non-git launch
+roots and explicit escape hatches for out-of-tree repos; they do not override an
+explicit git repository argument.
 
 The server exposes only context tools. It does not apply patches or expose a
 manual reindex/source-mutation tool, but context queries can auto-refresh the

@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -34,6 +34,21 @@ function seq<T>(count: number, factory: (index: number) => T): T[] {
 
 function serializedBytes(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
+
+async function createIndexedMcpRepo(parent: string, name: string, fileStem: string, symbol: string): Promise<string> {
+  const repo = path.join(parent, name);
+  await mkdir(path.join(repo, "src"), { recursive: true });
+  await writeFile(path.join(repo, "package.json"), JSON.stringify({ scripts: { test: "vitest run" } }, null, 2), "utf8");
+  await writeFile(path.join(repo, "src", `${fileStem}.ts`), `export function ${symbol}() { return '${symbol}' }\n`, "utf8");
+  execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+  execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+  execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+    cwd: repo,
+    stdio: "ignore"
+  });
+  await buildIndex({ repoRoot: repo });
+  return repo;
 }
 
 function buildContextPacket(mode?: "focus_brief" | "task_brief") {
@@ -244,6 +259,106 @@ function buildChangePlanPacket() {
 }
 
 describe("Codexa MCP server", () => {
+  it("routes workspace-root MCP calls and resources to the focused repository", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-workspace-"));
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const repoA = await createIndexedMcpRepo(workspace, "repo-a", "alpha", "alphaSymbol");
+    const repoB = await createIndexedMcpRepo(workspace, "repo-b", "beta", "betaSymbol");
+    const focusFile = path.join(workspace, ".codex", "WORKING.md");
+    await mkdir(path.dirname(focusFile), { recursive: true });
+    await writeFile(focusFile, `## Session\n\n- Focused project: \`${repoA}\`.\n`, "utf8");
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-workspace-routing-test", version: "0.1.0" });
+    await client.connect(transport);
+
+    try {
+      const firstFreshness = await client.callTool({ name: "freshness", arguments: {} });
+      expect(JSON.stringify(firstFreshness)).toContain(repoA);
+      expect(JSON.stringify(firstFreshness)).not.toContain("Failed to read git status");
+
+      const firstRepoMap = await client.callTool({ name: "repo_map", arguments: { limit: 5 } });
+      expect(JSON.stringify(firstRepoMap)).toContain("src/alpha.ts");
+      expect(JSON.stringify(firstRepoMap)).not.toContain("src/beta.ts");
+
+      const firstResource = await client.readResource({ uri: "codexa://repo/codebase/repo-map.md" });
+      expect(String(firstResource.contents?.[0]?.text)).toContain("src/alpha.ts");
+      expect(String(firstResource.contents?.[0]?.text)).not.toContain("src/beta.ts");
+
+      await writeFile(focusFile, `## Session\n\n- Focused project: \`${repoB}\`.\n`, "utf8");
+
+      const secondSearch = await client.callTool({ name: "find_context", arguments: { query: "betaSymbol", limit: 5 } });
+      expect(JSON.stringify(secondSearch)).toContain(repoB);
+      expect(JSON.stringify(secondSearch)).toContain("betaSymbol");
+      expect(JSON.stringify(secondSearch)).not.toContain("Failed to read git status");
+
+      const secondResource = await client.readResource({ uri: "codexa://repo/codebase/repo-map.md" });
+      expect(String(secondResource.contents?.[0]?.text)).toContain("src/beta.ts");
+      expect(String(secondResource.contents?.[0]?.text)).not.toContain("src/alpha.ts");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("does not let stale CODEXA_REPO override an explicit git repo argument", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-explicit-"));
+    const explicitRepo = await createIndexedMcpRepo(workspace, "explicit-repo", "explicit", "explicitSymbol");
+    const staleEnvRepo = await createIndexedMcpRepo(workspace, "stale-env-repo", "stale", "staleSymbol");
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", explicitRepo],
+      env: { CODEXA_REPO: staleEnvRepo },
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-explicit-routing-test", version: "0.1.0" });
+    await client.connect(transport);
+
+    try {
+      const freshness = await client.callTool({ name: "freshness", arguments: {} });
+      expect(JSON.stringify(freshness)).toContain(explicitRepo);
+      expect(JSON.stringify(freshness)).not.toContain(staleEnvRepo);
+
+      const repoMap = await client.callTool({ name: "repo_map", arguments: { limit: 5 } });
+      expect(JSON.stringify(repoMap)).toContain("src/explicit.ts");
+      expect(JSON.stringify(repoMap)).not.toContain("src/stale.ts");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("ignores out-of-tree repo paths from workspace focus files", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-focused-root-"));
+    const outsideParent = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-outside-"));
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const outsideRepo = await createIndexedMcpRepo(outsideParent, "outside-repo", "outside", "outsideSymbol");
+    const outsideLink = path.join(workspace, "outside-link");
+    await symlink(outsideRepo, outsideLink, "dir");
+    const focusFile = path.join(workspace, ".codex", "WORKING.md");
+    await mkdir(path.dirname(focusFile), { recursive: true });
+    await writeFile(focusFile, `## Session\n\n- Focused project: \`${outsideLink}\`.\n`, "utf8");
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-focused-root-boundary-test", version: "0.1.0" });
+    await client.connect(transport);
+
+    try {
+      const freshness = await client.callTool({ name: "freshness", arguments: {} });
+      expect(JSON.stringify(freshness)).toContain(workspace);
+      expect(JSON.stringify(freshness)).not.toContain(outsideRepo);
+    } finally {
+      await client.close();
+    }
+  });
+
   it("exposes bounded context tools with stale-index auto-refresh over stdio", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-"));
     execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });

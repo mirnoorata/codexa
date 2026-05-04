@@ -40,7 +40,8 @@ Codexa is packaged for public npm distribution as `@mirnoorata/codexa`; the inst
 binary remains `codexa` so existing Codex workflows do not need to change.
 The package also includes `plugins/codexa/`, a Codex plugin bundle with a
 manifest, skill, and MCP wrapper that launches the same npm `codexa serve`
-entrypoint for the focused git repository.
+entrypoint for the focused git repository or a workspace root that carries a
+`.codex/WORKING.md` focused-project marker.
 
 ```bash
 npm install -g @mirnoorata/codexa
@@ -79,6 +80,16 @@ codexa post-edit-review <repo> --task-id <snapshot_id>
 codexa eval <repo>
 codexa serve <repo>
 ```
+
+When an MCP host can only launch from a non-git workspace root, `codexa serve
+<workspace-root>` resolves the active repository from a `Focused project:
+/absolute/path/to/repo` line in `<workspace-root>/.codex/WORKING.md`. That
+resolution is checked for each tool/resource call, so focus changes do not
+require an MCP process restart. Focus-file targets must stay inside the
+configured workspace root. `CODEXA_REPO` and `CODEXA_FOCUSED_REPO` remain
+fallbacks for launch roots that are not git repositories and explicit escape
+hatches for out-of-tree repos; they do not override an explicit git repository
+argument.
 
 `init` is the user-facing setup command. It writes the repo-local `.codex/config.toml`
 MCP entry, writes/updates the SessionStart and edit-loop hooks, and indexes the repo unless

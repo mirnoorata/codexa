@@ -9,7 +9,7 @@ const autoRefresh = process.env.CODEXA_PLUGIN_AUTO_REFRESH !== "0";
 const repoRoot = resolveRepoRoot(explicitRepo);
 if (!repoRoot) {
   console.error(
-    "codexa plugin MCP could not find a git repository. Set CODEXA_REPO to the repository root or run Codexa from inside the workspace."
+    "codexa plugin MCP could not find a git repository or focused workspace. Set CODEXA_REPO to the repository root or run Codexa from inside the workspace."
   );
   process.exit(1);
 }
@@ -54,6 +54,7 @@ function resolveRepoRoot(explicit) {
   const candidates = [
     explicit,
     process.env.CODEXA_REPO,
+    process.env.CODEXA_FOCUSED_REPO,
     process.env.CODEX_WORKSPACE_ROOT,
     process.env.CODEX_WORKSPACE,
     process.env.PWD,
@@ -66,8 +67,21 @@ function resolveRepoRoot(explicit) {
     if (root) {
       return root;
     }
+    if (workspaceFocusFileExists(resolved)) {
+      return resolved;
+    }
   }
   return null;
+}
+
+function workspaceFocusFileExists(candidate) {
+  return focusFileCandidates(candidate).some((focusFile) => existsSync(focusFile));
+}
+
+function focusFileCandidates(candidate) {
+  return [process.env.CODEXA_WORKSPACE_FOCUS_FILE, path.join(candidate, ".codex", "WORKING.md")].filter(
+    (value) => typeof value === "string" && value.trim().length > 0
+  );
 }
 
 function gitRoot(candidate) {

@@ -40,6 +40,8 @@ if (mcpConfig) {
   requireField(server?.command === "node", "plugin MCP server must launch node");
   requireField(Array.isArray(server?.args) && server.args.includes("./scripts/codexa-mcp.js"), "plugin MCP server must launch scripts/codexa-mcp.js");
   requireField(Array.isArray(server?.env_vars) && server.env_vars.includes("CODEXA_REPO"), "plugin MCP server must expose CODEXA_REPO");
+  requireField(Array.isArray(server?.env_vars) && server.env_vars.includes("CODEXA_FOCUSED_REPO"), "plugin MCP server must expose CODEXA_FOCUSED_REPO");
+  requireField(Array.isArray(server?.env_vars) && server.env_vars.includes("CODEXA_WORKSPACE_FOCUS_FILE"), "plugin MCP server must expose CODEXA_WORKSPACE_FOCUS_FILE");
 }
 
 const marketplace = parseJson(marketplacePath, "plugin marketplace");

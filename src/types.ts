@@ -291,6 +291,7 @@ export interface QueryOptions {
   semanticTimeoutMs?: number;
   semanticBatchSize?: number;
   semanticMaxFiles?: number;
+  workspaceFocusFile?: string;
 }
 
 export type ChangeType = "style" | "api" | "behavior" | "rename" | "delete" | "unknown";

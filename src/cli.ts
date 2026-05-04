@@ -925,6 +925,7 @@ program
   .option("--lsp-max-files <n>", "maximum files to inspect with LSP assist", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before answering MCP context tools", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before answering MCP context tools")
+  .option("--workspace-focus-file <path>", "workspace focus file to consult when <repo> is a workspace launch root")
   .description("Start the stdio MCP server.")
   .action(async (repo: string, opts: CliQueryOptions) => {
     await serveMcp(path.resolve(repo), queryOptionsFromCli(opts));
@@ -957,6 +958,7 @@ type CliQueryOptions = {
   lsp?: boolean;
   lspTimeoutMs?: number;
   lspMaxFiles?: number;
+  workspaceFocusFile?: string;
 };
 
 function queryOptionsFromCli(opts: CliQueryOptions): QueryOptions {
@@ -972,7 +974,8 @@ function queryOptionsFromCli(opts: CliQueryOptions): QueryOptions {
     semanticBatchSize: opts.semanticBatchSize,
     lsp: opts.lsp,
     lspTimeoutMs: opts.lspTimeoutMs,
-    lspMaxFiles: opts.lspMaxFiles
+    lspMaxFiles: opts.lspMaxFiles,
+    workspaceFocusFile: opts.workspaceFocusFile ? path.resolve(opts.workspaceFocusFile) : undefined
   };
 }
 

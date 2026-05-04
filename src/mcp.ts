@@ -30,6 +30,7 @@ import { requireIndex } from "./query/runtime.js";
 import { createQuerySessionFromIndexState, type QuerySession, type QuerySessionIndexState } from "./query/session.js";
 import { RAW_SEARCH_EXPLICIT_PATTERN_LIMIT } from "./query/raw-search.js";
 import { semanticMayUseOpenWorldProvider } from "./semantic-retrieval.js";
+import { resolveMcpRepoRoot, type McpRepoRootResolution } from "./mcp-repo-root.js";
 
 type McpOptionalQueryInput = Record<string, unknown> & {
   semantic?: boolean;
@@ -44,9 +45,15 @@ type McpOptionalQueryInput = Record<string, unknown> & {
 };
 
 export async function serveMcp(repoRoot: string, options: QueryOptions = { autoRefresh: true }): Promise<void> {
+  const configuredRepoRoot = path.resolve(repoRoot);
   const queryOptions: QueryOptions = { ...options, autoRefresh: options.autoRefresh ?? true };
+  const annotationRepoRoot = await resolveMcpRepoRoot(configuredRepoRoot, { workspaceFocusFile: queryOptions.workspaceFocusFile })
+    .then((resolution) => resolution.repoRoot)
+    .catch(() => configuredRepoRoot);
   let cachedIndexState: QuerySessionIndexState | undefined;
-  let indexStateInflight: Promise<QuerySessionIndexState> | undefined;
+  let cachedIndexStateRepoRoot: string | undefined;
+  let indexStateInflight: { repoRoot: string; promise: Promise<QuerySessionIndexState> } | undefined;
+  let activeResolution: McpRepoRootResolution | undefined;
   const server = new McpServer({
     name: "codexa",
     version: "0.1.0"
@@ -60,7 +67,7 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
     readOnlyHint: !queryOptions.autoRefresh,
     destructiveHint: false,
     idempotentHint: !queryOptions.autoRefresh,
-    openWorldHint: semanticMayUseOpenWorldProvider(repoRoot, queryOptions)
+    openWorldHint: semanticMayUseOpenWorldProvider(annotationRepoRoot, queryOptions)
   };
   const pureReadAnnotations = {
     readOnlyHint: true,
@@ -72,7 +79,7 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
     readOnlyHint: false,
     destructiveHint: false,
     idempotentHint: false,
-    openWorldHint: semanticMayUseOpenWorldProvider(repoRoot, queryOptions)
+    openWorldHint: semanticMayUseOpenWorldProvider(annotationRepoRoot, queryOptions)
   };
   const changeTypeSchema = z.enum(["style", "api", "behavior", "rename", "delete", "unknown"]);
   const semanticQuerySchema: Record<string, z.ZodTypeAny> = semanticEnabledForServer(queryOptions)
@@ -102,40 +109,64 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
     lspTimeoutMs: input.lspTimeoutMs ?? queryOptions.lspTimeoutMs,
     lspMaxFiles: input.lspMaxFiles ?? queryOptions.lspMaxFiles
   });
-  const runTool = async (producer: (session: QuerySession) => Promise<QueryResult>) =>
-    toToolResult(
+  const runTool = async (producer: (session: QuerySession) => Promise<QueryResult>) => {
+    const activeRepoRoot = await resolveActiveRepoRoot();
+    return toToolResult(
       await safeQuery(async () => {
-        const session = await createMcpQuerySession();
+        const session = await createMcpQuerySession(activeRepoRoot);
         const result = compactMcpResult(withSessionRuntime(await producer(session), session));
         await notifyResourceListChangedAfterRefresh(server, session);
         return result;
-      }, repoRoot)
+      }, activeRepoRoot)
     );
-
-  const createMcpQuerySession = async (): Promise<QuerySession> => {
-    const state = await loadMcpIndexState();
-    return createQuerySessionFromIndexState(repoRoot, state, queryOptions);
   };
 
-  const loadMcpIndexState = async (): Promise<QuerySessionIndexState> => {
-    if (indexStateInflight) {
-      return indexStateInflight;
+  const resolveActiveRepoRoot = async (): Promise<string> => {
+    const resolution = await resolveMcpRepoRoot(configuredRepoRoot, { workspaceFocusFile: queryOptions.workspaceFocusFile });
+    if (activeResolution?.repoRoot !== resolution.repoRoot) {
+      cachedIndexState = undefined;
+      cachedIndexStateRepoRoot = undefined;
+      indexStateInflight = undefined;
     }
-    indexStateInflight = (async () => {
-      if (cachedIndexState) {
-        const freshness = await getFreshness(repoRoot, cachedIndexState.index, { recover: false });
+    if (!sameResolution(activeResolution, resolution)) {
+      activeResolution = resolution;
+      if (resolution.source !== "configured-root") {
+        const via = resolution.focusFile ? `${resolution.source}:${resolution.focusFile}` : resolution.source;
+        console.error(`codexa MCP resolved ${resolution.configuredRoot} to focused repo ${resolution.repoRoot} via ${via}`);
+      }
+    }
+    return resolution.repoRoot;
+  };
+
+  const createMcpQuerySession = async (activeRepoRoot: string): Promise<QuerySession> => {
+    const state = await loadMcpIndexState(activeRepoRoot);
+    return createQuerySessionFromIndexState(activeRepoRoot, state, queryOptions);
+  };
+
+  const loadMcpIndexState = async (activeRepoRoot: string): Promise<QuerySessionIndexState> => {
+    if (indexStateInflight?.repoRoot === activeRepoRoot) {
+      return indexStateInflight.promise;
+    }
+    const pending = (async () => {
+      if (cachedIndexState && cachedIndexStateRepoRoot === activeRepoRoot) {
+        const freshness = await getFreshness(activeRepoRoot, cachedIndexState.index, { recover: false });
         if (!freshness.stale || !queryOptions.autoRefresh) {
           cachedIndexState = { ...cachedIndexState, freshness, refresh: { refreshed: false } };
           return cachedIndexState;
         }
       }
-      const loaded = await requireIndex(repoRoot, queryOptions);
+      const loaded = await requireIndex(activeRepoRoot, queryOptions);
       cachedIndexState = loaded;
+      cachedIndexStateRepoRoot = activeRepoRoot;
       return loaded;
-    })().finally(() => {
-      indexStateInflight = undefined;
-    });
-    return indexStateInflight;
+    })();
+    indexStateInflight = { repoRoot: activeRepoRoot, promise: pending };
+    void pending.finally(() => {
+      if (indexStateInflight?.promise === pending) {
+        indexStateInflight = undefined;
+      }
+    }).catch(() => undefined);
+    return pending;
   };
 
   server.registerTool(
@@ -147,7 +178,10 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
       outputSchema,
       annotations: pureReadAnnotations
     },
-    async () => toToolResult(await safeQuery(() => statusQuery(repoRoot, { recover: false }), repoRoot))
+    async () => {
+      const activeRepoRoot = await resolveActiveRepoRoot();
+      return toToolResult(await safeQuery(() => statusQuery(activeRepoRoot, { recover: false }), activeRepoRoot));
+    }
   );
 
   server.registerTool(
@@ -494,22 +528,28 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
       outputSchema,
       annotations: sourceContextAnnotations
     },
-    async (input) =>
-      toToolResult(
+    async (input) => {
+      const activeRepoRoot = await resolveActiveRepoRoot();
+      return toToolResult(
         await safeQuery(async () => {
-          const session = await createMcpQuerySession();
+          const session = await createMcpQuerySession(activeRepoRoot);
           const result = compactMcpResult(withSessionRuntime(await postEditReviewQuery(session, { ...input, persistOutcome: false }, queryOptions), session));
           await notifyResourceListChangedAfterRefresh(server, session);
           return result;
-        }, repoRoot)
-      )
+        }, activeRepoRoot)
+      );
+    }
   );
 
-  await registerArtifactResources(server, repoRoot);
+  await registerArtifactResources(server, resolveActiveRepoRoot);
   registerWorkflowPrompts(server);
 
   await server.connect(new StdioServerTransport());
-  console.error(`codexa MCP server ready for ${repoRoot} (autoRefresh=${queryOptions.autoRefresh})`);
+  console.error(`codexa MCP server ready for ${configuredRepoRoot} (autoRefresh=${queryOptions.autoRefresh})`);
+}
+
+function sameResolution(previous: McpRepoRootResolution | undefined, next: McpRepoRootResolution): boolean {
+  return previous !== undefined && previous.repoRoot === next.repoRoot && previous.source === next.source && previous.focusFile === next.focusFile;
 }
 
 function semanticEnabledForServer(options: QueryOptions): boolean {
@@ -1711,7 +1751,7 @@ async function safeQuery(producer: () => Promise<QueryResult>, repoRoot: string)
   }
 }
 
-async function registerArtifactResources(server: McpServer, repoRoot: string): Promise<void> {
+async function registerArtifactResources(server: McpServer, resolveRepoRoot: () => Promise<string>): Promise<void> {
   const artifacts = [
     ["codebase-readme", "codexa://repo/codebase/README.md", ".codex/codebase/README.md", "text/markdown", "Codexa artifact overview"],
     ["codex-contract", "codexa://repo/codebase/codex-contract.md", ".codex/codebase/codex-contract.md", "text/markdown", "Codex automatic-use contract"],
@@ -1739,7 +1779,10 @@ async function registerArtifactResources(server: McpServer, repoRoot: string): P
           {
             uri,
             mimeType,
-            text: relativePath === ".codex/codebase/freshness.json" ? await readLiveFreshnessArtifact(repoRoot) : await readArtifact(repoRoot, relativePath)
+            text:
+              relativePath === ".codex/codebase/freshness.json"
+                ? await readLiveFreshnessArtifact(await resolveRepoRoot())
+                : await readArtifact(await resolveRepoRoot(), relativePath)
           }
         ]
       })
@@ -1755,6 +1798,7 @@ async function registerArtifactResources(server: McpServer, repoRoot: string): P
       mimeType: "text/markdown"
     },
     async () => {
+      const repoRoot = await resolveRepoRoot();
       const modulesDir = path.join(repoRoot, ".codex/codebase/modules");
       let text = "# Codexa Modules\n\n";
       try {
@@ -1775,7 +1819,7 @@ async function registerArtifactResources(server: McpServer, repoRoot: string): P
     "module-artifact",
     new ResourceTemplate("codexa://repo/codebase/modules/{name}", {
       list: async () => ({
-        resources: await listMarkdownArtifacts(repoRoot, ".codex/codebase/modules", "codexa://repo/codebase/modules", "Codexa module", "Generated Codexa module artifact")
+        resources: await listMarkdownArtifacts(await resolveRepoRoot(), ".codex/codebase/modules", "codexa://repo/codebase/modules", "Codexa module", "Generated Codexa module artifact")
       })
     }),
     {
@@ -1790,7 +1834,7 @@ async function registerArtifactResources(server: McpServer, repoRoot: string): P
           {
             uri: uri.toString(),
             mimeType: "text/markdown",
-            text: await readArtifact(repoRoot, `.codex/codebase/modules/${name}`)
+            text: await readArtifact(await resolveRepoRoot(), `.codex/codebase/modules/${name}`)
           }
         ]
       };
@@ -1802,7 +1846,7 @@ async function registerArtifactResources(server: McpServer, repoRoot: string): P
     new ResourceTemplate("codexa://repo/codebase/playbooks/{name}", {
       list: async () => ({
         resources: await listMarkdownArtifacts(
-          repoRoot,
+          await resolveRepoRoot(),
           ".codex/codebase/playbooks",
           "codexa://repo/codebase/playbooks",
           "Codexa playbook",
@@ -1823,7 +1867,7 @@ async function registerArtifactResources(server: McpServer, repoRoot: string): P
           {
             uri: uri.toString(),
             mimeType: "text/markdown",
-            text: await readArtifact(repoRoot, `.codex/codebase/playbooks/${name}`)
+            text: await readArtifact(await resolveRepoRoot(), `.codex/codebase/playbooks/${name}`)
           }
         ]
       };
