@@ -89,7 +89,7 @@ describe("Codexa plugin package", () => {
         cwd: repo,
         stdio: "ignore"
       });
-      await writeFile(focusFile, `- Focused project: \`${repo}\`.\n`, "utf8");
+      await writeFile(focusFile, `## Active Focus\n\n- Project: \`${repo}\`\n`, "utf8");
 
       const capturePath = path.join(temp, "capture.json");
       const sourceWrapper = path.join(process.cwd(), "plugins", "codexa", "scripts", "codexa-mcp.js");

@@ -81,15 +81,17 @@ codexa eval <repo>
 codexa serve <repo>
 ```
 
-When an MCP host can only launch from a non-git workspace root, `codexa serve
-<workspace-root>` resolves the active repository from a `Focused project:
-/absolute/path/to/repo` line in `<workspace-root>/.codex/WORKING.md`. That
-resolution is checked for each tool/resource call, so focus changes do not
-require an MCP process restart. Focus-file targets must stay inside the
-configured workspace root. `CODEXA_REPO` and `CODEXA_FOCUSED_REPO` remain
-fallbacks for launch roots that are not git repositories and explicit escape
-hatches for out-of-tree repos; they do not override an explicit git repository
-argument.
+When an MCP host launches from a workspace root, `codexa serve
+<workspace-root>` resolves the active repository from
+`<workspace-root>/.codex/WORKING.md` before falling back to the workspace git
+root. The preferred compact marker is an `## Active Focus` section with a
+`Project: /absolute/path/to/repo` line; the legacy `Focused project:
+/absolute/path/to/repo` line is still supported. That resolution is checked for
+each tool/resource call, so focus changes do not require an MCP process
+restart. Focus-file targets must stay inside the configured workspace root.
+`CODEXA_REPO` and `CODEXA_FOCUSED_REPO` remain fallbacks for launch roots that
+are not git repositories and explicit escape hatches for out-of-tree repos;
+they do not override an explicit git repository argument.
 
 `init` is the user-facing setup command. It writes the repo-local `.codex/config.toml`
 MCP entry, writes/updates the SessionStart and edit-loop hooks, and indexes the repo unless

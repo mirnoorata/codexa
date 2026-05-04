@@ -15,6 +15,8 @@ try {
   const packDir = path.join(tempRoot, "pack");
   const consumerRoot = path.join(tempRoot, "consumer");
   const targetRepo = path.join(tempRoot, "target-repo");
+  const workspaceRoot = path.join(tempRoot, "workspace-root");
+  const focusedRepo = path.join(workspaceRoot, "focused-repo");
   mkdirSync(packDir, { recursive: true });
   mkdirSync(consumerRoot, { recursive: true });
 
@@ -102,6 +104,17 @@ try {
   assertIncludes(hookPost.stdout, "Codexa", "post-edit hook should stay advisory and printable");
 
   await smokeMcp(codexa, targetRepo);
+  createWorkspaceFocusedRepo(workspaceRoot, focusedRepo);
+  const focusedInit = run(codexa, ["init", focusedRepo], {
+    cwd: consumerRoot,
+    label: "installed codexa init focused repo",
+    timeoutMs: 60_000
+  });
+  assertIncludes(focusedInit.stdout, "Codexa initialized", "focused repo init should complete from installed package");
+  await smokeMcp(codexa, workspaceRoot, {
+    expectedRepo: focusedRepo,
+    label: "installed MCP workspace focus startup"
+  });
 
   const summary = {
     package: {
@@ -164,10 +177,26 @@ function createFixtureRepo(repo) {
   });
 }
 
-async function smokeMcp(codexa, targetRepo) {
+function createWorkspaceFocusedRepo(workspaceRoot, focusedRepo) {
+  mkdirSync(workspaceRoot, { recursive: true });
+  run("git", ["init"], { cwd: workspaceRoot, label: "workspace git init" });
+  writeFileSync(path.join(workspaceRoot, "README.md"), "# workspace\n", "utf8");
+  run("git", ["add", "."], { cwd: workspaceRoot, label: "workspace git add" });
+  run("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "workspace fixture"], {
+    cwd: workspaceRoot,
+    label: "workspace git commit"
+  });
+  createFixtureRepo(focusedRepo);
+  mkdirSync(path.join(workspaceRoot, ".codex"), { recursive: true });
+  writeFileSync(path.join(workspaceRoot, ".codex", "WORKING.md"), `## Active Focus\n\n- Project: \`${focusedRepo}\`\n`, "utf8");
+}
+
+async function smokeMcp(codexa, mcpRoot, options = {}) {
+  const expectedRepo = options.expectedRepo ?? mcpRoot;
+  const label = options.label ?? "installed MCP startup";
   const transport = new StdioClientTransport({
     command: codexa,
-    args: ["serve", targetRepo, "--no-auto-refresh"],
+    args: ["serve", mcpRoot, "--no-auto-refresh"],
     stderr: "pipe"
   });
   const stderrChunks = [];
@@ -188,11 +217,12 @@ async function smokeMcp(codexa, targetRepo) {
     if (!text.includes("fresh") && !text.includes("stale")) {
       throw new Error(`MCP freshness returned an unexpected payload: ${bound(text)}`);
     }
+    assertIncludes(text, expectedRepo, "MCP freshness should resolve the expected repository");
   } finally {
     await client.close().catch(() => undefined);
     checks.push({
-      label: "installed MCP startup",
-      command: `${codexa} serve ${targetRepo} --no-auto-refresh`,
+      label,
+      command: `${codexa} serve ${mcpRoot} --no-auto-refresh`,
       durationMs: Math.round(Number(process.hrtime.bigint() - startedAt) / 1_000_000),
       exitCode: 0,
       signal: null,

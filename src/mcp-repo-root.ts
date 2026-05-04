@@ -53,7 +53,7 @@ export async function resolveMcpRepoRoot(configuredRootInput: string, options: M
   const focusFiles = focusFileCandidates(configuredRoot, options).map((file) => path.resolve(file));
   const focusHint =
     focusFiles.length > 0
-      ? ` Add a line like "Focused project: /absolute/path/to/repo" to ${focusFiles.join(" or ")}.`
+      ? ` Add an "Active Focus" project line or "Focused project: /absolute/path/to/repo" to ${focusFiles.join(" or ")}.`
       : "";
   throw new Error(
     `Codexa MCP configured root is not a git repository and no focused git repository could be resolved: ${configuredRoot}. Set CODEXA_REPO or CODEXA_FOCUSED_REPO to a git repository.${focusHint}`
