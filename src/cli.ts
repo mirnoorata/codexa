@@ -8,6 +8,7 @@ import { runDoctor } from "./doctor.js";
 import { initializeProject, sessionStartSummary } from "./init.js";
 import { runLiveIndexer, type LiveIndexEvent } from "./live-index.js";
 import { serveMcp } from "./mcp.js";
+import { resolveMcpRepoRoot } from "./mcp-repo-root.js";
 import { buildSemanticIndex, semanticProviderFromValue, type SemanticProviderKind } from "./semantic-retrieval.js";
 import { updateStaticAnalysisReports } from "./static-analysis.js";
 import { loadTaskSnapshot } from "./task-snapshots.js";
@@ -106,9 +107,9 @@ program
   .argument("<repo>", "repository root")
   .description("Cheap hook helper that reminds Codex when no change-plan snapshot exists before an edit.")
   .action(async (repo: string) => {
-    const resolved = path.resolve(repo);
-    await runAdvisoryHook(resolved, "pre-edit", "change-plan snapshot check", async () => {
-      const snapshot = await loadTaskSnapshot(resolved);
+    const { configuredRoot, activeRepoRoot } = await resolveHookRepoRoots(repo);
+    await runAdvisoryHook(configuredRoot, "pre-edit", "change-plan snapshot check", async () => {
+      const snapshot = await loadTaskSnapshot(activeRepoRoot);
       if (!snapshot.snapshot) {
         console.log("Codexa: no change-plan snapshot is available. For code edits, call change_plan with saveSnapshot=true before editing when the task is non-trivial.");
         return { status: "skipped", reason: "missing-change-plan-snapshot", taskId: snapshot.latestTaskId };
@@ -123,19 +124,19 @@ program
   .argument("<repo>", "repository root")
   .description("Bounded hook helper that runs the post-edit review packet after edit tools.")
   .action(async (repo: string) => {
-    const resolved = path.resolve(repo);
-    await runAdvisoryHook(resolved, "post-edit", "post-edit review", async () => {
-      const snapshot = await loadTaskSnapshot(resolved);
-      const freshness = await getFreshness(resolved, undefined, { recover: false });
+    const { configuredRoot, activeRepoRoot } = await resolveHookRepoRoots(repo);
+    await runAdvisoryHook(configuredRoot, "post-edit", "post-edit review", async () => {
+      const snapshot = await loadTaskSnapshot(activeRepoRoot);
+      const freshness = await getFreshness(activeRepoRoot, undefined, { recover: false });
       const signature = postEditHookReviewSignature({ freshness, taskId: snapshot.snapshot?.taskId ?? snapshot.latestTaskId });
-      const previous = await loadPostEditHookReviewState(resolved);
+      const previous = await loadPostEditHookReviewState(activeRepoRoot);
       if (previous?.signature === signature) {
         const verdict = previous.verdict ? `; last verdict ${previous.verdict}` : "";
         console.log(`Codexa: post-edit review unchanged since last hook run${verdict}.`);
         return { status: "skipped", reason: "duplicate-dirty-tree", signature, taskId: snapshot.snapshot?.taskId ?? snapshot.latestTaskId, verdict: previous.verdict, outcomeId: previous.outcomeId };
       }
       const result = await postEditReviewQuery(
-        resolved,
+        activeRepoRoot,
         {
           tokenBudget: 1200,
           limit: 5,
@@ -146,7 +147,7 @@ program
       console.log(compactHookOutput(result.text));
       const outcome = postEditOutcomeFromQueryResult(result.data);
       const reviewedSignature = postEditHookReviewSignature({ freshness: result.freshness, taskId: snapshot.snapshot?.taskId ?? snapshot.latestTaskId });
-      await savePostEditHookReviewState(resolved, {
+      await savePostEditHookReviewState(activeRepoRoot, {
         signature: reviewedSignature,
         outcome
       });
@@ -1018,6 +1019,16 @@ function compactHookOutput(text: string): string {
 }
 
 type HookActionResult = Omit<CodexaHookEventInput, "hook" | "durationMs"> | void;
+
+async function resolveHookRepoRoots(repo: string): Promise<{ configuredRoot: string; activeRepoRoot: string }> {
+  const configuredRoot = path.resolve(repo);
+  try {
+    const resolution = await resolveMcpRepoRoot(configuredRoot);
+    return { configuredRoot, activeRepoRoot: resolution.repoRoot };
+  } catch {
+    return { configuredRoot, activeRepoRoot: configuredRoot };
+  }
+}
 
 function postEditOutcomeFromQueryResult(data: unknown): PostEditOutcome | undefined {
   if (!data || typeof data !== "object") {

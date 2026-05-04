@@ -233,6 +233,29 @@ describe("Codexa project init", () => {
     expect(summary).toContain("Codexa startup hook is advisory");
   });
 
+  it("routes workspace-root session-start summaries to the focused repository", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-session-start-workspace-"));
+    const repo = path.join(workspace, "repo");
+    await mkdir(repo, { recursive: true });
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await writeFile(path.join(repo, "README.md"), "# fixture\n", "utf8");
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    await mkdir(path.join(workspace, ".codex"), { recursive: true });
+    await writeFile(path.join(workspace, ".codex", "WORKING.md"), `## Active Focus\n\n- Project: \`${repo}\`\n`, "utf8");
+
+    const summary = await sessionStartSummary(workspace, false);
+
+    expect(summary).toContain(`Codexa context for ${repo}:`);
+    expect(summary).toContain(`Workspace root: ${workspace} -> focused repo via workspace-focus-file:`);
+    expect(summary).toContain(`Repo: ${repo}`);
+    expect(summary).not.toContain("Codexa status unavailable:");
+    expect(summary).not.toContain("Failed to read git status");
+  });
+
   it("honors session-start auto-refresh when the index is missing", async () => {
     const repo = await createInitRepo();
     const summary = await sessionStartSummary(repo, true, true);

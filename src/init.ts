@@ -3,6 +3,7 @@ import path from "node:path";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { renderCodexUseContract } from "./codex-contract.js";
 import { buildIndexLocked } from "./indexer.js";
+import { resolveMcpRepoRoot } from "./mcp-repo-root.js";
 import { statusQuery } from "./queries.js";
 
 const EDIT_HOOK_MATCHER = "Edit|MultiEdit|Write|apply_patch";
@@ -67,8 +68,26 @@ export async function initializeProject(repoInput: string | undefined, options: 
 }
 
 export async function sessionStartSummary(repoInput: string | undefined, includeContext: boolean, autoRefresh = false): Promise<string> {
-  const repoRoot = path.resolve(repoInput ?? process.cwd());
+  const configuredRoot = path.resolve(repoInput ?? process.cwd());
+  let repoRoot: string;
+  let resolutionNote: string | undefined;
+  try {
+    const resolution = await resolveMcpRepoRoot(configuredRoot);
+    repoRoot = resolution.repoRoot;
+    if (resolution.source !== "configured-root") {
+      const via = resolution.focusFile ? `${resolution.source}:${resolution.focusFile}` : resolution.source;
+      resolutionNote = `Workspace root: ${configuredRoot} -> focused repo via ${via}`;
+    }
+  } catch (error) {
+    const lines = [`Codexa context for ${configuredRoot}:`];
+    lines.push(`Codexa status unavailable: ${boundedErrorMessage(error)}`);
+    lines.push("Codexa startup hook is advisory; continuing without blocking the session.");
+    return lines.join("\n");
+  }
   const lines = [`Codexa context for ${repoRoot}:`];
+  if (resolutionNote) {
+    lines.push(resolutionNote);
+  }
   let status: Awaited<ReturnType<typeof statusQuery>>;
   try {
     status = await statusQuery(repoRoot);

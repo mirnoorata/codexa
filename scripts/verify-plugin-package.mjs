@@ -61,6 +61,7 @@ try {
 for (const file of requiredFiles) {
   scanText(file, readFileSync(path.join(pluginRoot, file), "utf8"));
 }
+validateSkillFrontmatter("skills/codexa/SKILL.md", readFileSync(path.join(pluginRoot, "skills/codexa/SKILL.md"), "utf8"));
 scanText(".agents/plugins/marketplace.json", readFileSync(marketplacePath, "utf8"));
 
 if (failures.length > 0) {
@@ -98,6 +99,34 @@ function scanText(file, text) {
   for (const pattern of blocked) {
     if (pattern.test(text)) {
       failures.push(`${file} contains blocked scaffold or local-path text matching ${pattern}`);
+    }
+  }
+}
+
+function validateSkillFrontmatter(file, text) {
+  if (!text.startsWith("---\n")) {
+    failures.push(`${file} must start with YAML frontmatter`);
+    return;
+  }
+  const end = text.indexOf("\n---", 4);
+  if (end === -1) {
+    failures.push(`${file} must close YAML frontmatter with ---`);
+    return;
+  }
+  const frontmatter = text.slice(4, end).trim();
+  const fields = new Map();
+  for (const line of frontmatter.split(/\r?\n/u)) {
+    const match = /^([a-z][a-z0-9_-]*):\s*(.*)$/iu.exec(line);
+    if (!match) {
+      failures.push(`${file} contains unsupported skill frontmatter line: ${line}`);
+      continue;
+    }
+    fields.set(match[1], match[2]);
+  }
+  for (const field of ["name", "description"]) {
+    const value = fields.get(field);
+    if (typeof value !== "string" || value.trim().length === 0) {
+      failures.push(`${file} skill frontmatter must include ${field}`);
     }
   }
 }

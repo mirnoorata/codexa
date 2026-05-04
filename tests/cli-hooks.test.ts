@@ -43,6 +43,77 @@ describe("Codexa hook CLI", () => {
     expect(result.stdout).toContain("Codexa startup hook is advisory");
   });
 
+  it("routes workspace-root session-start hooks through the focused repository", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-session-start-focused-"));
+    const repo = path.join(workspace, "repo");
+    await mkdir(repo, { recursive: true });
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await writeFile(path.join(repo, "README.md"), "# fixture\n", "utf8");
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    await mkdir(path.join(workspace, ".codex"), { recursive: true });
+    await writeFile(path.join(workspace, ".codex", "WORKING.md"), `- Focused project: \`${repo}\`.\n`, "utf8");
+
+    const result = spawnSync(process.execPath, [path.resolve(process.cwd(), "dist/cli.js"), "session-start", workspace], {
+      cwd: process.cwd(),
+      encoding: "utf8"
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain(`Codexa context for ${repo}:`);
+    expect(result.stdout).toContain(`Repo: ${repo}`);
+    expect(result.stdout).not.toContain("Codexa status unavailable:");
+    expect(result.stdout).not.toContain("Failed to read git status");
+    const latest = JSON.parse(await readFile(path.join(workspace, ".codex/cache/codexa-hooks/latest.json"), "utf8")) as { status: string };
+    expect(latest.status).toBe("ok");
+  });
+
+  it("routes workspace-root edit hooks through the focused repository", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-edit-hooks-focused-"));
+    const repo = path.join(workspace, "repo");
+    await mkdir(repo, { recursive: true });
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdir(path.join(repo, "src"), { recursive: true });
+    await writeFile(path.join(repo, "src/main.ts"), "export function main() { return 1 }\n", "utf8");
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    await mkdir(path.join(workspace, ".codex"), { recursive: true });
+    await writeFile(path.join(workspace, ".codex", "WORKING.md"), `- Focused project: \`${repo}\`.\n`, "utf8");
+    const cli = path.resolve(process.cwd(), "dist/cli.js");
+
+    const indexed = spawnSync(process.execPath, [cli, "index", repo], {
+      cwd: process.cwd(),
+      encoding: "utf8"
+    });
+    expect(indexed.status).toBe(0);
+    await writeFile(path.join(repo, "src/main.ts"), "export function main() { return 2 }\n", "utf8");
+
+    const preEdit = spawnSync(process.execPath, [cli, "hook-pre-edit", workspace], {
+      cwd: process.cwd(),
+      encoding: "utf8"
+    });
+    expect(preEdit.status).toBe(0);
+    expect(preEdit.stdout).toContain("Codexa: no change-plan snapshot is available");
+    expect(preEdit.stdout).not.toContain("Failed to read git status");
+
+    const postEdit = spawnSync(process.execPath, [cli, "hook-post-edit", workspace], {
+      cwd: process.cwd(),
+      encoding: "utf8"
+    });
+    expect(postEdit.status).toBe(0);
+    expect(postEdit.stdout).toContain("Codexa post-edit review");
+    expect(postEdit.stdout).not.toContain("Failed to read git status");
+    const latest = JSON.parse(await readFile(path.join(workspace, ".codex/cache/codexa-hooks/latest.json"), "utf8")) as { hook: string; status: string };
+    expect(latest).toMatchObject({ hook: "post-edit", status: "ok" });
+  });
+
   it("skips duplicate hook-post-edit reviews for an unchanged dirty tree", async () => {
     const repo = await createHookFixtureRepo();
     const cli = path.resolve(process.cwd(), "dist/cli.js");

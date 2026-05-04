@@ -289,7 +289,7 @@ describe("Codexa MCP server", () => {
       expect(String(firstResource.contents?.[0]?.text)).toContain("src/alpha.ts");
       expect(String(firstResource.contents?.[0]?.text)).not.toContain("src/beta.ts");
 
-      await writeFile(focusFile, `## Session\n\n- Focused project: \`${repoB}\`.\n`, "utf8");
+      await writeFile(focusFile, `## Active Focus\n\n- Project: \`${repoB}\`\n`, "utf8");
 
       const secondSearch = await client.callTool({ name: "find_context", arguments: { query: "betaSymbol", limit: 5 } });
       expect(JSON.stringify(secondSearch)).toContain(repoB);

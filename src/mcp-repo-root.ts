@@ -19,7 +19,9 @@ interface CandidateRepoRoot {
   focusFile?: string;
 }
 
-const FOCUS_LINE_PATTERN = /\bfocused\s+(?:project|repo|repository)\s*:\s*(?:`([^`]+)`|([^\r\n#]+))/giu;
+const FOCUSED_REPO_LINE_PATTERN = /\bfocused\s+(?:project|repo|repository)\s*:\s*(?:`([^`]+)`|([^\r\n#]+))/iu;
+const COMPACT_PROJECT_LINE_PATTERN = /^\s*(?:[-*]\s*)?project\s*:\s*(?:`([^`]+)`|([^\r\n#]+))/iu;
+const HEADING_PATTERN = /^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/u;
 
 export async function resolveMcpRepoRoot(configuredRootInput: string, options: McpRepoRootResolutionOptions = {}): Promise<McpRepoRootResolution> {
   const configuredRoot = path.resolve(configuredRootInput);
@@ -90,14 +92,35 @@ async function readFocusedRepoPaths(focusFile: string): Promise<string[]> {
   }
 
   const paths: string[] = [];
-  for (const match of text.matchAll(FOCUS_LINE_PATTERN)) {
-    const raw = match[1] ?? match[2] ?? "";
-    const cleaned = raw.trim().replace(/[.,;:]+$/u, "");
-    if (cleaned) {
-      paths.push(cleaned);
+  let inActiveFocusSection = false;
+  for (const line of text.split(/\r?\n/u)) {
+    const heading = HEADING_PATTERN.exec(line);
+    if (heading) {
+      inActiveFocusSection = heading[1].trim().toLowerCase() === "active focus";
+      continue;
+    }
+
+    const focusedMatch = FOCUSED_REPO_LINE_PATTERN.exec(line);
+    if (focusedMatch) {
+      pushFocusedRepoPath(paths, focusedMatch[1] ?? focusedMatch[2] ?? "");
+      continue;
+    }
+
+    if (inActiveFocusSection) {
+      const projectMatch = COMPACT_PROJECT_LINE_PATTERN.exec(line);
+      if (projectMatch) {
+        pushFocusedRepoPath(paths, projectMatch[1] ?? projectMatch[2] ?? "");
+      }
     }
   }
   return paths;
+}
+
+function pushFocusedRepoPath(paths: string[], raw: string): void {
+  const cleaned = raw.trim().replace(/[.,;:]+$/u, "");
+  if (cleaned) {
+    paths.push(cleaned);
+  }
 }
 
 function normalizeCandidatePath(candidate: string): string | null {
