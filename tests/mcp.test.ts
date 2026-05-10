@@ -217,6 +217,26 @@ function buildChangePlanPacket() {
     mode: "change_plan",
     editReadiness: { editable: false, status: "orientation-only", snapshotBlocked: true },
     snapshotBlock: { taskId: "blocked-snap-1", path: ".codex/cache/codexa-tasks/blocked-snap-1.blocked.json", reason: "context quality is low" },
+    targetCandidates: seq(14, (index) => ({
+      rank: index + 1,
+      kind: index % 2 === 0 ? "file" : "symbol",
+      path: `src/candidate-${index}.ts`,
+      symbol:
+        index % 2 === 0
+          ? undefined
+          : {
+              id: `sym-${index}`,
+              name: `candidate${index}`,
+              qualifiedName: `candidate${index}`,
+              kind: "function"
+            },
+      score: 100 - index,
+      confidence: "derived",
+      evidence: seq(10, (evidenceIndex) => `evidence-${index}-${evidenceIndex}`),
+      missingAnchors: ["file-or-symbol-target", "edit-ready-context"],
+      nextChangePlanArgs: { files: [`src/candidate-${index}.ts`], saveSnapshot: true },
+      rawSearchQueries: seq(5, (queryIndex) => `query-${index}-${queryIndex}`)
+    })),
     steps: seq(5, (index) => `step-${index}`),
     focus: buildFocusBriefPacket(),
     context: buildContextPacket(),
@@ -973,6 +993,7 @@ describe("Codexa MCP server", () => {
       mode?: string;
       editReadiness?: { editable?: boolean; status?: string; snapshotBlocked?: boolean };
       snapshotBlock?: { taskId?: string; path?: string; reason?: string };
+      targetCandidates?: Array<{ rank?: number; path?: string; evidence?: unknown[]; rawSearchQueries?: unknown[] }>;
       files?: unknown[];
       plannedEditTargets?: unknown[];
       tests?: unknown[];
@@ -988,6 +1009,11 @@ describe("Codexa MCP server", () => {
       path: ".codex/cache/codexa-tasks/blocked-snap-1.blocked.json",
       reason: "context quality is low"
     });
+    expect(data.targetCandidates?.length).toBeGreaterThan(0);
+    expect(data.targetCandidates?.length).toBeLessThanOrEqual(12);
+    expect(data.targetCandidates?.[0]).toMatchObject({ rank: 1, path: "src/candidate-0.ts" });
+    expect(data.targetCandidates?.[0]?.evidence?.length).toBeLessThanOrEqual(8);
+    expect(data.targetCandidates?.[0]?.rawSearchQueries?.length).toBeLessThanOrEqual(4);
     expect(data.mcp.returnedBytes).toBe(serializedBytes(data));
     expect(data.mcp.returnedBytes).toBeLessThanOrEqual(data.mcp.targetBytes);
     expect(data.files?.length).toBeGreaterThan(0);
@@ -999,6 +1025,7 @@ describe("Codexa MCP server", () => {
     expect(data.snapshot?.requiredWorkflowCheckCount).toBe(7);
     expect(data.snapshot?.requiredDependencyCheckCount).toBe(8);
     expect(Object.keys(data.truncation ?? {}).length).toBeGreaterThan(0);
+    expect(Object.keys(data.truncation ?? {}).some((key) => key.startsWith("snapshot."))).toBe(true);
   });
 
   it("hard-enforces final MCP payload budget after metadata is attached", () => {

@@ -877,6 +877,7 @@ function enforceMcpStructuredBudget(
       verdict: dataWithoutMetrics.verdict,
       editReadiness: dataWithoutMetrics.editReadiness,
       snapshotBlock: compactSnapshotBlock(dataWithoutMetrics.snapshotBlock),
+      targetCandidates: Array.isArray(dataWithoutMetrics.targetCandidates) ? dataWithoutMetrics.targetCandidates.slice(0, 8).map(compactTargetCandidate) : dataWithoutMetrics.targetCandidates,
       packetVerdict: dataWithoutMetrics.packetVerdict,
       verificationProvenance: dataWithoutMetrics.verificationProvenance,
       runtime: compactSession(dataWithoutMetrics.runtime),
@@ -900,6 +901,7 @@ function buildMcpBudgetSummaryData(data: Record<string, unknown>, mode: string, 
     verdict: data.verdict,
     editReadiness: data.editReadiness,
     snapshotBlock: compactSnapshotBlock(data.snapshotBlock),
+    targetCandidates: compactSummaryArray("targetCandidates", data.targetCandidates, 8, truncation, compactTargetCandidate),
     packetVerdict: data.packetVerdict,
     files: compactSummaryArray("files", data.files, 12, truncation),
     plannedEditTargets: compactSummaryArray("plannedEditTargets", data.plannedEditTargets, 12, truncation),
@@ -1215,6 +1217,7 @@ function compactChangePlanData(data: Record<string, unknown>): McpCompactionResu
     mode: data.mode,
     editReadiness: data.editReadiness,
     snapshotBlock: compactSnapshotBlock(data.snapshotBlock),
+    targetCandidates: limit("targetCandidates", data.targetCandidates, 12, compactTargetCandidate),
     steps: limit("steps", data.steps, 12),
     focus: compactFocus?.data,
     context: compactContext?.data,
@@ -1264,6 +1267,8 @@ function compactChangePlanData(data: Record<string, unknown>): McpCompactionResu
   };
   const truncation = {
     ...limit.truncation,
+    ...prefixTruncation("snapshot", snapshotLimit.truncation),
+    ...prefixTruncation("snapshot.dirtyBaseline", snapshotDirtyLimit.truncation),
     ...prefixTruncation("focus", compactFocus?.truncation),
     ...prefixTruncation("context", compactContext?.truncation)
   };
@@ -1278,6 +1283,31 @@ function compactSnapshotBlock(value: unknown): unknown {
     taskId: value.taskId,
     path: value.path,
     reason: value.reason
+  };
+}
+
+function compactTargetCandidate(value: unknown): unknown {
+  if (!isRecord(value)) {
+    return value;
+  }
+  return {
+    rank: value.rank,
+    kind: value.kind,
+    path: value.path,
+    symbol: isRecord(value.symbol)
+      ? {
+          id: value.symbol.id,
+          name: value.symbol.name,
+          qualifiedName: value.symbol.qualifiedName,
+          kind: value.symbol.kind
+        }
+      : undefined,
+    score: value.score,
+    confidence: value.confidence,
+    evidence: limitArray(value.evidence, 8),
+    missingAnchors: limitArray(value.missingAnchors, 8),
+    nextChangePlanArgs: value.nextChangePlanArgs,
+    rawSearchQueries: limitArray(value.rawSearchQueries, 4)
   };
 }
 

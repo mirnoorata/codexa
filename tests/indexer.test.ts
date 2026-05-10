@@ -1048,13 +1048,37 @@ describe("Codexa indexer", () => {
       tests?: unknown[];
       snapshot?: unknown;
       snapshotBlock?: { taskId: string; path: string };
+      targetCandidates?: Array<{
+        rank: number;
+        kind: "file" | "symbol";
+        path: string;
+        evidence: string[];
+        missingAnchors: string[];
+        nextChangePlanArgs: { task?: string; files?: string[]; symbols?: string[]; query?: string; taskId?: string; changeType?: "style" | "api" | "behavior" | "rename" | "delete" | "unknown"; diff?: boolean; saveSnapshot: boolean };
+        rawSearchQueries: string[];
+      }>;
     };
     expect(ambiguousPlan.text).toContain("Edit readiness: orientation-only");
     expect(ambiguousPlan.text).toContain("Task snapshot: not saved");
+    expect(ambiguousPlan.text).toContain("Target candidates:");
     expect(ambiguousPlanData.editReadiness).toMatchObject({ editable: false, status: "orientation-only", snapshotBlocked: true });
     expect(ambiguousPlanData.plannedEditTargets).toEqual([]);
     expect(ambiguousPlanData.tests).toEqual([]);
     expect(ambiguousPlanData.snapshot).toBeUndefined();
+    expect(ambiguousPlanData.targetCandidates?.length).toBeGreaterThan(0);
+    expect(ambiguousPlanData.targetCandidates?.[0]).toMatchObject({
+      rank: 1,
+      path: expect.any(String),
+      evidence: expect.any(Array),
+      missingAnchors: expect.arrayContaining(["file-or-symbol-target"]),
+      nextChangePlanArgs: expect.objectContaining({ saveSnapshot: true, taskId: "ambiguous-change-plan" })
+    });
+    expect(
+      Boolean(ambiguousPlanData.targetCandidates?.[0]?.nextChangePlanArgs.files?.length) ||
+        Boolean(ambiguousPlanData.targetCandidates?.[0]?.nextChangePlanArgs.symbols?.length)
+    ).toBe(true);
+    expect(ambiguousPlanData.targetCandidates?.[0]?.evidence.length).toBeGreaterThan(0);
+    expect(ambiguousPlanData.targetCandidates?.[0]?.rawSearchQueries.length).toBeGreaterThan(0);
     expect(ambiguousPlanData.snapshotBlock).toMatchObject({
       taskId: "ambiguous-change-plan",
       path: ".codex/cache/codexa-tasks/ambiguous-change-plan.blocked.json"
@@ -1070,6 +1094,75 @@ describe("Codexa indexer", () => {
       path: "ambiguous-change-plan.blocked.json",
       blocked: true
     });
+    const followedCandidate = ambiguousPlanData.targetCandidates?.[0];
+    expect(followedCandidate).toBeDefined();
+    const followedPlan = await changePlanQuery(
+      repo,
+      {
+        task: followedCandidate?.nextChangePlanArgs.task,
+        files: followedCandidate?.nextChangePlanArgs.files,
+        symbols: followedCandidate?.nextChangePlanArgs.symbols,
+        query: followedCandidate?.nextChangePlanArgs.query,
+        taskId: followedCandidate?.nextChangePlanArgs.taskId,
+        changeType: followedCandidate?.nextChangePlanArgs.changeType,
+        diff: followedCandidate?.nextChangePlanArgs.diff,
+        saveSnapshot: followedCandidate?.nextChangePlanArgs.saveSnapshot
+      },
+      { autoRefresh: false }
+    );
+    expect((followedPlan.data as { editReadiness?: { editable: boolean; status: string }; snapshot?: { taskId: string } }).editReadiness).toMatchObject({ editable: true, status: "edit-ready" });
+    expect((followedPlan.data as { snapshot?: { taskId: string } }).snapshot?.taskId).toBe("ambiguous-change-plan");
+    await expect(readFile(path.join(repo, ".codex/cache/codexa-tasks/ambiguous-change-plan.blocked.json"), "utf8")).rejects.toThrow();
+    const followedLatest = JSON.parse(await readFile(path.join(repo, ".codex/cache/codexa-tasks/latest.json"), "utf8")) as {
+      taskId: string;
+      path: string;
+      blocked?: boolean;
+    };
+    expect(followedLatest).toMatchObject({
+      taskId: "ambiguous-change-plan",
+      path: "ambiguous-change-plan.json"
+    });
+    expect(followedLatest.blocked).toBeUndefined();
+
+    const generatedIdPlan = await changePlanQuery(
+      repo,
+      {
+        task: "Retarget behavior safely",
+        diff: false,
+        limit: 6,
+        tokenBudget: 1200,
+        saveSnapshot: true
+      },
+      { autoRefresh: false }
+    );
+    const generatedIdData = generatedIdPlan.data as {
+      snapshotBlock?: { taskId: string; path: string };
+      targetCandidates?: Array<{
+        nextChangePlanArgs: { task?: string; files?: string[]; symbols?: string[]; query?: string; taskId?: string; changeType?: "style" | "api" | "behavior" | "rename" | "delete" | "unknown"; diff?: boolean; saveSnapshot: boolean };
+      }>;
+    };
+    const generatedTaskId = generatedIdData.snapshotBlock?.taskId;
+    expect(generatedTaskId).toBeTruthy();
+    expect(generatedIdData.targetCandidates?.[0]?.nextChangePlanArgs.taskId).toBe(generatedTaskId);
+    const generatedBlockPath = generatedIdData.snapshotBlock?.path;
+    expect(generatedBlockPath).toBeTruthy();
+    const generatedCandidate = generatedIdData.targetCandidates?.[0];
+    const generatedFollowedPlan = await changePlanQuery(
+      repo,
+      {
+        task: generatedCandidate?.nextChangePlanArgs.task,
+        files: generatedCandidate?.nextChangePlanArgs.files,
+        symbols: generatedCandidate?.nextChangePlanArgs.symbols,
+        query: generatedCandidate?.nextChangePlanArgs.query,
+        taskId: generatedCandidate?.nextChangePlanArgs.taskId,
+        changeType: generatedCandidate?.nextChangePlanArgs.changeType,
+        diff: generatedCandidate?.nextChangePlanArgs.diff,
+        saveSnapshot: generatedCandidate?.nextChangePlanArgs.saveSnapshot
+      },
+      { autoRefresh: false }
+    );
+    expect((generatedFollowedPlan.data as { snapshot?: { taskId: string } }).snapshot?.taskId).toBe(generatedTaskId);
+    await expect(readFile(path.join(repo, generatedBlockPath ?? ""), "utf8")).rejects.toThrow();
 
     const exactFocus = await focusBriefQuery(repo, { task: "Fix src/api.ts handleThing", diff: false, limit: 4, tokenBudget: 900 }, { autoRefresh: false });
     expect((exactFocus.data as { focusFiles: Array<{ path: string }>; quality: { counts: { derived: number } } }).focusFiles.map((file) => file.path)).toContain("src/api.ts");
@@ -1120,7 +1213,8 @@ describe("Codexa indexer", () => {
 
     const plan = await changePlanQuery(repo, { task: "Change route normalization safely", files: ["service/helpers.py"], diff: false, limit: 6 }, { autoRefresh: false });
     expect(plan.text).toContain("Codexa change plan");
-    expect((plan.data as { editReadiness?: { editable: boolean; status: string } }).editReadiness).toMatchObject({ editable: true, status: "edit-ready" });
+    expect((plan.data as { editReadiness?: { editable: boolean; status: string }; targetCandidates?: unknown[] }).editReadiness).toMatchObject({ editable: true, status: "edit-ready" });
+    expect((plan.data as { targetCandidates?: unknown[] }).targetCandidates).toEqual([]);
     expect(plan.text).toContain("Read first:");
     expect(plan.text).toContain("tests/test_app.py");
   });

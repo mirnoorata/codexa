@@ -28,6 +28,7 @@ import type {
   PostEditReviewInput,
   QueryOptions,
   QueryResult,
+  SymbolFact,
   TaskSnapshot,
   TaskSnapshotRequiredCheck,
   TaskSnapshotRiskFile,
@@ -89,6 +90,26 @@ export async function changePlanQuery(
   const requiredDependencyChecks = requiredDependencyChecksForPlan(session.index, plannedEditTargets, input.changeType ?? "unknown").slice(0, 12);
   const plannedTests = editReadiness.editable ? tests : [];
   const plannedRecipes = editReadiness.editable ? recipes : [];
+  const blockedSnapshot = input.saveSnapshot && !editReadiness.editable
+    ? await saveBlockedTaskSnapshot({
+        repoRoot,
+        input,
+        reason: editReadiness.reason,
+        details: editReadiness
+      })
+    : undefined;
+  const targetCandidates = editReadiness.editable
+    ? []
+    : changePlanTargetCandidates({
+        input,
+        taskId: blockedSnapshot?.taskId ?? input.taskId,
+        index: session.index,
+        focusFiles,
+        workflows: focusData.workflows ?? [],
+        tests,
+        changedEntries: packData.changedEntries ?? [],
+        missingAnchors: editReadiness.missingAnchors
+      });
   const planSteps = editReadiness.editable
     ? [
         `1. Read ${files.slice(0, 6).join(", ") || "the focus files returned by Codexa"} before editing.`,
@@ -106,7 +127,9 @@ export async function changePlanQuery(
     : [
         `1. Do not edit yet: ${editReadiness.reason}.`,
         `2. Read ${files.slice(0, 6).join(", ") || "the orientation files returned by Codexa"} only to choose a concrete target.`,
-        `3. Use ${editReadiness.recommendedNextTool ?? focusData.nextCall?.tool ?? "search"} or raw search to identify the exact file or symbol.`,
+        targetCandidates.length > 0
+          ? "3. Pick one target candidate below, then re-run change_plan with its nextChangePlanArgs."
+          : `3. Use ${editReadiness.recommendedNextTool ?? focusData.nextCall?.tool ?? "search"} or raw search to identify the exact file or symbol.`,
         "4. Re-run change_plan with an explicit file or symbol target and saveSnapshot=true before editing.",
         "5. Treat any tests below as deferred until the edit target is explicit."
       ];
@@ -120,14 +143,6 @@ export async function changePlanQuery(
         freshness: pack.freshness,
         limit: 8
       }).catch(() => undefined)
-    : undefined;
-  const blockedSnapshot = input.saveSnapshot && !editReadiness.editable
-    ? await saveBlockedTaskSnapshot({
-        repoRoot,
-        input,
-        reason: editReadiness.reason,
-        details: editReadiness
-      })
     : undefined;
   const savedSnapshot = input.saveSnapshot && editReadiness.editable
     ? await saveTaskSnapshot({
@@ -182,6 +197,9 @@ export async function changePlanQuery(
     "",
     "Tests:",
     ...(editReadiness.editable ? formatTestRecommendations(plannedTests.slice(0, 12)) : ["- deferred until Codexa has an explicit file, symbol, or edit-ready packet."]),
+    !editReadiness.editable ? "" : undefined,
+    !editReadiness.editable ? "Target candidates:" : undefined,
+    ...(!editReadiness.editable ? formatTargetCandidates(targetCandidates) : []),
     "",
     "Required workflow checks:",
     ...formatRequiredChecks(editReadiness.editable ? requiredWorkflowChecks : []),
@@ -208,6 +226,7 @@ export async function changePlanQuery(
       plannedEditTargets,
       tests: plannedTests,
       recipes: plannedRecipes,
+      targetCandidates,
       quality,
       requiredWorkflowChecks: editReadiness.editable ? requiredWorkflowChecks : [],
       requiredDependencyChecks: editReadiness.editable ? requiredDependencyChecks : [],
@@ -240,6 +259,7 @@ function changePlanEditReadiness(input: {
   qualityLevel?: ContextQuality["level"];
   confidence?: number;
   recommendedNextTool?: string;
+  missingAnchors: string[];
   snapshotBlocked: boolean;
 } {
   const packetVerdict = input.packetVerdict ?? input.intentConfidence?.verdict;
@@ -247,6 +267,11 @@ function changePlanEditReadiness(input: {
   const hasEvidenceBackedFocus = input.focusFiles.some((entry) => entry.tier === "authoritative" || entry.tier === "derived");
   const highConfidenceContext = qualityLevel === "high" && hasEvidenceBackedFocus && (packetVerdict === undefined || packetVerdict === "edit-ready");
   const editable = input.explicitTargetProvided || highConfidenceContext;
+  const missingAnchors = uniqueSorted([
+    ...(input.intentConfidence?.missingAnchors ?? []),
+    ...(input.explicitTargetProvided ? [] : ["file-or-symbol-target"]),
+    ...(highConfidenceContext || input.explicitTargetProvided ? [] : ["edit-ready-context"])
+  ]);
   const reason = input.explicitTargetProvided
     ? "explicit file or symbol target provided"
     : highConfidenceContext
@@ -268,8 +293,255 @@ function changePlanEditReadiness(input: {
     qualityLevel,
     confidence: input.intentConfidence?.confidence,
     recommendedNextTool: editable ? undefined : input.intentConfidence?.recommendedNextTool ?? (packetVerdict === "raw-search-better" || packetVerdict === "needs-target" ? "search" : "task_brief"),
+    missingAnchors,
     snapshotBlocked: Boolean(input.input.saveSnapshot && !editable)
   };
+}
+
+interface ChangePlanTargetCandidate {
+  rank: number;
+  kind: "file" | "symbol";
+  path: string;
+  symbol?: {
+    id: string;
+    name: string;
+    qualifiedName: string;
+    kind: SymbolFact["kind"];
+  };
+  score: number;
+  confidence: EvidenceTier;
+  evidence: string[];
+  missingAnchors: string[];
+  nextChangePlanArgs: {
+    task?: string;
+    files?: string[];
+    symbols?: string[];
+    query?: string;
+    taskId?: string;
+    changeType: ChangeType;
+    diff?: boolean;
+    saveSnapshot: true;
+  };
+  rawSearchQueries: string[];
+}
+
+function changePlanTargetCandidates(input: {
+  input: ChangePlanInput;
+  taskId?: string;
+  index: CodexaIndex;
+  focusFiles: Array<{ file: FileFact; reasons: string[]; tier: EvidenceTier }>;
+  workflows: WorkflowTraceFact[];
+  tests: TestRecommendation[];
+  changedEntries: ChangedFileEntry[];
+  missingAnchors: string[];
+}): ChangePlanTargetCandidate[] {
+  const taskTokens = meaningfulTaskTokens(input.input.task ?? input.input.query ?? "");
+  const changedPaths = new Set(input.changedEntries.map((entry) => entry.path));
+  const testPaths = new Set(input.tests.map((test) => test.path));
+  const symbolsByPath = new Map<string, SymbolFact[]>();
+  for (const symbol of input.index.symbols) {
+    if (["module", "unknown"].includes(symbol.kind)) {
+      continue;
+    }
+    const entries = symbolsByPath.get(symbol.path) ?? [];
+    entries.push(symbol);
+    symbolsByPath.set(symbol.path, entries);
+  }
+  const candidates: ChangePlanTargetCandidate[] = [];
+  for (const entry of input.focusFiles.slice(0, 10)) {
+    const file = entry.file;
+    if (file.test && input.focusFiles.some((candidate) => !candidate.file.test)) {
+      continue;
+    }
+    const workflowHits = input.workflows.filter((workflow) => workflow.entryPath === file.path || workflow.relatedFiles.includes(file.path));
+    const graphHits = input.index.graphEdges.filter((edge) => edge.fromPath === file.path || edge.toPath === file.path).slice(0, 6);
+    const fileEvidence = candidateEvidence({
+      file,
+      reasons: entry.reasons,
+      workflowHits,
+      graphHits,
+      testPaths,
+      changedPaths,
+      taskTokens,
+      symbol: undefined
+    });
+    candidates.push({
+      rank: 0,
+      kind: "file",
+      path: file.path,
+      score: candidateScore(file, entry.tier, fileEvidence, undefined),
+      confidence: entry.tier,
+      evidence: fileEvidence.slice(0, 8),
+      missingAnchors: input.missingAnchors,
+      nextChangePlanArgs: {
+        task: input.input.task,
+        files: [file.path],
+        query: input.input.query,
+        taskId: input.taskId,
+        changeType: input.input.changeType ?? "unknown",
+        diff: input.input.diff,
+        saveSnapshot: true
+      },
+      rawSearchQueries: rawSearchQueries(input.input.task ?? input.input.query, file.path)
+    });
+    for (const symbol of candidateSymbols(symbolsByPath.get(file.path) ?? [], taskTokens).slice(0, 2)) {
+      const symbolEvidence = candidateEvidence({
+        file,
+        reasons: entry.reasons,
+        workflowHits,
+        graphHits: graphHits.filter((edge) => edge.fromSymbolId === symbol.id || edge.toSymbolId === symbol.id || edge.fromPath === symbol.path || edge.toPath === symbol.path),
+        testPaths,
+        changedPaths,
+        taskTokens,
+        symbol
+      });
+      candidates.push({
+        rank: 0,
+        kind: "symbol",
+        path: file.path,
+        symbol: {
+          id: symbol.id,
+          name: symbol.name,
+          qualifiedName: symbol.qualifiedName,
+          kind: symbol.kind
+        },
+        score: candidateScore(file, entry.tier, symbolEvidence, symbol),
+        confidence: entry.tier,
+        evidence: symbolEvidence.slice(0, 8),
+        missingAnchors: input.missingAnchors,
+        nextChangePlanArgs: {
+          task: input.input.task,
+          symbols: [symbol.id],
+          query: input.input.query,
+          taskId: input.taskId,
+          changeType: input.input.changeType ?? "unknown",
+          diff: input.input.diff,
+          saveSnapshot: true
+        },
+        rawSearchQueries: rawSearchQueries(input.input.task ?? input.input.query, symbol.qualifiedName)
+      });
+    }
+  }
+  return dedupeTargetCandidates(candidates)
+    .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path) || left.kind.localeCompare(right.kind))
+    .slice(0, 8)
+    .map((candidate, index) => ({ ...candidate, rank: index + 1 }));
+}
+
+function candidateEvidence(input: {
+  file: FileFact;
+  reasons: string[];
+  workflowHits: WorkflowTraceFact[];
+  graphHits: GraphEdgeFact[];
+  testPaths: Set<string>;
+  changedPaths: Set<string>;
+  taskTokens: string[];
+  symbol?: SymbolFact;
+}): string[] {
+  const evidence = new Set<string>();
+  for (const reason of input.reasons.slice(0, 4)) {
+    evidence.add(reason);
+  }
+  if (input.symbol) {
+    evidence.add(`symbol ${input.symbol.qualifiedName} (${input.symbol.kind})`);
+    const normalizedSymbol = normalizeSearchText(`${input.symbol.name} ${input.symbol.qualifiedName}`);
+    if (input.taskTokens.some((token) => normalizedSymbol.includes(token))) {
+      evidence.add("keyword match on symbol name");
+    }
+  }
+  const normalizedPath = normalizeSearchText(input.file.path);
+  if (input.taskTokens.some((token) => normalizedPath.includes(token))) {
+    evidence.add("keyword match on file path");
+  }
+  if (input.workflowHits.length > 0) {
+    evidence.add(`workflow evidence: ${input.workflowHits.slice(0, 2).map((workflow) => workflow.title).join(", ")}`);
+  }
+  if (input.graphHits.length > 0) {
+    evidence.add(`graph evidence: ${uniqueSorted(input.graphHits.map((edge) => edge.edgeKind)).slice(0, 4).join(", ")}`);
+  }
+  if (input.testPaths.has(input.file.path) || input.file.test) {
+    evidence.add("test evidence: candidate is a known test path");
+  } else if (input.graphHits.some((edge) => edge.edgeKind === "TESTS" || edge.edgeKind === "TEST_COVERS_WORKFLOW")) {
+    evidence.add("test evidence: graph links tests to this target");
+  }
+  if (input.changedPaths.has(input.file.path)) {
+    evidence.add("recent diff evidence: file is currently changed");
+  }
+  if (input.file.riskScore > 0) {
+    evidence.add(`risk evidence: score ${input.file.riskScore.toFixed(1)}`);
+  }
+  return [...evidence];
+}
+
+function candidateScore(file: FileFact, tier: EvidenceTier, evidence: string[], symbol: SymbolFact | undefined): number {
+  const tierScore: Record<EvidenceTier, number> = {
+    authoritative: 100,
+    derived: 70,
+    heuristic: 35,
+    fallback: 10
+  };
+  const symbolScore = symbol ? (symbol.exported || ["route", "node"].includes(symbol.kind) ? 18 : 10) : 0;
+  const sourceScore = file.test ? -12 : 12;
+  return tierScore[tier] + file.rank * 2 + file.riskScore + evidence.length * 4 + symbolScore + sourceScore;
+}
+
+function candidateSymbols(symbols: SymbolFact[], taskTokens: string[]): SymbolFact[] {
+  return symbols
+    .slice()
+    .sort(
+      (left, right) =>
+        symbolTargetScore(right, taskTokens) - symbolTargetScore(left, taskTokens) ||
+        (left.range?.startLine ?? 0) - (right.range?.startLine ?? 0) ||
+        left.qualifiedName.localeCompare(right.qualifiedName)
+    );
+}
+
+function symbolTargetScore(symbol: SymbolFact, taskTokens: string[]): number {
+  const normalized = normalizeSearchText(`${symbol.name} ${symbol.qualifiedName}`);
+  const tokenScore = taskTokens.filter((token) => normalized.includes(token)).length * 20;
+  const kindScore = symbol.kind === "route" ? 18 : symbol.exported ? 14 : ["function", "method", "class"].includes(symbol.kind) ? 10 : 4;
+  return tokenScore + kindScore;
+}
+
+function dedupeTargetCandidates(candidates: ChangePlanTargetCandidate[]): ChangePlanTargetCandidate[] {
+  const seen = new Set<string>();
+  const result: ChangePlanTargetCandidate[] = [];
+  for (const candidate of candidates) {
+    const key = `${candidate.kind}:${candidate.path}:${candidate.symbol?.id ?? candidate.symbol?.qualifiedName ?? ""}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(candidate);
+  }
+  return result;
+}
+
+function meaningfulTaskTokens(value: string): string[] {
+  const stop = new Set(["a", "an", "and", "as", "for", "how", "in", "of", "on", "or", "safely", "the", "to", "with"]);
+  return uniqueSorted(
+    normalizeSearchText(value)
+      .split(/\s+/u)
+      .map((token) => token.trim())
+      .filter((token) => token.length >= 3 && !stop.has(token))
+  ).slice(0, 8);
+}
+
+function rawSearchQueries(task: string | undefined, target: string): string[] {
+  const taskPart = meaningfulTaskTokens(task ?? "").slice(0, 4).join(" ");
+  const targetPart = target.split(/[/.]/u).filter(Boolean).slice(-2).join(" ");
+  return uniqueSorted([taskPart, targetPart, `${taskPart} ${targetPart}`].map((entry) => entry.trim()).filter(Boolean)).slice(0, 3);
+}
+
+function formatTargetCandidates(candidates: ChangePlanTargetCandidate[]): string[] {
+  if (candidates.length === 0) {
+    return ["- none ranked from current packet; run search/raw search to find a file or symbol target."];
+  }
+  return candidates.slice(0, 6).map((candidate) => {
+    const target = candidate.kind === "symbol" && candidate.symbol ? `${candidate.symbol.qualifiedName} in ${candidate.path}` : candidate.path;
+    const nextArg = candidate.nextChangePlanArgs.files?.[0] ?? candidate.nextChangePlanArgs.symbols?.[0] ?? target;
+    return `- #${candidate.rank} ${candidate.kind} ${target}: score ${candidate.score.toFixed(1)}; next change_plan target ${nextArg}; ${candidate.evidence.slice(0, 3).join("; ")}`;
+  });
 }
 
 function snapshotSymbolBaseline(index: CodexaIndex, paths: string[]): Record<string, TaskSnapshotSymbol[]> {
