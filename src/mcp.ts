@@ -17,6 +17,7 @@ import {
   postEditReviewQuery,
   repoMapQuery,
   searchQuery,
+  sessionMemoryQuery,
   statusQuery,
   symbolContextQuery,
   taskBriefQuery,
@@ -24,13 +25,14 @@ import {
   workflowPathQuery
 } from "./queries.js";
 import { CURRENT_VERIFICATION_PROVENANCE } from "./types.js";
-import type { FreshnessInfo, QueryOptions, QueryResult } from "./types.js";
+import type { FreshnessInfo, QueryOptions, QueryResult, SessionMemoryInput } from "./types.js";
 import { getFreshness } from "./indexer.js";
 import { requireIndex } from "./query/runtime.js";
 import { createQuerySessionFromIndexState, type QuerySession, type QuerySessionIndexState } from "./query/session.js";
 import { RAW_SEARCH_EXPLICIT_PATTERN_LIMIT } from "./query/raw-search.js";
 import { semanticMayUseOpenWorldProvider } from "./semantic-retrieval.js";
 import { resolveMcpRepoRoot, type McpRepoRootResolution } from "./mcp-repo-root.js";
+import { recordViewedMemoryForTool } from "./session-memory.js";
 
 type McpOptionalQueryInput = Record<string, unknown> & {
   semantic?: boolean;
@@ -81,6 +83,11 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
     idempotentHint: false,
     openWorldHint: semanticMayUseOpenWorldProvider(annotationRepoRoot, queryOptions)
   };
+  const memoryWriteAnnotations = {
+    ...sourceContextAnnotations,
+    readOnlyHint: false,
+    idempotentHint: false
+  };
   const changeTypeSchema = z.enum(["style", "api", "behavior", "rename", "delete", "unknown"]);
   const semanticQuerySchema: Record<string, z.ZodTypeAny> = semanticEnabledForServer(queryOptions)
     ? {
@@ -97,6 +104,76 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
     lspTimeoutMs: z.number().int().positive().max(60_000).optional(),
     lspMaxFiles: z.number().int().positive().max(12).optional()
   };
+  const confidenceSchema = z.enum(["authoritative", "derived", "heuristic"]);
+  const evidenceTierSchema = z.enum(["authoritative", "derived", "heuristic", "fallback"]);
+  const sessionMemoryKindSchema = z.enum(["viewed", "claim", "ruled_out", "open_question", "next_read", "decision", "verification", "risk", "constraint"]);
+  const sessionMemoryProvenanceSchema = z.enum(["codexa-derived", "agent-asserted", "user-asserted"]);
+  const sessionMemoryStatusSchema = z.enum(["active", "stale", "superseded", "rejected", "resolved"]);
+  const sessionMemoryRefSchema = z.object({
+    kind: z.enum(["file", "symbol", "workflow", "endpoint", "test", "graph_edge", "outcome", "snapshot"]),
+    id: z.string().min(1).max(240),
+    path: z.string().max(500).optional(),
+    edgeKind: z
+      .enum([
+        "DEFINES",
+        "IMPORTS",
+        "CALLS",
+        "REFERENCES",
+        "TESTS",
+        "ROUTE",
+        "JOB",
+        "RISK",
+        "ROUTE_HANDLES",
+        "ROUTE_CALLS_STORE",
+        "STORE_DISPATCHES_ADAPTER",
+        "ADAPTER_REFERENCED_BY_MANIFEST",
+        "UI_CALLS_ENDPOINT",
+        "TEST_COVERS_WORKFLOW",
+        "IMPLEMENTS",
+        "EXTENDS",
+        "EXPORTS",
+        "TYPE_EXPORTS"
+      ])
+      .optional(),
+    fromId: z.string().max(240).optional(),
+    toId: z.string().max(240).optional(),
+    evidenceTier: evidenceTierSchema,
+    confidence: confidenceSchema
+  });
+  const sessionMemoryEvidenceSchema = z.object({
+    id: z.string().min(1).max(240),
+    provenance: sessionMemoryProvenanceSchema,
+    source: z.enum(["agent", "mcp_tool", "task_snapshot", "post_edit_outcome", "hook_event", "index_fact", "codexa_cache"]),
+    sourceRef: z.string().min(1).max(500),
+    toolName: z.string().max(120).optional(),
+    callId: z.string().max(120).optional(),
+    taskId: z.string().max(120).optional(),
+    path: z.string().max(500).optional(),
+    range: z
+      .object({
+        startLine: z.number().int().nonnegative(),
+        endLine: z.number().int().nonnegative(),
+        startByte: z.number().int().nonnegative(),
+        endByte: z.number().int().nonnegative()
+      })
+      .optional(),
+    factType: z.string().max(120).optional(),
+    edgeKind: z.string().max(120).optional(),
+    evidenceTier: evidenceTierSchema,
+    confidence: confidenceSchema,
+    snapshotId: z.string().min(1).max(160),
+    indexedAt: z.string().min(1).max(80),
+    headCommit: z.string().max(80).nullable(),
+    note: z.string().max(500).optional()
+  });
+  const sessionMemoryScopeSchema = z.object({
+    files: z.array(z.string().max(500)).max(80).optional(),
+    symbols: z.array(z.string().max(240)).max(80).optional(),
+    tests: z.array(z.string().max(500)).max(80).optional(),
+    workflows: z.array(z.string().max(240)).max(80).optional(),
+    topics: z.array(z.string().max(280)).max(40).optional(),
+    refs: z.array(sessionMemoryRefSchema).max(80).optional()
+  });
   const toolQueryOptions = (input: McpOptionalQueryInput = {}): QueryOptions => ({
     ...queryOptions,
     semantic: input.semantic ?? queryOptions.semantic,
@@ -109,12 +186,14 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
     lspTimeoutMs: input.lspTimeoutMs ?? queryOptions.lspTimeoutMs,
     lspMaxFiles: input.lspMaxFiles ?? queryOptions.lspMaxFiles
   });
-  const runTool = async (producer: (session: QuerySession) => Promise<QueryResult>) => {
+  const runTool = async (producer: (session: QuerySession) => Promise<QueryResult>, autoRecord?: { toolName: string; input?: Record<string, unknown> }) => {
     const activeRepoRoot = await resolveActiveRepoRoot();
     return toToolResult(
       await safeQuery(async () => {
         const session = await createMcpQuerySession(activeRepoRoot);
-        const result = compactMcpResult(withSessionRuntime(await producer(session), session));
+        const rawResult = withSessionRuntime(await producer(session), session);
+        const memoryResult = autoRecord ? await withAutoRecordedSessionMemory(session, rawResult, autoRecord.toolName, autoRecord.input) : rawResult;
+        const result = compactMcpResult(memoryResult);
         await notifyResourceListChangedAfterRefresh(server, session);
         return result;
       }, activeRepoRoot)
@@ -203,9 +282,9 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
       description: "Find matching files, symbols, and usage sites, refreshing stale Codexa artifacts first when auto-refresh is enabled.",
       inputSchema: { query: z.string().min(1), limit: z.number().int().positive().max(30).optional(), ...semanticQuerySchema },
       outputSchema,
-      annotations: sourceContextAnnotations
+      annotations: memoryWriteAnnotations
     },
-    async (input) => runTool((session) => findContextQuery(session, input.query, input.limit ?? 12, toolQueryOptions(input)))
+    async (input) => runTool((session) => findContextQuery(session, input.query, input.limit ?? 12, toolQueryOptions(input)), { toolName: "find_context", input })
   );
 
   server.registerTool(
@@ -270,9 +349,9 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
         depth: z.number().int().min(1).max(3).optional()
       },
       outputSchema,
-      annotations: sourceContextAnnotations
+      annotations: memoryWriteAnnotations
     },
-    async ({ file, symbol, changeType, depth }) => runTool((session) => impactQuery(session, { file, symbol, changeType, depth }, queryOptions))
+    async (input) => runTool((session) => impactQuery(session, { file: input.file, symbol: input.symbol, changeType: input.changeType, depth: input.depth }, queryOptions), { toolName: "impact", input })
   );
 
   server.registerTool(
@@ -294,9 +373,9 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
       description: "Recommend targeted tests for the current diff or top-ranked files, refreshing stale Codexa artifacts first when auto-refresh is enabled.",
       inputSchema: { diff: z.boolean().optional() },
       outputSchema,
-      annotations: sourceContextAnnotations
+      annotations: memoryWriteAnnotations
     },
-    async ({ diff }) => runTool((session) => testPlanQuery(session, diff ?? true, queryOptions))
+    async (input) => runTool((session) => testPlanQuery(session, input.diff ?? true, queryOptions), { toolName: "test_plan", input })
   );
 
   server.registerTool(
@@ -319,9 +398,9 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
         ...lspQuerySchema
       },
       outputSchema,
-      annotations: sourceContextAnnotations
+      annotations: memoryWriteAnnotations
     },
-    async (input) => runTool((session) => taskBriefQuery(session, input, toolQueryOptions(input)))
+    async (input) => runTool((session) => taskBriefQuery(session, input, toolQueryOptions(input)), { toolName: "task_brief", input })
   );
 
   server.registerTool(
@@ -343,9 +422,9 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
         ...lspQuerySchema
       },
       outputSchema,
-      annotations: sourceContextAnnotations
+      annotations: memoryWriteAnnotations
     },
-    async (input) => runTool((session) => contextPackQuery(session, input, toolQueryOptions(input)))
+    async (input) => runTool((session) => contextPackQuery(session, input, toolQueryOptions(input)), { toolName: "context_pack", input })
   );
 
   server.registerTool(
@@ -361,9 +440,9 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
         ...semanticQuerySchema
       },
       outputSchema,
-      annotations: sourceContextAnnotations
+      annotations: memoryWriteAnnotations
     },
-    async (input) => runTool((session) => focusBriefQuery(session, input, toolQueryOptions(input)))
+    async (input) => runTool((session) => focusBriefQuery(session, input, toolQueryOptions(input)), { toolName: "focus_brief", input })
   );
 
   server.registerTool(
@@ -379,9 +458,57 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
         ...semanticQuerySchema
       },
       outputSchema,
-      annotations: sourceContextAnnotations
+      annotations: memoryWriteAnnotations
     },
-    async (input) => runTool((session) => focusBriefQuery(session, input, toolQueryOptions(input)))
+    async (input) => runTool((session) => focusBriefQuery(session, input, toolQueryOptions(input)), { toolName: "session_context", input })
+  );
+
+  server.registerTool(
+    "session_memory",
+    {
+      title: "Codexa session memory",
+      description: "Read, summarize, compact, or explicitly remember durable structured working memory for this Codex session. Cache-only; does not mutate source.",
+      inputSchema: {
+        action: z.enum(["read", "remember", "summary", "compact"]).optional(),
+        sessionId: z.string().min(1).max(120).optional(),
+        taskId: z.string().min(1).max(120).optional(),
+        task: z.string().max(500).optional(),
+        kinds: z.array(sessionMemoryKindSchema).max(12).optional(),
+        refs: z.array(sessionMemoryRefSchema).max(80).optional(),
+        files: z.array(z.string().max(500)).max(80).optional(),
+        symbols: z.array(z.string().max(240)).max(80).optional(),
+        topics: z.array(z.string().max(280)).max(40).optional(),
+        limit: z.number().int().positive().max(40).optional(),
+        tokenBudget: z.number().int().min(500).max(8000).optional(),
+        includeStale: z.boolean().optional(),
+        entries: z
+          .array(
+            z.object({
+              kind: sessionMemoryKindSchema,
+              key: z.string().max(160).optional(),
+              summary: z.string().min(1).max(500),
+              details: z.string().max(4000).optional(),
+              provenance: sessionMemoryProvenanceSchema.optional(),
+              status: sessionMemoryStatusSchema.optional(),
+              confidence: confidenceSchema,
+              evidenceTier: evidenceTierSchema,
+              scope: sessionMemoryScopeSchema.optional(),
+              evidence: z.array(sessionMemoryEvidenceSchema).max(24).optional(),
+              supersedes: z.array(z.string().max(240)).max(20).optional()
+            })
+          )
+          .max(20)
+          .optional()
+      },
+      outputSchema,
+      annotations: {
+        readOnlyHint: false,
+        destructiveHint: false,
+        idempotentHint: false,
+        openWorldHint: false
+      }
+    },
+    async (input) => runTool((session) => sessionMemoryQuery(session, input as SessionMemoryInput, queryOptions))
   );
 
   const graphTargetSchema = {
@@ -473,7 +600,7 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
       outputSchema,
       annotations: cacheWriteAnnotations
     },
-    async (input) => runTool((session) => changePlanQuery(session, input, toolQueryOptions(input)))
+    async (input) => runTool((session) => changePlanQuery(session, input, toolQueryOptions(input)), { toolName: "change_plan", input })
   );
 
   server.registerTool(
@@ -526,14 +653,16 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
           .optional()
       },
       outputSchema,
-      annotations: sourceContextAnnotations
+      annotations: memoryWriteAnnotations
     },
     async (input) => {
       const activeRepoRoot = await resolveActiveRepoRoot();
       return toToolResult(
         await safeQuery(async () => {
           const session = await createMcpQuerySession(activeRepoRoot);
-          const result = compactMcpResult(withSessionRuntime(await postEditReviewQuery(session, { ...input, persistOutcome: false }, queryOptions), session));
+          const rawResult = withSessionRuntime(await postEditReviewQuery(session, { ...input, persistOutcome: false }, queryOptions), session);
+          const memoryResult = await withAutoRecordedSessionMemory(session, rawResult, "post_edit_review", input);
+          const result = compactMcpResult(memoryResult);
           await notifyResourceListChangedAfterRefresh(server, session);
           return result;
         }, activeRepoRoot)
@@ -554,6 +683,66 @@ function sameResolution(previous: McpRepoRootResolution | undefined, next: McpRe
 
 function semanticEnabledForServer(options: QueryOptions): boolean {
   return options.semantic === true || process.env.CODEXA_SEMANTIC === "1";
+}
+
+async function withAutoRecordedSessionMemory(session: QuerySession, result: QueryResult, toolName: string, input: Record<string, unknown> | undefined): Promise<QueryResult> {
+  try {
+    const writes = await recordViewedMemoryForTool({
+      repoRoot: session.repoRoot,
+      taskId: typeof input?.taskId === "string" ? input.taskId : undefined,
+      task: typeof input?.task === "string" ? input.task : undefined,
+      toolName,
+      result,
+      index: session.index
+    });
+    if (!writes) {
+      return result;
+    }
+    return {
+      ...result,
+      data: addSessionMemoryWrite(result.data, writes)
+    };
+  } catch (error) {
+    const warning = `session memory auto-record failed for ${toolName}: ${error instanceof Error ? error.message : String(error)}`;
+    return {
+      ...result,
+      data: addSessionMemoryWarning(result.data, warning)
+    };
+  }
+}
+
+function addSessionMemoryWrite(data: unknown, writes: unknown): unknown {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return data;
+  }
+  const record = data as Record<string, unknown>;
+  const existing = isRecord(record.sessionMemory) ? record.sessionMemory : {};
+  return {
+    ...record,
+    sessionMemory: {
+      ...existing,
+      autoRecorded: true,
+      writes
+    }
+  };
+}
+
+function addSessionMemoryWarning(data: unknown, warning: string): unknown {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return data;
+  }
+  const record = data as Record<string, unknown>;
+  const warnings = Array.isArray(record.warnings) ? record.warnings.filter((entry): entry is string => typeof entry === "string") : [];
+  const existing = isRecord(record.sessionMemory) ? record.sessionMemory : {};
+  return {
+    ...record,
+    warnings: [...warnings, warning],
+    sessionMemory: {
+      ...existing,
+      autoRecorded: false,
+      warning
+    }
+  };
 }
 
 const MCP_STRUCTURED_DATA_TARGET_BYTES = 96_000;
@@ -855,6 +1044,8 @@ export function compactPostEditMcpResult(result: QueryResult): QueryResult {
       verificationCoverage: limitArray(data.verificationCoverage, 40),
       verificationLedger: limitArray(data.verificationLedger, 60),
       verificationProvenance: data.verificationProvenance ?? CURRENT_VERIFICATION_PROVENANCE,
+      sessionMemory: data.sessionMemory,
+      priorSessionMemory: data.priorSessionMemory,
       waivedVerification: limitArray(data.waivedVerification, 30),
       unindexedEditedFiles: data.unindexedEditedFiles,
       riskEscalations: limitArray(data.riskEscalations, 20),
@@ -979,6 +1170,7 @@ function compactContextPacketData(data: Record<string, unknown>, mode: string): 
     quality: data.quality,
     gaps: limit("gaps", data.gaps, 30),
     session: compactSession(data.session),
+    sessionMemory: data.sessionMemory,
     runtime: data.runtime,
     truncation: Object.keys(limit.truncation).length > 0 ? limit.truncation : undefined
   };
@@ -999,6 +1191,7 @@ function compactFocusBriefData(data: Record<string, unknown>): McpCompactionResu
     groups: limit("groups", data.groups, 20, compactGroup),
     tests: limit("tests", data.tests, 30, compactTestRecommendation),
     nextCall: data.nextCall,
+    sessionMemory: data.sessionMemory,
     quality: data.quality,
     gaps: limit("gaps", data.gaps, 30),
     runtime: data.runtime,
@@ -1026,6 +1219,7 @@ function compactChangePlanData(data: Record<string, unknown>): McpCompactionResu
     quality: data.quality,
     requiredWorkflowChecks: limit("requiredWorkflowChecks", data.requiredWorkflowChecks, 20, compactCheck),
     requiredDependencyChecks: limit("requiredDependencyChecks", data.requiredDependencyChecks, 30, compactCheck),
+    sessionMemory: data.sessionMemory,
     snapshot: snapshot
       ? {
           taskId: snapshot.taskId,
@@ -1036,6 +1230,7 @@ function compactChangePlanData(data: Record<string, unknown>): McpCompactionResu
           plannedFiles: snapshotLimit("plannedFiles", snapshot.plannedFiles, 40),
           focusFiles: snapshotLimit("focusFiles", snapshot.focusFiles, 20, compactFileFact),
           plannedTests: snapshotLimit("plannedTests", snapshot.plannedTests, 20, compactTestRecommendation),
+          sessionMemory: snapshot.sessionMemory,
           requiredWorkflowCheckCount: typeof snapshot.requiredWorkflowCheckCount === "number" ? snapshot.requiredWorkflowCheckCount : Array.isArray(snapshot.requiredWorkflowChecks) ? snapshot.requiredWorkflowChecks.length : 0,
           requiredDependencyCheckCount: typeof snapshot.requiredDependencyCheckCount === "number" ? snapshot.requiredDependencyCheckCount : Array.isArray(snapshot.requiredDependencyChecks) ? snapshot.requiredDependencyChecks.length : 0,
           recipes: snapshotLimit("recipes", snapshot.recipes, 12),
@@ -1082,6 +1277,7 @@ function compactTestPlanData(data: Record<string, unknown>): McpCompactionResult
     verificationCoverage: limit("verificationCoverage", data.verificationCoverage, 40, compactVerificationCoverage),
     verificationCommandPlan: limit("verificationCommandPlan", data.verificationCommandPlan, 30, compactVerificationPlan),
     verificationLedgerPreview: limit("verificationLedgerPreview", data.verificationLedgerPreview, 60, compactVerificationLedgerEntry),
+    sessionMemory: data.sessionMemory,
     gaps: limit("gaps", data.gaps, 30),
     runtime: data.runtime,
     truncation: Object.keys(limit.truncation).length > 0 ? limit.truncation : undefined

@@ -13,7 +13,8 @@ import type {
   VerificationLedgerEntry,
   VerificationLedgerStatus,
   VerificationProvenance,
-  VerificationWaiver
+  VerificationWaiver,
+  SessionMemoryPointer
 } from "./types.js";
 import { stableId } from "./util.js";
 
@@ -60,6 +61,7 @@ export interface PostEditOutcomeInput {
   verificationCoverage: VerificationCoverage[];
   verificationLedger: VerificationLedgerEntry[];
   verificationProvenance?: VerificationProvenance;
+  sessionMemory?: SessionMemoryPointer;
   riskDeltas: PostEditRiskDelta[];
   quality?: { level?: unknown; counts?: unknown };
   confidence?: {
@@ -126,6 +128,7 @@ export interface PostEditOutcome {
   verificationCoverage: VerificationCoverage[];
   verificationLedger: VerificationLedgerEntry[];
   verificationProvenance: VerificationProvenance;
+  sessionMemory?: SessionMemoryPointer;
   riskDeltas: PostEditRiskDelta[];
   hookSummary: PostEditHookSummary;
   qualityLevel?: string;
@@ -197,6 +200,7 @@ export function buildPostEditOutcome(input: PostEditOutcomeInput, createdAt = ne
     verificationCoverage: compactCoverage(input.verificationCoverage, repoRoot),
     verificationLedger: compactLedger(input.verificationLedger, repoRoot),
     verificationProvenance: input.verificationProvenance ?? CURRENT_VERIFICATION_PROVENANCE,
+    sessionMemory: input.sessionMemory,
     riskDeltas: input.riskDeltas,
     hookSummary: hookSummary(input),
     qualityLevel: typeof input.quality?.level === "string" ? input.quality.level : undefined,

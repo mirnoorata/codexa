@@ -221,6 +221,8 @@ describe("Codexa project init", () => {
     const repo = await createInitRepo();
     const summary = await sessionStartSummary(repo, true);
     expect(summary).toContain("Codexa Codex Contract");
+    expect(summary).toContain("Session Memory Protocol");
+    expect(summary).toContain("session_memory");
     expect(summary).toContain("codexa index <repo>");
     expect(summary).toContain("Codexa MCP is ready");
   });

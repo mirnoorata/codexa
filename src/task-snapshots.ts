@@ -228,6 +228,7 @@ function isTaskSnapshot(value: unknown): value is TaskSnapshot {
     Array.isArray(record.plannedFiles) &&
     Array.isArray(record.focusFiles) &&
     Array.isArray(record.plannedTests) &&
+    (record.sessionMemory === undefined || isSessionMemoryPointer(record.sessionMemory)) &&
     Array.isArray(record.requiredWorkflowChecks) &&
     Array.isArray(record.requiredDependencyChecks) &&
     Array.isArray(record.recipes) &&
@@ -235,6 +236,14 @@ function isTaskSnapshot(value: unknown): value is TaskSnapshot {
     Array.isArray(record.warnings) &&
     isSnapshotDirtyBaseline(record.dirtyBaseline)
   );
+}
+
+function isSessionMemoryPointer(value: unknown): boolean {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const record = value as Partial<NonNullable<TaskSnapshot["sessionMemory"]>>;
+  return typeof record.sessionId === "string" && typeof record.revision === "number" && Array.isArray(record.entryIds) && typeof record.summaryHash === "string";
 }
 
 function isSnapshotDirtyBaseline(value: unknown): value is TaskSnapshot["dirtyBaseline"] {

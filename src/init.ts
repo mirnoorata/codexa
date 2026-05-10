@@ -103,12 +103,12 @@ export async function sessionStartSummary(repoInput: string | undefined, include
   lines.push(...status.text.split(/\r?\n/).slice(0, 6));
 
   if (includeContext) {
-    lines.push("", ...renderCodexUseContract(status.freshness).split(/\r?\n/).slice(0, 44));
+    lines.push("", ...renderCodexUseContract(status.freshness).split(/\r?\n/).slice(0, 78));
     lines.push(`Session-start auto-refresh: ${autoRefresh ? "enabled for follow-up MCP context calls" : "disabled for this cheap startup check"}.`);
   }
 
   lines.push("Codexa MCP is ready.");
-  lines.push("Automatic-use contract: broad task -> focus_brief/session_context; code task -> task_brief; concrete edit -> change_plan with saveSnapshot=true before editing; after edits -> post_edit_review; workflow/runtime change -> workflow_path; API/rename/delete -> callers/callees/dependency_path; finish with test_plan.");
+  lines.push("Automatic-use contract: broad task -> focus_brief/session_context; code task -> task_brief; resume/reuse working memory -> session_memory; concrete edit -> change_plan with saveSnapshot=true before editing; after edits -> post_edit_review; workflow/runtime change -> workflow_path; API/rename/delete -> callers/callees/dependency_path; finish with test_plan.");
   return lines.join("\n");
 }
 

@@ -13,6 +13,7 @@ import { findFile, normalizeInputPaths, resolveSymbolTarget } from "./targets.js
 import { formatVerificationCoverage, formatVerificationLedger, verificationEvidenceForCommandReports, verificationLedgerForPostEdit } from "./verification.js";
 import { isCodexaControlPath, formatChangedEntry } from "./worktree.js";
 import { buildPostEditOutcome, savePostEditOutcome, type PostEditCheckResult, type PostEditOutcomeInput } from "../post-edit-outcomes.js";
+import { pointerForSessionMemory, readSessionMemory } from "../session-memory.js";
 import { loadTaskSnapshot, saveTaskSnapshot } from "../task-snapshots.js";
 import { CURRENT_VERIFICATION_PROVENANCE } from "../types.js";
 import type {
@@ -38,7 +39,7 @@ import type {
   VerificationLedgerEntry,
   WorkflowTraceFact
 } from "../types.js";
-import { limitText, uniqueSorted } from "../util.js";
+import { limitText, stableId, uniqueSorted } from "../util.js";
 
 export async function changePlanQuery(
   sessionInput: QuerySessionInput,
@@ -89,6 +90,15 @@ export async function changePlanQuery(
   const quality = packData.quality ?? (focus.data as { quality?: ContextQuality }).quality;
   const snapshotIndex = input.saveSnapshot ? session.index : undefined;
   const snapshotScope = uniqueSorted([...plannedEditTargets, ...files]);
+  const sessionMemoryPointer = input.saveSnapshot
+    ? await pointerForSessionMemory({
+        repoRoot,
+        taskId: input.taskId,
+        files: snapshotScope,
+        freshness: pack.freshness,
+        limit: 8
+      }).catch(() => undefined)
+    : undefined;
   const savedSnapshot = input.saveSnapshot
     ? await saveTaskSnapshot({
         repoRoot,
@@ -107,6 +117,7 @@ export async function changePlanQuery(
             riskScore: entry.file.riskScore
           })),
           plannedTests: compactSnapshotTests(tests, repoRoot),
+          sessionMemory: sessionMemoryPointer,
           requiredWorkflowChecks,
           requiredDependencyChecks,
           symbolBaseline: snapshotIndex ? snapshotSymbolBaseline(snapshotIndex, snapshotScope) : undefined,
@@ -382,6 +393,15 @@ export async function postEditReviewQuery(
     gaps?: string[];
     warnings?: string[];
   };
+  const priorSessionMemory = await readSessionMemory({
+    repoRoot,
+    taskId: snapshot?.taskId ?? input.taskId,
+    files: reviewTargets,
+    kinds: ["claim", "ruled_out", "open_question", "decision"],
+    freshness,
+    limit: 8,
+    includeStale: true
+  }).catch(() => undefined);
   const selectedFiles = [...new Set([...reviewTargets, ...(contextData.focusFiles ?? []).map((entry) => entry.file.path)])].slice(0, Math.max(limit * 2, 12));
   const symbolDeltas = compareSnapshotSymbols(snapshot, index, uniqueSorted([...reviewTargets, ...editPaths]));
   const modifiedSymbols = changedSymbols
@@ -544,6 +564,14 @@ export async function postEditReviewQuery(
     missingChecks: [...workflowChecks, ...dependencyChecks].filter((check) => check.status === "missing")
   });
   const quality = contextData.quality;
+  const sessionMemoryPointer = priorSessionMemory
+    ? {
+        sessionId: priorSessionMemory.sessionId,
+        revision: priorSessionMemory.revision,
+        entryIds: priorSessionMemory.memory.entries.map((entry) => entry.id).slice(0, 20),
+        summaryHash: stableSessionMemoryHash(priorSessionMemory.memory.entries.map((entry) => entry.summary).join("\n"))
+      }
+    : undefined;
   const outcomeInput: PostEditOutcomeInput = {
     repoRoot,
     task,
@@ -574,6 +602,7 @@ export async function postEditReviewQuery(
     verificationCoverage,
     verificationLedger,
     verificationProvenance: CURRENT_VERIFICATION_PROVENANCE,
+    sessionMemory: sessionMemoryPointer,
     riskDeltas: riskDeltas.map((delta) => ({
       path: delta.path,
       beforeRisk: delta.before.riskScore,
@@ -631,6 +660,9 @@ export async function postEditReviewQuery(
     ...workflows.slice(0, 4).map((workflow) => `- workflow ${workflow.title}: ${workflow.confidence}; ${workflow.relatedFiles.slice(0, 5).join(", ")}`),
     ...affectedEdges.slice(0, 10).map((edge) => `- edge ${edge.edgeKind}: ${edge.fromPath ?? edge.fromId} -> ${edge.toPath ?? edge.toId}; ${edge.confidence}; ${edge.reason}`),
     affectedTests.length > 0 ? `- Affected tests/workflows: ${affectedTests.slice(0, 10).join(", ")}` : "- Affected tests/workflows: none proven from typed graph edges",
+    priorSessionMemory && priorSessionMemory.memory.entries.length > 0 ? "" : undefined,
+    priorSessionMemory && priorSessionMemory.memory.entries.length > 0 ? "Session memory:" : undefined,
+    ...(priorSessionMemory?.memory.entries.slice(0, 8).map((entry) => `- ${entry.kind}: ${entry.summary} (${entry.evidenceTier}/${entry.confidence}; ${entry.status})`) ?? []),
     "",
     "Required workflow checks:",
     ...formatCheckResults(workflowChecks),
@@ -710,6 +742,15 @@ export async function postEditReviewQuery(
       verificationCoverage: limitArray(dataVerificationCoverage, 40),
       verificationLedger: limitArray(dataVerificationLedger, 60),
       verificationProvenance: CURRENT_VERIFICATION_PROVENANCE,
+      sessionMemory: sessionMemoryPointer,
+      priorSessionMemory: priorSessionMemory
+        ? {
+            sessionId: priorSessionMemory.sessionId,
+            revision: priorSessionMemory.revision,
+            entries: priorSessionMemory.memory.entries.slice(0, 8),
+            warnings: priorSessionMemory.warnings
+          }
+        : undefined,
       waivedVerification: limitArray(dataWaivedVerification, 30),
       unindexedEditedFiles,
       riskEscalations: limitArray(riskEscalations, 20),
@@ -1121,6 +1162,10 @@ function compactSnapshotForData(snapshot: TaskSnapshot | undefined): unknown {
     requiredWorkflowCheckCount: snapshot.requiredWorkflowChecks.length,
     requiredDependencyCheckCount: snapshot.requiredDependencyChecks.length
   };
+}
+
+function stableSessionMemoryHash(value: string): string {
+  return stableId("session-memory-summary", value);
 }
 
 function compactContextData(data: unknown): unknown {

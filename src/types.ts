@@ -1,6 +1,18 @@
 export type LanguageId = "typescript" | "javascript" | "python" | "json" | "markdown" | "unknown";
 
-export type FactSource = "tree-sitter" | "typescript-syntax" | "typescript-compiler" | "git" | "manifest" | "markdown" | "heuristic" | "static-analysis" | "lsp";
+export type FactSource =
+  | "tree-sitter"
+  | "typescript-syntax"
+  | "typescript-compiler"
+  | "git"
+  | "manifest"
+  | "markdown"
+  | "heuristic"
+  | "static-analysis"
+  | "lsp"
+  | "mcp-tool"
+  | "codex-agent"
+  | "codexa-cache";
 
 export type Confidence = "authoritative" | "derived" | "heuristic";
 
@@ -17,7 +29,8 @@ export type FactType =
   | "WorkflowTrace"
   | "ModuleCluster"
   | "RiskSignal"
-  | "ParserError";
+  | "ParserError"
+  | "SessionMemoryEntry";
 
 export type GraphEdgeKind =
   | "DEFINES"
@@ -198,6 +211,98 @@ export interface ParserErrorFact extends BaseFact {
   message: string;
 }
 
+export type SessionMemoryKind =
+  | "viewed"
+  | "claim"
+  | "ruled_out"
+  | "open_question"
+  | "next_read"
+  | "decision"
+  | "verification"
+  | "risk"
+  | "constraint";
+
+export type SessionMemoryProvenance = "codexa-derived" | "agent-asserted" | "user-asserted";
+
+export type SessionMemoryStatus = "active" | "stale" | "superseded" | "rejected" | "resolved";
+
+export interface SessionMemoryRef {
+  kind: "file" | "symbol" | "workflow" | "endpoint" | "test" | "graph_edge" | "outcome" | "snapshot";
+  id: string;
+  path?: string;
+  edgeKind?: GraphEdgeKind;
+  fromId?: string;
+  toId?: string;
+  evidenceTier: EvidenceTier;
+  confidence: Confidence;
+}
+
+export interface SessionMemoryScope {
+  files: string[];
+  symbols: string[];
+  tests: string[];
+  workflows: string[];
+  topics: string[];
+  refs: SessionMemoryRef[];
+}
+
+export interface SessionMemoryEvidence {
+  id: string;
+  provenance: SessionMemoryProvenance;
+  source: "agent" | "mcp_tool" | "task_snapshot" | "post_edit_outcome" | "hook_event" | "index_fact" | "codexa_cache";
+  sourceRef: string;
+  toolName?: string;
+  callId?: string;
+  taskId?: string;
+  path?: string;
+  range?: Range;
+  factType?: FactType;
+  edgeKind?: GraphEdgeKind;
+  evidenceTier: EvidenceTier;
+  confidence: Confidence;
+  snapshotId: string;
+  indexedAt: string;
+  headCommit: string | null;
+  note?: string;
+}
+
+export interface SessionMemoryEntryFact extends BaseFact {
+  type: "SessionMemoryEntry";
+  sessionId: string;
+  taskId?: string;
+  kind: SessionMemoryKind;
+  key: string;
+  summary: string;
+  details?: string;
+  provenance: SessionMemoryProvenance;
+  status: SessionMemoryStatus;
+  evidenceTier: EvidenceTier;
+  scope: SessionMemoryScope;
+  evidence: SessionMemoryEvidence[];
+  createdAt: string;
+  updatedAt: string;
+  supersedes: string[];
+  supersededBy?: string;
+  staleBecause: string[];
+}
+
+export interface SessionMemoryStore {
+  schemaVersion: 1;
+  sessionId: string;
+  repoRoot: ".";
+  createdAt: string;
+  updatedAt: string;
+  revision: number;
+  activeTaskId?: string;
+  entries: SessionMemoryEntryFact[];
+  compaction: {
+    compactedAt?: string;
+    sourceEventCount: number;
+    retainedEntryCount: number;
+    droppedEntryCount: number;
+  };
+}
+
 export type CodexaFact =
   | RepoSnapshotFact
   | FileFact
@@ -311,6 +416,34 @@ export interface ContextPackInput {
 export interface ChangePlanInput extends ContextPackInput {
   saveSnapshot?: boolean;
   taskId?: string;
+}
+
+export interface SessionMemoryInput {
+  action?: "read" | "remember" | "summary" | "compact";
+  sessionId?: string;
+  taskId?: string;
+  task?: string;
+  kinds?: SessionMemoryKind[];
+  refs?: SessionMemoryRef[];
+  files?: string[];
+  symbols?: string[];
+  topics?: string[];
+  limit?: number;
+  tokenBudget?: number;
+  includeStale?: boolean;
+  entries?: Array<{
+    kind: SessionMemoryKind;
+    key?: string;
+    summary: string;
+    details?: string;
+    provenance?: SessionMemoryProvenance;
+    status?: SessionMemoryStatus;
+    confidence: Confidence;
+    evidenceTier: EvidenceTier;
+    scope?: Partial<SessionMemoryScope>;
+    evidence?: SessionMemoryEvidence[];
+    supersedes?: string[];
+  }>;
 }
 
 export interface PostEditReviewInput {
@@ -533,6 +666,7 @@ export interface TaskSnapshot {
   plannedFiles: string[];
   focusFiles: TaskSnapshotFocusFile[];
   plannedTests: TestRecommendation[];
+  sessionMemory?: SessionMemoryPointer;
   requiredWorkflowChecks: TaskSnapshotRequiredCheck[];
   requiredDependencyChecks: TaskSnapshotRequiredCheck[];
   symbolBaseline?: Record<string, TaskSnapshotSymbol[]>;
@@ -548,4 +682,11 @@ export interface TaskSnapshot {
   quality?: unknown;
   gaps: string[];
   warnings: string[];
+}
+
+export interface SessionMemoryPointer {
+  sessionId: string;
+  revision: number;
+  entryIds: string[];
+  summaryHash: string;
 }

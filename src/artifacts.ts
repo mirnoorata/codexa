@@ -59,6 +59,7 @@ Use the Codexa MCP tools for focused live questions:
 - \`context_pack\`
 - \`focus_brief\`
 - \`session_context\`
+- \`session_memory\`
 - \`callers\`
 - \`callees\`
 - \`dependency_path\`
@@ -243,6 +244,9 @@ function renderConventions(index: CodexaIndex): string {
   heuristic-only links, and changed files without symbol ranges.
 - For code edits, use \`change_plan\` with \`saveSnapshot: true\` before editing
   and \`post_edit_review\` after editing.
+- Use \`session_memory\` to recall or explicitly save session-local working
+  memory. Auto-recorded \`viewed\` entries are Codexa-derived; agent claims stay
+  agent-asserted and must not be promoted into codebase facts.
 - Use \`focus_brief\` for broad natural-language tasks before falling back to
   top-ranked files. Use \`workflow_path\` for route/job/process changes and
   \`dependency_path\` for explicit source-to-target relationship questions.

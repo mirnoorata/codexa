@@ -27,6 +27,7 @@ import {
   postEditReviewQuery,
   repoMapQuery,
   searchQuery,
+  sessionMemoryQuery,
   statusQuery,
   symbolContextQuery,
   taskBriefQuery,
@@ -43,7 +44,7 @@ import {
   type CodexaHookName,
   type PostEditOutcome
 } from "./post-edit-outcomes.js";
-import type { ChangeType, QueryOptions, VerificationCommandReport, VerificationWaiver } from "./types.js";
+import type { ChangeType, QueryOptions, SessionMemoryInput, VerificationCommandReport, VerificationWaiver } from "./types.js";
 import { runEval } from "./eval.js";
 
 const program = new Command();
@@ -671,6 +672,65 @@ program
   );
 
 program
+  .command("session-memory")
+  .argument("<repo>", "repository root")
+  .option("--action <action>", "summary, read, remember, or compact", parseSessionMemoryAction, "summary")
+  .option("--session-id <id>", "session memory id; defaults to the latest local session")
+  .option("--task-id <id>", "task snapshot id to filter or attach memory")
+  .option("--task <task>", "task text to attach to remembered entries")
+  .option("--kind <kind...>", "memory kind filter; repeat or pass multiple values")
+  .option("--file <path...>", "file scope filter; repeat or pass multiple values")
+  .option("--symbol <symbol...>", "symbol id scope filter; repeat or pass multiple values")
+  .option("--topic <topic...>", "topic substring filter; repeat or pass multiple values")
+  .option("--entry-json <json...>", "entry JSON for --action remember; repeat for multiple entries")
+  .option("--limit <n>", "maximum entries", parseIntOption, 20)
+  .option("--budget <tokens>", "approximate token budget", parseIntOption, 1800)
+  .option("--include-stale", "include stale entries", true)
+  .option("--no-include-stale", "hide stale entries")
+  .option("--auto-refresh", "refresh a stale or missing index before querying", true)
+  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
+  .description("Read, summarize, compact, or explicitly remember Codexa session working memory.")
+  .action(
+    async (
+      repo: string,
+      opts: {
+        action: NonNullable<SessionMemoryInput["action"]>;
+        sessionId?: string;
+        taskId?: string;
+        task?: string;
+        kind?: string[];
+        file?: string[];
+        symbol?: string[];
+        topic?: string[];
+        entryJson?: string[];
+        limit: number;
+        budget: number;
+        includeStale: boolean;
+      } & CliQueryOptions
+    ) =>
+      printQuery(
+        await sessionMemoryQuery(
+          path.resolve(repo),
+          {
+            action: opts.action,
+            sessionId: opts.sessionId,
+            taskId: opts.taskId,
+            task: opts.task,
+            kinds: parseSessionMemoryKinds(opts.kind),
+            files: opts.file,
+            symbols: opts.symbol,
+            topics: opts.topic,
+            entries: parseSessionMemoryEntries(opts.entryJson),
+            limit: opts.limit,
+            tokenBudget: opts.budget,
+            includeStale: opts.includeStale
+          },
+          queryOptionsFromCli(opts)
+        )
+      )
+  );
+
+program
   .command("callers")
   .argument("<repo>", "repository root")
   .option("--file <path>", "target file")
@@ -1103,6 +1163,69 @@ function parseChangeType(value: string): ChangeType {
   throw new Error(`Invalid change type: ${value}`);
 }
 
+function parseSessionMemoryAction(value: string): NonNullable<SessionMemoryInput["action"]> {
+  const allowed = new Set<NonNullable<SessionMemoryInput["action"]>>(["read", "remember", "summary", "compact"]);
+  if (allowed.has(value as NonNullable<SessionMemoryInput["action"]>)) {
+    return value as NonNullable<SessionMemoryInput["action"]>;
+  }
+  throw new Error(`Invalid session memory action: ${value}`);
+}
+
+function parseSessionMemoryKinds(values: string[] | undefined): SessionMemoryInput["kinds"] | undefined {
+  return values?.map(parseSessionMemoryKind);
+}
+
+function parseSessionMemoryKind(value: string): NonNullable<SessionMemoryInput["kinds"]>[number] {
+  const allowed = new Set<NonNullable<SessionMemoryInput["kinds"]>[number]>([
+    "viewed",
+    "claim",
+    "ruled_out",
+    "open_question",
+    "next_read",
+    "decision",
+    "verification",
+    "risk",
+    "constraint"
+  ]);
+  if (allowed.has(value as NonNullable<SessionMemoryInput["kinds"]>[number])) {
+    return value as NonNullable<SessionMemoryInput["kinds"]>[number];
+  }
+  throw new Error(`Invalid session memory kind: ${value}`);
+}
+
+function parseSessionMemoryEntries(values: string[] | undefined): SessionMemoryInput["entries"] | undefined {
+  if (!values?.length) {
+    return undefined;
+  }
+  return values.map((value) => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      throw new Error(`Invalid session memory entry JSON: ${value}`);
+    }
+    if (!isCliRecord(parsed)) {
+      throw new Error(`Invalid session memory entry JSON: ${value}`);
+    }
+    const entry = parsed as NonNullable<SessionMemoryInput["entries"]>[number];
+    if (typeof entry.summary !== "string" || entry.summary.trim().length === 0) {
+      throw new Error(`Invalid session memory entry JSON: summary is required`);
+    }
+    const kind = parseSessionMemoryKind(String(entry.kind));
+    if (entry.confidence !== "authoritative" && entry.confidence !== "derived" && entry.confidence !== "heuristic") {
+      throw new Error(`Invalid session memory entry JSON: confidence is required`);
+    }
+    if (entry.evidenceTier !== "authoritative" && entry.evidenceTier !== "derived" && entry.evidenceTier !== "heuristic" && entry.evidenceTier !== "fallback") {
+      throw new Error(`Invalid session memory entry JSON: evidenceTier is required`);
+    }
+    return {
+      ...entry,
+      kind,
+      summary: entry.summary.trim()
+    };
+  });
+}
+
 function parseSemanticProvider(value: string): SemanticProviderKind {
   const provider = semanticProviderFromValue(value);
   if (!provider) {
@@ -1127,6 +1250,10 @@ function parseWaiverOptions(values: string[] | undefined): VerificationWaiver[] 
     }
     return { kind: parsed.kind, target: parsed.target, reason: parsed.reason };
   });
+}
+
+function isCliRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function parseCommandReportOptions(values: string[] | undefined): VerificationCommandReport[] | undefined {

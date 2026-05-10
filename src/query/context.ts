@@ -19,6 +19,7 @@ import { coverageForDisplay, formatVerificationCoverage, verificationCommandPlan
 import { classifyTaskIntent, retrieveForTask, type IntentConfidence, type RetrievalMatch, type RetrievalResult, type TaskIntent } from "../retrieval.js";
 import { semanticOptionsFromQueryOptions } from "../semantic-retrieval.js";
 import { compactChangedSymbol, compactDiffGroup, compactFileFact, compactRetrievalResult, compactWorkflowTrace } from "./compact-data.js";
+import { summarizeSessionMemory } from "../session-memory.js";
 
 type FocusSelectionEntry = { file: FileFact; score: number; reasons: string[]; matchedTerms: string[]; tier: EvidenceTier };
 
@@ -247,6 +248,14 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
           lspOptionsFromQueryOptions(options)
         )
       : [];
+  const sessionMemory = await sessionMemoryPreview({
+    repoRoot,
+    freshness,
+    files: focusPaths,
+    symbols: requestedSymbols,
+    topics: contextInput.task ? [contextInput.task] : explicitQuery ? [explicitQuery] : [],
+    limit: 6
+  });
 
   const text = [
     freshnessBanner(freshness, refresh),
@@ -282,6 +291,9 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       `- ${assist.file ?? "unknown"}: ${assist.status}${assist.server ? ` via ${assist.server}` : ""}; symbols ${assist.documentSymbols.length}; diagnostics ${assist.diagnostics.length}`,
       ...assist.warnings.slice(0, 3).map((warning) => `  warning: ${warning}`)
     ]),
+    sessionMemory.lines.length > 0 ? "" : undefined,
+    sessionMemory.lines.length > 0 ? "Session memory:" : undefined,
+    ...sessionMemory.lines,
     suppressActionGuidance ? undefined : "",
     suppressActionGuidance ? undefined : "If run, these commands would cover:",
     ...(suppressActionGuidance ? [] : formatVerificationCoverage(verificationCoverage)),
@@ -319,6 +331,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       baseline,
       retrieval: naturalRetrieval ? compactRetrievalResult(naturalRetrieval) : undefined,
       lspAssist,
+      sessionMemory: sessionMemory.data,
       intentConfidence: packetIntent,
       packetVerdict: packetIntent?.verdict,
       diagnostics: naturalRetrieval?.diagnostics ?? [],
@@ -448,6 +461,13 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
     packetVerdict: retrieval.intentConfidence.verdict,
     discardedAnchorCount: retrieval.intentConfidence.discardedAnchorCount
   });
+  const sessionMemory = await sessionMemoryPreview({
+    repoRoot,
+    freshness,
+    files: focusFiles.map((file) => file.path),
+    topics: [task],
+    limit: 6
+  });
   const text = [
     freshnessBanner(freshness, refresh),
     formatContextQuality(quality),
@@ -477,6 +497,9 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
     groups.length > 0 ? "" : undefined,
     groups.length > 0 ? "Current change groups:" : undefined,
     ...formatDiffGroups(groups),
+    sessionMemory.lines.length > 0 ? "" : undefined,
+    sessionMemory.lines.length > 0 ? "Session memory:" : undefined,
+    ...sessionMemory.lines,
     "",
     "Likely tests:",
     ...formatTestRecommendations(tests),
@@ -503,6 +526,7 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
       groups: groups.slice(0, 12).map(compactDiffGroup),
       tests: tests.slice(0, 30),
       nextCall,
+      sessionMemory: sessionMemory.data,
       quality,
       gaps
     }
@@ -779,6 +803,46 @@ async function contextSnippets(
     await add(symbol.path, symbol.range?.startLine ?? 1, `${symbol.kind} ${symbol.qualifiedName}`);
   }
   return snippets;
+}
+
+async function sessionMemoryPreview(input: {
+  repoRoot: string;
+  freshness: import("../types.js").FreshnessInfo;
+  files?: string[];
+  symbols?: string[];
+  topics?: string[];
+  taskId?: string;
+  limit: number;
+}): Promise<{ lines: string[]; data?: unknown }> {
+  try {
+    const result = await summarizeSessionMemory({
+      repoRoot: input.repoRoot,
+      taskId: input.taskId,
+      files: input.files,
+      symbols: input.symbols,
+      topics: input.topics,
+      freshness: input.freshness,
+      limit: input.limit,
+      includeStale: true
+    });
+    if (result.memory.entries.length === 0) {
+      return { lines: [] };
+    }
+    return {
+      lines: (result.memory.markdown ?? "").split(/\r?\n/u).slice(0, 12),
+      data: {
+        sessionId: result.sessionId,
+        revision: result.revision,
+        entries: result.memory.entries.slice(0, input.limit),
+        warnings: result.warnings
+      }
+    };
+  } catch (error) {
+    return {
+      lines: [`- unavailable: ${error instanceof Error ? error.message : String(error)}`],
+      data: { warning: error instanceof Error ? error.message : String(error) }
+    };
+  }
 }
 
 async function readSnippet(repoRoot: string, filePath: string, centerLine: number, radius: number): Promise<string> {

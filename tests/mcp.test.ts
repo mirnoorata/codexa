@@ -400,6 +400,7 @@ describe("Codexa MCP server", () => {
         "context_pack",
         "focus_brief",
         "session_context",
+        "session_memory",
         "callers",
         "callees",
         "dependency_path",
@@ -447,6 +448,7 @@ describe("Codexa MCP server", () => {
     expect(readme.contents?.[0]?.text).toContain("Codexa Codebase Context");
     const contract = await client.readResource({ uri: "codexa://repo/codebase/codex-contract.md" });
     expect(contract.contents?.[0]?.text).toContain("Automatic Use Rules");
+    expect(contract.contents?.[0]?.text).toContain("Session Memory Protocol");
     const placeholderMap = await client.readResource({ uri: "codexa://repo/codebase/placeholder-map.md" });
     expect(placeholderMap.contents?.[0]?.text).toContain("Placeholder Map");
 
@@ -500,11 +502,16 @@ describe("Codexa MCP server", () => {
         verificationCommands?: string[];
         verificationCoverage?: Array<{ kind: string }>;
         verificationCommandPlan?: Array<{ command: string; covers: string[] }>;
+        sessionMemory?: { autoRecorded?: boolean; writes?: { sessionId?: string; revision?: number; recordedEntryIds?: string[] } };
       };
     };
     expect(contextPackData.data?.verificationCommands?.length).toBeGreaterThan(0);
     expect(contextPackData.data?.verificationCoverage?.length).toBeGreaterThan(0);
     expect(contextPackData.data?.verificationCommandPlan?.length).toBeGreaterThan(0);
+    expect(contextPackData.data?.sessionMemory?.autoRecorded).toBe(true);
+    expect(contextPackData.data?.sessionMemory?.writes?.sessionId).toBeTruthy();
+    expect(contextPackData.data?.sessionMemory?.writes?.revision).toBeGreaterThan(0);
+    expect(contextPackData.data?.sessionMemory?.writes?.recordedEntryIds?.length).toBeGreaterThan(0);
 
     const taskBrief = await client.callTool({ name: "task_brief", arguments: { files: ["src/index.ts"], task: "change behavior", tokenBudget: 900, limit: 5 } });
     expect(JSON.stringify(taskBrief)).toContain("Codexa task brief");
@@ -522,6 +529,56 @@ describe("Codexa MCP server", () => {
 
     const focusBrief = await client.callTool({ name: "focus_brief", arguments: { task: "understand the main workflow", tokenBudget: 900, limit: 5 } });
     expect(JSON.stringify(focusBrief)).toContain("Codexa focus brief");
+
+    const autoMemorySummary = await client.callTool({
+      name: "session_memory",
+      arguments: { action: "summary", kinds: ["viewed", "verification"], limit: 10 }
+    });
+    expect(JSON.stringify(autoMemorySummary)).toContain("Recently viewed:");
+    expect(JSON.stringify(autoMemorySummary)).toContain("context_pack returned");
+    expect(JSON.stringify(autoMemorySummary)).toContain("test_plan recommended");
+
+    const remembered = await client.callTool({
+      name: "session_memory",
+      arguments: {
+        action: "remember",
+        sessionId: "mcp-test-session",
+        taskId: "mcp-changed-symbol",
+        files: ["src/index.ts"],
+        topics: ["mcp test"],
+        entries: [
+          {
+            kind: "decision",
+            key: "decision:mcp-test",
+            summary: "Use the session_memory MCP tool to persist task-local decisions.",
+            provenance: "agent-asserted",
+            confidence: "heuristic",
+            evidenceTier: "derived"
+          }
+        ]
+      }
+    });
+    expect(JSON.stringify(remembered)).toContain("Codexa session memory");
+    const rememberedData = remembered.structuredContent as { data?: { writes?: { recordedEntryIds?: string[] }; memory?: { decisions?: Array<{ confidence: string; provenance: string }> } } };
+    expect(rememberedData.data?.writes?.recordedEntryIds?.length).toBe(1);
+    expect(rememberedData.data?.memory?.decisions?.[0]).toMatchObject({ confidence: "heuristic", provenance: "agent-asserted" });
+
+    const recalled = await client.callTool({
+      name: "session_memory",
+      arguments: { action: "read", sessionId: "mcp-test-session", taskId: "mcp-changed-symbol", kinds: ["decision"], files: ["src/index.ts"] }
+    });
+    expect(JSON.stringify(recalled)).toContain("Use the session_memory MCP tool");
+
+    const memorySummary = await client.callTool({
+      name: "session_memory",
+      arguments: { action: "summary", sessionId: "mcp-test-session", taskId: "mcp-changed-symbol" }
+    });
+    expect(JSON.stringify(memorySummary)).toContain("Decisions:");
+    const cliMemorySummary = execFileSync(process.execPath, [path.join(process.cwd(), "dist/cli.js"), "session-memory", repo, "--action", "summary", "--session-id", "mcp-test-session", "--task-id", "mcp-changed-symbol"], {
+      encoding: "utf8"
+    });
+    expect(cliMemorySummary).toContain("Codexa session memory");
+    expect(cliMemorySummary).toContain("Use the session_memory MCP tool");
 
     const callers = await client.callTool({ name: "callers", arguments: { symbol: "changedSymbol", limit: 5 } });
     expect(JSON.stringify(callers)).toContain("Callers/importers");
@@ -1023,7 +1080,7 @@ describe("Codexa MCP server", () => {
     expect(data.mcp.returnedBytes).toBeLessThanOrEqual(data.mcp.targetBytes);
   });
 
-  it("marks context tools as strictly read-only when auto-refresh is disabled", async () => {
+  it("marks auto-recording tools as cache writers even when auto-refresh is disabled", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-readonly-"));
     execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
     await mkdir(path.join(repo, "src"), { recursive: true });
@@ -1043,14 +1100,15 @@ describe("Codexa MCP server", () => {
     const client = new Client({ name: "codexa-test", version: "0.1.0" });
     await client.connect(transport);
     const tools = await client.listTools();
-    expect(tools.tools.find((tool) => tool.name === "task_brief")?.annotations?.readOnlyHint).toBe(true);
-    expect(tools.tools.find((tool) => tool.name === "task_brief")?.annotations?.idempotentHint).toBe(true);
-    expect(tools.tools.find((tool) => tool.name === "context_pack")?.annotations?.readOnlyHint).toBe(true);
-    expect(tools.tools.find((tool) => tool.name === "context_pack")?.annotations?.idempotentHint).toBe(true);
-    expect(tools.tools.find((tool) => tool.name === "impact")?.annotations?.readOnlyHint).toBe(true);
-    expect(tools.tools.find((tool) => tool.name === "focus_brief")?.annotations?.readOnlyHint).toBe(true);
+    expect(tools.tools.find((tool) => tool.name === "repo_map")?.annotations?.readOnlyHint).toBe(true);
+    expect(tools.tools.find((tool) => tool.name === "task_brief")?.annotations?.readOnlyHint).toBe(false);
+    expect(tools.tools.find((tool) => tool.name === "task_brief")?.annotations?.idempotentHint).toBe(false);
+    expect(tools.tools.find((tool) => tool.name === "context_pack")?.annotations?.readOnlyHint).toBe(false);
+    expect(tools.tools.find((tool) => tool.name === "context_pack")?.annotations?.idempotentHint).toBe(false);
+    expect(tools.tools.find((tool) => tool.name === "impact")?.annotations?.readOnlyHint).toBe(false);
+    expect(tools.tools.find((tool) => tool.name === "focus_brief")?.annotations?.readOnlyHint).toBe(false);
     expect(tools.tools.find((tool) => tool.name === "callers")?.annotations?.readOnlyHint).toBe(true);
-    expect(tools.tools.find((tool) => tool.name === "post_edit_review")?.annotations?.readOnlyHint).toBe(true);
+    expect(tools.tools.find((tool) => tool.name === "post_edit_review")?.annotations?.readOnlyHint).toBe(false);
     await client.close();
   });
 

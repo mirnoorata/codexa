@@ -20,6 +20,7 @@ The first milestone used a private application repository as the acceptance proj
 - Generic project support includes TypeScript path alias/project-reference metadata, package manifest symbols, Python package and `__init__.py` resolution, changed-symbol summaries for dirty diffs, framework route/job/test surfaces, and heuristic candidate test commands.
 - Research-driven V1.1 additions keep the same small architecture while adding a default `task_brief` path, task-shaped `context_pack` output, bounded impact expansion inside task packets, grouped dirty-diff impact, MCP output schemas/annotations/resources/prompts, content-hash parse caching, generic framework detectors, repo-local SessionStart/edit-loop helpers, provenance-aware test command suggestions, known-gap reporting, and a structured anti-cheat eval harness.
 - The current implementation also adds natural-language `focus_brief`/`session_context`, a small BM25/inverted-index retrieval layer, first-class typed graph edges, route/job/manifest workflow traces, generated architecture playbooks, change-plan packets, and cross-process refresh locking. These are still local, deterministic, and dependency-light.
+- `session_memory` follows `docs/architecture/session-memory.md`: cache-only structured working memory, bounded auto-recorded `viewed` entries, one MCP tool with actions, no embeddings or learned similarity, and no promotion of agent assertions into the codebase fact graph.
 - The first competitive Codex-native differentiator is the generated
   `.codex/codebase/codex-contract.md` plus SessionStart packet. It tells Codex
   exactly when to call `task_brief`, `change_plan`, `workflow_path`,
@@ -396,13 +397,15 @@ and a value estimate where the query can be compared with raw search. MCP tools
 expose `outputSchema` for their structured result wrapper. Tool annotations are
 non-destructive and closed-world unless the server is configured for OpenAI
 semantic embeddings. When auto-refresh is disabled, context tools are strict
-filesystem reads and advertise `readOnlyHint: true`. With auto-refresh
-enabled, they advertise non-destructive but not read-only semantics because they
-may update generated Codexa cache artifacts under `.codex/codebase/` before
-answering. `change_plan` also advertises cache-write semantics because
-`saveSnapshot=true` writes `.codex/cache/codexa-tasks/` and reads the legacy
-`.codex/cache/codexa-task-snapshots/` path only as a migration fallback. They never
-mutate source files.
+filesystem reads and advertise `readOnlyHint: true` unless they auto-record
+session memory. Auto-recording tools advertise non-destructive cache-write
+semantics because they can update `.codex/cache/codexa-session-memory/`.
+With auto-refresh enabled, context tools may also update generated Codexa cache
+artifacts under `.codex/codebase/` before answering. `change_plan` advertises
+cache-write semantics because `saveSnapshot=true` writes
+`.codex/cache/codexa-tasks/` and reads the legacy
+`.codex/cache/codexa-task-snapshots/` path only as a migration fallback. They
+never mutate source files.
 
 When the MCP server starts with semantic retrieval forced, inputs for
 `find_context`, `search`, `task_brief`, `context_pack`, `focus_brief`,

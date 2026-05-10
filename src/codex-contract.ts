@@ -39,12 +39,33 @@ after source changes. Do not treat it as an unbounded graph dump.
 6. After editing: call \`post_edit_review\` with the saved task id and tests run.
 7. Before final response: call \`test_plan\` or account for why no targeted tests apply.
 
+## Session Memory Protocol
+
+- Codexa auto-records \`viewed\` memory for focused MCP packets such as
+  \`task_brief\`, \`context_pack\`, \`focus_brief\`, \`impact\`, \`test_plan\`,
+  \`change_plan\`, and \`post_edit_review\`.
+- At session start or resume, call \`session_memory\` with \`action: "summary"\`
+  before re-reading files already surfaced by Codexa.
+- After establishing a non-trivial task-local claim, decision, constraint,
+  risk, open question, next read, or ruled-out path, call \`session_memory\`
+  with \`action: "remember"\` and explicit refs/files/symbols when available.
+- Before deep-reading a file again, call \`session_memory\` with
+  \`action: "read"\` and the file/symbol/task filter. Prefer a narrower graph
+  tool when the memory says the file was already viewed.
+- When a claim is replaced, pass the old entry id in \`supersedes\`; do not
+  leave contradictory active entries unlinked.
+- Agent-asserted entries are working memory, not parser facts. Use their
+  \`provenance\`, \`evidenceTier\`, and \`confidence\` labels when deciding how
+  much source verification is still required.
+
 ## Trust Rules
 
 - If freshness is stale or missing, use auto-refresh or run \`codexa index\`.
 - If a packet is heuristic-heavy, verify with source reads before editing.
 - If the dirty tree is broad, keep the task's read-first set target-led.
 - If Codexa says raw search is better, use \`rg\` and then return to a focused Codexa tool.
+- Session memory recall is deterministic filtering by session, task, refs,
+  files, symbols, kind, topic, and recency. It is not semantic search.
 
 ## Session Next Action
 
