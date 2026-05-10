@@ -9,7 +9,7 @@ import { freshnessBanner } from "./runtime.js";
 import { ensureQuerySession, type QuerySessionInput } from "./session.js";
 import { normalizeSearchText } from "./search.js";
 import { formatTestRecommendations, narrowTestRecommendationsByChangeType, recommendTests, uniqueTests } from "./tests.js";
-import { findFile, normalizeInputPaths, resolveSymbolTarget } from "./targets.js";
+import { findFile, normalizeInputPaths, resolveFileTarget, resolveSymbolTarget } from "./targets.js";
 import { formatVerificationCoverage, formatVerificationLedger, verificationEvidenceForCommandReports, verificationLedgerForPostEdit } from "./verification.js";
 import { isCodexaControlPath, formatChangedEntry } from "./worktree.js";
 import { buildPostEditOutcome, savePostEditOutcome, type PostEditCheckResult, type PostEditOutcomeInput } from "../post-edit-outcomes.js";
@@ -104,6 +104,7 @@ export async function changePlanQuery(
         input,
         taskId: blockedSnapshot?.taskId ?? input.taskId,
         index: session.index,
+        repoRoot,
         focusFiles,
         workflows: focusData.workflows ?? [],
         tests,
@@ -298,7 +299,22 @@ function changePlanEditReadiness(input: {
   };
 }
 
-interface ChangePlanTargetCandidate {
+export type TargetCandidateValidationStatus = "edit-ready" | "needs-more-context" | "weak";
+
+export interface TargetCandidateRisk {
+  score: number;
+  reasons: string[];
+}
+
+export interface ChangePlanTargetCandidateValidation {
+  validationStatus: TargetCandidateValidationStatus;
+  validationReasons: string[];
+  wouldPlanEditTargets: string[];
+  wouldRecommendTests: string[];
+  candidateRisk: TargetCandidateRisk;
+}
+
+export interface ChangePlanTargetCandidateBase {
   rank: number;
   kind: "file" | "symbol";
   path: string;
@@ -325,10 +341,13 @@ interface ChangePlanTargetCandidate {
   rawSearchQueries: string[];
 }
 
+export interface ChangePlanTargetCandidate extends ChangePlanTargetCandidateBase, ChangePlanTargetCandidateValidation {}
+
 function changePlanTargetCandidates(input: {
   input: ChangePlanInput;
   taskId?: string;
   index: CodexaIndex;
+  repoRoot: string;
   focusFiles: Array<{ file: FileFact; reasons: string[]; tier: EvidenceTier }>;
   workflows: WorkflowTraceFact[];
   tests: TestRecommendation[];
@@ -347,7 +366,7 @@ function changePlanTargetCandidates(input: {
     entries.push(symbol);
     symbolsByPath.set(symbol.path, entries);
   }
-  const candidates: ChangePlanTargetCandidate[] = [];
+  const candidates: ChangePlanTargetCandidateBase[] = [];
   for (const entry of input.focusFiles.slice(0, 10)) {
     const file = entry.file;
     if (file.test && input.focusFiles.some((candidate) => !candidate.file.test)) {
@@ -423,9 +442,128 @@ function changePlanTargetCandidates(input: {
     }
   }
   return dedupeTargetCandidates(candidates)
-    .sort((left, right) => right.score - left.score || left.path.localeCompare(right.path) || left.kind.localeCompare(right.kind))
+    .map((candidate) => ({
+      ...candidate,
+      ...validateChangePlanTargetCandidate(candidate, { index: input.index, repoRoot: input.repoRoot })
+    }))
+    .sort(compareTargetCandidates)
     .slice(0, 8)
     .map((candidate, index) => ({ ...candidate, rank: index + 1 }));
+}
+
+export function validateChangePlanTargetCandidate(
+  candidate: ChangePlanTargetCandidateBase,
+  context: { index: CodexaIndex; repoRoot: string }
+): ChangePlanTargetCandidateValidation {
+  const validationReasons: string[] = [];
+  const wouldPlanEditTargets = new Set<string>();
+  let unresolvedTarget = false;
+  let ambiguousTarget = false;
+  const requestedFiles = candidate.nextChangePlanArgs.files ?? [];
+  const requestedSymbols = candidate.nextChangePlanArgs.symbols ?? [];
+
+  if (requestedFiles.length === 0 && requestedSymbols.length === 0) {
+    validationReasons.push("no explicit file or symbol target in nextChangePlanArgs");
+    unresolvedTarget = true;
+  }
+
+  for (const requestedFile of requestedFiles) {
+    const resolved = resolveFileTarget(context.index, requestedFile, context.repoRoot);
+    if (resolved.file) {
+      wouldPlanEditTargets.add(resolved.file.path);
+      validationReasons.push(`file target resolves: ${resolved.file.path}`);
+    } else if (resolved.ambiguous.length > 0) {
+      ambiguousTarget = true;
+      validationReasons.push(`file target is ambiguous: ${requestedFile}`);
+    } else {
+      unresolvedTarget = true;
+      validationReasons.push(`file target not indexed: ${requestedFile}`);
+    }
+  }
+
+  for (const requestedSymbol of requestedSymbols) {
+    const resolved = resolveSymbolTarget(context.index, requestedSymbol);
+    if (resolved.symbol) {
+      wouldPlanEditTargets.add(resolved.symbol.path);
+      validationReasons.push(`symbol target resolves: ${resolved.symbol.qualifiedName} in ${resolved.symbol.path}`);
+    } else if (resolved.ambiguous.length > 0) {
+      ambiguousTarget = true;
+      validationReasons.push(`symbol target is ambiguous: ${requestedSymbol}`);
+    } else {
+      unresolvedTarget = true;
+      validationReasons.push(`symbol target not indexed: ${requestedSymbol}`);
+    }
+  }
+
+  const plannedTargets = uniqueSorted(wouldPlanEditTargets);
+  if (candidate.confidence === "fallback") {
+    validationReasons.push("candidate evidence is fallback");
+  } else if (candidate.evidence.length > 0) {
+    validationReasons.push(`candidate has ${candidate.confidence} evidence`);
+  }
+  if (candidate.evidence.length === 0) {
+    validationReasons.push("candidate has no supporting evidence");
+  }
+
+  const wouldRecommendTests = plannedTargets.length > 0
+    ? recommendTests(context.index, plannedTargets, context.repoRoot, candidate.nextChangePlanArgs.changeType).map((test) => test.path).slice(0, 8)
+    : [];
+  if (wouldRecommendTests.length > 0) {
+    validationReasons.push(`would recommend ${wouldRecommendTests.length} targeted test(s)`);
+  } else {
+    validationReasons.push("no targeted test recommendation proven");
+  }
+
+  const candidateRisk = candidateRiskForTargets(context.index, plannedTargets);
+  if (candidateRisk.score > 0) {
+    validationReasons.push(`candidate risk score ${candidateRisk.score.toFixed(1)}`);
+  }
+
+  const hasStrongEvidence = (candidate.confidence === "authoritative" || candidate.confidence === "derived") && candidate.evidence.length > 0;
+  const validationStatus: TargetCandidateValidationStatus =
+    plannedTargets.length === 0 || unresolvedTarget || ambiguousTarget
+      ? "needs-more-context"
+      : hasStrongEvidence
+        ? "edit-ready"
+        : "weak";
+
+  return {
+    validationStatus,
+    validationReasons: uniqueInOrder(validationReasons).slice(0, 8),
+    wouldPlanEditTargets: plannedTargets,
+    wouldRecommendTests,
+    candidateRisk
+  };
+}
+
+function candidateRiskForTargets(index: CodexaIndex, paths: string[]): TargetCandidateRisk {
+  const pathSet = new Set(paths);
+  const fileReasons = paths
+    .map((filePath) => findFile(index, filePath))
+    .filter((file): file is FileFact => Boolean(file))
+    .filter((file) => file.riskScore > 0)
+    .map((file) => ({ score: file.riskScore, reason: `${file.path}: indexed risk ${file.riskScore.toFixed(1)}` }));
+  const signalReasons = index.risks
+    .filter((risk) => pathSet.has(risk.path))
+    .map((risk) => ({ score: risk.score, reason: `${risk.path}: ${risk.signal} - ${risk.reason}` }));
+  const scoredReasons = [...fileReasons, ...signalReasons].sort((left, right) => right.score - left.score || left.reason.localeCompare(right.reason));
+  return {
+    score: Math.max(0, ...scoredReasons.map((entry) => entry.score)),
+    reasons: uniqueInOrder(scoredReasons.map((entry) => entry.reason)).slice(0, 6)
+  };
+}
+
+function compareTargetCandidates(left: ChangePlanTargetCandidate, right: ChangePlanTargetCandidate): number {
+  return (
+    targetCandidateStatusRank(left.validationStatus) - targetCandidateStatusRank(right.validationStatus) ||
+    right.score - left.score ||
+    left.path.localeCompare(right.path) ||
+    left.kind.localeCompare(right.kind)
+  );
+}
+
+function targetCandidateStatusRank(status: TargetCandidateValidationStatus): number {
+  return status === "edit-ready" ? 0 : status === "weak" ? 1 : 2;
 }
 
 function candidateEvidence(input: {
@@ -503,9 +641,9 @@ function symbolTargetScore(symbol: SymbolFact, taskTokens: string[]): number {
   return tokenScore + kindScore;
 }
 
-function dedupeTargetCandidates(candidates: ChangePlanTargetCandidate[]): ChangePlanTargetCandidate[] {
+function dedupeTargetCandidates(candidates: ChangePlanTargetCandidateBase[]): ChangePlanTargetCandidateBase[] {
   const seen = new Set<string>();
-  const result: ChangePlanTargetCandidate[] = [];
+  const result: ChangePlanTargetCandidateBase[] = [];
   for (const candidate of candidates) {
     const key = `${candidate.kind}:${candidate.path}:${candidate.symbol?.id ?? candidate.symbol?.qualifiedName ?? ""}`;
     if (seen.has(key)) {
@@ -513,6 +651,19 @@ function dedupeTargetCandidates(candidates: ChangePlanTargetCandidate[]): Change
     }
     seen.add(key);
     result.push(candidate);
+  }
+  return result;
+}
+
+function uniqueInOrder(values: Iterable<string>): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const value of values) {
+    if (seen.has(value)) {
+      continue;
+    }
+    seen.add(value);
+    result.push(value);
   }
   return result;
 }
@@ -540,7 +691,7 @@ function formatTargetCandidates(candidates: ChangePlanTargetCandidate[]): string
   return candidates.slice(0, 6).map((candidate) => {
     const target = candidate.kind === "symbol" && candidate.symbol ? `${candidate.symbol.qualifiedName} in ${candidate.path}` : candidate.path;
     const nextArg = candidate.nextChangePlanArgs.files?.[0] ?? candidate.nextChangePlanArgs.symbols?.[0] ?? target;
-    return `- #${candidate.rank} ${candidate.kind} ${target}: score ${candidate.score.toFixed(1)}; next change_plan target ${nextArg}; ${candidate.evidence.slice(0, 3).join("; ")}`;
+    return `- #${candidate.rank} ${candidate.kind} ${target}: ${candidate.validationStatus}; score ${candidate.score.toFixed(1)}; risk ${candidate.candidateRisk.score.toFixed(1)}; next change_plan target ${nextArg}; ${candidate.evidence.slice(0, 3).join("; ")}`;
   });
 }
 

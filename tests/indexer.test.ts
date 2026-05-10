@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { getGitState } from "../src/git.js";
 import { buildIndex, buildIndexLocked, loadIndex } from "../src/indexer.js";
+import { validateChangePlanTargetCandidate } from "../src/query/post-edit.js";
 import { loadExternalRiskSignals } from "../src/risk-ingest.js";
 import { recordSessionMemory } from "../src/session-memory.js";
 import { updateStaticAnalysisReports } from "../src/static-analysis.js";
@@ -872,7 +873,7 @@ describe("Codexa indexer", () => {
 
   it("does not guess ambiguous file or symbol targets", async () => {
     const repo = await createFixtureRepo();
-    await buildIndex({ repoRoot: repo });
+    const index = await buildIndex({ repoRoot: repo });
 
     const symbolImpact = await impactQuery(repo, { symbol: "config" });
     expect(symbolImpact.text).toContain("Ambiguous symbol target");
@@ -885,6 +886,58 @@ describe("Codexa indexer", () => {
     const outside = await impactQuery(repo, { file: path.join(os.tmpdir(), "src/api.ts") });
     expect(outside.text).toContain("No file or symbol matched impact target");
     expect(outside.text).not.toContain("Impact target");
+
+    const baseCandidate = {
+      rank: 0,
+      kind: "symbol" as const,
+      path: "src/api.ts",
+      score: 1,
+      confidence: "derived" as const,
+      evidence: ["test candidate"],
+      missingAnchors: [],
+      nextChangePlanArgs: { symbols: ["missingSymbol"], changeType: "unknown" as const, saveSnapshot: true as const },
+      rawSearchQueries: []
+    };
+    const invalidSymbol = validateChangePlanTargetCandidate(baseCandidate, { index, repoRoot: repo });
+    expect(invalidSymbol.validationStatus).toBe("needs-more-context");
+    expect(invalidSymbol.validationReasons).toContain("symbol target not indexed: missingSymbol");
+
+    const ambiguousSymbol = validateChangePlanTargetCandidate(
+      {
+        ...baseCandidate,
+        nextChangePlanArgs: { symbols: ["config"], changeType: "unknown" as const, saveSnapshot: true as const }
+      },
+      { index, repoRoot: repo }
+    );
+    expect(ambiguousSymbol.validationStatus).toBe("needs-more-context");
+    expect(ambiguousSymbol.validationReasons).toContain("symbol target is ambiguous: config");
+
+    const weakCandidate = validateChangePlanTargetCandidate(
+      {
+        ...baseCandidate,
+        kind: "file" as const,
+        confidence: "fallback" as const,
+        evidence: [],
+        nextChangePlanArgs: { files: ["src/api.ts"], changeType: "unknown" as const, saveSnapshot: true as const }
+      },
+      { index, repoRoot: repo }
+    );
+    expect(weakCandidate.validationStatus).toBe("weak");
+    expect(weakCandidate.wouldPlanEditTargets).toEqual(["src/api.ts"]);
+    expect(weakCandidate.validationReasons).toContain("candidate evidence is fallback");
+
+    const heuristicCandidate = validateChangePlanTargetCandidate(
+      {
+        ...baseCandidate,
+        kind: "file" as const,
+        confidence: "heuristic" as const,
+        evidence: ["lexical path match"],
+        nextChangePlanArgs: { files: ["src/api.ts"], changeType: "unknown" as const, saveSnapshot: true as const }
+      },
+      { index, repoRoot: repo }
+    );
+    expect(heuristicCandidate.validationStatus).toBe("weak");
+    expect(heuristicCandidate.wouldPlanEditTargets).toEqual(["src/api.ts"]);
   });
 
   it("reports changed files that are not in the current index", async () => {
@@ -1052,6 +1105,12 @@ describe("Codexa indexer", () => {
         rank: number;
         kind: "file" | "symbol";
         path: string;
+        score: number;
+        validationStatus: "edit-ready" | "needs-more-context" | "weak";
+        validationReasons: string[];
+        wouldPlanEditTargets: string[];
+        wouldRecommendTests: string[];
+        candidateRisk: { score: number; reasons: string[] };
         evidence: string[];
         missingAnchors: string[];
         nextChangePlanArgs: { task?: string; files?: string[]; symbols?: string[]; query?: string; taskId?: string; changeType?: "style" | "api" | "behavior" | "rename" | "delete" | "unknown"; diff?: boolean; saveSnapshot: boolean };
@@ -1069,15 +1128,26 @@ describe("Codexa indexer", () => {
     expect(ambiguousPlanData.targetCandidates?.[0]).toMatchObject({
       rank: 1,
       path: expect.any(String),
+      validationStatus: "edit-ready",
+      validationReasons: expect.any(Array),
+      wouldPlanEditTargets: expect.any(Array),
+      wouldRecommendTests: expect.any(Array),
+      candidateRisk: expect.objectContaining({ score: expect.any(Number), reasons: expect.any(Array) }),
       evidence: expect.any(Array),
       missingAnchors: expect.arrayContaining(["file-or-symbol-target"]),
       nextChangePlanArgs: expect.objectContaining({ saveSnapshot: true, taskId: "ambiguous-change-plan" })
     });
+    const validationRanks = { "edit-ready": 0, weak: 1, "needs-more-context": 2 };
+    const candidateValidationOrder = (ambiguousPlanData.targetCandidates ?? []).map((candidate) => validationRanks[candidate.validationStatus]);
+    expect(candidateValidationOrder).toEqual([...candidateValidationOrder].sort((left, right) => left - right));
     expect(
       Boolean(ambiguousPlanData.targetCandidates?.[0]?.nextChangePlanArgs.files?.length) ||
         Boolean(ambiguousPlanData.targetCandidates?.[0]?.nextChangePlanArgs.symbols?.length)
     ).toBe(true);
     expect(ambiguousPlanData.targetCandidates?.[0]?.evidence.length).toBeGreaterThan(0);
+    expect(ambiguousPlanData.targetCandidates?.[0]?.validationReasons.some((reason) => reason.includes("target resolves"))).toBe(true);
+    expect(ambiguousPlanData.targetCandidates?.[0]?.wouldPlanEditTargets.length).toBeGreaterThan(0);
+    expect(Array.isArray(ambiguousPlanData.targetCandidates?.[0]?.wouldRecommendTests)).toBe(true);
     expect(ambiguousPlanData.targetCandidates?.[0]?.rawSearchQueries.length).toBeGreaterThan(0);
     expect(ambiguousPlanData.snapshotBlock).toMatchObject({
       taskId: "ambiguous-change-plan",
@@ -1096,6 +1166,7 @@ describe("Codexa indexer", () => {
     });
     const followedCandidate = ambiguousPlanData.targetCandidates?.[0];
     expect(followedCandidate).toBeDefined();
+    expect(followedCandidate?.validationStatus).toBe("edit-ready");
     const followedPlan = await changePlanQuery(
       repo,
       {
@@ -1112,6 +1183,7 @@ describe("Codexa indexer", () => {
     );
     expect((followedPlan.data as { editReadiness?: { editable: boolean; status: string }; snapshot?: { taskId: string } }).editReadiness).toMatchObject({ editable: true, status: "edit-ready" });
     expect((followedPlan.data as { snapshot?: { taskId: string } }).snapshot?.taskId).toBe("ambiguous-change-plan");
+    expect((followedPlan.data as { plannedEditTargets?: string[] }).plannedEditTargets).toEqual(followedCandidate?.wouldPlanEditTargets);
     await expect(readFile(path.join(repo, ".codex/cache/codexa-tasks/ambiguous-change-plan.blocked.json"), "utf8")).rejects.toThrow();
     const followedLatest = JSON.parse(await readFile(path.join(repo, ".codex/cache/codexa-tasks/latest.json"), "utf8")) as {
       taskId: string;
@@ -1123,6 +1195,32 @@ describe("Codexa indexer", () => {
       path: "ambiguous-change-plan.json"
     });
     expect(followedLatest.blocked).toBeUndefined();
+
+    const symbolCandidate = ambiguousPlanData.targetCandidates?.find((candidate) => candidate.kind === "symbol" && candidate.validationStatus === "edit-ready");
+    expect(symbolCandidate).toBeDefined();
+    const followedSymbolPlan = await changePlanQuery(
+      repo,
+      {
+        task: symbolCandidate?.nextChangePlanArgs.task,
+        symbols: symbolCandidate?.nextChangePlanArgs.symbols,
+        query: symbolCandidate?.nextChangePlanArgs.query,
+        taskId: "ambiguous-change-plan-symbol",
+        changeType: symbolCandidate?.nextChangePlanArgs.changeType,
+        diff: symbolCandidate?.nextChangePlanArgs.diff,
+        saveSnapshot: true
+      },
+      { autoRefresh: false }
+    );
+    const followedSymbolData = followedSymbolPlan.data as {
+      editReadiness?: { editable: boolean; status: string };
+      plannedEditTargets?: string[];
+      targetCandidates?: unknown[];
+      snapshot?: { taskId: string };
+    };
+    expect(followedSymbolData.editReadiness).toMatchObject({ editable: true, status: "edit-ready" });
+    expect(followedSymbolData.plannedEditTargets).toEqual(symbolCandidate?.wouldPlanEditTargets);
+    expect(followedSymbolData.targetCandidates).toEqual([]);
+    expect(followedSymbolData.snapshot?.taskId).toBe("ambiguous-change-plan-symbol");
 
     const generatedIdPlan = await changePlanQuery(
       repo,
@@ -1138,6 +1236,8 @@ describe("Codexa indexer", () => {
     const generatedIdData = generatedIdPlan.data as {
       snapshotBlock?: { taskId: string; path: string };
       targetCandidates?: Array<{
+        validationStatus: "edit-ready" | "needs-more-context" | "weak";
+        wouldPlanEditTargets: string[];
         nextChangePlanArgs: { task?: string; files?: string[]; symbols?: string[]; query?: string; taskId?: string; changeType?: "style" | "api" | "behavior" | "rename" | "delete" | "unknown"; diff?: boolean; saveSnapshot: boolean };
       }>;
     };
@@ -1147,6 +1247,8 @@ describe("Codexa indexer", () => {
     const generatedBlockPath = generatedIdData.snapshotBlock?.path;
     expect(generatedBlockPath).toBeTruthy();
     const generatedCandidate = generatedIdData.targetCandidates?.[0];
+    expect(generatedCandidate?.validationStatus).toBe("edit-ready");
+    expect(generatedCandidate?.wouldPlanEditTargets.length).toBeGreaterThan(0);
     const generatedFollowedPlan = await changePlanQuery(
       repo,
       {
@@ -1163,6 +1265,21 @@ describe("Codexa indexer", () => {
     );
     expect((generatedFollowedPlan.data as { snapshot?: { taskId: string } }).snapshot?.taskId).toBe(generatedTaskId);
     await expect(readFile(path.join(repo, generatedBlockPath ?? ""), "utf8")).rejects.toThrow();
+
+    const weakCandidatePlan = await changePlanQuery(
+      repo,
+      {
+        task: "narlple frondicate zindle",
+        diff: false,
+        limit: 4,
+        tokenBudget: 900
+      },
+      { autoRefresh: false }
+    );
+    const weakCandidateData = weakCandidatePlan.data as {
+      targetCandidates?: Array<{ validationStatus: "edit-ready" | "needs-more-context" | "weak"; validationReasons: string[] }>;
+    };
+    expect(weakCandidateData.targetCandidates?.some((candidate) => candidate.validationStatus === "weak" && candidate.validationReasons.includes("candidate evidence is fallback"))).toBe(true);
 
     const exactFocus = await focusBriefQuery(repo, { task: "Fix src/api.ts handleThing", diff: false, limit: 4, tokenBudget: 900 }, { autoRefresh: false });
     expect((exactFocus.data as { focusFiles: Array<{ path: string }>; quality: { counts: { derived: number } } }).focusFiles.map((file) => file.path)).toContain("src/api.ts");

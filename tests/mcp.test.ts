@@ -234,6 +234,14 @@ function buildChangePlanPacket() {
       confidence: "derived",
       evidence: seq(10, (evidenceIndex) => `evidence-${index}-${evidenceIndex}`),
       missingAnchors: ["file-or-symbol-target", "edit-ready-context"],
+      validationStatus: index % 5 === 0 ? "weak" : "edit-ready",
+      validationReasons: seq(10, (reasonIndex) => `validation-${index}-${reasonIndex}`),
+      wouldPlanEditTargets: seq(10, (targetIndex) => `src/validated-${index}-${targetIndex}.ts`),
+      wouldRecommendTests: seq(10, (testIndex) => `tests/validated-${index}-${testIndex}.test.ts`),
+      candidateRisk: {
+        score: index,
+        reasons: seq(8, (reasonIndex) => `risk-${index}-${reasonIndex}`)
+      },
       nextChangePlanArgs: { files: [`src/candidate-${index}.ts`], saveSnapshot: true },
       rawSearchQueries: seq(5, (queryIndex) => `query-${index}-${queryIndex}`)
     })),
@@ -993,7 +1001,17 @@ describe("Codexa MCP server", () => {
       mode?: string;
       editReadiness?: { editable?: boolean; status?: string; snapshotBlocked?: boolean };
       snapshotBlock?: { taskId?: string; path?: string; reason?: string };
-      targetCandidates?: Array<{ rank?: number; path?: string; evidence?: unknown[]; rawSearchQueries?: unknown[] }>;
+      targetCandidates?: Array<{
+        rank?: number;
+        path?: string;
+        evidence?: unknown[];
+        rawSearchQueries?: unknown[];
+        validationStatus?: string;
+        validationReasons?: unknown[];
+        wouldPlanEditTargets?: unknown[];
+        wouldRecommendTests?: unknown[];
+        candidateRisk?: { score?: number; reasons?: unknown[] };
+      }>;
       files?: unknown[];
       plannedEditTargets?: unknown[];
       tests?: unknown[];
@@ -1014,6 +1032,12 @@ describe("Codexa MCP server", () => {
     expect(data.targetCandidates?.[0]).toMatchObject({ rank: 1, path: "src/candidate-0.ts" });
     expect(data.targetCandidates?.[0]?.evidence?.length).toBeLessThanOrEqual(8);
     expect(data.targetCandidates?.[0]?.rawSearchQueries?.length).toBeLessThanOrEqual(4);
+    expect(data.targetCandidates?.[0]?.validationStatus).toBe("weak");
+    expect(data.targetCandidates?.[0]?.validationReasons?.length).toBeLessThanOrEqual(8);
+    expect(data.targetCandidates?.[0]?.wouldPlanEditTargets?.length).toBeLessThanOrEqual(8);
+    expect(data.targetCandidates?.[0]?.wouldRecommendTests?.length).toBeLessThanOrEqual(8);
+    expect(data.targetCandidates?.[0]?.candidateRisk).toMatchObject({ score: 0 });
+    expect(data.targetCandidates?.[0]?.candidateRisk?.reasons?.length).toBeLessThanOrEqual(6);
     expect(data.mcp.returnedBytes).toBe(serializedBytes(data));
     expect(data.mcp.returnedBytes).toBeLessThanOrEqual(data.mcp.targetBytes);
     expect(data.files?.length).toBeGreaterThan(0);

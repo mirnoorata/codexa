@@ -1306,6 +1306,16 @@ function compactTargetCandidate(value: unknown): unknown {
     confidence: value.confidence,
     evidence: limitArray(value.evidence, 8),
     missingAnchors: limitArray(value.missingAnchors, 8),
+    validationStatus: value.validationStatus,
+    validationReasons: limitArray(value.validationReasons, 8),
+    wouldPlanEditTargets: limitArray(value.wouldPlanEditTargets, 8),
+    wouldRecommendTests: limitArray(value.wouldRecommendTests, 8),
+    candidateRisk: isRecord(value.candidateRisk)
+      ? {
+          score: value.candidateRisk.score,
+          reasons: limitArray(value.candidateRisk.reasons, 6)
+        }
+      : undefined,
     nextChangePlanArgs: value.nextChangePlanArgs,
     rawSearchQueries: limitArray(value.rawSearchQueries, 4)
   };
