@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rename, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -1143,6 +1143,8 @@ describe("Codexa indexer", () => {
     const validationRanks = { "edit-ready": 0, weak: 1, "needs-more-context": 2 };
     const candidateValidationOrder = (ambiguousPlanData.targetCandidates ?? []).map((candidate) => validationRanks[candidate.validationStatus]);
     expect(candidateValidationOrder).toEqual([...candidateValidationOrder].sort((left, right) => left - right));
+    const candidateIds = (ambiguousPlanData.targetCandidates ?? []).map((candidate) => candidate.candidateId);
+    expect(new Set(candidateIds).size).toBe(candidateIds.length);
     expect(
       Boolean(ambiguousPlanData.targetCandidates?.[0]?.nextChangePlanArgs.files?.length) ||
         Boolean(ambiguousPlanData.targetCandidates?.[0]?.nextChangePlanArgs.symbols?.length)
@@ -1236,6 +1238,7 @@ describe("Codexa indexer", () => {
       repo,
       {
         task: "Retarget behavior safely",
+        changeType: "behavior",
         diff: false,
         limit: 6,
         tokenBudget: 1200,
@@ -1268,6 +1271,12 @@ describe("Codexa indexer", () => {
     );
     expect(generatedFollowedOutput).toContain(`Follow candidate: accepted ${generatedCandidate?.candidateId}`);
     expect(generatedFollowedOutput).toContain(`Task snapshot: ${generatedTaskId}`);
+    const generatedFollowedSnapshot = JSON.parse(await readFile(path.join(repo, ".codex/cache/codexa-tasks", `${generatedTaskId}.json`), "utf8")) as {
+      changeType: string;
+      input: { changeType?: string; diff?: boolean };
+    };
+    expect(generatedFollowedSnapshot.changeType).toBe("behavior");
+    expect(generatedFollowedSnapshot.input).toMatchObject({ changeType: "behavior", diff: false });
     await expect(readFile(path.join(repo, generatedBlockPath ?? ""), "utf8")).rejects.toThrow();
 
     const weakCandidatePlan = await changePlanQuery(
@@ -1433,6 +1442,38 @@ describe("Codexa indexer", () => {
     };
     expect(reusedTaskData.snapshot).toBeUndefined();
     expect(reusedTaskData.snapshotLoad).toMatchObject({ taskId: "reused-task-id", missingReason: "blocked-plan" });
+
+    await writeFile(path.join(repo, ".codex/cache/codexa-tasks/reused-task-id.blocked.json"), "{not json", "utf8");
+    const malformedBlockedReview = await postEditReviewQuery(repo, { taskId: "reused-task-id", ranTests: [], persistOutcome: false }, { autoRefresh: false });
+    const malformedBlockedReviewData = malformedBlockedReview.data as {
+      snapshot?: unknown;
+      snapshotLoad: { taskId?: string; missingReason?: string; path?: string };
+    };
+    expect(malformedBlockedReviewData.snapshot).toBeUndefined();
+    expect(malformedBlockedReviewData.snapshotLoad).toMatchObject({ taskId: "reused-task-id", missingReason: "invalid-json" });
+    expect(malformedBlockedReviewData.snapshotLoad.path).toContain("reused-task-id.blocked.json");
+    await rm(path.join(repo, ".codex/cache/codexa-tasks/reused-task-id.blocked.json"), { force: true });
+
+    await writeFile(
+      path.join(repo, ".codex/cache/codexa-tasks/invalid-replay-input.blocked.json"),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        kind: "change-plan-snapshot-blocked",
+        taskId: "invalid-replay-input",
+        input: { limit: 3 },
+        reason: "invalid replay input"
+      })}\n`,
+      "utf8"
+    );
+    const invalidReplayFollow = await changePlanQuery(
+      repo,
+      { taskId: "invalid-replay-input", followCandidate: "candidate-invalid-replay" },
+      { autoRefresh: false }
+    );
+    const invalidReplayFollowData = invalidReplayFollow.data as { followCandidate?: { status: string; requested: string; reason: string } };
+    expect(invalidReplayFollow.text).toContain("Follow candidate: rejected");
+    expect(invalidReplayFollowData.followCandidate).toMatchObject({ status: "rejected", requested: "candidate-invalid-replay" });
+    expect(invalidReplayFollowData.followCandidate?.reason).toContain("does not include replayable input");
 
     const blockedPlan = await changePlanQuery(
       repo,
@@ -2420,6 +2461,55 @@ describe("Codexa indexer", () => {
     expect((noScriptFallback.data as { testsNotRun: Array<{ path: string }> }).testsNotRun.map((test) => test.path)).toContain("packages/no-scripts/src/plain.test.ts");
   });
 
+  it("does not recover a legacy snapshot over a malformed current blocked marker", async () => {
+    const repo = await createFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+    await changePlanQuery(
+      repo,
+      {
+        task: "Change route normalization safely",
+        files: ["service/helpers.py"],
+        diff: false,
+        limit: 6,
+        saveSnapshot: true,
+        taskId: "legacy-only"
+      },
+      { autoRefresh: false }
+    );
+    const currentDir = path.join(repo, ".codex/cache/codexa-tasks");
+    const legacyDir = path.join(repo, ".codex/cache/codexa-task-snapshots");
+    const snapshotText = await readFile(path.join(currentDir, "legacy-only.json"), "utf8");
+    const snapshot = JSON.parse(snapshotText) as { createdAt: string };
+    await mkdir(legacyDir, { recursive: true });
+    await writeFile(path.join(legacyDir, "legacy-only.json"), snapshotText, "utf8");
+    await writeFile(
+      path.join(legacyDir, "latest.json"),
+      `${JSON.stringify({ schemaVersion: 1, taskId: "legacy-only", path: "legacy-only.json", createdAt: snapshot.createdAt })}\n`,
+      "utf8"
+    );
+    await rm(path.join(currentDir, "legacy-only.json"), { force: true });
+    await changePlanQuery(
+      repo,
+      {
+        task: "Change route normalization safely",
+        files: ["service/helpers.py"],
+        diff: false,
+        limit: 6,
+        saveSnapshot: true,
+        taskId: "current-valid"
+      },
+      { autoRefresh: false }
+    );
+    await writeFile(path.join(currentDir, "latest.json"), "{not json", "utf8");
+    await writeFile(path.join(currentDir, "current-blocked.blocked.json"), "{not json", "utf8");
+
+    const review = await postEditReviewQuery(repo, { ranTests: [], persistOutcome: false }, { autoRefresh: false });
+    const reviewData = review.data as { snapshot?: unknown; snapshotLoad: { taskId?: string; missingReason?: string; path?: string } };
+    expect(reviewData.snapshot).toBeUndefined();
+    expect(reviewData.snapshotLoad).toMatchObject({ taskId: "current-blocked", missingReason: "invalid-json" });
+    expect(reviewData.snapshotLoad.path).toContain("current-blocked.blocked.json");
+  });
+
   it("emits coverage semantics from test-plan", async () => {
     const repo = await createVerificationCoverageFixtureRepo();
     await buildIndex({ repoRoot: repo });
@@ -2779,6 +2869,39 @@ describe("Codexa indexer", () => {
       expect(defaultSymbol?.source).toBe("typescript-compiler");
       expect(index.usageSites.some((usage) => usage.path === "src/local-default-consumer.ts" && usage.name === "LocalDefault" && usage.targetSymbolId === defaultSymbol?.id)).toBe(true);
     }
+  });
+
+  it("keeps symbol target candidate ids stable across source-position-only reindexing", async () => {
+    const repo = await createFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+    type TargetCandidate = {
+      candidateId: string;
+      kind: "file" | "symbol";
+      path: string;
+      symbol?: { qualifiedName: string; kind: string };
+      nextChangePlanArgs: { symbols?: string[] };
+    };
+    const firstPlan = await changePlanQuery(repo, { task: "Change behavior safely", diff: false, limit: 6, tokenBudget: 1200 }, { autoRefresh: false });
+    const firstCandidates = ((firstPlan.data as { targetCandidates?: TargetCandidate[] }).targetCandidates ?? []);
+    const firstSymbol = firstCandidates.find((candidate) => candidate.kind === "symbol" && candidate.symbol);
+    expect(firstSymbol).toBeDefined();
+
+    const original = await readFile(path.join(repo, firstSymbol!.path), "utf8");
+    await writeFile(path.join(repo, firstSymbol!.path), `// source-position shift only\n${original}`, "utf8");
+    await buildIndex({ repoRoot: repo });
+
+    const shiftedPlan = await changePlanQuery(repo, { task: "Change behavior safely", diff: false, limit: 6, tokenBudget: 1200 }, { autoRefresh: false });
+    const shiftedCandidates = ((shiftedPlan.data as { targetCandidates?: TargetCandidate[] }).targetCandidates ?? []);
+    const shiftedSymbol = shiftedCandidates.find(
+      (candidate) =>
+        candidate.kind === "symbol" &&
+        candidate.path === firstSymbol!.path &&
+        candidate.symbol?.qualifiedName === firstSymbol!.symbol?.qualifiedName &&
+        candidate.symbol?.kind === firstSymbol!.symbol?.kind
+    );
+    expect(shiftedSymbol).toBeDefined();
+    expect(shiftedSymbol?.nextChangePlanArgs.symbols?.[0]).not.toBe(firstSymbol?.nextChangePlanArgs.symbols?.[0]);
+    expect(shiftedSymbol?.candidateId).toBe(firstSymbol?.candidateId);
   });
 
   it("refuses to build a false fresh index outside git", async () => {

@@ -410,11 +410,12 @@ async function changePlanFollowCandidateResult(input: {
     });
   }
 
+  const allowRequestOverrides = !input.snapshotLoad?.blockedSnapshot;
   const followedInput: ChangePlanInput = {
     ...selected.nextChangePlanArgs,
     taskId: input.originalInput.taskId ?? selected.nextChangePlanArgs.taskId ?? input.baseInput.taskId,
-    changeType: input.originalInput.changeType ?? selected.nextChangePlanArgs.changeType,
-    diff: input.originalInput.diff ?? selected.nextChangePlanArgs.diff,
+    changeType: allowRequestOverrides ? input.originalInput.changeType ?? selected.nextChangePlanArgs.changeType : selected.nextChangePlanArgs.changeType,
+    diff: allowRequestOverrides ? input.originalInput.diff ?? selected.nextChangePlanArgs.diff : selected.nextChangePlanArgs.diff,
     saveSnapshot: true
   };
   const result = await changePlanQuery(input.session, followedInput, { ...input.options, autoRefresh: false });
@@ -861,7 +862,7 @@ function dedupeTargetCandidates(candidates: ChangePlanTargetCandidateDraft[]): C
   const seen = new Set<string>();
   const result: ChangePlanTargetCandidateDraft[] = [];
   for (const candidate of candidates) {
-    const key = `${candidate.kind}:${candidate.path}:${candidate.symbol?.id ?? candidate.symbol?.qualifiedName ?? ""}`;
+    const key = targetCandidateStableTarget(candidate);
     if (seen.has(key)) {
       continue;
     }
@@ -879,8 +880,14 @@ function withTargetCandidateId(candidate: ChangePlanTargetCandidateDraft): Chang
 }
 
 function targetCandidateStableId(candidate: ChangePlanTargetCandidateDraft): string {
-  const target = candidate.symbol?.id ?? candidate.symbol?.qualifiedName ?? candidate.nextChangePlanArgs.symbols?.join("\n") ?? candidate.nextChangePlanArgs.files?.join("\n") ?? candidate.path;
-  return `candidate-${stableId("change-plan-target-candidate", candidate.kind, candidate.path, target).slice(0, 12)}`;
+  return `candidate-${stableId("change-plan-target-candidate", targetCandidateStableTarget(candidate)).slice(0, 12)}`;
+}
+
+function targetCandidateStableTarget(candidate: ChangePlanTargetCandidateDraft): string {
+  const target = candidate.symbol
+    ? `${candidate.symbol.kind}:${candidate.symbol.qualifiedName || candidate.symbol.name || candidate.symbol.id}`
+    : candidate.nextChangePlanArgs.files?.join("\n") ?? candidate.path;
+  return `${candidate.kind}:${candidate.path}:${target}`;
 }
 
 function uniqueInOrder(values: Iterable<string>): string[] {
