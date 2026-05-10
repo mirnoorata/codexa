@@ -416,6 +416,7 @@ export interface ContextPackInput {
 export interface ChangePlanInput extends ContextPackInput {
   saveSnapshot?: boolean;
   taskId?: string;
+  followCandidate?: string;
 }
 
 export interface SessionMemoryInput {

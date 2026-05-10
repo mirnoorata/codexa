@@ -218,6 +218,7 @@ function buildChangePlanPacket() {
     editReadiness: { editable: false, status: "orientation-only", snapshotBlocked: true },
     snapshotBlock: { taskId: "blocked-snap-1", path: ".codex/cache/codexa-tasks/blocked-snap-1.blocked.json", reason: "context quality is low" },
     targetCandidates: seq(14, (index) => ({
+      candidateId: `candidate-${index}`,
       rank: index + 1,
       kind: index % 2 === 0 ? "file" : "symbol",
       path: `src/candidate-${index}.ts`,
@@ -449,8 +450,17 @@ describe("Codexa MCP server", () => {
     expect(searchSchema).toContain("patterns");
     expect(searchSchema).toContain("maxItems");
     expect(searchSchema).toContain("7");
+    const changePlanSchema = JSON.stringify(tools.tools.find((tool) => tool.name === "change_plan")?.inputSchema);
+    expect(changePlanSchema).toContain("followCandidate");
     expect(tools.tools.find((tool) => tool.name === "impact")?.annotations?.readOnlyHint).toBe(false);
     expect(tools.tools.find((tool) => tool.name === "freshness")?.annotations?.readOnlyHint).toBe(true);
+
+    const rejectedFollow = await client.callTool({ name: "change_plan", arguments: { taskId: "missing-mcp-follow", followCandidate: "candidate-missing" } });
+    expect(JSON.stringify(rejectedFollow)).toContain("Follow candidate: rejected");
+    expect(((rejectedFollow.structuredContent as { data?: { followCandidate?: { status?: string; requested?: string } } }).data?.followCandidate)).toMatchObject({
+      status: "rejected",
+      requested: "candidate-missing"
+    });
 
     const resources = await client.listResources();
     expect(resources.resources.length).toBeLessThanOrEqual(200);
@@ -1002,6 +1012,7 @@ describe("Codexa MCP server", () => {
       editReadiness?: { editable?: boolean; status?: string; snapshotBlocked?: boolean };
       snapshotBlock?: { taskId?: string; path?: string; reason?: string };
       targetCandidates?: Array<{
+        candidateId?: string;
         rank?: number;
         path?: string;
         evidence?: unknown[];
@@ -1029,7 +1040,7 @@ describe("Codexa MCP server", () => {
     });
     expect(data.targetCandidates?.length).toBeGreaterThan(0);
     expect(data.targetCandidates?.length).toBeLessThanOrEqual(12);
-    expect(data.targetCandidates?.[0]).toMatchObject({ rank: 1, path: "src/candidate-0.ts" });
+    expect(data.targetCandidates?.[0]).toMatchObject({ candidateId: "candidate-0", rank: 1, path: "src/candidate-0.ts" });
     expect(data.targetCandidates?.[0]?.evidence?.length).toBeLessThanOrEqual(8);
     expect(data.targetCandidates?.[0]?.rawSearchQueries?.length).toBeLessThanOrEqual(4);
     expect(data.targetCandidates?.[0]?.validationStatus).toBe("weak");

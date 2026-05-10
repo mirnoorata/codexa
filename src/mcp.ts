@@ -594,6 +594,7 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
         includeSnippets: z.boolean().optional(),
         saveSnapshot: z.boolean().optional(),
         taskId: z.string().optional(),
+        followCandidate: z.string().min(1).max(160).optional(),
         ...semanticQuerySchema,
         ...lspQuerySchema
       },
@@ -876,6 +877,7 @@ function enforceMcpStructuredBudget(
       task: typeof dataWithoutMetrics.task === "string" ? dataWithoutMetrics.task.slice(0, 160) : dataWithoutMetrics.task,
       verdict: dataWithoutMetrics.verdict,
       editReadiness: dataWithoutMetrics.editReadiness,
+      followCandidate: compactFollowCandidate(dataWithoutMetrics.followCandidate),
       snapshotBlock: compactSnapshotBlock(dataWithoutMetrics.snapshotBlock),
       targetCandidates: Array.isArray(dataWithoutMetrics.targetCandidates) ? dataWithoutMetrics.targetCandidates.slice(0, 8).map(compactTargetCandidate) : dataWithoutMetrics.targetCandidates,
       packetVerdict: dataWithoutMetrics.packetVerdict,
@@ -900,6 +902,7 @@ function buildMcpBudgetSummaryData(data: Record<string, unknown>, mode: string, 
     task: data.task,
     verdict: data.verdict,
     editReadiness: data.editReadiness,
+    followCandidate: compactFollowCandidate(data.followCandidate),
     snapshotBlock: compactSnapshotBlock(data.snapshotBlock),
     targetCandidates: compactSummaryArray("targetCandidates", data.targetCandidates, 8, truncation, compactTargetCandidate),
     packetVerdict: data.packetVerdict,
@@ -1216,6 +1219,7 @@ function compactChangePlanData(data: Record<string, unknown>): McpCompactionResu
   const compacted = {
     mode: data.mode,
     editReadiness: data.editReadiness,
+    followCandidate: compactFollowCandidate(data.followCandidate),
     snapshotBlock: compactSnapshotBlock(data.snapshotBlock),
     targetCandidates: limit("targetCandidates", data.targetCandidates, 12, compactTargetCandidate),
     steps: limit("steps", data.steps, 12),
@@ -1286,11 +1290,36 @@ function compactSnapshotBlock(value: unknown): unknown {
   };
 }
 
+function compactFollowCandidate(value: unknown): unknown {
+  if (!isRecord(value)) {
+    return value;
+  }
+  return {
+    status: value.status,
+    requested: value.requested,
+    candidateId: value.candidateId,
+    rank: value.rank,
+    kind: value.kind,
+    path: value.path,
+    reason: value.reason,
+    plannedEditTargets: limitArray(value.plannedEditTargets, 8),
+    validationReasons: limitArray(value.validationReasons, 8),
+    snapshotLoad: isRecord(value.snapshotLoad)
+      ? {
+          latestTaskId: value.snapshotLoad.latestTaskId,
+          missingReason: value.snapshotLoad.missingReason,
+          error: value.snapshotLoad.error
+        }
+      : undefined
+  };
+}
+
 function compactTargetCandidate(value: unknown): unknown {
   if (!isRecord(value)) {
     return value;
   }
   return {
+    candidateId: value.candidateId,
     rank: value.rank,
     kind: value.kind,
     path: value.path,

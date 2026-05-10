@@ -888,6 +888,7 @@ describe("Codexa indexer", () => {
     expect(outside.text).not.toContain("Impact target");
 
     const baseCandidate = {
+      candidateId: "candidate-test",
       rank: 0,
       kind: "symbol" as const,
       path: "src/api.ts",
@@ -1102,6 +1103,7 @@ describe("Codexa indexer", () => {
       snapshot?: unknown;
       snapshotBlock?: { taskId: string; path: string };
       targetCandidates?: Array<{
+        candidateId: string;
         rank: number;
         kind: "file" | "symbol";
         path: string;
@@ -1126,6 +1128,7 @@ describe("Codexa indexer", () => {
     expect(ambiguousPlanData.snapshot).toBeUndefined();
     expect(ambiguousPlanData.targetCandidates?.length).toBeGreaterThan(0);
     expect(ambiguousPlanData.targetCandidates?.[0]).toMatchObject({
+      candidateId: expect.stringMatching(/^candidate-/),
       rank: 1,
       path: expect.any(String),
       validationStatus: "edit-ready",
@@ -1166,24 +1169,31 @@ describe("Codexa indexer", () => {
     });
     const followedCandidate = ambiguousPlanData.targetCandidates?.[0];
     expect(followedCandidate).toBeDefined();
+    expect(followedCandidate?.candidateId).toMatch(/^candidate-/);
     expect(followedCandidate?.validationStatus).toBe("edit-ready");
     const followedPlan = await changePlanQuery(
       repo,
       {
-        task: followedCandidate?.nextChangePlanArgs.task,
-        files: followedCandidate?.nextChangePlanArgs.files,
-        symbols: followedCandidate?.nextChangePlanArgs.symbols,
-        query: followedCandidate?.nextChangePlanArgs.query,
-        taskId: followedCandidate?.nextChangePlanArgs.taskId,
-        changeType: followedCandidate?.nextChangePlanArgs.changeType,
-        diff: followedCandidate?.nextChangePlanArgs.diff,
-        saveSnapshot: followedCandidate?.nextChangePlanArgs.saveSnapshot
+        taskId: "ambiguous-change-plan",
+        followCandidate: followedCandidate!.candidateId,
+        saveSnapshot: true
       },
       { autoRefresh: false }
     );
-    expect((followedPlan.data as { editReadiness?: { editable: boolean; status: string }; snapshot?: { taskId: string } }).editReadiness).toMatchObject({ editable: true, status: "edit-ready" });
-    expect((followedPlan.data as { snapshot?: { taskId: string } }).snapshot?.taskId).toBe("ambiguous-change-plan");
-    expect((followedPlan.data as { plannedEditTargets?: string[] }).plannedEditTargets).toEqual(followedCandidate?.wouldPlanEditTargets);
+    const followedPlanData = followedPlan.data as {
+      editReadiness?: { editable: boolean; status: string };
+      followCandidate?: { status: string; candidateId: string; plannedEditTargets: string[] };
+      snapshot?: { taskId: string };
+      plannedEditTargets?: string[];
+      targetCandidates?: unknown[];
+    };
+    expect(followedPlan.text).toContain(`Follow candidate: accepted ${followedCandidate?.candidateId}`);
+    expect(followedPlanData.editReadiness).toMatchObject({ editable: true, status: "edit-ready" });
+    expect(followedPlanData.followCandidate).toMatchObject({ status: "accepted", candidateId: followedCandidate?.candidateId });
+    expect(followedPlanData.snapshot?.taskId).toBe("ambiguous-change-plan");
+    expect(followedPlanData.plannedEditTargets).toEqual(followedCandidate?.wouldPlanEditTargets);
+    expect(followedPlanData.followCandidate?.plannedEditTargets).toEqual(followedCandidate?.wouldPlanEditTargets);
+    expect(followedPlanData.targetCandidates).toEqual([]);
     await expect(readFile(path.join(repo, ".codex/cache/codexa-tasks/ambiguous-change-plan.blocked.json"), "utf8")).rejects.toThrow();
     const followedLatest = JSON.parse(await readFile(path.join(repo, ".codex/cache/codexa-tasks/latest.json"), "utf8")) as {
       taskId: string;
@@ -1236,6 +1246,7 @@ describe("Codexa indexer", () => {
     const generatedIdData = generatedIdPlan.data as {
       snapshotBlock?: { taskId: string; path: string };
       targetCandidates?: Array<{
+        candidateId: string;
         validationStatus: "edit-ready" | "needs-more-context" | "weak";
         wouldPlanEditTargets: string[];
         nextChangePlanArgs: { task?: string; files?: string[]; symbols?: string[]; query?: string; taskId?: string; changeType?: "style" | "api" | "behavior" | "rename" | "delete" | "unknown"; diff?: boolean; saveSnapshot: boolean };
@@ -1247,23 +1258,16 @@ describe("Codexa indexer", () => {
     const generatedBlockPath = generatedIdData.snapshotBlock?.path;
     expect(generatedBlockPath).toBeTruthy();
     const generatedCandidate = generatedIdData.targetCandidates?.[0];
+    expect(generatedCandidate?.candidateId).toMatch(/^candidate-/);
     expect(generatedCandidate?.validationStatus).toBe("edit-ready");
     expect(generatedCandidate?.wouldPlanEditTargets.length).toBeGreaterThan(0);
-    const generatedFollowedPlan = await changePlanQuery(
-      repo,
-      {
-        task: generatedCandidate?.nextChangePlanArgs.task,
-        files: generatedCandidate?.nextChangePlanArgs.files,
-        symbols: generatedCandidate?.nextChangePlanArgs.symbols,
-        query: generatedCandidate?.nextChangePlanArgs.query,
-        taskId: generatedCandidate?.nextChangePlanArgs.taskId,
-        changeType: generatedCandidate?.nextChangePlanArgs.changeType,
-        diff: generatedCandidate?.nextChangePlanArgs.diff,
-        saveSnapshot: generatedCandidate?.nextChangePlanArgs.saveSnapshot
-      },
-      { autoRefresh: false }
+    const generatedFollowedOutput = execFileSync(
+      process.execPath,
+      [path.join(process.cwd(), "dist/cli.js"), "change-plan", repo, "--task-id", generatedTaskId!, "--follow-candidate", generatedCandidate!.candidateId, "--no-auto-refresh"],
+      { encoding: "utf8" }
     );
-    expect((generatedFollowedPlan.data as { snapshot?: { taskId: string } }).snapshot?.taskId).toBe(generatedTaskId);
+    expect(generatedFollowedOutput).toContain(`Follow candidate: accepted ${generatedCandidate?.candidateId}`);
+    expect(generatedFollowedOutput).toContain(`Task snapshot: ${generatedTaskId}`);
     await expect(readFile(path.join(repo, generatedBlockPath ?? ""), "utf8")).rejects.toThrow();
 
     const weakCandidatePlan = await changePlanQuery(
@@ -1277,9 +1281,34 @@ describe("Codexa indexer", () => {
       { autoRefresh: false }
     );
     const weakCandidateData = weakCandidatePlan.data as {
-      targetCandidates?: Array<{ validationStatus: "edit-ready" | "needs-more-context" | "weak"; validationReasons: string[] }>;
+      targetCandidates?: Array<{ candidateId: string; validationStatus: "edit-ready" | "needs-more-context" | "weak"; validationReasons: string[] }>;
     };
     expect(weakCandidateData.targetCandidates?.some((candidate) => candidate.validationStatus === "weak" && candidate.validationReasons.includes("candidate evidence is fallback"))).toBe(true);
+    const weakCandidate = weakCandidateData.targetCandidates?.find((candidate) => candidate.validationStatus === "weak");
+    expect(weakCandidate?.candidateId).toMatch(/^candidate-/);
+    const rejectedWeakFollow = await changePlanQuery(
+      repo,
+      {
+        task: "narlple frondicate zindle",
+        diff: false,
+        limit: 4,
+        tokenBudget: 900,
+        followCandidate: weakCandidate!.candidateId
+      },
+      { autoRefresh: false }
+    );
+    const rejectedWeakFollowData = rejectedWeakFollow.data as {
+      followCandidate?: { status: string; requested: string; reason: string };
+      snapshot?: unknown;
+      plannedEditTargets?: string[];
+    };
+    expect(rejectedWeakFollowData.followCandidate).toMatchObject({
+      status: "rejected",
+      requested: weakCandidate?.candidateId
+    });
+    expect(rejectedWeakFollowData.followCandidate?.reason).toContain("weak");
+    expect(rejectedWeakFollowData.snapshot).toBeUndefined();
+    expect(rejectedWeakFollowData.plannedEditTargets).toEqual([]);
 
     const exactFocus = await focusBriefQuery(repo, { task: "Fix src/api.ts handleThing", diff: false, limit: 4, tokenBudget: 900 }, { autoRefresh: false });
     expect((exactFocus.data as { focusFiles: Array<{ path: string }>; quality: { counts: { derived: number } } }).focusFiles.map((file) => file.path)).toContain("src/api.ts");

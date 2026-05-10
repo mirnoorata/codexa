@@ -23,11 +23,23 @@ export interface SaveBlockedTaskSnapshotInput {
 
 export interface TaskSnapshotLoadResult {
   snapshot?: TaskSnapshot;
+  blockedSnapshot?: BlockedTaskSnapshotMarker;
   path?: string;
   latestTaskId?: string;
   missingReason?: "missing-directory" | "missing-latest" | "missing-task" | "invalid-json" | "blocked-plan";
   error?: string;
   recoveredLatest?: boolean;
+}
+
+export interface BlockedTaskSnapshotMarker {
+  schemaVersion: 1;
+  kind: "change-plan-snapshot-blocked";
+  taskId: string;
+  repoRoot?: string;
+  createdAt?: string;
+  input?: ChangePlanInput;
+  reason?: string;
+  details?: unknown;
 }
 
 export async function saveTaskSnapshot({ repoRoot, input, snapshot }: SaveTaskSnapshotInput): Promise<{ snapshot: TaskSnapshot; path: string }> {
@@ -73,7 +85,7 @@ export async function saveBlockedTaskSnapshot({ repoRoot, input, reason, details
       details
     },
     repo
-  );
+  ) as BlockedTaskSnapshotMarker;
   await atomicJsonWrite(markerPath, marker);
   await fs.rm(path.join(dir, `${taskId}.json`), { force: true });
   await atomicJsonWrite(path.join(dir, LATEST_FILE), {
@@ -124,7 +136,9 @@ export async function loadTaskSnapshot(repoRoot: string, taskId?: string): Promi
     }
     if (latest.value.blocked === true) {
       const blockedTaskId = typeof latest.value.taskId === "string" ? normalizeTaskId(latest.value.taskId) : undefined;
-      return {
+      const latestDir = latest.dir;
+      const blocked = await readBlockedSnapshotMarker(blockedTaskId ? [latestDir, ...dirs.filter((candidateDir) => candidateDir !== latestDir)] : dirs, blockedTaskId);
+      return blocked ?? {
         latestTaskId: blockedTaskId,
         missingReason: "blocked-plan",
         error: blockedSnapshotReason(latest.value.reason),
@@ -181,21 +195,13 @@ interface LatestSnapshotPointer {
   reason?: unknown;
 }
 
-interface BlockedSnapshotMarker {
-  schemaVersion?: unknown;
-  kind?: unknown;
-  taskId?: unknown;
-  createdAt?: unknown;
-  reason?: unknown;
-}
-
 async function readBlockedSnapshotMarker(dirs: string[], taskId: string | undefined): Promise<TaskSnapshotLoadResult | undefined> {
   if (!taskId) {
     return undefined;
   }
   for (const dir of dirs) {
     const markerPath = path.join(dir, `${taskId}.blocked.json`);
-    const parsed = await readJson<BlockedSnapshotMarker>(markerPath);
+    const parsed = await readJson<BlockedTaskSnapshotMarker>(markerPath);
     if (!parsed.ok || !isBlockedSnapshotMarker(parsed.value, taskId)) {
       continue;
     }
@@ -204,22 +210,32 @@ async function readBlockedSnapshotMarker(dirs: string[], taskId: string | undefi
   return undefined;
 }
 
-function isBlockedSnapshotMarker(value: unknown, taskId?: string): value is BlockedSnapshotMarker {
+function isBlockedSnapshotMarker(value: unknown, taskId?: string): value is BlockedTaskSnapshotMarker {
   if (!value || typeof value !== "object") {
     return false;
   }
-  const record = value as BlockedSnapshotMarker;
+  const record = value as Partial<BlockedTaskSnapshotMarker>;
   const normalizedTaskId = typeof record.taskId === "string" ? normalizeTaskId(record.taskId) : undefined;
   return record.schemaVersion === 1 && record.kind === "change-plan-snapshot-blocked" && Boolean(normalizedTaskId) && (!taskId || normalizedTaskId === taskId);
 }
 
-function blockedSnapshotLoadResult(marker: BlockedSnapshotMarker, markerPath: string, recoveredLatest = false): TaskSnapshotLoadResult {
+function blockedSnapshotLoadResult(marker: BlockedTaskSnapshotMarker, markerPath: string, recoveredLatest = false): TaskSnapshotLoadResult {
+  const normalizedMarker = normalizeBlockedSnapshotMarker(marker);
   return {
-    latestTaskId: typeof marker.taskId === "string" ? normalizeTaskId(marker.taskId) : undefined,
+    blockedSnapshot: normalizedMarker,
+    latestTaskId: normalizedMarker.taskId,
     missingReason: "blocked-plan",
     error: blockedSnapshotReason(marker.reason),
     path: markerPath,
     recoveredLatest
+  };
+}
+
+function normalizeBlockedSnapshotMarker(marker: BlockedTaskSnapshotMarker): BlockedTaskSnapshotMarker {
+  return {
+    ...marker,
+    taskId: normalizeTaskId(marker.taskId) ?? marker.taskId,
+    reason: blockedSnapshotReason(marker.reason)
   };
 }
 
@@ -242,7 +258,7 @@ async function recoverLatestSnapshot(dirs: string[]): Promise<TaskSnapshotLoadRe
       }
       const snapshotPath = path.join(dir, entry);
       if (entry.endsWith(".blocked.json")) {
-        const parsed = await readJson<BlockedSnapshotMarker>(snapshotPath);
+        const parsed = await readJson<BlockedTaskSnapshotMarker>(snapshotPath);
         if (!parsed.ok || !isBlockedSnapshotMarker(parsed.value)) {
           continue;
         }
@@ -283,7 +299,7 @@ async function recoverLatestSnapshot(dirs: string[]): Promise<TaskSnapshotLoadRe
 
 type RecoveredSnapshotCandidate =
   | { kind: "snapshot"; snapshot: TaskSnapshot; path: string; createdAtMs: number }
-  | { kind: "blocked"; marker: BlockedSnapshotMarker; path: string; createdAtMs: number };
+  | { kind: "blocked"; marker: BlockedTaskSnapshotMarker; path: string; createdAtMs: number };
 
 function recoveredCandidateTaskId(candidate: RecoveredSnapshotCandidate): string {
   if (candidate.kind === "snapshot") {

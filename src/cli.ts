@@ -808,6 +808,7 @@ program
   .option("--limit <n>", "maximum focus items", parseIntOption, 10)
   .option("--save-snapshot", "save a plan-time task snapshot for post-edit review", false)
   .option("--task-id <id>", "optional id for the saved task snapshot")
+  .option("--follow-candidate <id>", "follow an edit-ready target candidate from a blocked orientation plan")
   .option("--semantic", "force the semantic retrieval lane even when auto-detection would skip it")
   .option("--no-semantic", "disable automatic semantic retrieval for this query")
   .option("--semantic-provider <provider>", "semantic query provider: openai or local-command", parseSemanticProvider)
@@ -837,6 +838,7 @@ program
         limit: number;
         saveSnapshot: boolean;
         taskId?: string;
+        followCandidate?: string;
       } & CliQueryOptions
     ) =>
       printQuery(
@@ -852,7 +854,8 @@ program
             tokenBudget: opts.budget,
             limit: opts.limit,
             saveSnapshot: opts.saveSnapshot,
-            taskId: opts.taskId
+            taskId: opts.taskId,
+            followCandidate: opts.followCandidate
           },
           queryOptionsFromCli(opts)
         )

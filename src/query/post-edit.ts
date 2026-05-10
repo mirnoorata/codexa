@@ -6,7 +6,7 @@ import { affectedWorkflowGraphEdges, testsFromGraphEdges } from "./graph.js";
 import { contextPackQuery, focusBriefQuery } from "./context.js";
 import { formatContextQuality, type ContextQuality } from "./quality.js";
 import { freshnessBanner } from "./runtime.js";
-import { ensureQuerySession, type QuerySessionInput } from "./session.js";
+import { ensureQuerySession, type QuerySession, type QuerySessionInput } from "./session.js";
 import { normalizeSearchText } from "./search.js";
 import { formatTestRecommendations, narrowTestRecommendationsByChangeType, recommendTests, uniqueTests } from "./tests.js";
 import { findFile, normalizeInputPaths, resolveFileTarget, resolveSymbolTarget } from "./targets.js";
@@ -14,7 +14,7 @@ import { formatVerificationCoverage, formatVerificationLedger, verificationEvide
 import { isCodexaControlPath, formatChangedEntry } from "./worktree.js";
 import { buildPostEditOutcome, savePostEditOutcome, type PostEditCheckResult, type PostEditOutcomeInput } from "../post-edit-outcomes.js";
 import { pointerForSessionMemory, readSessionMemory } from "../session-memory.js";
-import { loadTaskSnapshot, saveBlockedTaskSnapshot, saveTaskSnapshot } from "../task-snapshots.js";
+import { loadTaskSnapshot, saveBlockedTaskSnapshot, saveTaskSnapshot, type TaskSnapshotLoadResult } from "../task-snapshots.js";
 import { CURRENT_VERIFICATION_PROVENANCE } from "../types.js";
 import type {
   ChangedFileEntry,
@@ -49,8 +49,19 @@ export async function changePlanQuery(
 ): Promise<QueryResult> {
   const session = await ensureQuerySession(sessionInput, options);
   const repoRoot = session.repoRoot;
-  const focus = await focusBriefQuery(session, { task: input.task, tokenBudget: Math.min(input.tokenBudget ?? 2600, 3000), limit: input.limit ?? 8, diff: input.diff }, options);
-  const pack = await contextPackQuery(session, { ...input, tokenBudget: Math.min(input.tokenBudget ?? 3200, 4000), limit: input.limit ?? 10, includeSnippets: input.includeSnippets ?? false }, options);
+  const requestedFollowCandidate = normalizeTargetCandidateSelector(input.followCandidate);
+  const followBase = requestedFollowCandidate ? await resolveChangePlanFollowBaseInput(repoRoot, input) : undefined;
+  if (requestedFollowCandidate && !followBase?.input) {
+    return changePlanFollowCandidateRejectedResult({
+      session,
+      requestedCandidate: requestedFollowCandidate,
+      reason: followBase?.reason ?? "followCandidate requires a task, query, or blocked change-plan taskId to replay",
+      snapshotLoad: followBase?.snapshotLoad
+    });
+  }
+  const effectiveInput = followBase?.input ?? input;
+  const focus = await focusBriefQuery(session, { task: effectiveInput.task, tokenBudget: Math.min(effectiveInput.tokenBudget ?? 2600, 3000), limit: effectiveInput.limit ?? 8, diff: effectiveInput.diff }, options);
+  const pack = await contextPackQuery(session, { ...effectiveInput, tokenBudget: Math.min(effectiveInput.tokenBudget ?? 3200, 4000), limit: effectiveInput.limit ?? 10, includeSnippets: effectiveInput.includeSnippets ?? false }, options);
   const packData = pack.data as {
     focusFiles?: Array<{ file: FileFact; reasons: string[]; tier: EvidenceTier }>;
     changedEntries?: ChangedFileEntry[];
@@ -69,12 +80,12 @@ export async function changePlanQuery(
   const recipes = packData.recipes ?? [];
   const quality = packData.quality ?? (focus.data as { quality?: ContextQuality }).quality;
   const files = focusFiles.map((entry) => entry.file.path);
-  const explicitFiles = normalizeInputPaths(input.files ?? [], repoRoot);
+  const explicitFiles = normalizeInputPaths(effectiveInput.files ?? [], repoRoot);
   const explicitSymbolFiles = focusFiles
     .filter((entry) => entry.reasons.some((reason) => reason.startsWith("requested symbol ")))
     .map((entry) => entry.file.path);
   const editReadiness = changePlanEditReadiness({
-    input,
+    input: effectiveInput,
     focusFiles,
     explicitTargetProvided: explicitFiles.length > 0 || explicitSymbolFiles.length > 0,
     quality,
@@ -83,17 +94,17 @@ export async function changePlanQuery(
   });
   const plannedEditTargets = editReadiness.editable ? uniqueSorted(explicitFiles.length > 0 || explicitSymbolFiles.length > 0 ? [...explicitFiles, ...explicitSymbolFiles] : files.slice(0, 6)) : [];
   const focusPathSet = new Set(files);
-  const explicitWorkflowPaths = new Set(normalizeInputPaths(input.files ?? [], repoRoot));
+  const explicitWorkflowPaths = new Set(normalizeInputPaths(effectiveInput.files ?? [], repoRoot));
   const workflowMatchPaths = explicitWorkflowPaths.size > 0 ? explicitWorkflowPaths : focusPathSet;
   const relatedWorkflow = focusData.workflows?.find((workflow) => workflow.relatedFiles.some((file) => workflowMatchPaths.has(file)));
-  const requiredWorkflowChecks = requiredWorkflowChecksForPlan(focusData.workflows ?? [], workflowMatchPaths, input.changeType ?? "unknown").slice(0, 8);
-  const requiredDependencyChecks = requiredDependencyChecksForPlan(session.index, plannedEditTargets, input.changeType ?? "unknown").slice(0, 12);
+  const requiredWorkflowChecks = requiredWorkflowChecksForPlan(focusData.workflows ?? [], workflowMatchPaths, effectiveInput.changeType ?? "unknown").slice(0, 8);
+  const requiredDependencyChecks = requiredDependencyChecksForPlan(session.index, plannedEditTargets, effectiveInput.changeType ?? "unknown").slice(0, 12);
   const plannedTests = editReadiness.editable ? tests : [];
   const plannedRecipes = editReadiness.editable ? recipes : [];
-  const blockedSnapshot = input.saveSnapshot && !editReadiness.editable
+  const blockedSnapshot = effectiveInput.saveSnapshot && !editReadiness.editable && !requestedFollowCandidate
     ? await saveBlockedTaskSnapshot({
         repoRoot,
-        input,
+        input: effectiveInput,
         reason: editReadiness.reason,
         details: editReadiness
       })
@@ -101,8 +112,8 @@ export async function changePlanQuery(
   const targetCandidates = editReadiness.editable
     ? []
     : changePlanTargetCandidates({
-        input,
-        taskId: blockedSnapshot?.taskId ?? input.taskId,
+        input: effectiveInput,
+        taskId: blockedSnapshot?.taskId ?? effectiveInput.taskId,
         index: session.index,
         repoRoot,
         focusFiles,
@@ -111,12 +122,25 @@ export async function changePlanQuery(
         changedEntries: packData.changedEntries ?? [],
         missingAnchors: editReadiness.missingAnchors
       });
+  if (requestedFollowCandidate) {
+    return changePlanFollowCandidateResult({
+      session,
+      options,
+      originalInput: input,
+      baseInput: effectiveInput,
+      requestedCandidate: requestedFollowCandidate,
+      targetCandidates,
+      editReadiness,
+      quality,
+      snapshotLoad: followBase?.snapshotLoad
+    });
+  }
   const planSteps = editReadiness.editable
     ? [
         `1. Read ${files.slice(0, 6).join(", ") || "the focus files returned by Codexa"} before editing.`,
         relatedWorkflow
           ? `2. Inspect workflow_path for ${relatedWorkflow.title} if the change touches runtime flow.`
-          : input.files?.length || input.symbols?.length
+          : effectiveInput.files?.length || effectiveInput.symbols?.length
             ? "2. Use callers, callees, or dependency_path if this focused edit changes an exported API or runtime contract."
             : `2. Use ${focusData.nextCall?.tool ?? "task_brief"} next if the edit target is still ambiguous.`,
         plannedTests.length > 0
@@ -129,29 +153,29 @@ export async function changePlanQuery(
         `1. Do not edit yet: ${editReadiness.reason}.`,
         `2. Read ${files.slice(0, 6).join(", ") || "the orientation files returned by Codexa"} only to choose a concrete target.`,
         targetCandidates.length > 0
-          ? "3. Pick one target candidate below, then re-run change_plan with its nextChangePlanArgs."
+          ? "3. Pick one target candidate below, then re-run change_plan with followCandidate set to its candidateId."
           : `3. Use ${editReadiness.recommendedNextTool ?? focusData.nextCall?.tool ?? "search"} or raw search to identify the exact file or symbol.`,
         "4. Re-run change_plan with an explicit file or symbol target and saveSnapshot=true before editing.",
         "5. Treat any tests below as deferred until the edit target is explicit."
       ];
-  const snapshotIndex = input.saveSnapshot && editReadiness.editable ? session.index : undefined;
+  const snapshotIndex = effectiveInput.saveSnapshot && editReadiness.editable ? session.index : undefined;
   const snapshotScope = uniqueSorted([...plannedEditTargets, ...files]);
-  const sessionMemoryPointer = input.saveSnapshot && editReadiness.editable
+  const sessionMemoryPointer = effectiveInput.saveSnapshot && editReadiness.editable
     ? await pointerForSessionMemory({
         repoRoot,
-        taskId: input.taskId,
+        taskId: effectiveInput.taskId,
         files: snapshotScope,
         freshness: pack.freshness,
         limit: 8
       }).catch(() => undefined)
     : undefined;
-  const savedSnapshot = input.saveSnapshot && editReadiness.editable
+  const savedSnapshot = effectiveInput.saveSnapshot && editReadiness.editable
     ? await saveTaskSnapshot({
         repoRoot,
-        input,
+        input: effectiveInput,
         snapshot: {
-          task: input.task,
-          changeType: input.changeType ?? "unknown",
+          task: effectiveInput.task,
+          changeType: effectiveInput.changeType ?? "unknown",
           snapshotFreshness: pack.freshness,
           plannedEditTargets,
           plannedFiles: files,
@@ -186,10 +210,10 @@ export async function changePlanQuery(
     freshnessBanner(pack.freshness, pack.refresh),
     quality ? formatContextQuality(quality) : undefined,
     "Codexa change plan",
-    input.task ? `Task: ${input.task}` : undefined,
+    effectiveInput.task ? `Task: ${effectiveInput.task}` : undefined,
     `Edit readiness: ${editReadiness.status}; ${editReadiness.reason}`,
     savedSnapshot ? `Task snapshot: ${savedSnapshot.snapshot.taskId}` : undefined,
-    input.saveSnapshot && !editReadiness.editable ? "Task snapshot: not saved because this packet is orientation-only." : undefined,
+    effectiveInput.saveSnapshot && !editReadiness.editable ? "Task snapshot: not saved because this packet is orientation-only." : undefined,
     "",
     ...planSteps,
     "",
@@ -299,6 +323,193 @@ function changePlanEditReadiness(input: {
   };
 }
 
+async function resolveChangePlanFollowBaseInput(
+  repoRoot: string,
+  input: ChangePlanInput
+): Promise<{ input?: ChangePlanInput; snapshotLoad?: TaskSnapshotLoadResult; reason?: string }> {
+  const directInput = withoutFollowCandidate(input);
+  if (!input.taskId && hasChangePlanReplaySeed(directInput)) {
+    return { input: directInput };
+  }
+  const snapshotLoad = await loadTaskSnapshot(repoRoot, input.taskId);
+  if (snapshotLoad.missingReason === "blocked-plan" && snapshotLoad.blockedSnapshot?.input) {
+    return {
+      input: {
+        ...withoutFollowCandidate(snapshotLoad.blockedSnapshot.input),
+        taskId: snapshotLoad.blockedSnapshot.taskId,
+        saveSnapshot: true
+      },
+      snapshotLoad
+    };
+  }
+  if (hasChangePlanReplaySeed(directInput)) {
+    return { input: directInput, snapshotLoad };
+  }
+  if (snapshotLoad.missingReason === "blocked-plan") {
+    return { snapshotLoad, reason: "blocked change-plan marker does not include replayable input" };
+  }
+  if (snapshotLoad.snapshot) {
+    return { snapshotLoad, reason: "requested task already has an edit-ready snapshot; followCandidate only applies to blocked orientation plans" };
+  }
+  return {
+    snapshotLoad,
+    reason: snapshotLoad.missingReason ? `no blocked change-plan input available (${snapshotLoad.missingReason})` : "no blocked change-plan input available"
+  };
+}
+
+function withoutFollowCandidate(input: ChangePlanInput): ChangePlanInput {
+  const rest = { ...input };
+  delete rest.followCandidate;
+  return rest;
+}
+
+function hasChangePlanReplaySeed(input: ChangePlanInput): boolean {
+  return Boolean(input.task?.trim() || input.query?.trim() || input.files?.length || input.symbols?.length);
+}
+
+function normalizeTargetCandidateSelector(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed || undefined;
+}
+
+async function changePlanFollowCandidateResult(input: {
+  session: QuerySession;
+  options: QueryOptions;
+  originalInput: ChangePlanInput;
+  baseInput: ChangePlanInput;
+  requestedCandidate: string;
+  targetCandidates: ChangePlanTargetCandidate[];
+  editReadiness: ReturnType<typeof changePlanEditReadiness>;
+  quality?: ContextQuality;
+  snapshotLoad?: TaskSnapshotLoadResult;
+}): Promise<QueryResult> {
+  const selected = input.targetCandidates.find((candidate) => candidate.candidateId === input.requestedCandidate);
+  if (!selected) {
+    return changePlanFollowCandidateRejectedResult({
+      session: input.session,
+      requestedCandidate: input.requestedCandidate,
+      reason: "target candidate id was not found when replayed against the current index",
+      targetCandidates: input.targetCandidates,
+      editReadiness: input.editReadiness,
+      quality: input.quality,
+      snapshotLoad: input.snapshotLoad
+    });
+  }
+
+  const revalidation = validateChangePlanTargetCandidate(selected, { index: input.session.index, repoRoot: input.session.repoRoot });
+  const revalidatedCandidate = { ...selected, ...revalidation };
+  if (revalidation.validationStatus !== "edit-ready") {
+    return changePlanFollowCandidateRejectedResult({
+      session: input.session,
+      requestedCandidate: input.requestedCandidate,
+      reason: `target candidate revalidated as ${revalidation.validationStatus}: ${revalidation.validationReasons.join("; ")}`,
+      targetCandidates: [revalidatedCandidate, ...input.targetCandidates.filter((candidate) => candidate.candidateId !== selected.candidateId)],
+      editReadiness: input.editReadiness,
+      quality: input.quality,
+      snapshotLoad: input.snapshotLoad
+    });
+  }
+
+  const followedInput: ChangePlanInput = {
+    ...selected.nextChangePlanArgs,
+    taskId: input.originalInput.taskId ?? selected.nextChangePlanArgs.taskId ?? input.baseInput.taskId,
+    changeType: input.originalInput.changeType ?? selected.nextChangePlanArgs.changeType,
+    diff: input.originalInput.diff ?? selected.nextChangePlanArgs.diff,
+    saveSnapshot: true
+  };
+  const result = await changePlanQuery(input.session, followedInput, { ...input.options, autoRefresh: false });
+  const resultData = result.data && typeof result.data === "object" ? (result.data as Record<string, unknown>) : {};
+  return {
+    ...result,
+    text: limitText(`Follow candidate: accepted ${selected.candidateId}; revalidated edit-ready.\n\n${result.text}`, 7000),
+    data: {
+      ...resultData,
+      followCandidate: {
+        status: "accepted",
+        requested: input.requestedCandidate,
+        candidateId: selected.candidateId,
+        rank: selected.rank,
+        kind: selected.kind,
+        path: selected.path,
+        plannedEditTargets: revalidation.wouldPlanEditTargets,
+        validationReasons: revalidation.validationReasons
+      }
+    }
+  };
+}
+
+function changePlanFollowCandidateRejectedResult(input: {
+  session: QuerySession;
+  requestedCandidate: string;
+  reason: string;
+  targetCandidates?: ChangePlanTargetCandidate[];
+  editReadiness?: ReturnType<typeof changePlanEditReadiness>;
+  quality?: ContextQuality;
+  snapshotLoad?: TaskSnapshotLoadResult;
+}): QueryResult {
+  const editReadiness =
+    input.editReadiness ??
+    ({
+      editable: false,
+      status: "orientation-only",
+      reason: input.reason,
+      source: "insufficient-context",
+      explicitTargetProvided: false,
+      recommendedNextTool: "change_plan",
+      missingAnchors: ["valid-target-candidate"],
+      snapshotBlocked: false
+    } satisfies ReturnType<typeof changePlanEditReadiness>);
+  const steps = [
+    `1. Do not edit yet: ${input.reason}.`,
+    "2. Re-run the orientation change_plan if the target candidates are stale.",
+    "3. Use an edit-ready candidateId from the current Target candidates list, then retry followCandidate.",
+    "4. If no candidate is edit-ready, use search/task_brief to identify an explicit file or symbol target."
+  ];
+  const text = [
+    freshnessBanner(input.session.freshness, input.session.refresh),
+    input.quality ? formatContextQuality(input.quality) : undefined,
+    "Codexa change plan",
+    `Follow candidate: rejected; ${input.reason}`,
+    "",
+    ...steps,
+    "",
+    input.targetCandidates?.length ? "Target candidates:" : undefined,
+    ...(input.targetCandidates?.length ? formatTargetCandidates(input.targetCandidates) : [])
+  ]
+    .filter((line): line is string => line !== undefined)
+    .join("\n");
+  return {
+    freshness: input.session.freshness,
+    refresh: input.session.refresh,
+    text: limitText(text, 7000),
+    data: {
+      mode: "change_plan",
+      editReadiness,
+      steps,
+      files: [],
+      plannedEditTargets: [],
+      tests: [],
+      recipes: [],
+      targetCandidates: input.targetCandidates ?? [],
+      quality: input.quality,
+      requiredWorkflowChecks: [],
+      requiredDependencyChecks: [],
+      followCandidate: {
+        status: "rejected",
+        requested: input.requestedCandidate,
+        reason: input.reason,
+        snapshotLoad: input.snapshotLoad
+          ? {
+              latestTaskId: input.snapshotLoad.latestTaskId,
+              missingReason: input.snapshotLoad.missingReason,
+              error: input.snapshotLoad.error
+            }
+          : undefined
+      }
+    }
+  };
+}
+
 export type TargetCandidateValidationStatus = "edit-ready" | "needs-more-context" | "weak";
 
 export interface TargetCandidateRisk {
@@ -315,6 +526,7 @@ export interface ChangePlanTargetCandidateValidation {
 }
 
 export interface ChangePlanTargetCandidateBase {
+  candidateId: string;
   rank: number;
   kind: "file" | "symbol";
   path: string;
@@ -343,6 +555,8 @@ export interface ChangePlanTargetCandidateBase {
 
 export interface ChangePlanTargetCandidate extends ChangePlanTargetCandidateBase, ChangePlanTargetCandidateValidation {}
 
+type ChangePlanTargetCandidateDraft = Omit<ChangePlanTargetCandidateBase, "candidateId">;
+
 function changePlanTargetCandidates(input: {
   input: ChangePlanInput;
   taskId?: string;
@@ -366,7 +580,7 @@ function changePlanTargetCandidates(input: {
     entries.push(symbol);
     symbolsByPath.set(symbol.path, entries);
   }
-  const candidates: ChangePlanTargetCandidateBase[] = [];
+  const candidates: ChangePlanTargetCandidateDraft[] = [];
   for (const entry of input.focusFiles.slice(0, 10)) {
     const file = entry.file;
     if (file.test && input.focusFiles.some((candidate) => !candidate.file.test)) {
@@ -442,6 +656,7 @@ function changePlanTargetCandidates(input: {
     }
   }
   return dedupeTargetCandidates(candidates)
+    .map(withTargetCandidateId)
     .map((candidate) => ({
       ...candidate,
       ...validateChangePlanTargetCandidate(candidate, { index: input.index, repoRoot: input.repoRoot })
@@ -558,7 +773,8 @@ function compareTargetCandidates(left: ChangePlanTargetCandidate, right: ChangeP
     targetCandidateStatusRank(left.validationStatus) - targetCandidateStatusRank(right.validationStatus) ||
     right.score - left.score ||
     left.path.localeCompare(right.path) ||
-    left.kind.localeCompare(right.kind)
+    left.kind.localeCompare(right.kind) ||
+    left.candidateId.localeCompare(right.candidateId)
   );
 }
 
@@ -641,9 +857,9 @@ function symbolTargetScore(symbol: SymbolFact, taskTokens: string[]): number {
   return tokenScore + kindScore;
 }
 
-function dedupeTargetCandidates(candidates: ChangePlanTargetCandidateBase[]): ChangePlanTargetCandidateBase[] {
+function dedupeTargetCandidates(candidates: ChangePlanTargetCandidateDraft[]): ChangePlanTargetCandidateDraft[] {
   const seen = new Set<string>();
-  const result: ChangePlanTargetCandidateBase[] = [];
+  const result: ChangePlanTargetCandidateDraft[] = [];
   for (const candidate of candidates) {
     const key = `${candidate.kind}:${candidate.path}:${candidate.symbol?.id ?? candidate.symbol?.qualifiedName ?? ""}`;
     if (seen.has(key)) {
@@ -653,6 +869,18 @@ function dedupeTargetCandidates(candidates: ChangePlanTargetCandidateBase[]): Ch
     result.push(candidate);
   }
   return result;
+}
+
+function withTargetCandidateId(candidate: ChangePlanTargetCandidateDraft): ChangePlanTargetCandidateBase {
+  return {
+    ...candidate,
+    candidateId: targetCandidateStableId(candidate)
+  };
+}
+
+function targetCandidateStableId(candidate: ChangePlanTargetCandidateDraft): string {
+  const target = candidate.symbol?.id ?? candidate.symbol?.qualifiedName ?? candidate.nextChangePlanArgs.symbols?.join("\n") ?? candidate.nextChangePlanArgs.files?.join("\n") ?? candidate.path;
+  return `candidate-${stableId("change-plan-target-candidate", candidate.kind, candidate.path, target).slice(0, 12)}`;
 }
 
 function uniqueInOrder(values: Iterable<string>): string[] {
@@ -691,7 +919,7 @@ function formatTargetCandidates(candidates: ChangePlanTargetCandidate[]): string
   return candidates.slice(0, 6).map((candidate) => {
     const target = candidate.kind === "symbol" && candidate.symbol ? `${candidate.symbol.qualifiedName} in ${candidate.path}` : candidate.path;
     const nextArg = candidate.nextChangePlanArgs.files?.[0] ?? candidate.nextChangePlanArgs.symbols?.[0] ?? target;
-    return `- #${candidate.rank} ${candidate.kind} ${target}: ${candidate.validationStatus}; score ${candidate.score.toFixed(1)}; risk ${candidate.candidateRisk.score.toFixed(1)}; next change_plan target ${nextArg}; ${candidate.evidence.slice(0, 3).join("; ")}`;
+    return `- #${candidate.rank} ${candidate.candidateId} ${candidate.kind} ${target}: ${candidate.validationStatus}; score ${candidate.score.toFixed(1)}; risk ${candidate.candidateRisk.score.toFixed(1)}; followCandidate ${candidate.candidateId}; next change_plan target ${nextArg}; ${candidate.evidence.slice(0, 3).join("; ")}`;
   });
 }
 
