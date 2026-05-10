@@ -299,7 +299,8 @@ export async function recordViewedMemoryForTool(input: {
   result: QueryResult;
   index: CodexaIndex;
 }): Promise<SessionMemoryWriteResult | undefined> {
-  const refs = refsFromQueryResult(input.result.data, input.index);
+  const rawRefs = refsFromQueryResult(input.result.data, input.index);
+  const refs = isOrientationOnlyChangePlan(input.toolName, input.result.data) ? rawRefs.filter((ref) => ref.kind !== "test") : rawRefs;
   const files = uniqueSorted(refs.map((ref) => ref.path).filter((value): value is string => Boolean(value)));
   const symbols = uniqueSorted(refs.filter((ref) => ref.kind === "symbol").map((ref) => ref.id));
   const tests = uniqueSorted(refs.filter((ref) => ref.kind === "test").map((ref) => ref.path ?? ref.id));
@@ -348,6 +349,14 @@ export async function recordViewedMemoryForTool(input: {
   return result.writes;
 }
 
+function isOrientationOnlyChangePlan(toolName: string, data: unknown): boolean {
+  if (toolName !== "change_plan" || !isRecord(data)) {
+    return false;
+  }
+  const editReadiness = isRecord(data.editReadiness) ? data.editReadiness : undefined;
+  return editReadiness?.status === "orientation-only" || editReadiness?.editable === false;
+}
+
 function derivedEntriesForTool(
   toolName: string,
   data: unknown,
@@ -359,12 +368,27 @@ function derivedEntriesForTool(
   const record = data as Record<string, unknown>;
   if (toolName === "change_plan") {
     const snapshot = isRecord(record.snapshot) ? record.snapshot : undefined;
+    const editReadiness = isRecord(record.editReadiness) ? record.editReadiness : undefined;
+    const orientationOnly = editReadiness?.status === "orientation-only" || editReadiness?.editable === false;
     const taskId = typeof snapshot?.taskId === "string" ? snapshot.taskId : undefined;
     const plannedTargets = stringValues(record.plannedEditTargets).slice(0, MAX_REFS_PER_ENTRY);
     const targetCount = plannedTargets.length;
     const testCount = Array.isArray(record.tests) ? record.tests.length : 0;
     const workflowCheckCount = Array.isArray(record.requiredWorkflowChecks) ? record.requiredWorkflowChecks.length : 0;
     const dependencyCheckCount = Array.isArray(record.requiredDependencyChecks) ? record.requiredDependencyChecks.length : 0;
+    if (orientationOnly) {
+      return [
+        {
+          kind: "decision",
+          key: `decision:change_plan:${stableId("change-plan-orientation", String(record.task ?? ""), scope.files.join("\n")).slice(0, 16)}`,
+          summary: `change_plan withheld planned edit targets until an explicit file, symbol, or edit-ready packet is available.`,
+          provenance: "codexa-derived",
+          confidence: "derived",
+          evidenceTier: "derived",
+          scope
+        }
+      ];
+    }
     return [
       {
         kind: "decision",
@@ -1033,6 +1057,9 @@ function taskIdFromToolData(data: unknown): string | undefined {
   }
   if (isRecord(data.snapshot) && typeof data.snapshot.taskId === "string") {
     return data.snapshot.taskId;
+  }
+  if (isRecord(data.snapshotBlock) && typeof data.snapshotBlock.taskId === "string") {
+    return data.snapshotBlock.taskId;
   }
   if (isRecord(data.snapshotLoad) && typeof data.snapshotLoad.taskId === "string") {
     return data.snapshotLoad.taskId;

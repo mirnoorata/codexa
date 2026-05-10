@@ -14,11 +14,18 @@ export interface SaveTaskSnapshotInput {
   snapshot: Omit<TaskSnapshot, "schemaVersion" | "taskId" | "repoRoot" | "createdAt" | "input">;
 }
 
+export interface SaveBlockedTaskSnapshotInput {
+  repoRoot: string;
+  input: ChangePlanInput;
+  reason: string;
+  details?: unknown;
+}
+
 export interface TaskSnapshotLoadResult {
   snapshot?: TaskSnapshot;
   path?: string;
   latestTaskId?: string;
-  missingReason?: "missing-directory" | "missing-latest" | "missing-task" | "invalid-json";
+  missingReason?: "missing-directory" | "missing-latest" | "missing-task" | "invalid-json" | "blocked-plan";
   error?: string;
   recoveredLatest?: boolean;
 }
@@ -42,8 +49,42 @@ export async function saveTaskSnapshot({ repoRoot, input, snapshot }: SaveTaskSn
   await fs.mkdir(dir, { recursive: true });
   const snapshotPath = path.join(dir, `${taskId}.json`);
   await atomicJsonWrite(snapshotPath, saved);
+  await fs.rm(path.join(dir, `${taskId}.blocked.json`), { force: true });
   await atomicJsonWrite(path.join(dir, LATEST_FILE), { schemaVersion: 1, taskId, path: path.basename(snapshotPath), createdAt });
   return { snapshot: saved, path: snapshotPath };
+}
+
+export async function saveBlockedTaskSnapshot({ repoRoot, input, reason, details }: SaveBlockedTaskSnapshotInput): Promise<{ taskId: string; path: string }> {
+  const repo = path.resolve(repoRoot);
+  const createdAt = new Date().toISOString();
+  const taskId = normalizeTaskId(input.taskId) ?? defaultTaskId(repo, input, createdAt);
+  const dir = snapshotDir(repo);
+  await fs.mkdir(dir, { recursive: true });
+  const markerPath = path.join(dir, `${taskId}.blocked.json`);
+  const marker = redactRepoPath(
+    {
+      schemaVersion: 1,
+      kind: "change-plan-snapshot-blocked",
+      taskId,
+      repoRoot: ".",
+      createdAt,
+      input: { ...input, taskId, saveSnapshot: Boolean(input.saveSnapshot) },
+      reason,
+      details
+    },
+    repo
+  );
+  await atomicJsonWrite(markerPath, marker);
+  await fs.rm(path.join(dir, `${taskId}.json`), { force: true });
+  await atomicJsonWrite(path.join(dir, LATEST_FILE), {
+    schemaVersion: 1,
+    taskId,
+    path: path.basename(markerPath),
+    createdAt,
+    blocked: true,
+    reason
+  });
+  return { taskId, path: markerPath };
 }
 
 export async function loadTaskSnapshot(repoRoot: string, taskId?: string): Promise<TaskSnapshotLoadResult> {
@@ -58,20 +99,37 @@ export async function loadTaskSnapshot(repoRoot: string, taskId?: string): Promi
   let dir = dirs[0];
   if (!resolvedTaskId) {
     let latest:
-      | { ok: true; value: { taskId?: unknown }; dir: string }
+      | { ok: true; value: LatestSnapshotPointer; dir: string }
       | { ok: false; missing: boolean; error: string; dir: string }
       | undefined;
+    let priorLatestReadFailed = false;
     for (const candidateDir of dirs) {
-      const candidate = await readJson<{ taskId?: unknown }>(path.join(candidateDir, LATEST_FILE));
+      const candidate = await readJson<LatestSnapshotPointer>(path.join(candidateDir, LATEST_FILE));
       if (candidate.ok) {
+        if (priorLatestReadFailed) {
+          const recovered = await recoverLatestSnapshot(dirs);
+          if (recovered) {
+            return recovered;
+          }
+        }
         latest = { ...candidate, dir: candidateDir };
         break;
       }
+      priorLatestReadFailed = true;
       latest ??= { ...candidate, dir: candidateDir };
     }
     if (!latest || !latest.ok) {
       const recovered = await recoverLatestSnapshot(dirs);
       return recovered ?? { missingReason: latest?.missing ? "missing-latest" : "invalid-json", error: latest?.error };
+    }
+    if (latest.value.blocked === true) {
+      const blockedTaskId = typeof latest.value.taskId === "string" ? normalizeTaskId(latest.value.taskId) : undefined;
+      return {
+        latestTaskId: blockedTaskId,
+        missingReason: "blocked-plan",
+        error: blockedSnapshotReason(latest.value.reason),
+        path: typeof latest.value.path === "string" ? path.join(latest.dir, latest.value.path) : undefined
+      };
     }
     if (typeof latest.value.taskId !== "string" || !normalizeTaskId(latest.value.taskId)) {
       const recovered = await recoverLatestSnapshot(dirs);
@@ -80,6 +138,10 @@ export async function loadTaskSnapshot(repoRoot: string, taskId?: string): Promi
     resolvedTaskId = normalizeTaskId(latest.value.taskId);
     dir = latest.dir;
   } else {
+    const currentBlocked = await readBlockedSnapshotMarker([snapshotDir(repo)].filter((candidateDir) => existsSync(candidateDir)), resolvedTaskId);
+    if (currentBlocked) {
+      return currentBlocked;
+    }
     const matchingDir = dirs.find((candidateDir) => existsSync(path.join(candidateDir, `${resolvedTaskId}.json`)));
     if (matchingDir) {
       dir = matchingDir;
@@ -89,6 +151,10 @@ export async function loadTaskSnapshot(repoRoot: string, taskId?: string): Promi
   const snapshotPath = path.join(dir, `${resolvedTaskId}.json`);
   const parsed = await readJson<TaskSnapshot>(snapshotPath);
   if (!parsed.ok) {
+    const blocked = await readBlockedSnapshotMarker(dirs, resolvedTaskId);
+    if (blocked) {
+      return blocked;
+    }
     if (!requestedTaskId) {
       const recovered = await recoverLatestSnapshot(dirs);
       if (recovered) {
@@ -108,8 +174,61 @@ export async function loadTaskSnapshot(repoRoot: string, taskId?: string): Promi
   return { snapshot: parsed.value, latestTaskId: resolvedTaskId, path: snapshotPath };
 }
 
+interface LatestSnapshotPointer {
+  taskId?: unknown;
+  path?: unknown;
+  blocked?: unknown;
+  reason?: unknown;
+}
+
+interface BlockedSnapshotMarker {
+  schemaVersion?: unknown;
+  kind?: unknown;
+  taskId?: unknown;
+  createdAt?: unknown;
+  reason?: unknown;
+}
+
+async function readBlockedSnapshotMarker(dirs: string[], taskId: string | undefined): Promise<TaskSnapshotLoadResult | undefined> {
+  if (!taskId) {
+    return undefined;
+  }
+  for (const dir of dirs) {
+    const markerPath = path.join(dir, `${taskId}.blocked.json`);
+    const parsed = await readJson<BlockedSnapshotMarker>(markerPath);
+    if (!parsed.ok || !isBlockedSnapshotMarker(parsed.value, taskId)) {
+      continue;
+    }
+    return blockedSnapshotLoadResult(parsed.value, markerPath);
+  }
+  return undefined;
+}
+
+function isBlockedSnapshotMarker(value: unknown, taskId?: string): value is BlockedSnapshotMarker {
+  if (!value || typeof value !== "object") {
+    return false;
+  }
+  const record = value as BlockedSnapshotMarker;
+  const normalizedTaskId = typeof record.taskId === "string" ? normalizeTaskId(record.taskId) : undefined;
+  return record.schemaVersion === 1 && record.kind === "change-plan-snapshot-blocked" && Boolean(normalizedTaskId) && (!taskId || normalizedTaskId === taskId);
+}
+
+function blockedSnapshotLoadResult(marker: BlockedSnapshotMarker, markerPath: string, recoveredLatest = false): TaskSnapshotLoadResult {
+  return {
+    latestTaskId: typeof marker.taskId === "string" ? normalizeTaskId(marker.taskId) : undefined,
+    missingReason: "blocked-plan",
+    error: blockedSnapshotReason(marker.reason),
+    path: markerPath,
+    recoveredLatest
+  };
+}
+
+function blockedSnapshotReason(reason: unknown): string {
+  return typeof reason === "string" && reason.trim() ? reason : "latest change plan was orientation-only; no editable task snapshot was saved";
+}
+
 async function recoverLatestSnapshot(dirs: string[]): Promise<TaskSnapshotLoadResult | undefined> {
-  const candidates: Array<{ snapshot: TaskSnapshot; path: string; createdAtMs: number }> = [];
+  const candidates: RecoveredSnapshotCandidate[] = [];
   for (const dir of dirs) {
     let entries: string[] = [];
     try {
@@ -122,26 +241,55 @@ async function recoverLatestSnapshot(dirs: string[]): Promise<TaskSnapshotLoadRe
         continue;
       }
       const snapshotPath = path.join(dir, entry);
+      if (entry.endsWith(".blocked.json")) {
+        const parsed = await readJson<BlockedSnapshotMarker>(snapshotPath);
+        if (!parsed.ok || !isBlockedSnapshotMarker(parsed.value)) {
+          continue;
+        }
+        candidates.push({
+          kind: "blocked",
+          marker: parsed.value,
+          path: snapshotPath,
+          createdAtMs: typeof parsed.value.createdAt === "string" ? Date.parse(parsed.value.createdAt) || 0 : 0
+        });
+        continue;
+      }
       const parsed = await readJson<TaskSnapshot>(snapshotPath);
       if (!parsed.ok || !isTaskSnapshot(parsed.value)) {
         continue;
       }
       candidates.push({
+        kind: "snapshot",
         snapshot: parsed.value,
         path: snapshotPath,
         createdAtMs: Date.parse(parsed.value.createdAt) || 0
       });
     }
   }
-  const latest = candidates.sort((a, b) => b.createdAtMs - a.createdAtMs || a.snapshot.taskId.localeCompare(b.snapshot.taskId))[0];
-  return latest
-    ? {
-        snapshot: latest.snapshot,
-        latestTaskId: latest.snapshot.taskId,
-        path: latest.path,
-        recoveredLatest: true
-      }
-    : undefined;
+  const latest = candidates.sort((a, b) => b.createdAtMs - a.createdAtMs || recoveredCandidateTaskId(a).localeCompare(recoveredCandidateTaskId(b)) || a.kind.localeCompare(b.kind))[0];
+  if (!latest) {
+    return undefined;
+  }
+  if (latest.kind === "blocked") {
+    return blockedSnapshotLoadResult(latest.marker, latest.path, true);
+  }
+  return {
+    snapshot: latest.snapshot,
+    latestTaskId: latest.snapshot.taskId,
+    path: latest.path,
+    recoveredLatest: true
+  };
+}
+
+type RecoveredSnapshotCandidate =
+  | { kind: "snapshot"; snapshot: TaskSnapshot; path: string; createdAtMs: number }
+  | { kind: "blocked"; marker: BlockedSnapshotMarker; path: string; createdAtMs: number };
+
+function recoveredCandidateTaskId(candidate: RecoveredSnapshotCandidate): string {
+  if (candidate.kind === "snapshot") {
+    return candidate.snapshot.taskId;
+  }
+  return typeof candidate.marker.taskId === "string" ? normalizeTaskId(candidate.marker.taskId) ?? "" : "";
 }
 
 export function taskSnapshotCacheDir(repoRoot: string): string {

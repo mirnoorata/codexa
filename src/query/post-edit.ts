@@ -14,7 +14,7 @@ import { formatVerificationCoverage, formatVerificationLedger, verificationEvide
 import { isCodexaControlPath, formatChangedEntry } from "./worktree.js";
 import { buildPostEditOutcome, savePostEditOutcome, type PostEditCheckResult, type PostEditOutcomeInput } from "../post-edit-outcomes.js";
 import { pointerForSessionMemory, readSessionMemory } from "../session-memory.js";
-import { loadTaskSnapshot, saveTaskSnapshot } from "../task-snapshots.js";
+import { loadTaskSnapshot, saveBlockedTaskSnapshot, saveTaskSnapshot } from "../task-snapshots.js";
 import { CURRENT_VERIFICATION_PROVENANCE } from "../types.js";
 import type {
   ChangedFileEntry,
@@ -56,6 +56,8 @@ export async function changePlanQuery(
     changedFiles?: string[];
     tests?: TestRecommendation[];
     recipes?: string[];
+    packetVerdict?: string;
+    intentConfidence?: { editReady?: boolean; confidence?: number; verdict?: string; recommendedNextTool?: string; missingAnchors?: string[] };
     quality?: ContextQuality;
     gaps?: string[];
     warnings?: string[];
@@ -64,33 +66,53 @@ export async function changePlanQuery(
   const focusFiles = packData.focusFiles ?? [];
   const tests = packData.tests ?? [];
   const recipes = packData.recipes ?? [];
+  const quality = packData.quality ?? (focus.data as { quality?: ContextQuality }).quality;
   const files = focusFiles.map((entry) => entry.file.path);
   const explicitFiles = normalizeInputPaths(input.files ?? [], repoRoot);
   const explicitSymbolFiles = focusFiles
     .filter((entry) => entry.reasons.some((reason) => reason.startsWith("requested symbol ")))
     .map((entry) => entry.file.path);
-  const plannedEditTargets = uniqueSorted(explicitFiles.length > 0 || explicitSymbolFiles.length > 0 ? [...explicitFiles, ...explicitSymbolFiles] : files.slice(0, 6));
+  const editReadiness = changePlanEditReadiness({
+    input,
+    focusFiles,
+    explicitTargetProvided: explicitFiles.length > 0 || explicitSymbolFiles.length > 0,
+    quality,
+    packetVerdict: packData.packetVerdict,
+    intentConfidence: packData.intentConfidence
+  });
+  const plannedEditTargets = editReadiness.editable ? uniqueSorted(explicitFiles.length > 0 || explicitSymbolFiles.length > 0 ? [...explicitFiles, ...explicitSymbolFiles] : files.slice(0, 6)) : [];
   const focusPathSet = new Set(files);
   const explicitWorkflowPaths = new Set(normalizeInputPaths(input.files ?? [], repoRoot));
   const workflowMatchPaths = explicitWorkflowPaths.size > 0 ? explicitWorkflowPaths : focusPathSet;
   const relatedWorkflow = focusData.workflows?.find((workflow) => workflow.relatedFiles.some((file) => workflowMatchPaths.has(file)));
   const requiredWorkflowChecks = requiredWorkflowChecksForPlan(focusData.workflows ?? [], workflowMatchPaths, input.changeType ?? "unknown").slice(0, 8);
   const requiredDependencyChecks = requiredDependencyChecksForPlan(session.index, plannedEditTargets, input.changeType ?? "unknown").slice(0, 12);
-  const planSteps = [
-    `1. Read ${files.slice(0, 6).join(", ") || "the focus files returned by Codexa"} before editing.`,
-    relatedWorkflow
-      ? `2. Inspect workflow_path for ${relatedWorkflow.title} if the change touches runtime flow.`
-      : input.files?.length || input.symbols?.length
-        ? "2. Use callers, callees, or dependency_path if this focused edit changes an exported API or runtime contract."
-        : `2. Use ${focusData.nextCall?.tool ?? "task_brief"} next if the edit target is still ambiguous.`,
-    tests.length > 0 ? `3. Keep these tests in scope: ${tests.slice(0, 5).map((test) => test.path).join(", ")}.` : "3. No targeted tests were proven; inspect repo test metadata before inventing a command.",
-    recipes.length > 0 ? `4. Verification: ${recipes.slice(0, 3).join(" ")}` : "4. Run the narrowest verified test or type check that covers the touched files.",
-    "5. Re-run Codexa task_brief after edits if freshness reports dirty-files-changed."
-  ];
-  const quality = packData.quality ?? (focus.data as { quality?: ContextQuality }).quality;
-  const snapshotIndex = input.saveSnapshot ? session.index : undefined;
+  const plannedTests = editReadiness.editable ? tests : [];
+  const plannedRecipes = editReadiness.editable ? recipes : [];
+  const planSteps = editReadiness.editable
+    ? [
+        `1. Read ${files.slice(0, 6).join(", ") || "the focus files returned by Codexa"} before editing.`,
+        relatedWorkflow
+          ? `2. Inspect workflow_path for ${relatedWorkflow.title} if the change touches runtime flow.`
+          : input.files?.length || input.symbols?.length
+            ? "2. Use callers, callees, or dependency_path if this focused edit changes an exported API or runtime contract."
+            : `2. Use ${focusData.nextCall?.tool ?? "task_brief"} next if the edit target is still ambiguous.`,
+        plannedTests.length > 0
+          ? `3. Keep these tests in scope: ${plannedTests.slice(0, 5).map((test) => test.path).join(", ")}.`
+          : "3. No targeted tests were proven; inspect repo test metadata before inventing a command.",
+        plannedRecipes.length > 0 ? `4. Verification: ${plannedRecipes.slice(0, 3).join(" ")}` : "4. Run the narrowest verified test or type check that covers the touched files.",
+        "5. Re-run Codexa task_brief after edits if freshness reports dirty-files-changed."
+      ]
+    : [
+        `1. Do not edit yet: ${editReadiness.reason}.`,
+        `2. Read ${files.slice(0, 6).join(", ") || "the orientation files returned by Codexa"} only to choose a concrete target.`,
+        `3. Use ${editReadiness.recommendedNextTool ?? focusData.nextCall?.tool ?? "search"} or raw search to identify the exact file or symbol.`,
+        "4. Re-run change_plan with an explicit file or symbol target and saveSnapshot=true before editing.",
+        "5. Treat any tests below as deferred until the edit target is explicit."
+      ];
+  const snapshotIndex = input.saveSnapshot && editReadiness.editable ? session.index : undefined;
   const snapshotScope = uniqueSorted([...plannedEditTargets, ...files]);
-  const sessionMemoryPointer = input.saveSnapshot
+  const sessionMemoryPointer = input.saveSnapshot && editReadiness.editable
     ? await pointerForSessionMemory({
         repoRoot,
         taskId: input.taskId,
@@ -99,7 +121,15 @@ export async function changePlanQuery(
         limit: 8
       }).catch(() => undefined)
     : undefined;
-  const savedSnapshot = input.saveSnapshot
+  const blockedSnapshot = input.saveSnapshot && !editReadiness.editable
+    ? await saveBlockedTaskSnapshot({
+        repoRoot,
+        input,
+        reason: editReadiness.reason,
+        details: editReadiness
+      })
+    : undefined;
+  const savedSnapshot = input.saveSnapshot && editReadiness.editable
     ? await saveTaskSnapshot({
         repoRoot,
         input,
@@ -116,13 +146,13 @@ export async function changePlanQuery(
             rank: entry.file.rank,
             riskScore: entry.file.riskScore
           })),
-          plannedTests: compactSnapshotTests(tests, repoRoot),
+          plannedTests: compactSnapshotTests(plannedTests, repoRoot),
           sessionMemory: sessionMemoryPointer,
           requiredWorkflowChecks,
           requiredDependencyChecks,
           symbolBaseline: snapshotIndex ? snapshotSymbolBaseline(snapshotIndex, snapshotScope) : undefined,
           riskBaseline: snapshotIndex ? snapshotRiskBaseline(snapshotIndex, snapshotScope) : undefined,
-          recipes,
+          recipes: plannedRecipes,
           dirtyBaseline: {
             changedEntries: packData.changedEntries ?? [],
             dirtyFiles: pack.freshness.dirtyFiles,
@@ -141,7 +171,9 @@ export async function changePlanQuery(
     quality ? formatContextQuality(quality) : undefined,
     "Codexa change plan",
     input.task ? `Task: ${input.task}` : undefined,
+    `Edit readiness: ${editReadiness.status}; ${editReadiness.reason}`,
     savedSnapshot ? `Task snapshot: ${savedSnapshot.snapshot.taskId}` : undefined,
+    input.saveSnapshot && !editReadiness.editable ? "Task snapshot: not saved because this packet is orientation-only." : undefined,
     "",
     ...planSteps,
     "",
@@ -149,13 +181,13 @@ export async function changePlanQuery(
     ...focusFiles.slice(0, 10).map((entry) => `- ${entry.file.path}: ${entry.tier}; ${entry.reasons.join("; ")}`),
     "",
     "Tests:",
-    ...formatTestRecommendations(tests.slice(0, 12)),
+    ...(editReadiness.editable ? formatTestRecommendations(plannedTests.slice(0, 12)) : ["- deferred until Codexa has an explicit file, symbol, or edit-ready packet."]),
     "",
     "Required workflow checks:",
-    ...formatRequiredChecks(requiredWorkflowChecks),
+    ...formatRequiredChecks(editReadiness.editable ? requiredWorkflowChecks : []),
     "",
     "Required dependency checks:",
-    ...formatRequiredChecks(requiredDependencyChecks),
+    ...formatRequiredChecks(editReadiness.editable ? requiredDependencyChecks : []),
     "",
     "Known gaps:",
     ...formatGaps(packData.gaps ?? [])
@@ -168,18 +200,75 @@ export async function changePlanQuery(
     text: limitText(text, 7000),
     data: {
       mode: "change_plan",
+      editReadiness,
       steps: planSteps,
       focus: focus.data,
       context: pack.data,
       files,
       plannedEditTargets,
-      tests,
-      recipes,
+      tests: plannedTests,
+      recipes: plannedRecipes,
       quality,
-      requiredWorkflowChecks,
-      requiredDependencyChecks,
-      snapshot: savedSnapshot?.snapshot
+      requiredWorkflowChecks: editReadiness.editable ? requiredWorkflowChecks : [],
+      requiredDependencyChecks: editReadiness.editable ? requiredDependencyChecks : [],
+      snapshot: savedSnapshot?.snapshot,
+      snapshotBlock: blockedSnapshot
+        ? {
+            taskId: blockedSnapshot.taskId,
+            path: path.relative(repoRoot, blockedSnapshot.path).split(path.sep).join("/"),
+            reason: editReadiness.reason
+          }
+        : undefined
     }
+  };
+}
+
+function changePlanEditReadiness(input: {
+  input: ChangePlanInput;
+  focusFiles: Array<{ file: FileFact; reasons: string[]; tier: EvidenceTier }>;
+  explicitTargetProvided: boolean;
+  quality?: ContextQuality;
+  packetVerdict?: string;
+  intentConfidence?: { editReady?: boolean; confidence?: number; verdict?: string; recommendedNextTool?: string; missingAnchors?: string[] };
+}): {
+  editable: boolean;
+  status: "edit-ready" | "orientation-only";
+  reason: string;
+  source: "explicit-target" | "high-confidence-context" | "insufficient-context";
+  explicitTargetProvided: boolean;
+  packetVerdict?: string;
+  qualityLevel?: ContextQuality["level"];
+  confidence?: number;
+  recommendedNextTool?: string;
+  snapshotBlocked: boolean;
+} {
+  const packetVerdict = input.packetVerdict ?? input.intentConfidence?.verdict;
+  const qualityLevel = input.quality?.level;
+  const hasEvidenceBackedFocus = input.focusFiles.some((entry) => entry.tier === "authoritative" || entry.tier === "derived");
+  const highConfidenceContext = qualityLevel === "high" && hasEvidenceBackedFocus && (packetVerdict === undefined || packetVerdict === "edit-ready");
+  const editable = input.explicitTargetProvided || highConfidenceContext;
+  const reason = input.explicitTargetProvided
+    ? "explicit file or symbol target provided"
+    : highConfidenceContext
+      ? "high-confidence evidence-backed packet"
+      : packetVerdict === "raw-search-better"
+        ? "raw search is likely a cleaner first pass than this broad packet"
+        : packetVerdict === "needs-target"
+          ? "broad change plan needs an explicit file or symbol target"
+          : qualityLevel === "low"
+            ? "context quality is low"
+            : "packet is not edit-ready without an explicit file or symbol target";
+  return {
+    editable,
+    status: editable ? "edit-ready" : "orientation-only",
+    reason,
+    source: input.explicitTargetProvided ? "explicit-target" : highConfidenceContext ? "high-confidence-context" : "insufficient-context",
+    explicitTargetProvided: input.explicitTargetProvided,
+    packetVerdict,
+    qualityLevel,
+    confidence: input.intentConfidence?.confidence,
+    recommendedNextTool: editable ? undefined : input.intentConfidence?.recommendedNextTool ?? (packetVerdict === "raw-search-better" || packetVerdict === "needs-target" ? "search" : "task_brief"),
+    snapshotBlocked: Boolean(input.input.saveSnapshot && !editable)
   };
 }
 
@@ -361,6 +450,7 @@ export async function postEditReviewQuery(
   const plannedButUntouchedFiles = snapshot ? plannedScope.filter((filePath) => !editPaths.includes(filePath) && !currentDirtyPaths.includes(filePath)) : [];
   const headChanged = Boolean(snapshot && snapshot.dirtyBaseline.headCommit !== freshness.headCommit);
   const task = input.task ?? snapshot?.task ?? "Post-edit review";
+  const effectiveTaskId = snapshot?.taskId ?? loadedSnapshot.latestTaskId ?? input.taskId;
   const changeType = input.changeType ?? snapshot?.changeType ?? "unknown";
   const reviewTargets = uniqueSorted([
     ...(editPaths.length > 0 ? editPaths : []),
@@ -395,7 +485,7 @@ export async function postEditReviewQuery(
   };
   const priorSessionMemory = await readSessionMemory({
     repoRoot,
-    taskId: snapshot?.taskId ?? input.taskId,
+    taskId: effectiveTaskId,
     files: reviewTargets,
     kinds: ["claim", "ruled_out", "open_question", "decision"],
     freshness,
@@ -575,7 +665,7 @@ export async function postEditReviewQuery(
   const outcomeInput: PostEditOutcomeInput = {
     repoRoot,
     task,
-    taskId: snapshot?.taskId ?? loadedSnapshot.latestTaskId,
+    taskId: effectiveTaskId,
     snapshotPath: loadedSnapshot.path ? path.relative(repoRoot, loadedSnapshot.path).split(path.sep).join("/") : undefined,
     verdict,
     freshness,

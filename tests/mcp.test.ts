@@ -215,6 +215,8 @@ function buildTestPlanPacket() {
 function buildChangePlanPacket() {
   return {
     mode: "change_plan",
+    editReadiness: { editable: false, status: "orientation-only", snapshotBlocked: true },
+    snapshotBlock: { taskId: "blocked-snap-1", path: ".codex/cache/codexa-tasks/blocked-snap-1.blocked.json", reason: "context quality is low" },
     steps: seq(5, (index) => `step-${index}`),
     focus: buildFocusBriefPacket(),
     context: buildContextPacket(),
@@ -969,6 +971,8 @@ describe("Codexa MCP server", () => {
     expect(compacted.text).toBe("change plan text");
     const data = compacted.data as {
       mode?: string;
+      editReadiness?: { editable?: boolean; status?: string; snapshotBlocked?: boolean };
+      snapshotBlock?: { taskId?: string; path?: string; reason?: string };
       files?: unknown[];
       plannedEditTargets?: unknown[];
       tests?: unknown[];
@@ -978,6 +982,12 @@ describe("Codexa MCP server", () => {
     };
     expect(data.mode).toBe("change_plan");
     expect(data.mcp.mode).toBe("change_plan");
+    expect(data.editReadiness).toMatchObject({ editable: false, status: "orientation-only", snapshotBlocked: true });
+    expect(data.snapshotBlock).toMatchObject({
+      taskId: "blocked-snap-1",
+      path: ".codex/cache/codexa-tasks/blocked-snap-1.blocked.json",
+      reason: "context quality is low"
+    });
     expect(data.mcp.returnedBytes).toBe(serializedBytes(data));
     expect(data.mcp.returnedBytes).toBeLessThanOrEqual(data.mcp.targetBytes);
     expect(data.files?.length).toBeGreaterThan(0);

@@ -473,6 +473,48 @@ describe("session memory storage", () => {
     expect(memory.memory.verification[0]?.summary).toContain("change_plan queued 1 test target");
   });
 
+  it("does not auto-record nested test refs for orientation-only change plans", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-session-memory-plan-orientation-"));
+    const freshness = freshnessFixture("snap-plan-orientation");
+    const index = indexFixture(repo, freshness, [
+      fileFixture("src/a.ts", freshness),
+      fileFixture("tests/a.test.ts", freshness, { test: true })
+    ]);
+
+    const writes = await recordViewedMemoryForTool({
+      repoRoot: repo,
+      toolName: "change_plan",
+      result: {
+        freshness,
+        text: "orientation plan",
+        data: {
+          mode: "change_plan",
+          task: "change behavior safely",
+          editReadiness: { editable: false, status: "orientation-only" },
+          snapshotBlock: { taskId: "generated-blocked-task", path: ".codex/cache/codexa-tasks/generated-blocked-task.blocked.json" },
+          plannedEditTargets: [],
+          tests: [],
+          context: {
+            focusFiles: [{ file: { path: "src/a.ts" } }],
+            tests: [{ path: "tests/a.test.ts" }]
+          }
+        }
+      } satisfies QueryResult,
+      index
+    });
+
+    expect(writes?.recordedEntryIds.length).toBeGreaterThanOrEqual(2);
+    expect(writes?.taskId).toBe("generated-blocked-task");
+    const memory = await readSessionMemory({ repoRoot: repo, freshness, limit: 20 });
+    expect(memory.memory.viewed[0]?.summary).toContain("change_plan returned");
+    expect(memory.memory.viewed[0]?.summary).not.toContain("test");
+    expect(memory.memory.viewed[0]?.scope.tests).toEqual([]);
+    expect(memory.memory.decisions[0]?.summary).toContain("change_plan withheld planned edit targets");
+    expect(memory.memory.decisions[0]?.scope.tests).toEqual([]);
+    expect(memory.memory.nextReads).toEqual([]);
+    expect(memory.memory.verification).toEqual([]);
+  });
+
   it("bounds direct entry scope arrays before writing cache state", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-session-memory-bounds-"));
     const freshness = freshnessFixture("snap-bounds");

@@ -6,6 +6,7 @@ import { describe, expect, it } from "vitest";
 import { getGitState } from "../src/git.js";
 import { buildIndex, buildIndexLocked, loadIndex } from "../src/indexer.js";
 import { loadExternalRiskSignals } from "../src/risk-ingest.js";
+import { recordSessionMemory } from "../src/session-memory.js";
 import { updateStaticAnalysisReports } from "../src/static-analysis.js";
 import { CURRENT_VERIFICATION_PROVENANCE } from "../src/types.js";
 import {
@@ -1029,6 +1030,47 @@ describe("Codexa indexer", () => {
     expect(["low", "medium"]).toContain(ambiguousData.quality?.level);
     expect(ambiguousEdit.text).toContain("Recommended next MCP call: search");
 
+    const ambiguousPlan = await changePlanQuery(
+      repo,
+      {
+        task: "Change behavior safely",
+        diff: false,
+        limit: 6,
+        tokenBudget: 1200,
+        saveSnapshot: true,
+        taskId: "ambiguous-change-plan"
+      },
+      { autoRefresh: false }
+    );
+    const ambiguousPlanData = ambiguousPlan.data as {
+      editReadiness?: { editable: boolean; status: string; snapshotBlocked: boolean };
+      plannedEditTargets?: string[];
+      tests?: unknown[];
+      snapshot?: unknown;
+      snapshotBlock?: { taskId: string; path: string };
+    };
+    expect(ambiguousPlan.text).toContain("Edit readiness: orientation-only");
+    expect(ambiguousPlan.text).toContain("Task snapshot: not saved");
+    expect(ambiguousPlanData.editReadiness).toMatchObject({ editable: false, status: "orientation-only", snapshotBlocked: true });
+    expect(ambiguousPlanData.plannedEditTargets).toEqual([]);
+    expect(ambiguousPlanData.tests).toEqual([]);
+    expect(ambiguousPlanData.snapshot).toBeUndefined();
+    expect(ambiguousPlanData.snapshotBlock).toMatchObject({
+      taskId: "ambiguous-change-plan",
+      path: ".codex/cache/codexa-tasks/ambiguous-change-plan.blocked.json"
+    });
+    await expect(readFile(path.join(repo, ".codex/cache/codexa-tasks/ambiguous-change-plan.json"), "utf8")).rejects.toThrow();
+    const ambiguousLatest = JSON.parse(await readFile(path.join(repo, ".codex/cache/codexa-tasks/latest.json"), "utf8")) as {
+      taskId: string;
+      path: string;
+      blocked: boolean;
+    };
+    expect(ambiguousLatest).toMatchObject({
+      taskId: "ambiguous-change-plan",
+      path: "ambiguous-change-plan.blocked.json",
+      blocked: true
+    });
+
     const exactFocus = await focusBriefQuery(repo, { task: "Fix src/api.ts handleThing", diff: false, limit: 4, tokenBudget: 900 }, { autoRefresh: false });
     expect((exactFocus.data as { focusFiles: Array<{ path: string }>; quality: { counts: { derived: number } } }).focusFiles.map((file) => file.path)).toContain("src/api.ts");
     expect((exactFocus.data as { quality: { counts: { derived: number } } }).quality.counts.derived).toBeGreaterThan(0);
@@ -1078,6 +1120,7 @@ describe("Codexa indexer", () => {
 
     const plan = await changePlanQuery(repo, { task: "Change route normalization safely", files: ["service/helpers.py"], diff: false, limit: 6 }, { autoRefresh: false });
     expect(plan.text).toContain("Codexa change plan");
+    expect((plan.data as { editReadiness?: { editable: boolean; status: string } }).editReadiness).toMatchObject({ editable: true, status: "edit-ready" });
     expect(plan.text).toContain("Read first:");
     expect(plan.text).toContain("tests/test_app.py");
   });
@@ -1108,6 +1151,136 @@ describe("Codexa indexer", () => {
     expect(JSON.stringify(savedPlanSnapshot)).not.toContain(repo);
     expect(savedPlanSnapshot.requiredWorkflowChecks.length).toBeGreaterThan(0);
     expect(savedPlanSnapshot.requiredDependencyChecks.length).toBeGreaterThan(0);
+
+    await changePlanQuery(
+      repo,
+      {
+        task: "Change route normalization safely",
+        files: ["service/helpers.py"],
+        diff: false,
+        limit: 6,
+        saveSnapshot: true,
+        taskId: "reused-task-id"
+      },
+      { autoRefresh: false }
+    );
+    const reusedSnapshotText = await readFile(path.join(repo, ".codex/cache/codexa-tasks/reused-task-id.json"), "utf8");
+    const reusedSnapshot = JSON.parse(reusedSnapshotText) as { createdAt: string };
+    await mkdir(path.join(repo, ".codex/cache/codexa-task-snapshots"), { recursive: true });
+    await writeFile(path.join(repo, ".codex/cache/codexa-task-snapshots/reused-task-id.json"), reusedSnapshotText, "utf8");
+    await writeFile(
+      path.join(repo, ".codex/cache/codexa-task-snapshots/latest.json"),
+      `${JSON.stringify({ schemaVersion: 1, taskId: "reused-task-id", path: "reused-task-id.json", createdAt: reusedSnapshot.createdAt })}\n`,
+      "utf8"
+    );
+    await changePlanQuery(
+      repo,
+      {
+        task: "Change behavior safely",
+        diff: false,
+        limit: 6,
+        tokenBudget: 1200,
+        saveSnapshot: true,
+        taskId: "reused-task-id"
+      },
+      { autoRefresh: false }
+    );
+    await expect(readFile(path.join(repo, ".codex/cache/codexa-tasks/reused-task-id.json"), "utf8")).rejects.toThrow();
+    const reusedTaskReview = await postEditReviewQuery(repo, { taskId: "reused-task-id", ranTests: [], persistOutcome: false }, { autoRefresh: false });
+    const reusedTaskData = reusedTaskReview.data as {
+      snapshot?: unknown;
+      snapshotLoad: { taskId?: string; missingReason?: string };
+    };
+    expect(reusedTaskData.snapshot).toBeUndefined();
+    expect(reusedTaskData.snapshotLoad).toMatchObject({ taskId: "reused-task-id", missingReason: "blocked-plan" });
+
+    const blockedPlan = await changePlanQuery(
+      repo,
+      {
+        task: "Change behavior safely",
+        diff: false,
+        limit: 6,
+        tokenBudget: 1200,
+        saveSnapshot: true,
+        taskId: "blocked-after-valid"
+      },
+      { autoRefresh: false }
+    );
+    expect(blockedPlan.text).toContain("Edit readiness: orientation-only");
+    await expect(readFile(path.join(repo, ".codex/cache/codexa-tasks/blocked-after-valid.json"), "utf8")).rejects.toThrow();
+    const blockedReview = await postEditReviewQuery(repo, { ranTests: [], persistOutcome: false }, { autoRefresh: false });
+    const blockedReviewData = blockedReview.data as {
+      snapshot?: unknown;
+      snapshotLoad: { taskId?: string; missingReason?: string; error?: string };
+      outcome: { persisted: boolean };
+    };
+    expect(blockedReview.text).toContain("Snapshot: unavailable (blocked-plan)");
+    expect(blockedReviewData.snapshot).toBeUndefined();
+    expect(blockedReviewData.snapshotLoad).toMatchObject({ taskId: "blocked-after-valid", missingReason: "blocked-plan" });
+    expect(blockedReviewData.snapshotLoad.error).toBeTruthy();
+    expect(blockedReviewData.outcome.persisted).toBe(false);
+
+    await recordSessionMemory({
+      repoRoot: repo,
+      taskId: "blocked-after-valid",
+      freshness: blockedPlan.freshness,
+      entries: [
+        {
+          kind: "decision",
+          key: "decision:blocked-task",
+          summary: "blocked-after-valid memory stays task-scoped.",
+          provenance: "agent-asserted",
+          confidence: "derived",
+          evidenceTier: "derived",
+          scope: { files: [] }
+        }
+      ]
+    });
+    await recordSessionMemory({
+      repoRoot: repo,
+      taskId: "unrelated-task",
+      freshness: blockedPlan.freshness,
+      entries: [
+        {
+          kind: "decision",
+          key: "decision:unrelated-task",
+          summary: "unrelated memory should not leak into blocked review.",
+          provenance: "agent-asserted",
+          confidence: "derived",
+          evidenceTier: "derived",
+          scope: { files: [] }
+        }
+      ]
+    });
+    const blockedMemoryReview = await postEditReviewQuery(repo, { ranTests: [], persistOutcome: false }, { autoRefresh: false });
+    expect(blockedMemoryReview.text).toContain("blocked-after-valid memory stays task-scoped");
+    expect(blockedMemoryReview.text).not.toContain("unrelated memory should not leak");
+
+    await writeFile(path.join(repo, ".codex/cache/codexa-tasks/latest.json"), "{not json", "utf8");
+    const recoveredBlocked = await postEditReviewQuery(repo, { ranTests: [], persistOutcome: false }, { autoRefresh: false });
+    const recoveredBlockedData = recoveredBlocked.data as {
+      snapshot?: unknown;
+      snapshotLoad: { taskId?: string; missingReason?: string; recoveredLatest?: boolean };
+    };
+    expect(recoveredBlockedData.snapshot).toBeUndefined();
+    expect(recoveredBlockedData.snapshotLoad).toMatchObject({
+      taskId: "blocked-after-valid",
+      missingReason: "blocked-plan",
+      recoveredLatest: true
+    });
+
+    await changePlanQuery(
+      repo,
+      {
+        task: "Change route normalization safely",
+        files: ["service/helpers.py"],
+        diff: false,
+        limit: 6,
+        saveSnapshot: true,
+        taskId: "fixture-normalize"
+      },
+      { autoRefresh: false }
+    );
 
     await writeFile(path.join(repo, "service/helpers.py"), "def normalize(value):\n    return value.strip().lower()\n", "utf8");
     await writeFile(

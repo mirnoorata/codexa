@@ -875,6 +875,8 @@ function enforceMcpStructuredBudget(
       mode,
       task: typeof dataWithoutMetrics.task === "string" ? dataWithoutMetrics.task.slice(0, 160) : dataWithoutMetrics.task,
       verdict: dataWithoutMetrics.verdict,
+      editReadiness: dataWithoutMetrics.editReadiness,
+      snapshotBlock: compactSnapshotBlock(dataWithoutMetrics.snapshotBlock),
       packetVerdict: dataWithoutMetrics.packetVerdict,
       verificationProvenance: dataWithoutMetrics.verificationProvenance,
       runtime: compactSession(dataWithoutMetrics.runtime),
@@ -896,6 +898,8 @@ function buildMcpBudgetSummaryData(data: Record<string, unknown>, mode: string, 
     mode,
     task: data.task,
     verdict: data.verdict,
+    editReadiness: data.editReadiness,
+    snapshotBlock: compactSnapshotBlock(data.snapshotBlock),
     packetVerdict: data.packetVerdict,
     files: compactSummaryArray("files", data.files, 12, truncation),
     plannedEditTargets: compactSummaryArray("plannedEditTargets", data.plannedEditTargets, 12, truncation),
@@ -1209,6 +1213,8 @@ function compactChangePlanData(data: Record<string, unknown>): McpCompactionResu
   const snapshot = data.snapshot && typeof data.snapshot === "object" && !Array.isArray(data.snapshot) ? (data.snapshot as Record<string, unknown>) : undefined;
   const compacted = {
     mode: data.mode,
+    editReadiness: data.editReadiness,
+    snapshotBlock: compactSnapshotBlock(data.snapshotBlock),
     steps: limit("steps", data.steps, 12),
     focus: compactFocus?.data,
     context: compactContext?.data,
@@ -1262,6 +1268,17 @@ function compactChangePlanData(data: Record<string, unknown>): McpCompactionResu
     ...prefixTruncation("context", compactContext?.truncation)
   };
   return { data: compacted, truncation, compacted: true };
+}
+
+function compactSnapshotBlock(value: unknown): unknown {
+  if (!isRecord(value)) {
+    return value;
+  }
+  return {
+    taskId: value.taskId,
+    path: value.path,
+    reason: value.reason
+  };
 }
 
 function compactTestPlanData(data: Record<string, unknown>): McpCompactionResult {
