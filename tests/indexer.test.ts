@@ -250,6 +250,11 @@ describe("Codexa indexer", () => {
     await writeFile(path.join(repo, "src/ready.ts"), "export function ready() { return 1 }\n", "utf8");
     await writeFile(path.join(repo, "src/formatted-empty.ts"), "export function formattedEmpty() {\n}\n", "utf8");
     await writeFile(path.join(repo, "src/methods.ts"), "export class Box { constructor() {} reset() {} }\nexport const oneArg = value => {}\n", "utf8");
+    await writeFile(
+      path.join(repo, "src/parameter-property.ts"),
+      "interface ClientOptions { endpoint: string }\nexport class Client { constructor(private readonly options: ClientOptions) {} }\nexport class MultilineClient {\n  constructor(private readonly options: ClientOptions) {\n  }\n}\n",
+      "utf8"
+    );
     await writeFile(path.join(repo, "src/block-comment.ts"), "/**\n * TODO: replace temporary parser fallback\n */\nexport const ready = true\n", "utf8");
     await writeFile(path.join(repo, "src/uppercase.ts"), "export const token = 'TODO'\n", "utf8");
     await writeFile(path.join(repo, "src/url.ts"), "export const docsUrl = 'https://example.com/TODO'\n", "utf8");
@@ -293,6 +298,7 @@ describe("Codexa indexer", () => {
     expect(index.risks.some((risk) => risk.path === "src/existing.ts" && risk.signal === "placeholder.no-op-body")).toBe(true);
     expect(index.risks.some((risk) => risk.path === "src/formatted-empty.ts" && risk.signal === "placeholder.no-op-body")).toBe(true);
     expect(index.risks.some((risk) => risk.path === "src/methods.ts" && risk.signal === "placeholder.no-op-body")).toBe(true);
+    expect(index.risks.some((risk) => risk.path === "src/parameter-property.ts")).toBe(false);
     expect(index.risks.some((risk) => risk.path === "src/block-comment.ts" && risk.signal === "placeholder.todo-comment")).toBe(true);
     expect(index.risks.some((risk) => risk.path === "src/uppercase.ts" && risk.signal === "placeholder.dummy-literal")).toBe(true);
     expect(index.risks.some((risk) => risk.path === "src/existing.ts" && risk.signal === "placeholder.dummy-data")).toBe(true);
@@ -1055,6 +1061,75 @@ describe("Codexa indexer", () => {
     expect(pack.text).toContain("Likely tests:");
     expect(pack.text).toContain("tests/test_app.py");
     expect(pack.text.length).toBeLessThanOrEqual(900 * 4 + 40);
+  });
+
+  it("keeps source-anchored edit packets ready when dirty tests are selected", async () => {
+    const repo = await createFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+    await writeFile(
+      path.join(repo, "tests/test_app.py"),
+      "from service.app import route_thing\n\ndef test_route_dirty():\n    assert route_thing(' A ') == 'A'\n",
+      "utf8"
+    );
+
+    const pack = await taskBriefQuery(
+      repo,
+      {
+        task: "Fix service/app.py route_thing normalization behavior",
+        diff: true,
+        tokenBudget: 1400,
+        limit: 8
+      },
+      { autoRefresh: true }
+    );
+    const data = pack.data as {
+      packetVerdict?: string;
+      actionGuidanceSuppressed?: boolean;
+      focusFiles: Array<{ file: { path: string }; tier: string }>;
+      intentConfidence?: { editReady: boolean; anchors: string[]; missingAnchors: string[] };
+      quality?: { level: string };
+      tests?: unknown[];
+    };
+
+    expect(data.focusFiles.map((entry) => entry.file.path)).toContain("service/app.py");
+    expect(data.focusFiles.map((entry) => entry.file.path)).toContain("tests/test_app.py");
+    expect(data.intentConfidence?.anchors).toContain("service/app.py");
+    expect(data.intentConfidence?.missingAnchors).not.toContain("only test anchors for edit prompt");
+    expect(data.packetVerdict).toBe("edit-ready");
+    expect(data.intentConfidence?.editReady).toBe(true);
+    expect(data.quality?.level).not.toBe("low");
+    expect(data.actionGuidanceSuppressed).toBe(false);
+    expect(data.tests?.length).toBeGreaterThan(0);
+    expect(pack.text).not.toContain("deferred until Codexa has an explicit file, symbol, or higher-confidence packet");
+  });
+
+  it("does not let unrelated dirty files turn broad edit prompts into edit-ready packets", async () => {
+    const repo = await createFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+    await writeFile(path.join(repo, "service/helpers.py"), "def normalize(value):\n    return value.strip().lower()\n", "utf8");
+
+    const pack = await taskBriefQuery(
+      repo,
+      {
+        task: "Change behavior safely",
+        diff: true,
+        tokenBudget: 1400,
+        limit: 8
+      },
+      { autoRefresh: false }
+    );
+    const data = pack.data as {
+      packetVerdict?: string;
+      focusFiles: Array<{ file: { path: string }; tier: string }>;
+      intentConfidence?: { editReady: boolean; anchors: string[]; missingAnchors: string[] };
+    };
+
+    expect(data.focusFiles.map((entry) => entry.file.path)).toContain("service/helpers.py");
+    expect(data.intentConfidence?.anchors).not.toContain("service/helpers.py");
+    expect(data.intentConfidence?.editReady).toBe(false);
+    expect(data.packetVerdict).not.toBe("edit-ready");
+    expect(data.intentConfidence?.missingAnchors).toContain("no selected packet anchors");
+    expect(pack.text).toContain("Recommended next MCP call: search");
   });
 
   it("answers broad focus, graph, workflow, dependency, and change-plan queries", async () => {

@@ -25,7 +25,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "node scripts/verify-source-hygiene.mjs",
+    "lint": "node scripts/verify-source-hygiene.mjs && node scripts/verify-release-path.mjs",
     "audit": "npm audit --audit-level=moderate",
     "privacy": "node scripts/verify-public-hygiene.mjs",
     "privacy:history": "node scripts/verify-public-hygiene.mjs --history",
@@ -41,6 +41,8 @@
     "prepack": "npm run build",
     "prepublishOnly": "npm run security:check",
     "release:archive": "npm run check && git archive --format=tar.gz --output codexa-public-head.tar.gz HEAD",
+    "release:github:dry-run": "npm run build && node dist/cli.js github-release . --dry-run",
+    "release:github": "npm run security:check && node dist/cli.js github-release .",
     "test": "npm run build && vitest run",
     "test:schema": "vitest run tests/schema.test.ts",
     "test:claude-code": "bash integrations/claude-code/tests/cmd-smoke.sh && bash integrations/claude-code/tests/hook-smoke.sh",

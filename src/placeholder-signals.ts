@@ -4,6 +4,9 @@ import { stableId } from "./util.js";
 
 export const PLACEHOLDER_SIGNAL_PREFIX = "placeholder.";
 const MAX_PLACEHOLDER_RISKS_PER_FILE = 12;
+const EMPTY_METHOD_BODY_PATTERN = /(?:^|[;{}\s])(?:async\s+)?(?!(?:if|for|while|switch|catch|function)\b)(?:constructor|[A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{\s*\}/gu;
+const EMPTY_METHOD_BODY_START_PATTERN = /(?:^|[;{}\s])(?:async\s+)?(?!(?:if|for|while|switch|catch|function)\b)(?:constructor|[A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{\s*$/gu;
+const TYPESCRIPT_PARAMETER_PROPERTY_MODIFIERS = new Set(["private", "protected", "public", "readonly", "override", "accessor"]);
 
 export interface PlaceholderScanInput {
   path: string;
@@ -63,7 +66,7 @@ function executableStubCandidates(input: PlaceholderScanInput): PlaceholderCandi
       if (hasOutsideStringMatch(codeText, /\bfunction\s+[A-Za-z_$][\w$]*\s*\([^)]*\)\s*\{\s*\}/gu)) {
         candidates.push(candidate(input, line, "placeholder.no-op-body", 2.2, "derived", "empty function body"));
       }
-      if (hasOutsideStringMatch(codeText, /(?:^|[;{}\s])(?:async\s+)?(?!(?:if|for|while|switch|catch|function)\b)(?:constructor|[A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{\s*\}/gu)) {
+      if (hasReportableEmptyMethodBody(input.language, codeText, EMPTY_METHOD_BODY_PATTERN)) {
         candidates.push(candidate(input, line, "placeholder.no-op-body", 2.0, "heuristic", "empty method body"));
       }
       if (hasOutsideStringMatch(codeText, /(?:^|[=(:,]\s*)(?:async\s*)?\([^)]*\)\s*=>\s*\{\s*\}/gu)) {
@@ -86,7 +89,7 @@ function multilineEmptyBodyCandidates(input: PlaceholderScanInput, lines: Source
     const currentCode = stripInlineComment(input.language, lines[index].text);
     const startsEmptyFunction =
       hasOutsideStringMatch(currentCode, /\bfunction\s+[A-Za-z_$][\w$]*\s*\([^)]*\)\s*\{\s*$/gu) ||
-      hasOutsideStringMatch(currentCode, /(?:^|[;{}\s])(?:async\s+)?(?!(?:if|for|while|switch|catch|function)\b)(?:constructor|[A-Za-z_$][\w$]*)\s*\([^)]*\)\s*\{\s*$/gu) ||
+      hasReportableEmptyMethodBody(input.language, currentCode, EMPTY_METHOD_BODY_START_PATTERN) ||
       hasOutsideStringMatch(currentCode, /(?:^|[=(:,]\s*)(?:async\s*)?\([^)]*\)\s*=>\s*\{\s*$/gu) ||
       hasOutsideStringMatch(currentCode, /(?:^|[=(:,]\s*)(?:async\s+)?[A-Za-z_$][\w$]*\s*=>\s*\{\s*$/gu);
     if (!startsEmptyFunction) {
@@ -405,14 +408,113 @@ function isPlaceholderLiteralValue(value: string): boolean {
 }
 
 function hasOutsideStringMatch(line: string, pattern: RegExp): boolean {
+  return hasOutsideStringMatchWhere(line, pattern, () => true);
+}
+
+function hasOutsideStringMatchWhere(line: string, pattern: RegExp, predicate: (match: RegExpMatchArray) => boolean): boolean {
   const flags = pattern.flags.includes("g") ? pattern.flags : `${pattern.flags}g`;
   const matcher = new RegExp(pattern.source, flags);
   for (const match of line.matchAll(matcher)) {
-    if (!isInsideQuotedString(line, match.index ?? 0)) {
+    if (!isInsideQuotedString(line, match.index ?? 0) && predicate(match)) {
       return true;
     }
   }
   return false;
+}
+
+function hasReportableEmptyMethodBody(language: LanguageId, line: string, pattern: RegExp): boolean {
+  return hasOutsideStringMatchWhere(line, pattern, (match) => !isTypeScriptParameterPropertyConstructor(language, match[0]));
+}
+
+function isTypeScriptParameterPropertyConstructor(language: LanguageId, matchText: string): boolean {
+  if (language !== "typescript") {
+    return false;
+  }
+  const constructorMatch = /(?:^|[;{}\s])(?:async\s+)?constructor\s*\(([^)]*)\)\s*\{\s*(?:\})?\s*$/u.exec(matchText.trim());
+  return Boolean(constructorMatch?.[1] && hasTypeScriptParameterProperty(constructorMatch[1]));
+}
+
+function hasTypeScriptParameterProperty(parameters: string): boolean {
+  return splitTopLevelParameters(parameters).some((parameter) => {
+    const text = stripLeadingParameterDecorators(parameter).trimStart();
+    let remaining = text;
+    let sawModifier = false;
+    while (true) {
+      const modifier = /^[A-Za-z_$][\w$]*/u.exec(remaining)?.[0];
+      if (!modifier || !TYPESCRIPT_PARAMETER_PROPERTY_MODIFIERS.has(modifier)) {
+        break;
+      }
+      sawModifier = true;
+      remaining = remaining.slice(modifier.length).trimStart();
+    }
+    return sawModifier && /^[A-Za-z_$][\w$]*\s*[?!]?\s*(?::|=|$)/u.test(remaining);
+  });
+}
+
+function stripLeadingParameterDecorators(parameter: string): string {
+  return parameter.replace(/^(?:\s*@[A-Za-z_$][\w$]*(?:\.[A-Za-z_$][\w$]*)*(?:\([^)]*\))?)+/u, "");
+}
+
+function splitTopLevelParameters(parameters: string): string[] {
+  const result: string[] = [];
+  let start = 0;
+  let parenDepth = 0;
+  let braceDepth = 0;
+  let bracketDepth = 0;
+  let quote: "'" | "\"" | "`" | undefined;
+  let escaped = false;
+
+  for (let index = 0; index < parameters.length; index += 1) {
+    const char = parameters[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote) {
+      if (char === "\\") {
+        escaped = true;
+        continue;
+      }
+      if (char === quote) {
+        quote = undefined;
+      }
+      continue;
+    }
+    if (char === "'" || char === "\"" || char === "`") {
+      quote = char;
+      continue;
+    }
+    if (char === "(") {
+      parenDepth += 1;
+      continue;
+    }
+    if (char === ")" && parenDepth > 0) {
+      parenDepth -= 1;
+      continue;
+    }
+    if (char === "{") {
+      braceDepth += 1;
+      continue;
+    }
+    if (char === "}" && braceDepth > 0) {
+      braceDepth -= 1;
+      continue;
+    }
+    if (char === "[") {
+      bracketDepth += 1;
+      continue;
+    }
+    if (char === "]" && bracketDepth > 0) {
+      bracketDepth -= 1;
+      continue;
+    }
+    if (char === "," && parenDepth === 0 && braceDepth === 0 && bracketDepth === 0) {
+      result.push(parameters.slice(start, index));
+      start = index + 1;
+    }
+  }
+  result.push(parameters.slice(start));
+  return result;
 }
 
 function isInsideQuotedString(line: string, offset: number): boolean {

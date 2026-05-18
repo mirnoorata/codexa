@@ -116,6 +116,10 @@ serves focused MCP context tools over stdio.
 - `codexa init` also writes lightweight edit hooks when supported by Codex
   hooks: `hook-pre-edit` reminds Codex when a non-trivial edit lacks a saved
   change-plan snapshot, and `hook-post-edit` runs a bounded post-edit review.
+  The post-edit hook also runs narrowly targeted safe test commands inferred
+  from the review packet, captures structured command reports, and feeds those
+  reports into the persisted outcome without user-supplied `--ran-command`
+  input.
   These hooks are advisory and fail open: setup/query errors print a bounded
   unavailable message and exit successfully so editor tool calls are not
   blocked. Hook runs write compact local JSONL diagnostics under ignored
@@ -390,6 +394,43 @@ before publication or visibility changes:
 npm run security:check
 ```
 
+## GitHub Release Timeline
+
+Use GitHub Releases as the visible source timeline for the current project. The
+release command derives the project display name from the target repo's
+`package.json` name, falling back to the repo directory, then creates an
+annotated source tag, pushes `main` and the tag, and creates or updates the
+GitHub Release for that tag:
+
+```bash
+npm run release:github:dry-run -- --tag v0.2.0
+npm run release:github -- --tag v0.2.0
+```
+
+The dry run shows what would be tagged and pushed. The real command runs
+`security:check` first, refuses dirty working trees and non-`main` releases by
+default, disables hidden git credential prompts, and writes release notes with:
+
+- a compare link from the previous `v*` release tag
+- commands to branch or add a worktree at the exact release
+- forward-only PR rollback commands using `git revert --no-commit <tag>..HEAD`
+
+For future Codexa changes, ship code to GitHub before cutting the release:
+finish on a named branch, push the branch, merge through the normal GitHub
+flow, then run the release command from a clean `main`. After publishing,
+verify the remote tag and release entry:
+
+```bash
+git ls-remote --tags origin refs/tags/v0.2.0
+gh release view v0.2.0 --repo mirnoorata/codexa --json tagName,name,url,targetCommitish
+```
+
+If you need notes without mutating git or GitHub, run:
+
+```bash
+codexa github-release . --tag v0.2.0 --notes-file /tmp/project-v0.2.0-notes.md --no-push --no-github-release
+```
+
 If sensitive identifiers were already pushed to a private remote, a clean public
 release requires rewriting git history before the repository is made public.
 Adding a sanitizing commit is not enough because old commits remain visible once
@@ -544,7 +585,10 @@ Candidate test commands include provenance such as `package.json` scripts or
 Python test metadata. If Codexa cannot find provenance, it omits the command
 instead of inventing one.
 Post-edit review accepts both `--ran-test` for direct test/accounting entries
-and `--ran-command` for aggregate verification commands. Use
+and `--ran-command` for aggregate verification commands. The generated
+`hook-post-edit` path attempts AutoVerify first: it runs only targeted test
+commands whose package script and runner shape are allowlisted, then passes the
+captured command report into the final review. Use
 `--ran-command-report` when you have structured execution evidence such as
 `cwd`, package manager, package/workspace scope, script name, args, `exitCode`,
 `durationMs`, and short stdout/stderr summaries. Codexa records these command

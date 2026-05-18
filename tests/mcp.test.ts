@@ -335,6 +335,49 @@ describe("Codexa MCP server", () => {
     }
   });
 
+  it("routes workspace-root task briefs from WORKING.md default before active-session rows", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-working-default-"));
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const defaultRepo = await createIndexedMcpRepo(workspace, "default-repo", "alpha", "alphaSymbol");
+    const activeRepo = await createIndexedMcpRepo(workspace, "active-repo", "beta", "betaSymbol");
+    const focusFile = path.join(workspace, ".codex", "WORKING.md");
+    await mkdir(path.dirname(focusFile), { recursive: true });
+    await writeFile(
+      focusFile,
+      [
+        "## Workspace Default",
+        "",
+        `- Default repo: \`${defaultRepo}\`.`,
+        "",
+        "## Active Sessions",
+        "",
+        "| session | agent | repo | task | status | claims | last_seen | next |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        `| codex-test | codex | ${activeRepo} | route task | active | none | now | inspect |`
+      ].join("\n"),
+      "utf8"
+    );
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-working-default-routing-test", version: "0.1.0" });
+    await client.connect(transport);
+
+    try {
+      const taskBrief = await client.callTool({ name: "task_brief", arguments: { task: "change alphaSymbol", tokenBudget: 900, limit: 5 } });
+      const serialized = JSON.stringify(taskBrief);
+      expect(serialized).toContain(defaultRepo);
+      expect(serialized).toContain("alphaSymbol");
+      expect(serialized).not.toContain(activeRepo);
+      expect(serialized).not.toContain("Failed to read git status");
+    } finally {
+      await client.close();
+    }
+  });
+
   it("does not let stale CODEXA_REPO override an explicit git repo argument", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-explicit-"));
     const explicitRepo = await createIndexedMcpRepo(workspace, "explicit-repo", "explicit", "explicitSymbol");

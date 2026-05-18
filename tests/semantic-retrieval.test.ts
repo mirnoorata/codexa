@@ -8,6 +8,37 @@ import { retrieveForTask } from "../src/retrieval.js";
 import { buildSemanticIndex, semanticOptionsFromQueryOptions } from "../src/semantic-retrieval.js";
 
 describe("semantic retrieval lane", () => {
+  it("does not report only-test anchors when source anchors are also present", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-retrieval-source-test-anchors-"));
+    try {
+      execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+      await mkdir(path.join(repo, "src"), { recursive: true });
+      await mkdir(path.join(repo, "tests"), { recursive: true });
+      await writeFile(path.join(repo, "src", "runtime.ts"), "export function renderRuntime() { return 'ready' }\n", "utf8");
+      await writeFile(
+        path.join(repo, "tests", "runtime.test.ts"),
+        "import { renderRuntime } from '../src/runtime'\nexport function assertRuntimeRender() { return renderRuntime() }\n",
+        "utf8"
+      );
+      execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+      execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+        cwd: repo,
+        stdio: "ignore"
+      });
+
+      const index = await buildIndexLocked({ repoRoot: repo, writeArtifacts: true });
+      const retrieval = await retrieveForTask(index, "Fix renderRuntime runtime behavior", 8);
+
+      expect(retrieval.intentConfidence.anchors).toContain("src/runtime.ts");
+      expect(retrieval.matches.map((match) => match.file.path)).toContain("tests/runtime.test.ts");
+      expect(retrieval.intentConfidence.missingAnchors).not.toContain("only test anchors for edit prompt");
+      expect(retrieval.intentConfidence.verdict).toBe("edit-ready");
+      expect(retrieval.intentConfidence.editReady).toBe(true);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
   it("builds a local-command semantic cache and fuses semantic matches into retrieval", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-semantic-retrieval-"));
     try {

@@ -664,15 +664,14 @@ function analyzeIntentConfidence(
   const mode: PromptMode = intents.some((intent) => intent === "implementation" || intent === "debugging") ? "edit" : "orientation";
   const primaryIntent = intents.find((intent) => intent !== "unknown") ?? "unknown";
   const allowTestAnchors = /\b(test|tests|spec|specs|pytest|vitest|coverage|verification|verify)\b/i.test(query);
-  const directAnchorMatches = matches
-    .filter((match) => (match.lanes.exact ?? 0) > 0 || (match.lanes.symbol ?? 0) > 0 || (match.lanes.workflow ?? 0) > 0)
-    .slice(0, 8);
+  const directAnchorMatches = matches.filter((match) => (match.lanes.exact ?? 0) > 0 || (match.lanes.symbol ?? 0) > 0 || (match.lanes.workflow ?? 0) > 0);
   const anchors = uniqueSorted(
     directAnchorMatches
       .filter((match) => allowTestAnchors || (!match.file.test && !isTestPath(match.file.path)))
       .map((match) => match.file.path)
-  );
-  const testOnlyAnchorCount = allowTestAnchors ? 0 : directAnchorMatches.filter((match) => match.file.test || isTestPath(match.file.path)).length;
+  ).slice(0, 8);
+  const testOnlyAnchorCount =
+    allowTestAnchors || anchors.length > 0 ? 0 : directAnchorMatches.filter((match) => match.file.test || isTestPath(match.file.path)).length;
   const missingAnchors: string[] = [];
   if (matches.length === 0) {
     missingAnchors.push("no retrieval matches");
@@ -696,6 +695,7 @@ function analyzeIntentConfidence(
       1,
       0.18 +
         Math.min(0.36, anchors.length * 0.08) +
+        (anchors.length > 0 && !broad ? 0.22 : 0) +
         Math.min(0.22, workflows.length * 0.05) +
         (allowTestAnchors && matches.some((match) => (match.lanes.test ?? 0) > 0) ? 0.1 : 0) -
         missingAnchors.length * 0.16 -

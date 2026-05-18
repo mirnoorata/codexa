@@ -117,7 +117,32 @@ describe("QuerySession", () => {
     expect(data.tests).toEqual([]);
     expect(data.verificationCommands).toEqual([]);
     expect(result.text).toContain("Likely tests:\n- deferred until Codexa has an explicit file, symbol, or higher-confidence packet.");
+    expect(result.text).toContain("Recommended next MCP call: search");
+    expect(result.text).not.toContain("Recommended next MCP call: find_context");
+    expect(result.text).not.toMatch(/Read first:[\s\S]*\n- none\n\nLikely tests:/u);
     expect(result.text).not.toContain("If run, these commands would cover:");
+  });
+
+  it("keeps hyphenated plain-English tasks on natural retrieval", async () => {
+    const repo = await createSessionFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+
+    const result = await contextPackQuery(
+      repo,
+      {
+        task: "audit main behavior over-trust under-trust",
+        diff: false,
+        includeSnippets: false,
+        limit: 5
+      },
+      { autoRefresh: false }
+    );
+    const data = result.data as { focusFiles?: Array<{ file: { path: string }; tier: string }>; quality?: { level: string } };
+
+    expect(data.focusFiles?.map((entry) => entry.file.path)).toContain("src/main.ts");
+    expect(data.focusFiles?.every((entry) => entry.tier === "fallback")).toBe(false);
+    expect(data.quality?.level).not.toBe("low");
+    expect(result.text).toContain("natural task retrieval");
   });
 });
 

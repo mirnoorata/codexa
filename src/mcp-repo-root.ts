@@ -20,6 +20,7 @@ interface CandidateRepoRoot {
 }
 
 const FOCUSED_REPO_LINE_PATTERN = /\bfocused\s+(?:project|repo|repository)\s*:\s*(?:`([^`]+)`|([^\r\n#]+))/iu;
+const DEFAULT_REPO_LINE_PATTERN = /\bdefault\s+(?:repo|repository)\s*:\s*(?:`([^`]+)`|([^\r\n#|]+))/iu;
 const COMPACT_PROJECT_LINE_PATTERN = /^\s*(?:[-*]\s*)?project\s*:\s*(?:`([^`]+)`|([^\r\n#]+))/iu;
 const HEADING_PATTERN = /^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/u;
 
@@ -91,36 +92,96 @@ async function readFocusedRepoPaths(focusFile: string): Promise<string[]> {
     return [];
   }
 
-  const paths: string[] = [];
+  const explicitPaths: string[] = [];
+  const activeSessionPaths: string[] = [];
+  const defaultPaths: string[] = [];
   let inActiveFocusSection = false;
+  let inActiveSessionsSection = false;
+  let activeSessionRepoColumn = -1;
+  let activeSessionStatusColumn = -1;
   for (const line of text.split(/\r?\n/u)) {
     const heading = HEADING_PATTERN.exec(line);
     if (heading) {
-      inActiveFocusSection = heading[1].trim().toLowerCase() === "active focus";
+      const headingText = heading[1].trim().toLowerCase();
+      inActiveFocusSection = headingText === "active focus";
+      inActiveSessionsSection = headingText === "active sessions";
+      activeSessionRepoColumn = -1;
+      activeSessionStatusColumn = -1;
       continue;
     }
 
     const focusedMatch = FOCUSED_REPO_LINE_PATTERN.exec(line);
     if (focusedMatch) {
-      pushFocusedRepoPath(paths, focusedMatch[1] ?? focusedMatch[2] ?? "");
+      pushFocusedRepoPath(explicitPaths, focusedMatch[1] ?? focusedMatch[2] ?? "");
+      continue;
+    }
+
+    const defaultRepoMatch = DEFAULT_REPO_LINE_PATTERN.exec(line);
+    if (defaultRepoMatch) {
+      pushFocusedRepoPath(defaultPaths, defaultRepoMatch[1] ?? defaultRepoMatch[2] ?? "");
       continue;
     }
 
     if (inActiveFocusSection) {
       const projectMatch = COMPACT_PROJECT_LINE_PATTERN.exec(line);
       if (projectMatch) {
-        pushFocusedRepoPath(paths, projectMatch[1] ?? projectMatch[2] ?? "");
+        pushFocusedRepoPath(explicitPaths, projectMatch[1] ?? projectMatch[2] ?? "");
+      }
+    }
+    if (inActiveSessionsSection) {
+      const cells = markdownTableCells(line);
+      if (!cells) {
+        continue;
+      }
+      if (isMarkdownSeparatorRow(cells)) {
+        continue;
+      }
+      const lowerCells = cells.map((cell) => cell.trim().toLowerCase());
+      const repoColumn = lowerCells.indexOf("repo");
+      if (repoColumn >= 0) {
+        activeSessionRepoColumn = repoColumn;
+        activeSessionStatusColumn = lowerCells.indexOf("status");
+        continue;
+      }
+      if (activeSessionRepoColumn >= 0 && activeSessionRepoColumn < cells.length) {
+        const status = activeSessionStatusColumn >= 0 ? cells[activeSessionStatusColumn]?.trim().toLowerCase() : "";
+        if (isActiveSessionStatus(status)) {
+          pushFocusedRepoPath(activeSessionPaths, cells[activeSessionRepoColumn] ?? "");
+        }
       }
     }
   }
-  return paths;
+  return uniquePaths([...explicitPaths, ...defaultPaths, ...activeSessionPaths]);
 }
 
 function pushFocusedRepoPath(paths: string[], raw: string): void {
-  const cleaned = raw.trim().replace(/[.,;:]+$/u, "");
+  const cleaned = raw.trim().replace(/^`|`$/gu, "").replace(/[.,;:]+$/u, "");
   if (cleaned) {
     paths.push(cleaned);
   }
+}
+
+function uniquePaths(paths: string[]): string[] {
+  return [...new Set(paths)];
+}
+
+function markdownTableCells(line: string): string[] | null {
+  const trimmed = line.trim();
+  if (!trimmed.startsWith("|") || !trimmed.endsWith("|")) {
+    return null;
+  }
+  return trimmed
+    .slice(1, -1)
+    .split("|")
+    .map((cell) => cell.trim());
+}
+
+function isMarkdownSeparatorRow(cells: string[]): boolean {
+  return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/u.test(cell.trim()));
+}
+
+function isActiveSessionStatus(status: string | undefined): boolean {
+  return ["active", "in_progress", "running"].includes(String(status ?? "").trim().toLowerCase());
 }
 
 function normalizeCandidatePath(candidate: string): string | null {

@@ -4,6 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildIndexLocked, getFreshness } from "./indexer.js";
 import { checkGithubSync } from "./github-sync.js";
+import { publishProjectGithubRelease } from "./github-release.js";
 import { runDoctor } from "./doctor.js";
 import { initializeProject, sessionStartSummary } from "./init.js";
 import { runLiveIndexer, type LiveIndexEvent } from "./live-index.js";
@@ -12,6 +13,7 @@ import { resolveMcpRepoRoot } from "./mcp-repo-root.js";
 import { buildSemanticIndex, semanticProviderFromValue, type SemanticProviderKind } from "./semantic-retrieval.js";
 import { updateStaticAnalysisReports } from "./static-analysis.js";
 import { loadTaskSnapshot } from "./task-snapshots.js";
+import { runAutoVerifyForPostEdit } from "./autoverify.js";
 import {
   contextPackQuery,
   callersQuery,
@@ -136,12 +138,36 @@ program
         console.log(`Codexa: post-edit review unchanged since last hook run${verdict}.`);
         return { status: "skipped", reason: "duplicate-dirty-tree", signature, taskId: snapshot.snapshot?.taskId ?? snapshot.latestTaskId, verdict: previous.verdict, outcomeId: previous.outcomeId };
       }
+      const reviewInput = {
+        tokenBudget: 1200,
+        limit: 5,
+        includeSnippets: false
+      };
+      const initialResult = await postEditReviewQuery(
+        activeRepoRoot,
+        {
+          ...reviewInput,
+          persistOutcome: false
+        },
+        { autoRefresh: true, commandBudgetMs: 15_000, maxResults: 6 }
+      );
+      const autoVerify = await runAutoVerifyForPostEdit(activeRepoRoot, initialResult.data);
+      if (autoVerify.attempted.length > 0) {
+        console.log(`Codexa AutoVerify: ran ${autoVerify.attempted.length} targeted command(s).`);
+        for (const report of autoVerify.reports) {
+          const status = report.exitCode === 0 ? "passed" : `failed exit ${report.exitCode ?? "unknown"}`;
+          const duration = report.durationMs === undefined ? "" : ` in ${report.durationMs}ms`;
+          console.log(`- ${status}${duration}: ${report.command}`);
+        }
+      }
+      if (autoVerify.skipped.length > 0 && autoVerify.attempted.length === 0) {
+        console.log(`Codexa AutoVerify: skipped ${autoVerify.skipped.length} unsafe or unsupported command(s).`);
+      }
       const result = await postEditReviewQuery(
         activeRepoRoot,
         {
-          tokenBudget: 1200,
-          limit: 5,
-          includeSnippets: false
+          ...reviewInput,
+          ranCommandReports: autoVerify.reports.length > 0 ? autoVerify.reports : undefined
         },
         { autoRefresh: true, commandBudgetMs: 15_000, maxResults: 6 }
       );
@@ -321,6 +347,67 @@ program
   );
 
 program
+  .command("github-release")
+  .argument("[repo]", "repository root; defaults to the current directory", process.cwd())
+  .option("--tag <tag>", "release tag; defaults to v<package.json version>")
+  .option("--title <title>", "GitHub Release title; defaults to <project name> <tag>")
+  .option("--project-name <name>", "project display name for release notes; defaults to package.json name or repo directory")
+  .option("--repo <owner/name>", "GitHub repo slug; defaults to origin remote")
+  .option("--remote <name>", "git remote name", "origin")
+  .option("--branch <branch>", "branch to push; defaults to current branch")
+  .option("--latest <mode>", "GitHub latest marker behavior: auto, true, or false", "auto")
+  .option("--notes-file <path>", "write generated release notes to a file and stop before git/gh mutation")
+  .option("--dry-run", "print intended tag, push, and release actions without mutating git or GitHub", false)
+  .option("--push", "push the branch and tag to GitHub", true)
+  .option("--no-push", "leave branch and tag local")
+  .option("--create-tag", "create the annotated release tag when missing", true)
+  .option("--no-create-tag", "require an existing tag and skip tag creation")
+  .option("--github-release", "create or update the GitHub Release timeline entry", true)
+  .option("--no-github-release", "skip GitHub Release creation/update")
+  .option("--allow-dirty", "allow release notes/dry-run while the working tree is dirty", false)
+  .option("--allow-non-main", "allow releasing from a branch other than main", false)
+  .description("Create a visible GitHub Release with exact continue and forward-only revert commands.")
+  .action(
+    async (
+      repo: string,
+      opts: {
+        tag?: string;
+        title?: string;
+        projectName?: string;
+        repo?: string;
+        remote: string;
+        branch?: string;
+        latest: "auto" | "true" | "false";
+        notesFile?: string;
+        dryRun: boolean;
+        push: boolean;
+        createTag: boolean;
+        githubRelease: boolean;
+        allowDirty: boolean;
+        allowNonMain: boolean;
+      }
+    ) => {
+      const result = await publishProjectGithubRelease(path.resolve(repo), {
+        tag: opts.tag,
+        title: opts.title,
+        projectName: opts.projectName,
+        repo: opts.repo,
+        remote: opts.remote,
+        branch: opts.branch,
+        latest: opts.latest,
+        notesFile: opts.notesFile,
+        dryRun: opts.dryRun,
+        push: opts.push,
+        createTag: opts.createTag,
+        githubRelease: opts.githubRelease,
+        allowDirty: opts.allowDirty,
+        allowNonMain: opts.allowNonMain
+      });
+      console.log(result.text);
+    }
+  );
+
+program
   .command("doctor")
   .argument("[repo]", "repository root; defaults to the current directory", process.cwd())
   .option("--json", "emit structured JSON")
@@ -337,7 +424,7 @@ program
   .command("status")
   .argument("<repo>", "repository root")
   .description("Report Codexa index freshness and parser status.")
-  .action(async (repo: string) => printQuery(await statusQuery(path.resolve(repo))));
+  .action(async (repo: string) => printQuery(await statusQuery(await resolveQueryRepoRoot(repo))));
 
 program
   .command("repo-map")
@@ -348,7 +435,7 @@ program
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Print the top-ranked repo map, refreshing stale artifacts when needed.")
   .action(async (repo: string, opts: { limit: number; budget: number; autoRefresh: boolean }) =>
-    printQuery(await repoMapQuery(path.resolve(repo), opts.limit, { autoRefresh: opts.autoRefresh }, opts.budget))
+    printQuery(await repoMapQuery(await resolveQueryRepoRoot(repo), opts.limit, { autoRefresh: opts.autoRefresh }, opts.budget))
   );
 
 program
@@ -369,7 +456,7 @@ program
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Find matching files, symbols, and usage sites.")
   .action(async (repo: string, opts: { query: string; limit: number } & CliQueryOptions) =>
-    printQuery(await findContextQuery(path.resolve(repo), opts.query, opts.limit, queryOptionsFromCli(opts)))
+    printQuery(await findContextQuery(await resolveQueryRepoRoot(repo), opts.query, opts.limit, queryOptionsFromCli(opts)))
   );
 
 program
@@ -395,7 +482,7 @@ program
   .action(async (repo: string, opts: { query: string; pattern?: string[]; limit: number; raw: boolean } & CliQueryOptions) =>
     printQuery(
       await searchQuery(
-        path.resolve(repo),
+        await resolveQueryRepoRoot(repo),
         { query: opts.query, patterns: opts.pattern, limit: opts.limit, includeRaw: opts.raw },
         queryOptionsFromCli(opts)
       )
@@ -416,7 +503,7 @@ program
   .action(async (repo: string, opts: { includeTests: boolean; includeDocs: boolean; includeGenerated: boolean; limit: number; budget: number; autoRefresh: boolean }) =>
     printQuery(
       await placeholderReportQuery(
-        path.resolve(repo),
+        await resolveQueryRepoRoot(repo),
         {
           includeTests: opts.includeTests,
           includeDocs: opts.includeDocs,
@@ -442,12 +529,13 @@ program
   .description("Return compact evidence for a file or symbol.")
   .action(async (repo: string, opts: { file?: string; symbol?: string } & CliQueryOptions) => {
     const queryOptions = queryOptionsFromCli(opts);
+    const repoRoot = await resolveQueryRepoRoot(repo);
     if (opts.symbol) {
-      printQuery(await symbolContextQuery(path.resolve(repo), opts.symbol, queryOptions));
+      printQuery(await symbolContextQuery(repoRoot, opts.symbol, queryOptions));
       return;
     }
     if (opts.file) {
-      printQuery(await fileContextQuery(path.resolve(repo), opts.file, queryOptions));
+      printQuery(await fileContextQuery(repoRoot, opts.file, queryOptions));
       return;
     }
     throw new Error("explain requires --file or --symbol");
@@ -467,7 +555,7 @@ program
     if (!opts.file && !opts.symbol) {
       throw new Error("impact requires --file or --symbol");
     }
-    printQuery(await impactQuery(path.resolve(repo), opts, { autoRefresh: opts.autoRefresh }));
+    printQuery(await impactQuery(await resolveQueryRepoRoot(repo), opts, { autoRefresh: opts.autoRefresh }));
   });
 
 program
@@ -477,7 +565,7 @@ program
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Return impact context for the current dirty git diff.")
   .action(async (repo: string, opts: { autoRefresh: boolean }) =>
-    printQuery(await diffImpactQuery(path.resolve(repo), { autoRefresh: opts.autoRefresh }))
+    printQuery(await diffImpactQuery(await resolveQueryRepoRoot(repo), { autoRefresh: opts.autoRefresh }))
   );
 
 program
@@ -490,7 +578,7 @@ program
   .description("Recommend targeted tests.")
   .action(async (repo: string, opts: { diff: boolean; changeType: ChangeType; autoRefresh: boolean }) =>
     printQuery(
-      await testPlanQuery(path.resolve(repo), opts.diff, {
+      await testPlanQuery(await resolveQueryRepoRoot(repo), opts.diff, {
         autoRefresh: opts.autoRefresh,
         changeType: opts.changeType
       })
@@ -543,7 +631,7 @@ program
     ) =>
       printQuery(
         await taskBriefQuery(
-          path.resolve(repo),
+          await resolveQueryRepoRoot(repo),
           {
             task: opts.task,
             files: opts.file,
@@ -606,7 +694,7 @@ program
     ) =>
       printQuery(
         await contextPackQuery(
-          path.resolve(repo),
+          await resolveQueryRepoRoot(repo),
           {
             task: opts.task,
             files: opts.file,
@@ -644,7 +732,7 @@ program
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Classify a broad task, choose likely subsystems, and recommend the next Codexa call.")
   .action(async (repo: string, opts: { task?: string; budget: number; limit: number; diff: boolean } & CliQueryOptions) =>
-    printQuery(await focusBriefQuery(path.resolve(repo), { task: opts.task, tokenBudget: opts.budget, limit: opts.limit, diff: opts.diff }, queryOptionsFromCli(opts)))
+    printQuery(await focusBriefQuery(await resolveQueryRepoRoot(repo), { task: opts.task, tokenBudget: opts.budget, limit: opts.limit, diff: opts.diff }, queryOptionsFromCli(opts)))
   );
 
 program
@@ -668,7 +756,7 @@ program
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Print the Codexa focus/session packet used when Codex focuses a project.")
   .action(async (repo: string, opts: { task?: string; budget: number; limit: number; diff: boolean } & CliQueryOptions) =>
-    printQuery(await focusBriefQuery(path.resolve(repo), { task: opts.task, tokenBudget: opts.budget, limit: opts.limit, diff: opts.diff }, queryOptionsFromCli(opts)))
+    printQuery(await focusBriefQuery(await resolveQueryRepoRoot(repo), { task: opts.task, tokenBudget: opts.budget, limit: opts.limit, diff: opts.diff }, queryOptionsFromCli(opts)))
   );
 
 program
@@ -710,7 +798,7 @@ program
     ) =>
       printQuery(
         await sessionMemoryQuery(
-          path.resolve(repo),
+          await resolveQueryRepoRoot(repo),
           {
             action: opts.action,
             sessionId: opts.sessionId,
@@ -740,7 +828,7 @@ program
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Show graph callers, importers, references, and tests for a target.")
   .action(async (repo: string, opts: { file?: string; symbol?: string; limit: number; autoRefresh: boolean }) =>
-    printQuery(await callersQuery(path.resolve(repo), opts, { autoRefresh: opts.autoRefresh }))
+    printQuery(await callersQuery(await resolveQueryRepoRoot(repo), opts, { autoRefresh: opts.autoRefresh }))
   );
 
 program
@@ -753,7 +841,7 @@ program
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Show graph callees, dependencies, imports, and risk surfaces for a target.")
   .action(async (repo: string, opts: { file?: string; symbol?: string; limit: number; autoRefresh: boolean }) =>
-    printQuery(await calleesQuery(path.resolve(repo), opts, { autoRefresh: opts.autoRefresh }))
+    printQuery(await calleesQuery(await resolveQueryRepoRoot(repo), opts, { autoRefresh: opts.autoRefresh }))
   );
 
 program
@@ -768,7 +856,7 @@ program
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Find a typed dependency path between files or symbols.")
   .action(async (repo: string, opts: { fromFile?: string; fromSymbol?: string; toFile?: string; toSymbol?: string; maxDepth: number; autoRefresh: boolean }) =>
-    printQuery(await dependencyPathQuery(path.resolve(repo), opts, { autoRefresh: opts.autoRefresh }))
+    printQuery(await dependencyPathQuery(await resolveQueryRepoRoot(repo), opts, { autoRefresh: opts.autoRefresh }))
   );
 
 program
@@ -791,7 +879,7 @@ program
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Show route/job/manifest workflow traces related to a task, file, or symbol.")
   .action(async (repo: string, opts: { query?: string; file?: string; symbol?: string; limit: number } & CliQueryOptions) =>
-    printQuery(await workflowPathQuery(path.resolve(repo), opts, queryOptionsFromCli(opts)))
+    printQuery(await workflowPathQuery(await resolveQueryRepoRoot(repo), opts, queryOptionsFromCli(opts)))
   );
 
 program
@@ -843,7 +931,7 @@ program
     ) =>
       printQuery(
         await changePlanQuery(
-          path.resolve(repo),
+          await resolveQueryRepoRoot(repo),
           {
             task: opts.task,
             files: opts.file,
@@ -905,7 +993,7 @@ program
     ) =>
       printQuery(
         await postEditReviewQuery(
-          path.resolve(repo),
+          await resolveQueryRepoRoot(repo),
           {
             task: opts.task,
             taskId: opts.taskId,
@@ -940,7 +1028,7 @@ program
   .description("Run a structured Codexa quality benchmark with randomized anti-cheat holdouts.")
   .action(async (repo: string, opts: { suite: "all" | "project" | "synthetic" | "historical-fixture" | "task-pack"; seed?: string; taskPack?: string; json?: boolean; autoRefresh: boolean; failOnRefresh: boolean }) => {
     const result = await runEval(
-      path.resolve(repo),
+      await resolveQueryRepoRoot(repo),
       { autoRefresh: opts.autoRefresh },
       { suite: opts.suite, seed: opts.seed, json: opts.json, failOnRefresh: opts.failOnRefresh, taskPackPath: opts.taskPack ? path.resolve(opts.taskPack) : undefined }
     );
@@ -1002,6 +1090,10 @@ program.parseAsync(process.argv).catch((error) => {
 
 function printQuery(result: { text: string }) {
   console.log(result.text);
+}
+
+async function resolveQueryRepoRoot(repo: string): Promise<string> {
+  return (await resolveMcpRepoRoot(path.resolve(repo))).repoRoot;
 }
 
 function invokedCliName(): string {

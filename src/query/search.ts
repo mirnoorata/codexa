@@ -368,6 +368,7 @@ export function codeLikeQueryFromTask(task?: string): string {
   if (!task) {
     return "";
   }
+  const lowerTask = task.toLowerCase();
   const stopWords = new Set([
     "add",
     "and",
@@ -403,7 +404,10 @@ export function codeLikeQueryFromTask(task?: string): string {
       if (stopWords.has(lower)) {
         return false;
       }
-      return /[._/@:-]/.test(term) || /[a-z][A-Z]/.test(term) || /[A-Z].*\d|\d.*[A-Z]/.test(term) || /^[A-Z0-9]{3,}$/.test(term);
+      const hasStrongDelimiter = /[._/@:]/.test(term);
+      const hyphenatedPackageHint =
+        term.includes("-") && /\b(package|dependency|dependencies|import|module|npm|pnpm|yarn|bun|plugin|config|library|lib|cli|command)\b/u.test(lowerTask);
+      return hasStrongDelimiter || hyphenatedPackageHint || /[a-z][A-Z]/.test(term) || /[A-Z].*\d|\d.*[A-Z]/.test(term) || /^[A-Z0-9]{3,}$/.test(term);
     })
     .sort((a, b) => b.length - a.length || a.localeCompare(b));
   return uniqueSorted(terms).slice(0, 4).join(" ");

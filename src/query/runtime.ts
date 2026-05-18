@@ -46,10 +46,11 @@ export async function statusQuery(repoRoot: string, options: { recover?: boolean
 }
 
 export function freshnessBanner(freshness: FreshnessInfo, refresh?: RefreshInfo): string {
+  const repo = `; Repo: ${freshness.repoRoot}`;
   if (refresh?.refreshed) {
-    return `Freshness: ${freshness.reason} (auto-refreshed from ${refresh.reason})`;
+    return `Freshness: ${freshness.reason} (auto-refreshed from ${refresh.reason})${repo}`;
   }
-  return freshness.stale ? `WARNING: index stale (${freshness.reason})` : `Freshness: ${freshness.reason}`;
+  return freshness.stale ? `WARNING: index stale (${freshness.reason})${repo}` : `Freshness: ${freshness.reason}${repo}`;
 }
 
 export function ambiguityResult(

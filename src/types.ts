@@ -477,6 +477,9 @@ export interface TestRecommendation {
   rank: number;
   evidenceTier?: EvidenceTier;
   command?: string;
+  commandCwd?: string;
+  commandExecutable?: string;
+  commandArgs?: string[];
   commandSource?: string;
   commandConfidence?: Confidence;
 }

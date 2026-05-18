@@ -22,6 +22,7 @@ import { compactChangedSymbol, compactDiffGroup, compactFileFact, compactRetriev
 import { summarizeSessionMemory } from "../session-memory.js";
 
 type FocusSelectionEntry = { file: FileFact; score: number; reasons: string[]; matchedTerms: string[]; tier: EvidenceTier };
+type PacketFocusEntry = { file: FileFact; reasons: Set<string>; tier: EvidenceTier };
 
 export async function contextPackQuery(input: QuerySessionInput, contextInput: ContextPackInput = {}, options: QueryOptions = {}): Promise<QueryResult> {
   const session = await ensureQuerySession(input, options);
@@ -210,7 +211,13 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       .join(" ");
   const snippets = includeSnippets ? await contextSnippets(repoRoot, index, focusPaths, snippetChangedSymbols, snippetQueryText, limit) : [];
   const nextReads = focusEntries.slice(0, Math.min(8, focusEntries.length)).map((entry) => entry.file.path);
-  const packetIntent = naturalRetrieval ? packetIntentConfidence(naturalRetrieval.intentConfidence, focusEntries, explicitTargetProvided) : undefined;
+  const packetIntent = naturalRetrieval
+    ? packetIntentConfidence(naturalRetrieval.intentConfidence, focusEntries, {
+        explicitTargetProvided,
+        dirtyAnchorAllowed: Boolean(contextInput.task && taskReferencesDirtyContext(contextInput.task) && dirtyDrivesFocus && !broadDirty)
+      })
+    : undefined;
+  const packetDiagnostics = packetIntent ? packetIntentDiagnostics(packetIntent, naturalRetrieval?.diagnostics ?? []) : [];
   const baseline = explicitQuery ? await baselineSearchSummary(repoRoot, queryText) : undefined;
   const gaps = indexGaps(index, freshness, unindexedChanged);
   const quality = assessContextQuality({
@@ -266,7 +273,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     packetIntent ? `Packet verdict: ${packetIntent.verdict}; edit-ready ${packetIntent.editReady ? "yes" : "no"}; confidence ${Math.round(packetIntent.confidence * 100)}%` : undefined,
     packetIntent ? `Intent mode: ${packetIntent.mode}; primary ${packetIntent.intent}; anchors ${packetIntent.anchors.slice(0, 4).join(", ") || "none"}` : undefined,
     packetIntent ? `Recommended next MCP call: ${packetIntent.recommendedNextTool}` : undefined,
-    naturalRetrieval?.diagnostics.length ? `Retrieval diagnostics: ${naturalRetrieval.diagnostics.join("; ")}` : undefined,
+    packetDiagnostics.length ? `Retrieval diagnostics: ${packetDiagnostics.join("; ")}` : undefined,
     `Change type: ${changeType}`,
     `Budget: ${tokenBudget} tokens approx; focus files: ${focusEntries.length}; changed files: ${changed.length}`,
     baseline ? `Baseline search: ${baseline.command} returned ${baseline.lines} non-empty lines; Codexa selected ${focusEntries.length} focus files.` : undefined,
@@ -278,7 +285,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     ...focusEntries.map((entry) => `- ${entry.file.path}: ${entry.tier}; rank ${entry.file.rank.toFixed(2)}, risk ${entry.file.riskScore.toFixed(1)}; ${formatReasons(entry.reasons)}`),
     groups.length > 0 ? "" : undefined,
     groups.length > 0 ? "Change groups:" : undefined,
-    ...formatDiffGroups(groups),
+    ...(groups.length > 0 ? formatDiffGroups(groups) : []),
     "",
     "Likely tests:",
     ...(suppressActionGuidance ? ["- deferred until Codexa has an explicit file, symbol, or higher-confidence packet."] : formatTestRecommendations(displayedTests)),
@@ -334,7 +341,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       sessionMemory: sessionMemory.data,
       intentConfidence: packetIntent,
       packetVerdict: packetIntent?.verdict,
-      diagnostics: naturalRetrieval?.diagnostics ?? [],
+      diagnostics: packetDiagnostics,
       actionGuidanceSuppressed: suppressActionGuidance,
       recipes,
       verificationCommands,
@@ -496,7 +503,7 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
     ...retrieval.workflows.slice(0, 6).map(formatWorkflowSummary),
     groups.length > 0 ? "" : undefined,
     groups.length > 0 ? "Current change groups:" : undefined,
-    ...formatDiffGroups(groups),
+    ...(groups.length > 0 ? formatDiffGroups(groups) : []),
     sessionMemory.lines.length > 0 ? "" : undefined,
     sessionMemory.lines.length > 0 ? "Session memory:" : undefined,
     ...sessionMemory.lines,
@@ -666,19 +673,27 @@ function shouldAddExplicitNaturalMatch(match: RetrievalMatch, explicitConfigTarg
   return /\b(adapter|manifest|node|type_id|node_type)\b/u.test(evidenceText) || /(^|\/)adapters?\//u.test(match.file.path);
 }
 
-function packetIntentConfidence(base: IntentConfidence, focusEntries: Array<{ file: FileFact; reasons: Set<string>; tier: EvidenceTier }>, explicitTargetProvided: boolean): IntentConfidence {
+function packetIntentConfidence(
+  base: IntentConfidence,
+  focusEntries: PacketFocusEntry[],
+  options: { explicitTargetProvided: boolean; dirtyAnchorAllowed: boolean }
+): IntentConfidence {
   const focusPathSet = new Set(focusEntries.map((entry) => entry.file.path));
-  const allowTestAnchors = explicitTargetProvided || base.intent === "testing";
+  const allowTestAnchors = options.explicitTargetProvided || base.intent === "testing";
   const selectedBaseAnchors = base.anchors.filter((anchor) => focusPathSet.has(anchor));
-  const evidenceAnchors = focusEntries
+  const evidenceEntries = focusEntries
     .filter((entry) => entry.tier === "authoritative" || entry.tier === "derived")
-    .filter((entry) => entry.reasons.size > 0)
+    .filter((entry) => entry.reasons.size > 0);
+  const strongEvidenceAnchors = evidenceEntries
+    .filter((entry) => isStrongPacketAnchor(entry, options.dirtyAnchorAllowed))
     .filter((entry) => allowTestAnchors || (!entry.file.test && !isTestPath(entry.file.path)))
     .map((entry) => entry.file.path);
-  const anchors = uniqueSorted([...selectedBaseAnchors, ...evidenceAnchors]).slice(0, 8);
-  const selectedTestOnlyAnchorCount = allowTestAnchors
-    ? 0
-    : focusEntries.filter((entry) => (entry.tier === "authoritative" || entry.tier === "derived") && (entry.file.test || isTestPath(entry.file.path))).length;
+  const anchors = uniqueSorted([...selectedBaseAnchors, ...strongEvidenceAnchors]).slice(0, 8);
+  const nonTestEvidenceCount = evidenceEntries.filter((entry) => !entry.file.test && !isTestPath(entry.file.path)).length;
+  const selectedTestOnlyAnchorCount =
+    allowTestAnchors || anchors.length > 0 || nonTestEvidenceCount > 0
+      ? 0
+      : evidenceEntries.filter((entry) => entry.file.test || isTestPath(entry.file.path)).length;
   const discardedAnchorCount = base.anchors.filter((anchor) => !focusPathSet.has(anchor)).length;
   const missingAnchors = base.missingAnchors.filter((reason) => {
     if (anchors.length > 0 && (reason === "no authoritative or derived edit anchor" || reason === "broad prompt matched only weak lexical evidence")) {
@@ -701,7 +716,8 @@ function packetIntentConfidence(base: IntentConfidence, focusEntries: Array<{ fi
       1,
       base.confidence +
         Math.min(0.16, anchors.length * 0.03) +
-        (explicitTargetProvided && anchors.length > 0 ? 0.08 : 0) -
+        (options.explicitTargetProvided && anchors.length > 0 ? 0.08 : 0) +
+        (options.dirtyAnchorAllowed && anchors.length > 0 ? 0.05 : 0) -
         Math.min(0.3, discardedAnchorCount * 0.05) -
         (missingAnchors.length - base.missingAnchors.length) * 0.18
     )
@@ -719,13 +735,47 @@ function packetIntentConfidence(base: IntentConfidence, focusEntries: Array<{ fi
     missingAnchors: uniqueSorted(missingAnchors),
     editReady,
     verdict,
-    recommendedNextTool: verdict === "edit-ready" ? base.recommendedNextTool : verdict === "orientation-only" ? base.recommendedNextTool : "search",
+    recommendedNextTool: verdict === "edit-ready" ? (base.mode === "edit" ? "task_brief" : "find_context") : verdict === "orientation-only" ? "find_context" : "search",
     reasons: uniqueSorted([
       ...base.reasons.filter((reason) => !/direct anchor/.test(reason)),
       anchors.length > 0 ? `${anchors.length} selected packet anchor(s)` : "no selected packet anchors",
       discardedAnchorCount > 0 ? `${discardedAnchorCount} discarded retrieval anchor(s) not shown in packet` : undefined
     ].filter((entry): entry is string => Boolean(entry)))
   };
+}
+
+function isStrongPacketAnchor(entry: PacketFocusEntry, dirtyAnchorAllowed: boolean): boolean {
+  const reasons = [...entry.reasons].join(" ").toLowerCase();
+  if (reasons.includes("requested file") || reasons.includes("requested symbol")) {
+    return true;
+  }
+  if (dirtyAnchorAllowed && (reasons.includes("dirty diff") || reasons.includes("changed symbol"))) {
+    return true;
+  }
+  return false;
+}
+
+function taskReferencesDirtyContext(task: string): boolean {
+  return /\b(current|dirty|diff|worktree|working tree|changed|changes|unstaged|staged|this change|these changes)\b/iu.test(task);
+}
+
+function packetIntentDiagnostics(intent: IntentConfidence, baseDiagnostics: string[]): string[] {
+  if (intent.editReady) {
+    return [];
+  }
+  const diagnostics = baseDiagnostics.filter(
+    (diagnostic) => !/needs explicit file|raw search likely|broad packet|only test anchors/iu.test(diagnostic)
+  );
+  if (intent.verdict === "needs-target") {
+    diagnostics.push("needs explicit file, symbol, or narrower search before edit planning");
+  }
+  if (intent.verdict === "raw-search-better") {
+    diagnostics.push("raw search likely gives a cleaner first pass than this broad packet");
+  }
+  for (const anchor of intent.missingAnchors) {
+    diagnostics.push(`missing ${anchor}`);
+  }
+  return uniqueSorted(diagnostics);
 }
 
 function uniqueFocusEntries<T extends { file: FileFact; score: number; tier: EvidenceTier }>(entries: T[]): T[] {
