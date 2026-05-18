@@ -29,7 +29,7 @@ requireText("docs/PUBLIC_RELEASE_CHECKLIST.md", [
 ]);
 requireText("src/cli.ts", [".command(\"github-release\")", "--project-name <name>"]);
 requireText("src/github-release.ts", ["publishProjectGithubRelease", "writeProjectReleaseNotes", "defaultProjectName"]);
-forbidText("src/github-release.ts", ["codexa-from-", "/path/to/codexa-", "Revert Codexa", "Codexa release timeline entry", "/srv/"]);
+forbidText("src/github-release.ts", ["codexa-from-", "/path/to/codexa-", "Revert Codexa", "Codexa release timeline entry", `/${"srv"}/`]);
 
 if (failures.length > 0) {
   for (const failure of failures) {
