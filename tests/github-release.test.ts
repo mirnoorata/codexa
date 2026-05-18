@@ -25,6 +25,11 @@ describe("GitHub release timeline", () => {
       const notes = await readFile(notesFile, "utf8");
       expect(notes).toContain("widget release timeline entry for `v0.2.0`.");
       expect(notes).toContain("https://github.com/example-owner/widget/compare/v0.1.0...v0.2.0");
+      expect(notes).toContain("## Changelog");
+      expect(notes).toContain("### Code and behavior");
+      expect(notes).toContain("change value");
+      expect(notes).toContain("## Changed Areas");
+      expect(notes).toContain("- Code and behavior: `src/index.ts`");
       expect(notes).toContain("## Continue From This Version");
       expect(notes).toContain("git switch -c widget-from-v0.2.0 v0.2.0");
       expect(notes).toContain("git worktree add /path/to/widget-v0.2.0 v0.2.0");
@@ -32,6 +37,45 @@ describe("GitHub release timeline", () => {
       expect(notes).toContain("git revert --no-commit v0.2.0..HEAD");
       expect(notes).toContain("git push origin revert/widget-v0.2.0");
       expect(notes).not.toContain("codexa-from-");
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("groups release notes by changelog category and changed file area", async () => {
+    const repo = await createReleaseRepo("0.2.0", "@example/widget");
+    try {
+      tag(repo, "v0.1.0", "widget v0.1.0");
+      await writeFile(path.join(repo, "README.md"), "Release guide\n", "utf8");
+      commitAll(repo, "docs: add release guide");
+      const docsSha = revParse(repo, "HEAD");
+      await mkdir(path.join(repo, "tests"), { recursive: true });
+      await writeFile(path.join(repo, "tests", "release.test.ts"), "test('release notes', () => {})\n", "utf8");
+      commitAll(repo, "test: cover release notes");
+      const testsSha = revParse(repo, "HEAD");
+      await writeFile(path.join(repo, "package-lock.json"), "{}\n", "utf8");
+      commitAll(repo, "Bump @types/node from 22.19.17 to 25.6.2");
+      const dependencySha = revParse(repo, "HEAD");
+      tag(repo, "v0.2.0", "widget v0.2.0");
+      const notesFile = path.join(repo, "notes", "v0.2.0.md");
+
+      await writeProjectReleaseNotes(repo, {
+        tag: "v0.2.0",
+        title: "widget v0.2.0",
+        githubRepo: "example-owner/widget",
+        notesFile
+      });
+
+      const notes = await readFile(notesFile, "utf8");
+      expect(notes).toContain("### Dependencies and security");
+      expect(notes).toContain(`- [${dependencySha.slice(0, 7)}](https://github.com/example-owner/widget/commit/${dependencySha}) Bump @types/node from 22.19.17 to 25.6.2`);
+      expect(notes).toContain("### Tests and verification");
+      expect(notes).toContain(`- [${testsSha.slice(0, 7)}](https://github.com/example-owner/widget/commit/${testsSha}) test: cover release notes`);
+      expect(notes).toContain("### Documentation");
+      expect(notes).toContain(`- [${docsSha.slice(0, 7)}](https://github.com/example-owner/widget/commit/${docsSha}) docs: add release guide`);
+      expect(notes).toContain("- Dependencies and packaging: `package-lock.json`");
+      expect(notes).toContain("- Tests and verification: `tests/release.test.ts`");
+      expect(notes).toContain("- Documentation: `README.md`");
     } finally {
       await rm(repo, { recursive: true, force: true });
     }
@@ -134,4 +178,8 @@ function tag(repo: string, name: string, message: string): void {
     cwd: repo,
     stdio: "ignore"
   });
+}
+
+function revParse(repo: string, revision: string): string {
+  return execFileSync("git", ["rev-parse", revision], { cwd: repo, encoding: "utf8" }).trim();
 }

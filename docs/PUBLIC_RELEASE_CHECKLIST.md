@@ -207,7 +207,8 @@ Neither of these is failure. Both are normal open-source lifecycles.
 - Cut a release if there are shipped changes:
   `npm run release:github -- --tag v0.2.0`. This runs the release gate, pushes
   the project source tag, and creates the GitHub Release timeline entry with
-  exact branch/worktree commands and a forward-only rollback branch recipe.
+  a changelog-style summary, changed-area summary, exact branch/worktree
+  commands, and a forward-only rollback branch recipe.
   Releases give Dependabot and downstream users something to pin against.
 - Verify the visible GitHub surfaces before calling the release done:
   `git ls-remote --tags origin refs/tags/v0.2.0` and

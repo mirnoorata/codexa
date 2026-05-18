@@ -29,8 +29,8 @@ npm run release:github -- --tag vX.Y.Z
 
 - The release lane must keep running `security:check`, create or reuse a source
   tag, push through the configured GitHub remote, and create or update the
-  GitHub Release entry with branch/worktree continuation commands and a
-  forward-only rollback recipe.
+  GitHub Release entry with a changelog-style summary, changed-area summary,
+  branch/worktree continuation commands, and a forward-only rollback recipe.
 - Do not cut official releases from a dirty tree, detached worktree, or
   machine-local project path. If local work is not ready for `main`, push a
   branch or draft PR instead of tagging it.

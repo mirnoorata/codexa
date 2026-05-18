@@ -39,7 +39,13 @@ export interface ProjectGithubReleaseData {
   warnings: string[];
 }
 
+interface ReleaseCommit {
+  sha: string;
+  subject: string;
+}
+
 const DEFAULT_TIMEOUT_MS = 10_000;
+const MAX_CHANGED_AREA_FILES = 8;
 
 export async function publishProjectGithubRelease(
   repoInput: string,
@@ -231,9 +237,8 @@ export async function writeProjectReleaseNotes(
   const changedFiles = previousTag
     ? await gitText(repoRoot, ["diff", "--stat", `${previousTag}..${releaseRevision}`], "diff previous release", timeoutMs, true)
     : await gitText(repoRoot, ["show", "--stat", "--format=", releaseRevision], "show release stat", timeoutMs, true);
-  const commits = previousTag
-    ? await gitText(repoRoot, ["log", "--oneline", "--no-decorate", `${previousTag}..${releaseRevision}`], "log previous release", timeoutMs, true)
-    : await gitText(repoRoot, ["log", "--oneline", "--no-decorate", "-1", releaseRevision], "log release commit", timeoutMs, true);
+  const changedFileList = await releaseChangedFiles(repoRoot, previousTag, releaseRevision, timeoutMs);
+  const releaseCommits = await releaseCommitList(repoRoot, previousTag, releaseRevision, timeoutMs);
 
   const notes = [
     `${projectName} release timeline entry for \`${input.tag}\`.`,
@@ -244,6 +249,14 @@ export async function writeProjectReleaseNotes(
     `- Commit: \`${effectiveCommit.slice(0, 7)}\``,
     `- Commit date: \`${commitDate || "unknown"}\``,
     compareUrl ? `- Compare from previous release: ${compareUrl}` : undefined,
+    "",
+    "## Changelog",
+    "",
+    ...renderChangelog(releaseCommits, input.githubRepo),
+    "",
+    "## Changed Areas",
+    "",
+    ...renderChangedAreaSummary(changedFileList),
     "",
     "## Continue From This Version",
     "",
@@ -285,7 +298,7 @@ export async function writeProjectReleaseNotes(
     "## Commits Since Previous Release",
     "",
     "```text",
-    commits.trim() || "No commits recorded.",
+    renderRawCommitList(releaseCommits) || "No commits recorded.",
     "```",
     ""
   ]
@@ -293,6 +306,218 @@ export async function writeProjectReleaseNotes(
     .join("\n");
   await fs.mkdir(path.dirname(input.notesFile), { recursive: true });
   await fs.writeFile(input.notesFile, notes, "utf8");
+}
+
+async function releaseCommitList(repoRoot: string, previousTag: string | null, releaseRevision: string, timeoutMs: number): Promise<ReleaseCommit[]> {
+  const args = previousTag
+    ? ["log", "--format=%H%x1f%s%x1e", `${previousTag}..${releaseRevision}`]
+    : ["log", "--format=%H%x1f%s%x1e", "-1", releaseRevision];
+  const raw = await gitText(repoRoot, args, "log release commits", timeoutMs, true);
+  return parseReleaseCommitList(raw);
+}
+
+function parseReleaseCommitList(raw: string): ReleaseCommit[] {
+  return raw
+    .split("\x1e")
+    .map((record) => record.trim())
+    .filter(Boolean)
+    .map((record) => {
+      const [sha = "", ...subjectParts] = record.split("\x1f");
+      const subject = subjectParts.join("\x1f").trim();
+      return sha && subject ? { sha: sha.trim(), subject } : null;
+    })
+    .filter((commit): commit is ReleaseCommit => commit !== null);
+}
+
+async function releaseChangedFiles(repoRoot: string, previousTag: string | null, releaseRevision: string, timeoutMs: number): Promise<string[]> {
+  const args = previousTag
+    ? ["diff", "--name-only", `${previousTag}..${releaseRevision}`]
+    : ["show", "--name-only", "--format=", releaseRevision];
+  const raw = await gitText(repoRoot, args, "list release changed files", timeoutMs, true);
+  const seen = new Set<string>();
+  const files: string[] = [];
+  for (const file of raw.split(/\r?\n/u).map((line) => line.trim()).filter(Boolean)) {
+    if (!seen.has(file)) {
+      seen.add(file);
+      files.push(file);
+    }
+  }
+  return files;
+}
+
+function renderChangelog(commits: ReleaseCommit[], githubRepo: string | null): string[] {
+  if (commits.length === 0) {
+    return ["No commit summaries recorded."];
+  }
+
+  const grouped = new Map<string, ReleaseCommit[]>();
+  for (const commit of commits) {
+    const category = changelogCategory(commit.subject);
+    grouped.set(category, [...(grouped.get(category) ?? []), commit]);
+  }
+
+  const lines: string[] = [];
+  for (const title of changelogCategoryOrder()) {
+    const categoryCommits = grouped.get(title);
+    if (!categoryCommits || categoryCommits.length === 0) {
+      continue;
+    }
+    lines.push(`### ${title}`, "");
+    lines.push(...categoryCommits.map((commit) => formatCommitBullet(commit, githubRepo)));
+    lines.push("");
+  }
+  return trimTrailingBlank(lines);
+}
+
+function changelogCategory(subject: string): string {
+  const normalized = subject.toLowerCase();
+  if (/\b(dependabot|bump|dependency|dependencies|package-lock|npm audit|vulnerab|cve|security)\b/u.test(normalized)) {
+    return "Dependencies and security";
+  }
+  if (/\b(readme|docs?|checklist|guide|runbook|contributing|security policy)\b/u.test(normalized)) {
+    return "Documentation";
+  }
+  if (/\b(test|tests|verify|verification|check|smoke|benchmark|ci|lint|typecheck|fixture)\b/u.test(normalized)) {
+    return "Tests and verification";
+  }
+  if (/\b(release|publish|github release|tag|rollback|revert path|changelog|package hygiene)\b/u.test(normalized)) {
+    return "Release and publishing";
+  }
+  if (/\b(cli|command|hook|mcp|session-start|plugin|integration|claude|codex)\b/u.test(normalized)) {
+    return "CLI, hooks, and integrations";
+  }
+  if (/\b(context|brief|change[- ]plans?|query|retrieval|index|parser|graph|snapshot|candidates?|semantic|lsp|session memory)\b/u.test(normalized)) {
+    return "Codexa context engine";
+  }
+  return "Code and behavior";
+}
+
+function changelogCategoryOrder(): string[] {
+  return [
+    "Release and publishing",
+    "Dependencies and security",
+    "CLI, hooks, and integrations",
+    "Codexa context engine",
+    "Code and behavior",
+    "Tests and verification",
+    "Documentation"
+  ];
+}
+
+function formatCommitBullet(commit: ReleaseCommit, githubRepo: string | null): string {
+  const shortSha = commit.sha.slice(0, 7);
+  const commitRef = githubRepo ? `[${shortSha}](https://github.com/${githubRepo}/commit/${commit.sha})` : `\`${shortSha}\``;
+  return `- ${commitRef} ${commit.subject}`;
+}
+
+function renderChangedAreaSummary(files: string[]): string[] {
+  if (files.length === 0) {
+    return ["No changed file paths recorded."];
+  }
+
+  const grouped = new Map<string, string[]>();
+  for (const file of files) {
+    const area = changedArea(file);
+    grouped.set(area, [...(grouped.get(area) ?? []), file]);
+  }
+
+  const lines: string[] = [];
+  for (const title of changedAreaOrder()) {
+    const areaFiles = grouped.get(title);
+    if (!areaFiles || areaFiles.length === 0) {
+      continue;
+    }
+    const visibleFiles = areaFiles.slice(0, MAX_CHANGED_AREA_FILES).map((file) => `\`${file}\``).join(", ");
+    const extraCount = areaFiles.length - MAX_CHANGED_AREA_FILES;
+    const suffix = extraCount > 0 ? `, plus ${extraCount} more` : "";
+    lines.push(`- ${title}: ${visibleFiles}${suffix}`);
+  }
+  return lines;
+}
+
+function changedArea(file: string): string {
+  const normalized = file.replace(/\\/gu, "/");
+  if (
+    normalized === "src/github-release.ts" ||
+    normalized === "scripts/verify-release-path.mjs" ||
+    normalized === "docs/PUBLIC_RELEASE_CHECKLIST.md" ||
+    normalized === ".github/workflows/check.yml"
+  ) {
+    return "Release and publishing";
+  }
+  if (
+    normalized === "src/cli.ts" ||
+    normalized === "src/mcp.ts" ||
+    normalized === "src/init.ts" ||
+    normalized.startsWith("integrations/") ||
+    normalized.startsWith("plugins/")
+  ) {
+    return "CLI, hooks, and integrations";
+  }
+  if (
+    normalized.startsWith("src/query/") ||
+    normalized === "src/queries.ts" ||
+    normalized === "src/indexer.ts" ||
+    normalized === "src/parser.ts" ||
+    normalized === "src/retrieval.ts" ||
+    normalized === "src/graph.ts" ||
+    normalized === "src/task-snapshots.ts" ||
+    normalized === "src/semantic-retrieval.ts" ||
+    normalized.startsWith("src/semantic/") ||
+    normalized.startsWith("src/lsp/")
+  ) {
+    return "Codexa context engine";
+  }
+  if (normalized.startsWith("tests/") || normalized === "vitest.config.ts" || normalized.startsWith("scripts/verify-")) {
+    return "Tests and verification";
+  }
+  if (
+    normalized === "README.md" ||
+    normalized === "AGENTS.md" ||
+    normalized === "CONTRIBUTING.md" ||
+    normalized === "SECURITY.md" ||
+    normalized === "CODE_OF_CONDUCT.md" ||
+    normalized.startsWith("docs/")
+  ) {
+    return "Documentation";
+  }
+  if (
+    normalized === "package.json" ||
+    normalized === "package-lock.json" ||
+    normalized === ".npmrc" ||
+    normalized.startsWith("scripts/package-") ||
+    normalized.startsWith("scripts/prepare-")
+  ) {
+    return "Dependencies and packaging";
+  }
+  if (normalized.startsWith("src/")) {
+    return "Code and behavior";
+  }
+  return "Other files";
+}
+
+function changedAreaOrder(): string[] {
+  return [
+    "Release and publishing",
+    "Dependencies and packaging",
+    "CLI, hooks, and integrations",
+    "Codexa context engine",
+    "Code and behavior",
+    "Tests and verification",
+    "Documentation",
+    "Other files"
+  ];
+}
+
+function renderRawCommitList(commits: ReleaseCommit[]): string {
+  return commits.map((commit) => `${commit.sha.slice(0, 7)} ${commit.subject}`).join("\n");
+}
+
+function trimTrailingBlank(lines: string[]): string[] {
+  while (lines.at(-1) === "") {
+    lines.pop();
+  }
+  return lines;
 }
 
 export function sanitizeReleaseRef(value: string): string {

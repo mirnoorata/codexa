@@ -20,15 +20,19 @@ requireText("README.md", [
   "## GitHub Release Timeline",
   "visible source timeline for the current project",
   "npm run release:github",
+  "changelog-style summary",
+  "changed-area summary",
   "forward-only PR rollback commands"
 ]);
 requireText("docs/PUBLIC_RELEASE_CHECKLIST.md", [
   "npm run release:github",
   "GitHub Release timeline entry",
+  "changelog-style summary",
+  "changed-area summary",
   "forward-only rollback branch recipe"
 ]);
 requireText("src/cli.ts", [".command(\"github-release\")", "--project-name <name>"]);
-requireText("src/github-release.ts", ["publishProjectGithubRelease", "writeProjectReleaseNotes", "defaultProjectName"]);
+requireText("src/github-release.ts", ["publishProjectGithubRelease", "writeProjectReleaseNotes", "defaultProjectName", "## Changelog", "## Changed Areas"]);
 forbidText("src/github-release.ts", ["codexa-from-", "/path/to/codexa-", "Revert Codexa", "Codexa release timeline entry", `/${"srv"}/`]);
 
 if (failures.length > 0) {

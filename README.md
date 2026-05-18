@@ -412,8 +412,11 @@ The dry run shows what would be tagged and pushed. The real command runs
 default, disables hidden git credential prompts, and writes release notes with:
 
 - a compare link from the previous `v*` release tag
+- a changelog-style summary grouped by commit purpose
+- a changed-area summary grouped by touched file paths
 - commands to branch or add a worktree at the exact release
 - forward-only PR rollback commands using `git revert --no-commit <tag>..HEAD`
+- raw changed-file stats and commit subjects for auditability
 
 For future Codexa changes, ship code to GitHub before cutting the release:
 finish on a named branch, push the branch, merge through the normal GitHub
