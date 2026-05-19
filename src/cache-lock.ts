@@ -76,13 +76,12 @@ async function removeStaleLock(lockDir: string, staleMs: number): Promise<boolea
     const owner = await readLockOwner(ownerPath);
     if (owner) {
       if (!(await lockOwnerStillRunning(owner))) {
-        return claimAndRemoveDeadOwnerLock(lockDir, owner);
+        return claimAndRemoveOwnerLock(lockDir, owner, () => true);
       }
-      const heartbeatMs = Date.parse(owner.heartbeatAt || owner.startedAt);
-      if (Date.now() - heartbeatMs <= staleMs) {
+      if (lockOwnerHeartbeatFresh(owner, staleMs)) {
         return false;
       }
-      return false;
+      return claimAndRemoveOwnerLock(lockDir, owner, (claimed) => !lockOwnerHeartbeatFresh(claimed, staleMs));
     }
     if (Date.now() - stat.mtimeMs <= staleMs) {
       return false;
@@ -97,9 +96,9 @@ async function removeStaleLock(lockDir: string, staleMs: number): Promise<boolea
   }
 }
 
-async function claimAndRemoveDeadOwnerLock(lockDir: string, expectedOwner: CacheLockOwner): Promise<boolean> {
+async function claimAndRemoveOwnerLock(lockDir: string, expectedOwner: CacheLockOwner, shouldRemove: (owner: CacheLockOwner) => boolean): Promise<boolean> {
   const ownerPath = path.join(lockDir, "owner.json");
-  const claimedOwnerPath = path.join(lockDir, `owner.json.dead-${process.pid}-${randomUUID()}`);
+  const claimedOwnerPath = path.join(lockDir, `owner.json.claimed-${process.pid}-${randomUUID()}`);
   try {
     await fs.rename(ownerPath, claimedOwnerPath);
   } catch (error) {
@@ -107,11 +106,32 @@ async function claimAndRemoveDeadOwnerLock(lockDir: string, expectedOwner: Cache
   }
   const claimed = await readLockOwner(claimedOwnerPath);
   if (claimed?.token !== expectedOwner.token || claimed.pid !== expectedOwner.pid) {
-    await fs.rename(claimedOwnerPath, ownerPath).catch(() => undefined);
+    await restoreClaimedOwner(ownerPath, claimedOwnerPath);
+    return false;
+  }
+  if (!shouldRemove(claimed)) {
+    await restoreClaimedOwner(ownerPath, claimedOwnerPath);
     return false;
   }
   await fs.rm(lockDir, { recursive: true, force: true });
   return true;
+}
+
+async function restoreClaimedOwner(ownerPath: string, claimedOwnerPath: string): Promise<void> {
+  try {
+    await fs.link(claimedOwnerPath, ownerPath);
+  } catch (error) {
+    if (!isNodeError(error) || (error.code !== "EEXIST" && error.code !== "ENOENT")) {
+      await fs.rename(claimedOwnerPath, ownerPath).catch(() => undefined);
+      return;
+    }
+  }
+  await fs.rm(claimedOwnerPath, { force: true }).catch(() => undefined);
+}
+
+function lockOwnerHeartbeatFresh(owner: CacheLockOwner, staleMs: number): boolean {
+  const heartbeatMs = Date.parse(owner.heartbeatAt || owner.startedAt);
+  return Number.isFinite(heartbeatMs) && Date.now() - heartbeatMs <= staleMs;
 }
 
 async function writeLockOwner(ownerPath: string, owner: CacheLockOwner): Promise<void> {

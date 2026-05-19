@@ -639,6 +639,40 @@ describe("session memory storage", () => {
       await rm(path.join(repo, ".codex"), { recursive: true, force: true });
     }
   });
+
+  it("reclaims a live cache lock after its heartbeat expires", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-session-memory-stale-live-lock-"));
+    const lockDir = path.join(repo, SESSION_MEMORY_LOCK_DIR);
+    await mkdir(lockDir, { recursive: true });
+    await writeFile(
+      path.join(lockDir, "owner.json"),
+      `${JSON.stringify({
+        pid: process.pid,
+        token: "stale-live-owner",
+        processStartTime: null,
+        startedAt: "2000-01-01T00:00:00.000Z",
+        heartbeatAt: "2000-01-01T00:00:00.000Z",
+        repoRoot: repo
+      })}\n`,
+      "utf8"
+    );
+
+    const release = await acquireCacheLock({
+      repoRoot: repo,
+      lockDir: SESSION_MEMORY_LOCK_DIR,
+      staleMs: 1,
+      timeoutMs: 1_000,
+      label: "test stale live lock"
+    });
+
+    try {
+      const owner = JSON.parse(await readFile(path.join(lockDir, "owner.json"), "utf8")) as { token?: string };
+      expect(owner.token).not.toBe("stale-live-owner");
+    } finally {
+      await release();
+      await rm(path.join(repo, ".codex"), { recursive: true, force: true });
+    }
+  });
 });
 
 function indexFixture(repoRoot: string, freshness: FreshnessInfo, files: FileFact[]): CodexaIndex {
