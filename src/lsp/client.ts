@@ -42,10 +42,11 @@ export class LspStdioClient {
     }
     this.child = spawn(this.options.command, this.options.args ?? [], {
       cwd: this.options.cwd,
+      detached: process.platform !== "win32",
       stdio: ["pipe", "pipe", "pipe"]
     });
     this.child.stdout.on("data", (chunk) => this.readStdout(Buffer.from(chunk)));
-    this.child.stderr.on("data", (chunk) => this.stderrChunks.push(Buffer.from(chunk)));
+    this.child.stderr.on("data", (chunk) => this.appendStderr(Buffer.from(chunk)));
     this.child.on("exit", () => {
       for (const pending of this.pending.values()) {
         clearTimeout(pending.timer);
@@ -139,7 +140,7 @@ export class LspStdioClient {
     } catch {
       // Ignore.
     }
-    this.child.kill();
+    this.terminateChild("SIGTERM");
     this.child = undefined;
   }
 
@@ -147,12 +148,36 @@ export class LspStdioClient {
     if (!this.child) {
       return;
     }
-    this.child.kill();
+    this.terminateChild("SIGTERM");
     this.child = undefined;
   }
 
   stderr(): string {
     return Buffer.concat(this.stderrChunks).toString("utf8").replace(/\s+/gu, " ").trim().slice(0, 600);
+  }
+
+  private terminateChild(signal: NodeJS.Signals): void {
+    if (!this.child?.pid) {
+      return;
+    }
+    try {
+      process.kill(process.platform !== "win32" ? -this.child.pid : this.child.pid, signal);
+    } catch {
+      try {
+        this.child.kill(signal);
+      } catch {
+        // Best effort only; the LSP sidecar is already being abandoned.
+      }
+    }
+  }
+
+  private appendStderr(chunk: Buffer): void {
+    this.stderrChunks.push(chunk);
+    let total = this.stderrChunks.reduce((sum, entry) => sum + entry.length, 0);
+    while (total > 20_000 && this.stderrChunks.length > 1) {
+      const removed = this.stderrChunks.shift();
+      total -= removed?.length ?? 0;
+    }
   }
 
   private readStdout(chunk: Buffer): void {

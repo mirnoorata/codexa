@@ -26,6 +26,14 @@ export async function runAutoVerifyForPostEdit(repoRoot: string, data: unknown):
   const reports: VerificationCommandReport[] = [];
   const attempted: string[] = [];
   const skipped: string[] = [];
+  const trust = await autoVerifyTrusted(repoRoot);
+  if (!trust.enabled) {
+    return {
+      reports,
+      attempted,
+      skipped: candidates.map((candidate) => `${candidate.command} (${trust.reason})`)
+    };
+  }
   for (const candidate of candidates) {
     if (reports.length >= DEFAULT_MAX_COMMANDS) {
       skipped.push(`${candidate.command} (max auto-verify commands reached)`);
@@ -44,6 +52,22 @@ export async function runAutoVerifyForPostEdit(repoRoot: string, data: unknown):
     }
   }
   return { reports, attempted, skipped };
+}
+
+async function autoVerifyTrusted(repoRoot: string): Promise<{ enabled: true } | { enabled: false; reason: string }> {
+  if (process.env.CODEXA_AUTOVERIFY === "1" || process.env.CODEXA_AUTOVERIFY?.toLowerCase() === "true") {
+    return { enabled: true };
+  }
+  const configPath = path.join(repoRoot, ".codex/config.toml");
+  try {
+    const config = await fs.readFile(configPath, "utf8");
+    if (/^\s*(auto_verify|autoverify)\s*=\s*true\s*$/imu.test(config)) {
+      return { enabled: true };
+    }
+  } catch {
+    // Missing config means the repo has not opted in to executing its own tests from hooks.
+  }
+  return { enabled: false, reason: "AutoVerify execution requires CODEXA_AUTOVERIFY=1 or auto_verify=true in .codex/config.toml" };
 }
 
 function autoVerifyCandidates(repoRoot: string, data: unknown): AutoVerifyCandidate[] {

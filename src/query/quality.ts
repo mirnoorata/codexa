@@ -40,6 +40,7 @@ export function assessContextQuality(input: {
   const totalEvidence = evidenceBacked + input.tiers.heuristic + input.tiers.fallback;
   const heuristicDominates = input.tiers.heuristic > evidenceBacked && input.tiers.heuristic > 0;
   const parserGapsPresent = input.gaps.some((gap) => gap.startsWith("parser errors"));
+  const worktreeUnknown = input.gaps.some((gap) => gap.startsWith("worktree state unavailable"));
   const broadFanout = (input.fanoutCount ?? 0) > Math.max(10, input.selectedCount * 2);
   const allHeuristic = evidenceBacked === 0 && input.tiers.heuristic > 0;
   const missingLikelyTest = (input.testCount ?? 1) === 0 && input.selectedCount > 0 && !input.rawSufficient;
@@ -67,6 +68,9 @@ export function assessContextQuality(input: {
   }
   if (parserGapsPresent) {
     reasons.push("parser gaps present");
+  }
+  if (worktreeUnknown) {
+    reasons.push("worktree state is unknown");
   }
   if (broadFanout) {
     reasons.push(`broad fanout: ${input.fanoutCount} affected, ${input.selectedCount} read-first`);
@@ -103,7 +107,7 @@ export function assessContextQuality(input: {
   } else if (allHeuristic) {
     level = "low";
     recommendation = "Only heuristic context was selected. Use this as a lead, then verify with source reads, callers, and tests before editing.";
-  } else if (input.freshness.stale || heuristicDominates || parserGapsPresent || missingLikelyTest || centralHeavy || discardedAnchors > 0 || (needsTargetPacket && input.queryBroad)) {
+  } else if (input.freshness.stale || heuristicDominates || parserGapsPresent || worktreeUnknown || missingLikelyTest || centralHeavy || discardedAnchors > 0 || (needsTargetPacket && input.queryBroad)) {
     level = "medium";
     recommendation = "Treat heuristic entries as expansion candidates, not edit targets. Verify by reading source and tests.";
   } else if (broadFanout) {

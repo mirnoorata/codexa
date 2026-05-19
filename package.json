@@ -40,6 +40,7 @@
     "prepare:codera-parking": "node scripts/prepare-codera-parking-package.mjs && node scripts/verify-package-hygiene.mjs .local/release/codera",
     "prepack": "npm run build",
     "prepublishOnly": "npm run security:check",
+    "publish:codexa": "bash scripts/codexa-publish.sh",
     "release:archive": "npm run check && git archive --format=tar.gz --output codexa-public-head.tar.gz HEAD",
     "release:github:dry-run": "npm run build && node dist/cli.js github-release . --dry-run",
     "release:github": "npm run security:check && node dist/cli.js github-release .",

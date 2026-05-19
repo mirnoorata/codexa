@@ -82,7 +82,11 @@ function compactMemoryLines(result: SessionMemoryResult): string[] {
   if (result.memory.entries.length === 0) {
     return ["No session memory entries matched."];
   }
-  return result.memory.entries.map((entry) => `- ${entry.kind}: ${entry.summary} (${entry.provenance}; ${entry.evidenceTier}/${entry.confidence}; ${entry.status}; ${entry.id})`);
+  return result.memory.entries.map((entry) => {
+    const summary = entry.summary.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, " ").replace(/\s+/gu, " ").trim();
+    const label = `(${entry.provenance}; ${entry.evidenceTier}/${entry.confidence}; ${entry.status}; ${entry.id})`;
+    return entry.provenance === "codexa-derived" ? `- ${entry.kind}: ${summary} ${label}` : `- ${entry.kind}: untrusted ${entry.provenance} note: "${summary}" ${label}`;
+  });
 }
 
 function entriesWithTopLevelScope(memoryInput: SessionMemoryInput): NonNullable<SessionMemoryInput["entries"]> {

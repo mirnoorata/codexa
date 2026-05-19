@@ -134,6 +134,18 @@ describe("semantic retrieval lane", () => {
       await rm(repo, { recursive: true, force: true });
     }
   });
+
+  it("treats oversized semantic cache manifests as unavailable instead of reading them", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-semantic-oversized-"));
+    try {
+      await mkdir(path.join(repo, ".codex/cache/codexa-semantic-v1"), { recursive: true });
+      await writeFile(path.join(repo, ".codex/cache/codexa-semantic-v1/manifest.json"), `${" ".repeat(140 * 1024)}\n`, "utf8");
+      const options = semanticOptionsFromQueryOptions(repo, {});
+      expect(options.enabled).toBe(false);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
 });
 
 function restoreEnv(name: string, value: string | undefined): void {

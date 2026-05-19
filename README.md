@@ -414,6 +414,7 @@ default, disables hidden git credential prompts, and writes release notes with:
 - a compare link from the previous `v*` release tag
 - a changelog-style summary grouped by commit purpose
 - a changed-area summary grouped by touched file paths
+- commands to restore a clean checkout from GitHub at the exact release tag
 - commands to branch or add a worktree at the exact release
 - forward-only PR rollback commands using `git revert --no-commit <tag>..HEAD`
 - raw changed-file stats and commit subjects for auditability
@@ -427,6 +428,13 @@ verify the remote tag and release entry:
 git ls-remote --tags origin refs/tags/v0.2.0
 gh release view v0.2.0 --repo mirnoorata/codexa --json tagName,name,url,targetCommitish
 ```
+
+Local `codexaPublish` wraps that flow. If the current PR branch is dirty, it
+creates one source commit first, pushes that branch, waits for PR checks,
+squash-merges through GitHub, bumps the version, and then runs
+`release:github`. Pass `--commit-message "Subject"` when the default generated
+source-commit subject would be too vague. Pass `--no-source-commit` to require a
+clean tree.
 
 If you need notes without mutating git or GitHub, run:
 

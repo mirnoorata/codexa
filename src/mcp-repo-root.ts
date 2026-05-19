@@ -151,7 +151,14 @@ async function readFocusedRepoPaths(focusFile: string): Promise<string[]> {
       }
     }
   }
-  return uniquePaths([...explicitPaths, ...defaultPaths, ...activeSessionPaths]);
+  return firstUnambiguousPriority(
+    [
+      { paths: explicitPaths, allowFallbackWhenAmbiguous: false },
+      { paths: activeSessionPaths, allowFallbackWhenAmbiguous: true },
+      { paths: defaultPaths, allowFallbackWhenAmbiguous: false }
+    ],
+    focusFile
+  );
 }
 
 function pushFocusedRepoPath(paths: string[], raw: string): void {
@@ -163,6 +170,29 @@ function pushFocusedRepoPath(paths: string[], raw: string): void {
 
 function uniquePaths(paths: string[]): string[] {
   return [...new Set(paths)];
+}
+
+function firstUnambiguousPriority(groups: Array<{ paths: string[]; allowFallbackWhenAmbiguous: boolean }>, focusFile: string): string[] {
+  let deferredAmbiguity: string[] | null = null;
+  for (const group of groups) {
+    const paths = uniquePaths(group.paths);
+    if (paths.length === 0) {
+      continue;
+    }
+    const normalized = uniquePaths(paths.map((entry) => normalizeCandidatePath(entry)).filter((entry): entry is string => Boolean(entry)));
+    if (normalized.length > 1) {
+      if (group.allowFallbackWhenAmbiguous) {
+        deferredAmbiguity = deferredAmbiguity ?? normalized;
+        continue;
+      }
+      throw new Error(`Codexa MCP workspace focus is ambiguous in ${path.resolve(focusFile)}: ${normalized.join(", ")}`);
+    }
+    return paths;
+  }
+  if (deferredAmbiguity) {
+    throw new Error(`Codexa MCP workspace focus is ambiguous in ${path.resolve(focusFile)}: ${deferredAmbiguity.join(", ")}`);
+  }
+  return [];
 }
 
 function markdownTableCells(line: string): string[] | null {

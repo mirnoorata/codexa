@@ -3,6 +3,7 @@ import { freshnessBanner } from "./runtime.js";
 import { ensureQuerySession, type QuerySessionInput } from "./session.js";
 import { formatTestRecommendations, recommendTests } from "./tests.js";
 import { compactChangedSymbol, compactDiffGroup } from "./compact-data.js";
+import { compactWorktreeState, getWorktreeState, worktreeStateGaps, worktreeStateText } from "./worktree-state.js";
 import {
   coverageForDisplay,
   formatVerificationCoverage,
@@ -22,12 +23,13 @@ export async function testPlanQuery(input: QuerySessionInput, diff = true, optio
   const session = await ensureQuerySession(input, options);
   const { index, freshness, refresh, repoRoot } = session;
   const indexedPaths = new Set(index.files.map((file) => file.path));
-  const changedEntries = diff ? await session.getChangedFileEntries() : [];
-  const changed = changedEntries.map((entry) => entry.path);
-  const changedSymbols = diff ? await session.getChangedSymbols() : [];
+  const worktree = diff ? await getWorktreeState(session) : undefined;
+  const changedEntries = worktree?.entries ?? [];
+  const changed = worktree?.files ?? [];
+  const changedSymbols = worktree?.symbols ?? [];
   const unindexedChanged = changed.filter((file) => !indexedPaths.has(file));
   const groups = groupDiffImpact(index, changedEntries, changedSymbols, unindexedChanged);
-  const gaps = indexGaps(index, freshness, unindexedChanged);
+  const gaps = [...indexGaps(index, freshness, unindexedChanged), ...(worktree ? worktreeStateGaps(worktree) : [])];
   const changeType: ChangeType = options.changeType ?? "unknown";
   const tests = recommendTests(
     index,
@@ -68,17 +70,21 @@ export async function testPlanQuery(input: QuerySessionInput, diff = true, optio
     ...(unindexedChanged.length > 0 ? ["", "Changed but not indexed:", ...unindexedChanged.slice(0, 20).map((file) => `- ${file}`)] : []),
     "",
     "Known gaps:",
-    ...formatGaps(gaps)
+    ...formatGaps(gaps),
+    ...(worktree ? worktreeStateText(worktree) : [])
   ].join("\n");
   return {
     freshness,
     refresh,
     text: limitText(text, 6000),
     data: {
+      mode: "test_plan",
       changedFiles: changed.slice(0, 120),
       changedEntries: changedEntries.slice(0, 120),
       changedSymbols: changedSymbols.slice(0, 80).map(compactChangedSymbol),
       unindexedChanged: unindexedChanged.slice(0, 80),
+      worktree: worktree ? compactWorktreeState(worktree) : undefined,
+      worktreeDegradationReasons: worktree?.degradedReasons ?? [],
       groups: groups.slice(0, 20).map(compactDiffGroup),
       tests: tests.slice(0, 30),
       verificationCommands: verificationCommands.slice(0, 30),

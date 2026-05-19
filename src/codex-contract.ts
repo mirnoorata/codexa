@@ -31,13 +31,15 @@ after source changes. Do not treat it as an unbounded graph dump.
 
 ## Automatic Use Rules
 
-1. Broad or ambiguous request: call \`focus_brief\` or \`session_context\`.
+1. Broad or ambiguous request: call \`session_context\` or \`focus_brief\`.
 2. Any code edit, debug, or review task: call \`task_brief\` first with the user's exact task.
-3. Before editing concrete files: call \`change_plan\` with \`saveSnapshot: true\`.
-4. Route, job, queue, adapter, manifest, or runtime behavior: call \`workflow_path\`.
-5. API, rename, delete, or exported contract change: call \`callers\`, \`callees\`, or \`dependency_path\`.
-6. After editing: call \`post_edit_review\` with the saved task id and tests run.
-7. Before final response: call \`test_plan\` or account for why no targeted tests apply.
+3. Before editing concrete files: call \`change_plan\` with \`saveSnapshot: true\` and keep the returned task id.
+4. After editing: call \`post_edit_review\` with the saved task id and tests run.
+5. Before final response: call \`test_plan\` or account for why no targeted tests apply.
+6. Route, job, queue, adapter, manifest, or runtime behavior: call \`workflow_path\`.
+7. API, rename, delete, or exported contract change: call \`callers\`, \`callees\`, or \`dependency_path\`.
+
+Primary Codex loop: \`session_context -> task_brief -> change_plan(saveSnapshot) -> post_edit_review -> test_plan\`.
 
 ## Session Memory Protocol
 

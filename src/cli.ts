@@ -162,6 +162,9 @@ program
       }
       if (autoVerify.skipped.length > 0 && autoVerify.attempted.length === 0) {
         console.log(`Codexa AutoVerify: skipped ${autoVerify.skipped.length} unsafe or unsupported command(s).`);
+        for (const skipped of autoVerify.skipped.slice(0, 4)) {
+          console.log(`- ${skipped}`);
+        }
       }
       const result = await postEditReviewQuery(
         activeRepoRoot,
@@ -411,9 +414,10 @@ program
   .command("doctor")
   .argument("[repo]", "repository root; defaults to the current directory", process.cwd())
   .option("--json", "emit structured JSON")
+  .option("--mcp-readiness", "include Codex MCP readiness checks")
   .description("Diagnose local Codexa wiring, index freshness, hooks, and generated state.")
-  .action(async (repo: string, opts: { json?: boolean }) => {
-    const result = await runDoctor(path.resolve(repo), { json: opts.json });
+  .action(async (repo: string, opts: { json?: boolean; mcpReadiness?: boolean }) => {
+    const result = await runDoctor(path.resolve(repo), { json: opts.json, mcpReadiness: opts.mcpReadiness });
     console.log(result.text);
     if (!result.ok) {
       process.exitCode = 1;
@@ -1077,6 +1081,7 @@ program
   .option("--lsp-max-files <n>", "maximum files to inspect with LSP assist", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before answering MCP context tools", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before answering MCP context tools")
+  .option("--session-memory <mode>", "auto-record MCP session memory: auto or off", parseSessionMemoryMode, "auto")
   .option("--workspace-focus-file <path>", "workspace focus file to consult when <repo> is a workspace launch root")
   .description("Start the stdio MCP server.")
   .action(async (repo: string, opts: CliQueryOptions) => {
@@ -1114,6 +1119,7 @@ type CliQueryOptions = {
   lsp?: boolean;
   lspTimeoutMs?: number;
   lspMaxFiles?: number;
+  sessionMemory?: "auto" | "off";
   workspaceFocusFile?: string;
 };
 
@@ -1131,8 +1137,16 @@ function queryOptionsFromCli(opts: CliQueryOptions): QueryOptions {
     lsp: opts.lsp,
     lspTimeoutMs: opts.lspTimeoutMs,
     lspMaxFiles: opts.lspMaxFiles,
+    sessionMemory: opts.sessionMemory,
     workspaceFocusFile: opts.workspaceFocusFile ? path.resolve(opts.workspaceFocusFile) : undefined
   };
+}
+
+function parseSessionMemoryMode(value: string): "auto" | "off" {
+  if (value === "auto" || value === "off") {
+    return value;
+  }
+  throw new Error("session memory mode must be auto or off");
 }
 
 function compactHookOutput(text: string): string {
@@ -1379,7 +1393,7 @@ function parseCommandReportOptions(values: string[] | undefined): VerificationCo
     if (parsed.args !== undefined && parsed.args.length > 80) {
       throw new Error(`Invalid command report JSON: args exceeds 80 entries`);
     }
-    if (parsed.exitCode === undefined || !Number.isInteger(parsed.exitCode) || parsed.exitCode < 0) {
+    if (parsed.exitCode !== undefined && (!Number.isInteger(parsed.exitCode) || parsed.exitCode < 0)) {
       throw new Error(`Invalid command report JSON: ${value}`);
     }
     if (parsed.durationMs !== undefined && (!Number.isFinite(parsed.durationMs) || parsed.durationMs < 0)) {

@@ -1,3 +1,4 @@
+import { promises as fs } from "node:fs";
 import path from "node:path";
 import { isTestPath } from "../language.js";
 import { groupDiffImpact, formatDiffGroups, formatGaps, indexGaps } from "./diff.js";
@@ -1066,6 +1067,7 @@ export async function postEditReviewQuery(
   const limit = clampInt(input.limit ?? 10, 3, 30);
   const loadedSnapshot = await loadTaskSnapshot(repoRoot, input.taskId);
   const snapshot = loadedSnapshot.snapshot;
+  const snapshotAmbiguity = !input.taskId && snapshot ? await latestSnapshotAmbiguity(repoRoot, snapshot.taskId) : undefined;
   const currentEntries = await session.getChangedFileEntries();
   const currentDirtyPaths = currentEntries.map((entry) => entry.path);
   const baselinePaths = new Set(snapshot?.dirtyBaseline.dirtyFiles ?? snapshot?.dirtyBaseline.changedEntries.map((entry) => entry.path) ?? []);
@@ -1262,6 +1264,7 @@ export async function postEditReviewQuery(
     verificationLedger.some((entry) => entry.kind === "test" && (entry.status === "covered" || entry.status === "waived"));
   const driftReasons = [
     !snapshot ? `missing task snapshot${loadedSnapshot.missingReason ? `: ${loadedSnapshot.missingReason}` : ""}` : undefined,
+    snapshotAmbiguity ? snapshotAmbiguity : undefined,
     loadedSnapshot.missingReason === "invalid-json" ? loadedSnapshot.error : undefined,
     session.worktreeDegradationReasons.length > 0
       ? `worktree state unavailable (${session.worktreeDegradationReasons.join("; ")}); treat empty change set as unknown, not clean`
@@ -1460,7 +1463,9 @@ export async function postEditReviewQuery(
         path: loadedSnapshot.path,
         missingReason: loadedSnapshot.missingReason,
         error: loadedSnapshot.error,
-        recoveredLatest: loadedSnapshot.recoveredLatest
+        recoveredLatest: loadedSnapshot.recoveredLatest,
+        ambiguousLatest: Boolean(snapshotAmbiguity),
+        ambiguityReason: snapshotAmbiguity
       },
       files: selectedFiles,
       reviewTargets,
@@ -1468,6 +1473,14 @@ export async function postEditReviewQuery(
       changedGroups: limitArray(changedGroups, 20),
       resolvedBaselineFiles: limitArray(resolvedBaselineFiles, 30),
       unplannedEditedFiles,
+      worktree: {
+        knownClean: session.worktreeDegradationReasons.length === 0 && currentDirtyPaths.length === 0,
+        degraded: session.worktreeDegradationReasons.length > 0,
+        dirtyFileCount: currentDirtyPaths.length,
+        symbolCount: changedSymbols.length,
+        degradedReasons: session.worktreeDegradationReasons
+      },
+      worktreeDegradationReasons: session.worktreeDegradationReasons,
       plannedRenames: limitArray(plannedRenames, 20),
       unplannedChangedSymbols: limitArray(unplannedChangedSymbols, 20),
       plannedButUntouchedFiles: limitArray(plannedButUntouchedFiles, 30),
@@ -1558,6 +1571,21 @@ function requestedSymbolIds(snapshot: TaskSnapshot | undefined, requestedSymbols
     }
   }
   return ids;
+}
+
+async function latestSnapshotAmbiguity(repoRoot: string, latestTaskId: string): Promise<string | undefined> {
+  const dir = path.join(repoRoot, ".codex/cache/codexa-tasks");
+  try {
+    const entries = await fs.readdir(dir);
+    const taskSnapshots = entries.filter((entry) => entry.endsWith(".json") && entry !== "latest.json" && !entry.endsWith(".blocked.json"));
+    const otherSnapshots = taskSnapshots.filter((entry) => entry !== `${latestTaskId}.json`);
+    if (otherSnapshots.length === 0) {
+      return undefined;
+    }
+    return `post_edit_review used latest snapshot ${latestTaskId} without an explicit taskId while ${otherSnapshots.length} other snapshot(s) exist; pass taskId to bind review to the intended plan`;
+  } catch {
+    return undefined;
+  }
 }
 
 function plannedScopeContainsSymbolFile(snapshot: TaskSnapshot | undefined, filePath: string): boolean {

@@ -46,9 +46,34 @@ type McpOptionalQueryInput = Record<string, unknown> & {
   lspMaxFiles?: number;
 };
 
+export const MCP_TOOL_CATALOG = [
+  { name: "session_context", tier: "primary", phase: "orientation", writeEffects: "session-memory-auto", readOnly: false, nextToolUse: ["task_brief", "search"] },
+  { name: "task_brief", tier: "primary", phase: "brief", writeEffects: "session-memory-auto", readOnly: false, nextToolUse: ["change_plan"] },
+  { name: "change_plan", tier: "primary", phase: "plan", writeEffects: "task-snapshot-cache", readOnly: false, nextToolUse: ["post_edit_review"] },
+  { name: "post_edit_review", tier: "primary", phase: "review", writeEffects: "session-memory-auto", readOnly: false, nextToolUse: ["test_plan"] },
+  { name: "test_plan", tier: "primary", phase: "verify", writeEffects: "session-memory-auto", readOnly: false, nextToolUse: [] },
+  { name: "search", tier: "primary", phase: "inspect", writeEffects: "none", readOnly: true, nextToolUse: ["task_brief"] },
+  { name: "workflow_path", tier: "primary", phase: "inspect", writeEffects: "none", readOnly: true, nextToolUse: ["task_brief", "change_plan"] },
+  { name: "freshness", tier: "advanced", phase: "diagnose", writeEffects: "none", readOnly: true, nextToolUse: ["task_brief"] },
+  { name: "repo_map", tier: "advanced", phase: "orientation", writeEffects: "index-cache-if-auto-refresh", readOnly: false, nextToolUse: ["task_brief"] },
+  { name: "find_context", tier: "advanced", phase: "inspect", writeEffects: "session-memory-auto", readOnly: false, nextToolUse: ["task_brief"] },
+  { name: "context_pack", tier: "advanced", phase: "brief", writeEffects: "session-memory-auto", readOnly: false, nextToolUse: ["change_plan"] },
+  { name: "focus_brief", tier: "advanced", phase: "orientation", writeEffects: "session-memory-auto", readOnly: false, nextToolUse: ["task_brief", "search"] },
+  { name: "impact", tier: "advanced", phase: "inspect", writeEffects: "session-memory-auto", readOnly: false, nextToolUse: ["change_plan"] },
+  { name: "diff_impact", tier: "advanced", phase: "inspect", writeEffects: "none", readOnly: true, nextToolUse: ["post_edit_review", "test_plan"] },
+  { name: "symbol_context", tier: "advanced", phase: "inspect", writeEffects: "none", readOnly: true, nextToolUse: ["impact"] },
+  { name: "callers", tier: "advanced", phase: "inspect", writeEffects: "none", readOnly: true, nextToolUse: ["impact"] },
+  { name: "callees", tier: "advanced", phase: "inspect", writeEffects: "none", readOnly: true, nextToolUse: ["impact"] },
+  { name: "dependency_path", tier: "advanced", phase: "inspect", writeEffects: "none", readOnly: true, nextToolUse: ["change_plan"] },
+  { name: "placeholder_report", tier: "advanced", phase: "risk", writeEffects: "none", readOnly: true, nextToolUse: ["task_brief"] },
+  { name: "session_memory", tier: "advanced", phase: "memory", writeEffects: "explicit-memory-cache", readOnly: false, nextToolUse: ["task_brief"] }
+] as const;
+
 export async function serveMcp(repoRoot: string, options: QueryOptions = { autoRefresh: true }): Promise<void> {
   const configuredRepoRoot = path.resolve(repoRoot);
   const queryOptions: QueryOptions = { ...options, autoRefresh: options.autoRefresh ?? true };
+  const sessionMemoryMode = queryOptions.sessionMemory ?? "auto";
+  const autoRecordSessionMemory = sessionMemoryMode !== "off";
   const annotationRepoRoot = await resolveMcpRepoRoot(configuredRepoRoot, { workspaceFocusFile: queryOptions.workspaceFocusFile })
     .then((resolution) => resolution.repoRoot)
     .catch(() => configuredRepoRoot);
@@ -60,10 +85,43 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
     name: "codexa",
     version: "0.1.0"
   });
+  const mcpTruncationSchema = z.record(z.string(), z.object({ total: z.number(), returned: z.number() }));
+  const mcpRelatedResourceSchema = z.object({
+    uri: z.string(),
+    name: z.string(),
+    mimeType: z.string().optional(),
+    description: z.string().optional()
+  });
   const outputSchema = {
+    schemaVersion: z.literal(1),
+    mode: z.string(),
+    actionability: z.enum(["orientation", "edit_ready", "blocked", "review", "verify", "done"]),
     data: z.unknown(),
     freshness: z.unknown(),
-    refresh: z.unknown()
+    refresh: z.unknown(),
+    quality: z.unknown().optional(),
+    lifecycle: z
+      .object({
+        phase: z.string(),
+        taskId: z.string().optional(),
+        snapshotStatus: z.string().optional(),
+        preconditions: z.array(z.string()).optional(),
+        blockingReasons: z.array(z.string()).optional(),
+        nextTools: z.array(z.string()).optional()
+      })
+      .optional(),
+    worktree: z
+      .object({
+        knownClean: z.boolean(),
+        degraded: z.boolean(),
+        dirtyFileCount: z.number(),
+        degradedReasons: z.array(z.string())
+      })
+      .optional(),
+    verificationProvenance: z.unknown().optional(),
+    truncation: mcpTruncationSchema.optional(),
+    nextTools: z.array(z.string()).optional(),
+    relatedResources: z.array(mcpRelatedResourceSchema).optional()
   };
   const sourceContextAnnotations = {
     readOnlyHint: !queryOptions.autoRefresh,
@@ -83,11 +141,13 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
     idempotentHint: false,
     openWorldHint: semanticMayUseOpenWorldProvider(annotationRepoRoot, queryOptions)
   };
-  const memoryWriteAnnotations = {
-    ...sourceContextAnnotations,
-    readOnlyHint: false,
-    idempotentHint: false
-  };
+  const memoryWriteAnnotations = autoRecordSessionMemory
+    ? {
+        ...sourceContextAnnotations,
+        readOnlyHint: false,
+        idempotentHint: false
+      }
+    : sourceContextAnnotations;
   const changeTypeSchema = z.enum(["style", "api", "behavior", "rename", "delete", "unknown"]);
   const semanticQuerySchema: Record<string, z.ZodTypeAny> = semanticEnabledForServer(queryOptions)
     ? {
@@ -192,7 +252,7 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
       await safeQuery(async () => {
         const session = await createMcpQuerySession(activeRepoRoot);
         const rawResult = withSessionRuntime(await producer(session), session);
-        const memoryResult = autoRecord ? await withAutoRecordedSessionMemory(session, rawResult, autoRecord.toolName, autoRecord.input) : rawResult;
+        const memoryResult = autoRecord && autoRecordSessionMemory ? await withAutoRecordedSessionMemory(session, rawResult, autoRecord.toolName, autoRecord.input) : rawResult;
         const result = compactMcpResult(memoryResult);
         await notifyResourceListChangedAfterRefresh(server, session);
         return result;
@@ -371,11 +431,19 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
     {
       title: "Codexa test plan",
       description: "Recommend targeted tests for the current diff or top-ranked files, refreshing stale Codexa artifacts first when auto-refresh is enabled.",
-      inputSchema: { diff: z.boolean().optional() },
+      inputSchema: { diff: z.boolean().optional(), changeType: changeTypeSchema.optional() },
       outputSchema,
       annotations: memoryWriteAnnotations
     },
-    async (input) => runTool((session) => testPlanQuery(session, input.diff ?? true, queryOptions), { toolName: "test_plan", input })
+    async (input) =>
+      runTool(
+        (session) =>
+          testPlanQuery(session, input.diff ?? true, {
+            ...queryOptions,
+            changeType: input.changeType
+          }),
+        { toolName: "test_plan", input }
+      )
   );
 
   server.registerTool(
@@ -632,7 +700,7 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
               packageName: z.string().optional(),
               scriptName: z.string().optional(),
               args: z.array(z.string()).max(80).optional(),
-              exitCode: z.number().int().nonnegative(),
+              exitCode: z.number().int().nonnegative().optional(),
               durationMs: z.number().nonnegative().optional(),
               stdoutSummary: z.string().max(1000).optional(),
               stderrSummary: z.string().max(1000).optional(),
@@ -662,7 +730,7 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
         await safeQuery(async () => {
           const session = await createMcpQuerySession(activeRepoRoot);
           const rawResult = withSessionRuntime(await postEditReviewQuery(session, { ...input, persistOutcome: false }, queryOptions), session);
-          const memoryResult = await withAutoRecordedSessionMemory(session, rawResult, "post_edit_review", input);
+          const memoryResult = autoRecordSessionMemory ? await withAutoRecordedSessionMemory(session, rawResult, "post_edit_review", input) : rawResult;
           const result = compactMcpResult(memoryResult);
           await notifyResourceListChangedAfterRefresh(server, session);
           return result;
@@ -1177,6 +1245,8 @@ function compactContextPacketData(data: Record<string, unknown>, mode: string): 
     verificationCommandPlan: limit("verificationCommandPlan", data.verificationCommandPlan, 30, compactVerificationPlan),
     value: data.value,
     quality: data.quality,
+    worktree: data.worktree,
+    worktreeDegradationReasons: data.worktreeDegradationReasons,
     gaps: limit("gaps", data.gaps, 30),
     session: compactSession(data.session),
     sessionMemory: data.sessionMemory,
@@ -1202,6 +1272,8 @@ function compactFocusBriefData(data: Record<string, unknown>): McpCompactionResu
     nextCall: data.nextCall,
     sessionMemory: data.sessionMemory,
     quality: data.quality,
+    worktree: data.worktree,
+    worktreeDegradationReasons: data.worktreeDegradationReasons,
     gaps: limit("gaps", data.gaps, 30),
     runtime: data.runtime,
     truncation: Object.keys(limit.truncation).length > 0 ? limit.truncation : undefined
@@ -1353,6 +1425,7 @@ function compactTargetCandidate(value: unknown): unknown {
 function compactTestPlanData(data: Record<string, unknown>): McpCompactionResult {
   const limit = createArrayLimiter();
   const compacted = {
+    mode: data.mode ?? "test_plan",
     changedFiles: limit("changedFiles", data.changedFiles, 40),
     changedEntries: limit("changedEntries", data.changedEntries, 40, compactChangedEntry),
     changedSymbols: limit("changedSymbols", data.changedSymbols, 40, compactSymbolLike),
@@ -1364,6 +1437,8 @@ function compactTestPlanData(data: Record<string, unknown>): McpCompactionResult
     verificationCommandPlan: limit("verificationCommandPlan", data.verificationCommandPlan, 30, compactVerificationPlan),
     verificationLedgerPreview: limit("verificationLedgerPreview", data.verificationLedgerPreview, 60, compactVerificationLedgerEntry),
     sessionMemory: data.sessionMemory,
+    worktree: data.worktree,
+    worktreeDegradationReasons: data.worktreeDegradationReasons,
     gaps: limit("gaps", data.gaps, 30),
     runtime: data.runtime,
     truncation: Object.keys(limit.truncation).length > 0 ? limit.truncation : undefined
@@ -1979,19 +2054,189 @@ function compactSnapshotLoad(value: unknown): unknown {
 }
 
 function toToolResult(result: { text: string; data: unknown; freshness: unknown; refresh?: unknown }) {
+  const envelope = buildMcpEnvelope(result);
   return {
     content: [
       {
         type: "text" as const,
         text: result.text
-      }
+      },
+      ...envelope.relatedResources.map((resource) => ({ type: "resource_link" as const, ...resource }))
     ],
-    structuredContent: {
-      data: result.data,
-      freshness: result.freshness,
-      refresh: result.refresh ?? { refreshed: false }
-    }
+    structuredContent: envelope
   };
+}
+
+function buildMcpEnvelope(result: { data: unknown; freshness: unknown; refresh?: unknown }): Record<string, unknown> & {
+  schemaVersion: 1;
+  mode: string;
+  actionability: "orientation" | "edit_ready" | "blocked" | "review" | "verify" | "done";
+  data: unknown;
+  freshness: unknown;
+  refresh: unknown;
+  relatedResources: Array<{ uri: string; name: string; mimeType?: string; description?: string }>;
+} {
+  const data = ensureMcpDataMode(result.data);
+  const record = isRecord(data) ? data : {};
+  const mode = typeof record.mode === "string" ? record.mode : "unknown";
+  const lifecycle = lifecycleForMcpData(mode, record);
+  const relatedResources = relatedResourcesForMode(mode);
+  const worktree = worktreeForMcpData(record);
+  return {
+    schemaVersion: 1,
+    mode,
+    actionability: actionabilityForMcpData(mode, record, lifecycle),
+    data,
+    freshness: result.freshness,
+    refresh: result.refresh ?? { refreshed: false },
+    quality: record.quality,
+    lifecycle,
+    worktree,
+    verificationProvenance: record.verificationProvenance ?? CURRENT_VERIFICATION_PROVENANCE,
+    truncation: record.truncation,
+    nextTools: lifecycle.nextTools,
+    relatedResources
+  };
+}
+
+function ensureMcpDataMode(data: unknown): unknown {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return { mode: "unknown", value: data };
+  }
+  const record = data as Record<string, unknown>;
+  if (typeof record.mode === "string") {
+    return record;
+  }
+  return { mode: inferMcpDataMode(record) ?? "unknown", ...record };
+}
+
+function lifecycleForMcpData(mode: string, data: Record<string, unknown>): {
+  phase: string;
+  taskId?: string;
+  snapshotStatus?: string;
+  preconditions: string[];
+  blockingReasons: string[];
+  nextTools: string[];
+} {
+  const snapshot = isRecord(data.snapshot) ? data.snapshot : undefined;
+  const snapshotBlock = isRecord(data.snapshotBlock) ? data.snapshotBlock : undefined;
+  const snapshotLoad = isRecord(data.snapshotLoad) ? data.snapshotLoad : undefined;
+  const taskId = stringValue(data.taskId) ?? stringValue(snapshot?.taskId) ?? stringValue(snapshotBlock?.taskId);
+  const blockingReasons = [
+    stringValue(snapshotBlock?.reason),
+    stringValue(snapshotLoad?.missingReason),
+    ...stringArray(data.driftReasons).slice(0, 6),
+    ...stringArray(data.gaps).filter((gap) => gap.startsWith("worktree state unavailable")).slice(0, 2)
+  ].filter((entry): entry is string => Boolean(entry));
+  const snapshotStatus = snapshotBlock ? "blocked" : snapshot ? "saved" : snapshotLoad ? "loaded" : mode === "post_edit_review" ? "missing-or-ambiguous" : undefined;
+  const nextTools = nextToolsForMode(mode, data, snapshotStatus);
+  return {
+    phase: lifecyclePhaseForMode(mode),
+    taskId,
+    snapshotStatus,
+    preconditions: preconditionsForMode(mode, snapshotStatus),
+    blockingReasons,
+    nextTools
+  };
+}
+
+function lifecyclePhaseForMode(mode: string): string {
+  if (mode === "focus_brief" || mode === "session_context") return "orientation";
+  if (mode === "task_brief" || mode === "context_pack") return "brief";
+  if (mode === "change_plan") return "plan";
+  if (mode === "post_edit_review") return "review";
+  if (mode === "test_plan") return "verify";
+  return "inspect";
+}
+
+function preconditionsForMode(mode: string, snapshotStatus: string | undefined): string[] {
+  if (mode === "change_plan") return ["task_brief or explicit target should identify edit-ready files", "use saveSnapshot=true before editing"];
+  if (mode === "post_edit_review") return snapshotStatus === "loaded" || snapshotStatus === "saved" ? ["saved change_plan snapshot loaded"] : ["exact taskId is recommended when more than one snapshot exists"];
+  if (mode === "test_plan") return ["run after edits or when selecting verification for a focused diff"];
+  return [];
+}
+
+function nextToolsForMode(mode: string, data: Record<string, unknown>, snapshotStatus: string | undefined): string[] {
+  if (mode === "focus_brief" || mode === "session_context") return ["task_brief", "search"];
+  if (mode === "task_brief" || mode === "context_pack") return ["change_plan"];
+  if (mode === "change_plan") return snapshotStatus === "blocked" ? ["search", "task_brief"] : ["post_edit_review"];
+  if (mode === "post_edit_review") return ["test_plan"];
+  if (mode === "test_plan") return stringArray(data.verificationCommands).length > 0 ? [] : ["search"];
+  return [];
+}
+
+function actionabilityForMcpData(
+  mode: string,
+  data: Record<string, unknown>,
+  lifecycle: { blockingReasons: string[]; snapshotStatus?: string }
+): "orientation" | "edit_ready" | "blocked" | "review" | "verify" | "done" {
+  if (lifecycle.blockingReasons.length > 0 || lifecycle.snapshotStatus === "blocked") {
+    return "blocked";
+  }
+  if (mode === "post_edit_review") return "review";
+  if (mode === "test_plan") return "verify";
+  const editReadiness = isRecord(data.editReadiness) ? data.editReadiness : undefined;
+  if (editReadiness?.editable === true || data.packetVerdict === "edit-ready") {
+    return "edit_ready";
+  }
+  if (mode === "change_plan" && Array.isArray(data.plannedEditTargets) && data.plannedEditTargets.length > 0) {
+    return "edit_ready";
+  }
+  return "orientation";
+}
+
+function worktreeForMcpData(data: Record<string, unknown>): { knownClean: boolean; degraded: boolean; dirtyFileCount: number; degradedReasons: string[] } {
+  const worktree = isRecord(data.worktree) ? data.worktree : undefined;
+  const runtime = isRecord(data.runtime) ? data.runtime : isRecord(data.session) ? data.session : undefined;
+  const changedFiles = stringArray(data.changedFiles);
+  const dirtyFileCount = numberValue(worktree?.dirtyFileCount) ?? numberValue(runtime?.dirtyFileCount) ?? changedFiles.length;
+  const degradedReasons = [...stringArray(worktree?.degradedReasons), ...stringArray(data.worktreeDegradationReasons)].filter(Boolean);
+  return {
+    knownClean: dirtyFileCount === 0 && degradedReasons.length === 0,
+    degraded: degradedReasons.length > 0,
+    dirtyFileCount,
+    degradedReasons
+  };
+}
+
+function relatedResourcesForMode(mode: string): Array<{ uri: string; name: string; mimeType?: string; description?: string }> {
+  const resources = [
+    {
+      uri: "codexa://repo/codebase/codex-contract.md",
+      name: "Codexa Codex contract",
+      mimeType: "text/markdown",
+      description: "Automatic-use rules for Codex in this repository"
+    }
+  ];
+  if (mode === "repo_map" || mode === "focus_brief" || mode === "session_context" || mode === "task_brief" || mode === "context_pack") {
+    resources.push({
+      uri: "codexa://repo/codebase/repo-map.md",
+      name: "Codexa repo map",
+      mimeType: "text/markdown",
+      description: "Ranked repository map generated by Codexa"
+    });
+  }
+  if (mode === "test_plan" || mode === "post_edit_review" || mode === "change_plan") {
+    resources.push({
+      uri: "codexa://repo/codebase/test-map.md",
+      name: "Codexa test map",
+      mimeType: "text/markdown",
+      description: "Detected tests and test relationships"
+    });
+  }
+  return resources;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
 }
 
 async function safeQuery(producer: () => Promise<QueryResult>, repoRoot: string): Promise<QueryResult> {

@@ -13,6 +13,7 @@ import { baselineSearchSummary } from "./raw-search.js";
 import { codeLikeQueryFromTask, fileStemQueryTerms, matchReason, matchScore, uniqueFiles } from "./search.js";
 import { freshnessBanner } from "./runtime.js";
 import { ensureQuerySession, type QuerySessionInput } from "./session.js";
+import { compactWorktreeState, getWorktreeState, worktreeStateGaps, worktreeStateText } from "./worktree-state.js";
 import { formatTestRecommendations, recommendTests } from "./tests.js";
 import { findFile, resolveFileTarget, resolveSymbolTarget } from "./targets.js";
 import { coverageForDisplay, formatVerificationCoverage, verificationCommandPlan, verificationCommandsForContext } from "./verification.js";
@@ -152,9 +153,10 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
   }
 
   const includeDiff = contextInput.diff ?? true;
-  const changedEntries = includeDiff ? await session.getChangedFileEntries() : [];
-  const changed = changedEntries.map((entry) => entry.path);
-  const changedSymbols = includeDiff ? await session.getChangedSymbols() : [];
+  const worktree = includeDiff ? await getWorktreeState(session) : undefined;
+  const changedEntries = worktree?.entries ?? [];
+  const changed = worktree?.files ?? [];
+  const changedSymbols = worktree?.symbols ?? [];
   const indexedPaths = new Set(index.files.map((file) => file.path));
   const unindexedChanged = changed.filter((file) => !indexedPaths.has(file));
   const groups = groupDiffImpact(index, changedEntries, changedSymbols, unindexedChanged).slice(0, 12);
@@ -219,7 +221,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     : undefined;
   const packetDiagnostics = packetIntent ? packetIntentDiagnostics(packetIntent, naturalRetrieval?.diagnostics ?? []) : [];
   const baseline = explicitQuery ? await baselineSearchSummary(repoRoot, queryText) : undefined;
-  const gaps = indexGaps(index, freshness, unindexedChanged);
+  const gaps = [...indexGaps(index, freshness, unindexedChanged), ...(worktree ? worktreeStateGaps(worktree) : [])];
   const quality = assessContextQuality({
     freshness,
     gaps,
@@ -292,6 +294,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     "",
     "Known gaps:",
     ...formatGaps(gaps),
+    ...(worktree ? worktreeStateText(worktree) : []),
     lspAssist.length > 0 ? "" : undefined,
     lspAssist.length > 0 ? "LSP assist:" : undefined,
     ...lspAssist.flatMap((assist) => [
@@ -322,6 +325,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     refresh,
     text: limitTextToTokens(text, tokenBudget),
     data: {
+      mode: "context_pack",
       task: contextInput.task,
       changeType,
       tokenBudget,
@@ -330,6 +334,8 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       changedEntries: changedEntries.slice(0, 120),
       changedSymbols: changedSymbols.slice(0, 80).map(compactChangedSymbol),
       unindexedChanged: unindexedChanged.slice(0, 80),
+      worktree: worktree ? compactWorktreeState(worktree) : undefined,
+      worktreeDegradationReasons: worktree?.degradedReasons ?? [],
       groups: groups.slice(0, 20).map(compactDiffGroup),
       tests: displayedTests.slice(0, 30),
       snippets,
@@ -394,11 +400,12 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
   const tokenBudget = clampInt(focusInput.tokenBudget ?? 2400, 600, 8000);
   const retrieval = await retrieveForTask(index, task, limit, semanticOptionsFromQueryOptions(repoRoot, options));
   const includeDiff = focusInput.diff ?? true;
-  const changedEntries = includeDiff ? await session.getChangedFileEntries() : [];
-  const changed = changedEntries.map((entry) => entry.path);
+  const worktree = includeDiff ? await getWorktreeState(session) : undefined;
+  const changedEntries = worktree?.entries ?? [];
+  const changed = worktree?.files ?? [];
   const indexedPaths = new Set(index.files.map((file) => file.path));
   const unindexedChanged = changed.filter((file) => !indexedPaths.has(file));
-  const groups = includeDiff ? groupDiffImpact(index, changedEntries, includeDiff ? await session.getChangedSymbols() : [], unindexedChanged).slice(0, 8) : [];
+  const groups = includeDiff ? groupDiffImpact(index, changedEntries, worktree?.symbols ?? [], unindexedChanged).slice(0, 8) : [];
   const exactMatches: FocusSelectionEntry[] = exactFocusFileMatches(index, task).map((file) => ({
     file,
     score: file.rank + 100,
@@ -449,7 +456,7 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
     retrieval.intentConfidence.recommendedNextTool === nextCall.tool
       ? `${nextCall.tool} - ${nextCall.reason}`
       : `${retrieval.intentConfidence.recommendedNextTool} - ${nextCall.reason}`;
-  const gaps = indexGaps(index, freshness, unindexedChanged);
+  const gaps = [...indexGaps(index, freshness, unindexedChanged), ...(worktree ? worktreeStateGaps(worktree) : [])];
   const quality = assessContextQuality({
     freshness,
     gaps,
@@ -512,7 +519,8 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
     ...formatTestRecommendations(tests),
     "",
     "Known gaps:",
-    ...formatGaps(gaps)
+    ...formatGaps(gaps),
+    ...(worktree ? worktreeStateText(worktree) : [])
   ]
     .filter((line): line is string => line !== undefined)
     .join("\n");
@@ -531,6 +539,8 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
       workflows: retrieval.workflows.slice(0, 12).map(compactWorkflowTrace),
       modules: retrieval.modules.slice(0, 12).map((module) => ({ ...module, files: module.files.slice(0, 40), reasons: module.reasons.slice(0, 12) })),
       groups: groups.slice(0, 12).map(compactDiffGroup),
+      worktree: worktree ? compactWorktreeState(worktree) : undefined,
+      worktreeDegradationReasons: worktree?.degradedReasons ?? [],
       tests: tests.slice(0, 30),
       nextCall,
       sessionMemory: sessionMemory.data,

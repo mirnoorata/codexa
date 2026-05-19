@@ -31,6 +31,8 @@ const EVENTS_FILE = "events.ndjson";
 const COMPACTIONS_DIR = "compactions";
 const MAX_EVENTS_BYTES = 512 * 1024;
 const MAX_EVENTS_LINES = 200;
+const MAX_MEMORY_JSON_BYTES = 2 * 1024 * 1024;
+const MAX_EVENT_REPLAY_BYTES = 1024 * 1024;
 const MAX_REFS_PER_ENTRY = 80;
 const MAX_EVIDENCE_PER_ENTRY = 24;
 const MAX_SUMMARY_CHARS = 280;
@@ -671,7 +673,24 @@ function formatMemorySection(title: string, entries: SessionMemoryEntryFact[], l
   if (entries.length === 0) {
     return "";
   }
-  return [`${title}:`, ...entries.slice(0, limit).map((entry) => `- ${entry.summary} (${entry.provenance}; ${entry.evidenceTier}/${entry.confidence}; ${entry.id})`)].join("\n");
+  return [`${title}:`, ...entries.slice(0, limit).map(formatMemoryEntryLine)].join("\n");
+}
+
+function formatMemoryEntryLine(entry: SessionMemoryEntryFact): string {
+  const label = `(${entry.provenance}; ${entry.evidenceTier}/${entry.confidence}; ${entry.id})`;
+  const summary = sanitizeMemoryText(entry.summary);
+  if (entry.provenance === "codexa-derived") {
+    return `- ${summary} ${label}`;
+  }
+  return `- untrusted ${entry.provenance} note: "${summary}" ${label}`;
+}
+
+function sanitizeMemoryText(value: string): string {
+  return value
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/gu, " ")
+    .replace(/\s+/gu, " ")
+    .trim()
+    .slice(0, MAX_SUMMARY_CHARS);
 }
 
 async function compactSessionMemoryStore(repoRoot: string, store: SessionMemoryStore, freshness?: FreshnessInfo): Promise<SessionMemoryStore> {
@@ -706,6 +725,15 @@ async function replaySessionMemoryEvents(repoRoot: string, sessionId: string, fr
   const eventsPath = path.join(sessionDir(repoRoot, sessionId), EVENTS_FILE);
   let store = base;
   try {
+    const stat = await fs.stat(eventsPath);
+    if (stat.size > MAX_EVENT_REPLAY_BYTES) {
+      warnings.push(`session memory replay skipped: events.ndjson exceeds ${MAX_EVENT_REPLAY_BYTES} bytes`);
+      return {
+        store: markStoreStaleness(sanitizeStoreTrust(store), freshness),
+        path: memoryStorePath(repoRoot, sessionId),
+        warnings
+      };
+    }
     const text = await fs.readFile(eventsPath, "utf8");
     for (const line of text.split(/\r?\n/u).filter(Boolean)) {
       try {
@@ -1179,6 +1207,10 @@ async function atomicTextWrite(filePath: string, value: string): Promise<void> {
 
 async function readJson<T>(filePath: string): Promise<{ ok: true; value: T } | { ok: false; missing: boolean; error: string }> {
   try {
+    const stat = await fs.stat(filePath);
+    if (stat.size > MAX_MEMORY_JSON_BYTES) {
+      return { ok: false, missing: false, error: `${path.basename(filePath)} exceeds ${MAX_MEMORY_JSON_BYTES} bytes` };
+    }
     const text = await fs.readFile(filePath, "utf8");
     return { ok: true, value: JSON.parse(text) as T };
   } catch (error) {

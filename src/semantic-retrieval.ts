@@ -17,6 +17,9 @@ const DEFAULT_OPENAI_BATCH_CHAR_BUDGET = 120_000;
 const DEFAULT_MAX_FILES = 750;
 const MAX_SOURCE_CHARS_PER_FILE = 16_000;
 const MAX_PREVIEW_CHARS = 280;
+const MAX_SEMANTIC_MANIFEST_BYTES = 128 * 1024;
+const MAX_SEMANTIC_VECTOR_BYTES = 64 * 1024 * 1024;
+const MAX_SEMANTIC_VECTOR_RECORDS = 100_000;
 
 export type SemanticProviderKind = "openai" | "local-command";
 
@@ -512,16 +515,20 @@ function loadSemanticCache(repoRoot: string): { ok: true; manifest: SemanticMani
   const manifestPath = path.join(cacheDir, MANIFEST_FILE);
   const vectorPath = path.join(cacheDir, VECTORS_FILE);
   try {
-    const manifest = JSON.parse(fsSync.readFileSync(manifestPath, "utf8")) as SemanticManifest;
+    const manifest = JSON.parse(readSizedTextSync(manifestPath, MAX_SEMANTIC_MANIFEST_BYTES)) as SemanticManifest;
     if (!isManifest(manifest)) {
       return { ok: false, reason: "semantic cache manifest is invalid" };
     }
-    const vectors = fsSync
-      .readFileSync(vectorPath, "utf8")
+    const vectorLines = readSizedTextSync(vectorPath, MAX_SEMANTIC_VECTOR_BYTES)
       .split(/\r?\n/u)
-      .filter((line) => line.trim().length > 0)
-      .map((line) => JSON.parse(line) as SemanticVectorRecord)
-      .filter(isVectorRecord);
+      .filter((line) => line.trim().length > 0);
+    if (vectorLines.length > MAX_SEMANTIC_VECTOR_RECORDS) {
+      return { ok: false, reason: `semantic cache vector file has too many records: ${vectorLines.length}` };
+    }
+    const vectors = vectorLines.map((line) => JSON.parse(line) as SemanticVectorRecord).filter((record) => isVectorRecordForManifest(record, manifest));
+    if (vectors.length !== manifest.chunkCount) {
+      return { ok: false, reason: `semantic cache vector count mismatch: manifest ${manifest.chunkCount}, vectors ${vectors.length}` };
+    }
     return { ok: true, manifest, vectors };
   } catch (error) {
     return { ok: false, reason: `semantic cache unavailable: ${errorMessage(error)}` };
@@ -530,11 +537,23 @@ function loadSemanticCache(repoRoot: string): { ok: true; manifest: SemanticMani
 
 function readSemanticManifest(repoRoot: string): SemanticManifest | undefined {
   try {
-    const manifest = JSON.parse(fsSync.readFileSync(path.join(repoRoot, SEMANTIC_CACHE_DIR, MANIFEST_FILE), "utf8")) as SemanticManifest;
+    const manifest = JSON.parse(readSizedTextSync(path.join(repoRoot, SEMANTIC_CACHE_DIR, MANIFEST_FILE), MAX_SEMANTIC_MANIFEST_BYTES)) as SemanticManifest;
     return isManifest(manifest) ? manifest : undefined;
   } catch {
     return undefined;
   }
+}
+
+function readSizedTextSync(filePath: string, maxBytes: number): string {
+  const stat = fsSync.statSync(filePath);
+  if (stat.size > maxBytes) {
+    throw new Error(`${path.basename(filePath)} exceeds ${maxBytes} bytes`);
+  }
+  return fsSync.readFileSync(filePath, "utf8");
+}
+
+function isVectorRecordForManifest(record: unknown, manifest: SemanticManifest): record is SemanticVectorRecord {
+  return isVectorRecord(record) && record.embedding.length === manifest.dimensions;
 }
 
 async function writeSemanticCache(cacheDir: string, manifest: SemanticManifest, vectors: SemanticVectorRecord[]): Promise<void> {

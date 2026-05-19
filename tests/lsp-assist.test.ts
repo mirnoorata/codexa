@@ -50,6 +50,44 @@ describe("LSP assist", () => {
       await rm(repo, { recursive: true, force: true });
     }
   });
+
+  it("drops LSP locations outside the repository", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-lsp-outside-"));
+    try {
+      execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+      await mkdir(path.join(repo, "src"), { recursive: true });
+      await writeFile(path.join(repo, "src", "index.ts"), "export function main() { return 1 }\n", "utf8");
+      execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+      execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+        cwd: repo,
+        stdio: "ignore"
+      });
+      await buildIndexLocked({ repoRoot: repo, writeArtifacts: true });
+
+      const server = path.join(repo, "language-server-outside.mjs");
+      await writeFile(server, outsideLocationServerSource(), "utf8");
+      const result = await symbolContextQuery(repo, "main", {
+        autoRefresh: false,
+        lsp: true,
+        lspTimeoutMs: 5000,
+        lspServers: {
+          typescript: { command: process.execPath, args: [server] }
+        }
+      });
+      const data = result.data as {
+        lspAssist?: {
+          definitions: Array<{ uri?: string; path?: string }>;
+          references: Array<{ uri?: string; path?: string }>;
+        };
+      };
+
+      expect(data.lspAssist?.definitions).toEqual([]);
+      expect(data.lspAssist?.references).toEqual([]);
+      expect(JSON.stringify(data.lspAssist)).not.toContain("/etc/passwd");
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
 });
 
 function languageServerSource(): string {
@@ -164,4 +202,8 @@ function send(payload) {
   process.stdout.write("Content-Length: " + Buffer.byteLength(body, "utf8") + "\\r\\n\\r\\n" + body);
 }
 `.trimStart();
+}
+
+function outsideLocationServerSource(): string {
+  return languageServerSource().replace("uri: message.params.textDocument.uri,", "uri: 'file:///etc/passwd',");
 }

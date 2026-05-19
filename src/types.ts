@@ -380,6 +380,7 @@ export interface RefreshInfo {
 
 export interface QueryOptions {
   autoRefresh?: boolean;
+  sessionMemory?: "auto" | "off";
   commandBudgetMs?: number;
   maxResultBytes?: number;
   maxResults?: number;

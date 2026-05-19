@@ -1,11 +1,13 @@
 import { execFileSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { getFreshness } from "./indexer.js";
 import { codexaHookEventsRelativePath, loadLatestCodexaHookEvent } from "./post-edit-outcomes.js";
 
 export interface DoctorOptions {
   json?: boolean;
+  mcpReadiness?: boolean;
 }
 
 export interface DoctorCheck {
@@ -57,6 +59,7 @@ export interface DoctorResult {
     latestHookEvent: Awaited<ReturnType<typeof loadLatestCodexaHookEvent>>;
     hookEventsPath: string;
     latestOutcome: unknown;
+    mcpReadiness?: Awaited<ReturnType<typeof checkMcpReadiness>>;
     checks: DoctorCheck[];
     nextActions: string[];
   };
@@ -76,6 +79,7 @@ export async function runDoctor(repoInput: string, options: DoctorOptions = {}):
   checkLatestHookEvent(latestHookEvent, checks);
   const latestOutcome = await readJsonIfExists(path.join(repoRoot, ".codex/cache/codexa-outcomes/latest.json"));
   const hookEventsPath = codexaHookEventsRelativePath();
+  const mcpReadiness = options.mcpReadiness ? await checkMcpReadiness(repoRoot, checks, nextActions) : undefined;
 
   const ok = checks.every((check) => check.status !== "fail");
   const data = {
@@ -89,6 +93,7 @@ export async function runDoctor(repoInput: string, options: DoctorOptions = {}):
     latestHookEvent,
     hookEventsPath,
     latestOutcome,
+    mcpReadiness,
     checks,
     nextActions
   };
@@ -96,6 +101,63 @@ export async function runDoctor(repoInput: string, options: DoctorOptions = {}):
     ok,
     data,
     text: options.json ? `${JSON.stringify(data, null, 2)}\n` : renderDoctor(data)
+  };
+}
+
+async function checkMcpReadiness(repoRoot: string, checks: DoctorCheck[], nextActions: string[]): Promise<{
+  configPresent: boolean;
+  serveConfigured: boolean;
+  typedEnvelope: boolean;
+  sessionMemoryMode: "auto" | "off";
+  autoVerifyOptIn: boolean;
+  semanticCache: boolean;
+  lspConfigured: boolean;
+  packageMetadata: { name?: string; version?: string; mcpServer: string };
+  latestBenchmark?: unknown;
+}> {
+  const configText = await readTextIfExists(path.join(repoRoot, ".codex/config.toml"));
+  const packageJson = await readJsonIfExists(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../package.json"));
+  const packageRecord = packageJson && typeof packageJson === "object" ? (packageJson as Record<string, unknown>) : {};
+  const sessionMemoryMode = /^\s*session_memory\s*=\s*"off"\s*$/imu.test(configText ?? "") ? "off" : "auto";
+  const autoVerifyOptIn = process.env.CODEXA_AUTOVERIFY === "1" || /^\s*(auto_verify|autoverify)\s*=\s*true\s*$/imu.test(configText ?? "");
+  const semanticCache = await exists(path.join(repoRoot, ".codex/cache/codexa-semantic-v1/manifest.json"));
+  const lspConfigured = Boolean(process.env.CODEXA_LSP === "1" || process.env.CODEXA_LSP_TYPESCRIPT_COMMAND || process.env.CODEXA_LSP_JAVASCRIPT_COMMAND || process.env.CODEXA_LSP_PYTHON_COMMAND);
+  const latestBenchmark = await readJsonIfExists(path.join(repoRoot, ".codex/cache/codexa-benchmarks/latest.json"));
+  const serveConfigured = Boolean(configText && /\[mcp_servers\.[^\]]+\]/iu.test(configText) && /\bserve\b/u.test(configText));
+  checks.push({
+    name: "mcp-readiness",
+    status: serveConfigured ? "ok" : "warn",
+    message: serveConfigured ? "Codexa MCP serve command is configured." : "Codexa MCP serve command is not configured for this repo."
+  });
+  checks.push({
+    name: "mcp-envelope",
+    status: "ok",
+    message: "Codexa MCP tools use the schemaVersion=1 structured envelope."
+  });
+  if (!autoVerifyOptIn) {
+    checks.push({
+      name: "autoverify-trust",
+      status: "ok",
+      message: "AutoVerify execution is not opted in; hooks will recommend commands without spawning repo tests."
+    });
+  }
+  if (!serveConfigured) {
+    nextActions.push("Run `codexa init <repo>` so Codex can discover the Codexa MCP server.");
+  }
+  return {
+    configPresent: configText !== null,
+    serveConfigured,
+    typedEnvelope: true,
+    sessionMemoryMode,
+    autoVerifyOptIn,
+    semanticCache,
+    lspConfigured,
+    packageMetadata: {
+      name: typeof packageRecord.name === "string" ? packageRecord.name : undefined,
+      version: typeof packageRecord.version === "string" ? packageRecord.version : undefined,
+      mcpServer: "codexa"
+    },
+    latestBenchmark
   };
 }
 
@@ -265,6 +327,16 @@ function renderDoctor(data: DoctorResult["data"]): string {
     lines.push("", `Latest hook: ${data.latestHookEvent.hook} ${data.latestHookEvent.status} at ${data.latestHookEvent.createdAt}`);
     lines.push(`Hook log: ${data.hookEventsPath}`);
   }
+  if (data.mcpReadiness) {
+    lines.push("", "MCP readiness:");
+    lines.push(`- serve configured: ${data.mcpReadiness.serveConfigured ? "yes" : "no"}`);
+    lines.push(`- typed envelope: ${data.mcpReadiness.typedEnvelope ? "yes" : "no"}`);
+    lines.push(`- session memory: ${data.mcpReadiness.sessionMemoryMode}`);
+    lines.push(`- AutoVerify opted in: ${data.mcpReadiness.autoVerifyOptIn ? "yes" : "no"}`);
+    lines.push(`- semantic cache: ${data.mcpReadiness.semanticCache ? "present" : "missing"}`);
+    lines.push(`- LSP configured: ${data.mcpReadiness.lspConfigured ? "yes" : "no"}`);
+    lines.push(`- package: ${data.mcpReadiness.packageMetadata.name ?? "unknown"} ${data.mcpReadiness.packageMetadata.version ?? "unknown"}`);
+  }
   if (data.nextActions.length > 0) {
     lines.push("", "Next actions:");
     for (const action of [...new Set(data.nextActions)]) {
@@ -298,6 +370,15 @@ async function readJsonIfExists(filePath: string): Promise<unknown | null> {
     return JSON.parse(await fs.readFile(filePath, "utf8"));
   } catch {
     return null;
+  }
+}
+
+async function exists(filePath: string): Promise<boolean> {
+  try {
+    await fs.stat(filePath);
+    return true;
+  } catch {
+    return false;
   }
 }
 

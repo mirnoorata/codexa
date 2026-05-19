@@ -178,7 +178,32 @@ describe("Codexa hook CLI", () => {
     expect(latest).toMatchObject({ hook: "post-edit", status: "ok" });
   });
 
-  it("auto-runs targeted safe verification before persisting hook-post-edit outcome", async () => {
+  it("skips AutoVerify execution by default and records recommended commands as skipped", async () => {
+    const repo = await createAutoVerifyFixtureRepo({ test: "node --test" });
+    const cli = path.resolve(process.cwd(), "dist/cli.js");
+
+    const plan = spawnSync(
+      process.execPath,
+      [cli, "change-plan", repo, "--task", "Tighten main formatting", "--file", "src/main.js", "--save-snapshot", "--task-id", "hook-autoverify-default-skip"],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8"
+      }
+    );
+    expect(plan.status).toBe(0);
+    await writeFile(path.join(repo, "src/main.js"), "export function main() {\n  return 1;\n}\n", "utf8");
+
+    const postEdit = spawnSync(process.execPath, [cli, "hook-post-edit", repo], {
+      cwd: process.cwd(),
+      encoding: "utf8"
+    });
+    expect(postEdit.status).toBe(0);
+    expect(postEdit.stdout).toContain("Codexa AutoVerify: skipped 1 unsafe or unsupported command(s).");
+    expect(postEdit.stdout).toContain("AutoVerify execution requires CODEXA_AUTOVERIFY=1");
+    expect(postEdit.stdout).not.toContain("Codexa AutoVerify: ran");
+  });
+
+  it("auto-runs targeted safe verification before persisting hook-post-edit outcome when trusted", async () => {
     const repo = await createAutoVerifyFixtureRepo({ test: "node --test" });
     const cli = path.resolve(process.cwd(), "dist/cli.js");
 
@@ -195,7 +220,8 @@ describe("Codexa hook CLI", () => {
 
     const postEdit = spawnSync(process.execPath, [cli, "hook-post-edit", repo], {
       cwd: process.cwd(),
-      encoding: "utf8"
+      encoding: "utf8",
+      env: { ...process.env, CODEXA_AUTOVERIFY: "1" }
     });
     expect(postEdit.status).toBe(0);
     expect(postEdit.stdout).toContain("Codexa AutoVerify: ran 1 targeted command(s).");
@@ -232,7 +258,8 @@ describe("Codexa hook CLI", () => {
 
       const postEdit = spawnSync(process.execPath, [cli, "hook-post-edit", repo], {
         cwd: process.cwd(),
-        encoding: "utf8"
+        encoding: "utf8",
+        env: { ...process.env, CODEXA_AUTOVERIFY: "1" }
       });
       expect(postEdit.status).toBe(0);
       expect(postEdit.stdout).toContain("Codexa AutoVerify: skipped 1 unsafe or unsupported command(s).");
@@ -252,7 +279,8 @@ describe("Codexa hook CLI", () => {
 
     const postEdit = spawnSync(process.execPath, [cli, "hook-post-edit", repo], {
       cwd: process.cwd(),
-      encoding: "utf8"
+      encoding: "utf8",
+      env: { ...process.env, CODEXA_AUTOVERIFY: "1" }
     });
     expect(postEdit.status).toBe(0);
     expect(postEdit.stdout).toContain("Codexa AutoVerify: skipped 1 unsafe or unsupported command(s).");
@@ -336,13 +364,15 @@ describe("Codexa hook CLI", () => {
     expect(data.latestHookEvent).toMatchObject({ hook: "session-start", status: "ok" });
     expect(data.hookEventsPath).toBe(".codex/cache/codexa-hooks/events.ndjson");
 
-    const doctorText = spawnSync(process.execPath, [cli, "doctor", repo], {
+    const doctorText = spawnSync(process.execPath, [cli, "doctor", repo, "--mcp-readiness"], {
       cwd: process.cwd(),
       encoding: "utf8"
     });
     expect(doctorText.status).toBe(0);
     expect(doctorText.stdout).toContain("Codexa doctor");
     expect(doctorText.stdout).toContain("Latest hook: session-start ok");
+    expect(doctorText.stdout).toContain("MCP readiness:");
+    expect(doctorText.stdout).toContain("typed envelope: yes");
   });
 });
 

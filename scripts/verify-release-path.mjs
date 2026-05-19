@@ -29,10 +29,26 @@ requireText("docs/PUBLIC_RELEASE_CHECKLIST.md", [
   "GitHub Release timeline entry",
   "changelog-style summary",
   "changed-area summary",
-  "forward-only rollback branch recipe"
+  "forward-only rollback branch"
+]);
+requireText("scripts/codexa-publish.sh", [
+  "npm run release:github",
+  "commit_current_source_if_dirty",
+  "--commit-message",
+  "--no-source-commit",
+  "verify_github_restore_point",
+  "gh release view",
+  "git -C \"$ROOT\" ls-remote --exit-code --tags origin"
 ]);
 requireText("src/cli.ts", [".command(\"github-release\")", "--project-name <name>"]);
-requireText("src/github-release.ts", ["publishProjectGithubRelease", "writeProjectReleaseNotes", "defaultProjectName", "## Changelog", "## Changed Areas"]);
+requireText("src/github-release.ts", [
+  "publishProjectGithubRelease",
+  "writeProjectReleaseNotes",
+  "defaultProjectName",
+  "## Changelog",
+  "## Changed Areas",
+  "## Restore From GitHub"
+]);
 forbidText("src/github-release.ts", ["codexa-from-", "/path/to/codexa-", "Revert Codexa", "Codexa release timeline entry", `/${"srv"}/`]);
 
 if (failures.length > 0) {

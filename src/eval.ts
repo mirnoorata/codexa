@@ -78,6 +78,9 @@ export interface ScoredEvalScenario {
     textChars: number;
     dataBytes: number;
     refreshed: boolean;
+    structuredBytes: number;
+    toolHopsToEditReady: number | null;
+    verificationProvenancePresent: boolean;
   };
   comparison: {
     baselineFileRecall: number | null;
@@ -761,6 +764,8 @@ function scoreScenario(scenario: EvalScenario, result: QueryResult, baseline: Ba
   const structuredDataBudget = scenario.oracle.maxDataBytes ?? (scenario.oracle.maxTextChars ? Math.max(128_000, scenario.oracle.maxTextChars * 8) : 128_000);
   const overBudgetedStructuredData = structuredDataBytes > structuredDataBudget;
   const postEditOutcome = postEditOutcomeFromData(result.data);
+  const toolHopsToEditReady = toolHopsToEditReadyFromData(result.data);
+  const verificationProvenancePresent = Boolean(postEditOutcome?.verificationProvenance || verificationProvenanceFromData(result.data));
 
   if (fileRecall !== null && fileRecall < minFileRecall) {
     failures.push(`file recall ${fileRecall.toFixed(2)} < ${minFileRecall.toFixed(2)}`);
@@ -833,7 +838,10 @@ function scoreScenario(scenario: EvalScenario, result: QueryResult, baseline: Ba
       selectedToBaselineRatio,
       textChars: result.text.length,
       dataBytes: structuredDataBytes,
-      refreshed
+      refreshed,
+      structuredBytes: structuredDataBytes,
+      toolHopsToEditReady,
+      verificationProvenancePresent
     },
     comparison: {
       baselineFileRecall,
@@ -1134,6 +1142,36 @@ function postEditOutcomeFromData(data: unknown): ScoredEvalScenario["calibration
     }
   }
   return undefined;
+}
+
+function toolHopsToEditReadyFromData(data: unknown): number | null {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return null;
+  }
+  const record = data as Record<string, unknown>;
+  const mode = typeof record.mode === "string" ? record.mode : undefined;
+  const actionability = typeof record.actionability === "string" ? record.actionability : undefined;
+  const editReady = actionability === "edit_ready" || record.packetVerdict === "edit-ready" || (record.editReadiness && typeof record.editReadiness === "object" && (record.editReadiness as { editable?: unknown }).editable === true);
+  if (editReady) {
+    if (mode === "session_context" || mode === "focus_brief") return 2;
+    if (mode === "task_brief" || mode === "context_pack") return 1;
+    return 0;
+  }
+  for (const key of ["focus", "context", "diff", "plan", "data"]) {
+    const nested = toolHopsToEditReadyFromData(record[key]);
+    if (nested !== null) {
+      return nested;
+    }
+  }
+  return null;
+}
+
+function verificationProvenanceFromData(data: unknown): EvalVerificationProvenance | undefined {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return undefined;
+  }
+  const record = data as Record<string, unknown>;
+  return extractVerificationProvenance(record.verificationProvenance) ?? verificationProvenanceFromData(record.data);
 }
 
 function extractVerificationProvenance(value: unknown): EvalVerificationProvenance | undefined {
@@ -1661,7 +1699,10 @@ function baselineFailureScenario(scenario: EvalScenario, error: unknown): Scored
       selectedToBaselineRatio: null,
       textChars: 0,
       dataBytes: 0,
-      refreshed: false
+      refreshed: false,
+      structuredBytes: 0,
+      toolHopsToEditReady: null,
+      verificationProvenancePresent: false
     },
     comparison: {
       baselineFileRecall: null,

@@ -335,7 +335,7 @@ describe("Codexa MCP server", () => {
     }
   });
 
-  it("routes workspace-root task briefs from WORKING.md default before active-session rows", async () => {
+  it("routes workspace-root task briefs from active-session rows before WORKING.md default", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-working-default-"));
     execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
     const defaultRepo = await createIndexedMcpRepo(workspace, "default-repo", "alpha", "alphaSymbol");
@@ -369,9 +369,54 @@ describe("Codexa MCP server", () => {
     try {
       const taskBrief = await client.callTool({ name: "task_brief", arguments: { task: "change alphaSymbol", tokenBudget: 900, limit: 5 } });
       const serialized = JSON.stringify(taskBrief);
+      expect(serialized).toContain(activeRepo);
+      expect(serialized).toContain("betaSymbol");
+      expect(serialized).not.toContain(defaultRepo);
+      expect(serialized).not.toContain("Failed to read git status");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("falls back to WORKING.md default when active-session rows are ambiguous", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-working-ambiguous-active-"));
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const defaultRepo = await createIndexedMcpRepo(workspace, "default-repo", "alpha", "alphaSymbol");
+    const otherRepo = await createIndexedMcpRepo(workspace, "other-repo", "beta", "betaSymbol");
+    const focusFile = path.join(workspace, ".codex", "WORKING.md");
+    await mkdir(path.dirname(focusFile), { recursive: true });
+    await writeFile(
+      focusFile,
+      [
+        "## Workspace Default",
+        "",
+        `- Default repo: \`${defaultRepo}\`.`,
+        "",
+        "## Active Sessions",
+        "",
+        "| session | agent | repo | task | status | claims | last_seen | next |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        `| codex-default | codex | ${defaultRepo} | workspace default task | active | none | now | inspect |`,
+        `| codex-other | codex | ${otherRepo} | concurrent repo task | active | none | now | inspect |`
+      ].join("\n"),
+      "utf8"
+    );
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-working-ambiguous-active-test", version: "0.1.0" });
+    await client.connect(transport);
+
+    try {
+      const taskBrief = await client.callTool({ name: "task_brief", arguments: { task: "change alphaSymbol", tokenBudget: 900, limit: 5 } });
+      const serialized = JSON.stringify(taskBrief);
       expect(serialized).toContain(defaultRepo);
       expect(serialized).toContain("alphaSymbol");
-      expect(serialized).not.toContain(activeRepo);
+      expect(serialized).not.toContain(otherRepo);
+      expect(serialized).not.toContain("Codexa MCP workspace focus is ambiguous");
       expect(serialized).not.toContain("Failed to read git status");
     } finally {
       await client.close();
@@ -485,6 +530,8 @@ describe("Codexa MCP server", () => {
     );
     const contextTool = tools.tools.find((tool) => tool.name === "context_pack");
     expect(contextTool?.outputSchema).toBeTruthy();
+    expect(JSON.stringify(contextTool?.outputSchema)).toContain("schemaVersion");
+    expect(JSON.stringify(contextTool?.outputSchema)).toContain("actionability");
     expect(contextTool?.annotations?.destructiveHint).toBe(false);
     expect(contextTool?.annotations?.openWorldHint).toBe(false);
     expect(contextTool?.annotations?.readOnlyHint).toBe(false);
@@ -495,8 +542,14 @@ describe("Codexa MCP server", () => {
     expect(searchSchema).toContain("7");
     const changePlanSchema = JSON.stringify(tools.tools.find((tool) => tool.name === "change_plan")?.inputSchema);
     expect(changePlanSchema).toContain("followCandidate");
+    const testPlanSchema = JSON.stringify(tools.tools.find((tool) => tool.name === "test_plan")?.inputSchema);
+    expect(testPlanSchema).toContain("changeType");
     expect(tools.tools.find((tool) => tool.name === "impact")?.annotations?.readOnlyHint).toBe(false);
     expect(tools.tools.find((tool) => tool.name === "freshness")?.annotations?.readOnlyHint).toBe(true);
+
+    const freshness = await client.callTool({ name: "freshness", arguments: {} });
+    expect(freshness.structuredContent).toMatchObject({ schemaVersion: 1, mode: expect.any(String), actionability: expect.any(String) });
+    expect(JSON.stringify(freshness.content)).toContain("resource_link");
 
     const rejectedFollow = await client.callTool({ name: "change_plan", arguments: { taskId: "missing-mcp-follow", followCandidate: "candidate-missing" } });
     expect(JSON.stringify(rejectedFollow)).toContain("Follow candidate: rejected");
@@ -1225,6 +1278,36 @@ describe("Codexa MCP server", () => {
     expect(tools.tools.find((tool) => tool.name === "callers")?.annotations?.readOnlyHint).toBe(true);
     expect(tools.tools.find((tool) => tool.name === "post_edit_review")?.annotations?.readOnlyHint).toBe(false);
     await client.close();
+  });
+
+  it("can disable MCP session-memory auto-recording for a strict read-only launch", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-memory-off-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdir(path.join(repo, "src"), { recursive: true });
+    await writeFile(path.join(repo, "src/index.ts"), "export function main() { return 1 }\n", "utf8");
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    await buildIndex({ repoRoot: repo });
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh", "--session-memory", "off"],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-test", version: "0.1.0" });
+    await client.connect(transport);
+    try {
+      const tools = await client.listTools();
+      expect(tools.tools.find((tool) => tool.name === "task_brief")?.annotations?.readOnlyHint).toBe(true);
+      expect(tools.tools.find((tool) => tool.name === "task_brief")?.annotations?.idempotentHint).toBe(true);
+      await client.callTool({ name: "task_brief", arguments: { task: "inspect main", tokenBudget: 900, limit: 5 } });
+      await expect(readdir(path.join(repo, ".codex/cache/codexa-session-memory"))).rejects.toThrow();
+    } finally {
+      await client.close();
+    }
   });
 
   it("marks semantic OpenAI-capable MCP tools as open-world, including change_plan", async () => {

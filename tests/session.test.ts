@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildIndex } from "../src/indexer.js";
-import { contextPackQuery } from "../src/queries.js";
+import { contextPackQuery, diffImpactQuery, testPlanQuery } from "../src/queries.js";
 import { createQuerySession } from "../src/query/session.js";
 import { getChangedFileEntries } from "../src/query/worktree.js";
 
@@ -65,6 +65,26 @@ describe("QuerySession", () => {
     expect(
       session.provenance.some((entry) => entry.startsWith("worktree-degraded:status:"))
     ).toBe(true);
+  });
+
+  it("propagates degraded worktree state through diff-sensitive query packets", async () => {
+    const repo = await createSessionFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+    const session = await createQuerySession(repo, { autoRefresh: false });
+    await rm(path.join(repo, ".git"), { recursive: true, force: true });
+
+    const context = await contextPackQuery(session, { task: "review current diff", diff: true, includeSnippets: false }, { autoRefresh: false });
+    const diffImpact = await diffImpactQuery(session, { autoRefresh: false });
+    const testPlan = await testPlanQuery(session, true, { autoRefresh: false });
+
+    for (const result of [context, diffImpact, testPlan]) {
+      const data = result.data as { worktree?: { degraded?: boolean }; worktreeDegradationReasons?: string[]; gaps?: string[] };
+      expect(data.worktree?.degraded).toBe(true);
+      expect(data.worktreeDegradationReasons?.length).toBeGreaterThan(0);
+      expect(data.gaps?.some((gap) => gap.startsWith("worktree state unavailable"))).toBe(true);
+      expect(result.text).toContain("Worktree state:");
+      expect(result.text).toContain("unknown");
+    }
   });
 
   it("reports worktree degradation from the internal getChangedFileEntries when git is unavailable", async () => {

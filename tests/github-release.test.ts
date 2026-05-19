@@ -30,6 +30,9 @@ describe("GitHub release timeline", () => {
       expect(notes).toContain("change value");
       expect(notes).toContain("## Changed Areas");
       expect(notes).toContain("- Code and behavior: `src/index.ts`");
+      expect(notes).toContain("## Restore From GitHub");
+      expect(notes).toContain("git clone https://github.com/example-owner/widget.git widget-v0.2.0");
+      expect(notes).toContain("git switch --detach v0.2.0");
       expect(notes).toContain("## Continue From This Version");
       expect(notes).toContain("git switch -c widget-from-v0.2.0 v0.2.0");
       expect(notes).toContain("git worktree add /path/to/widget-v0.2.0 v0.2.0");
@@ -122,7 +125,10 @@ describe("GitHub release timeline", () => {
       expect(result.data.githubRepo).toBeNull();
       expect(result.data.releaseUrl).toBeNull();
       expect(result.data.actions.join("\n")).toContain("push skipped");
-      expect(await readFile(notesFile, "utf8")).toContain("git revert --no-commit v0.4.0..HEAD");
+      const notes = await readFile(notesFile, "utf8");
+      expect(notes).toContain("Restore From GitHub");
+      expect(notes).toContain("Restore from any remote that contains this exact release tag:");
+      expect(notes).toContain("git revert --no-commit v0.4.0..HEAD");
     } finally {
       await rm(repo, { recursive: true, force: true });
     }

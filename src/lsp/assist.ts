@@ -265,10 +265,14 @@ function summarizeLocations(value: unknown, repoRoot: string): LspLocationSummar
       if (!uri) {
         return null;
       }
+      const relativePath = fileUriToRelativePath(uri, repoRoot);
+      if (!relativePath) {
+        return null;
+      }
       const start = loc.range?.start ?? loc.targetRange?.start;
       return {
         uri,
-        path: fileUriToRelativePath(uri, repoRoot),
+        path: relativePath,
         line: typeof start?.line === "number" ? start.line + 1 : undefined,
         character: typeof start?.character === "number" ? start.character : undefined
       };
@@ -377,8 +381,12 @@ function fileUriToRelativePath(uri: string, repoRoot: string): string | undefine
     return undefined;
   }
   try {
-    const decoded = decodeURIComponent(new URL(uri).pathname);
-    return path.relative(repoRoot, decoded).split(path.sep).join("/");
+    const decoded = path.resolve(decodeURIComponent(new URL(uri).pathname));
+    const relative = path.relative(path.resolve(repoRoot), decoded);
+    if (relative === "" || relative.startsWith("..") || path.isAbsolute(relative)) {
+      return undefined;
+    }
+    return relative.split(path.sep).join("/");
   } catch {
     return undefined;
   }

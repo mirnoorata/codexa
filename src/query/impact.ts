@@ -11,6 +11,7 @@ import { ensureQuerySession, type QuerySessionInput } from "./session.js";
 import { formatTestRecommendations, recommendTests } from "./tests.js";
 import { findFile, resolveFileTarget, resolveSymbolTarget } from "./targets.js";
 import { formatChangedEntry } from "./worktree.js";
+import { compactWorktreeState, getWorktreeState, worktreeStateGaps, worktreeStateText } from "./worktree-state.js";
 
 export type ImpactEntry = { file: FileFact; reasons: string[]; depth: number; confidence: Confidence };
 
@@ -40,7 +41,7 @@ export async function impactQuery(
       freshness,
       refresh,
       text: `${freshnessBanner(freshness, refresh)}\nNo file or symbol matched impact target.`,
-      data: { file: null, symbol: null }
+      data: { mode: "impact", file: null, symbol: null }
     };
   }
 
@@ -142,6 +143,7 @@ export async function impactQuery(
     refresh,
     text: limitText(text, 7000),
     data: {
+      mode: "impact",
       target: { file: file ? compactFileFact(file) : undefined, symbol: symbol ? compactSymbolFact(symbol) : undefined },
       changeType,
       depth: maxDepth,
@@ -170,14 +172,15 @@ export async function impactQuery(
 export async function diffImpactQuery(input: QuerySessionInput, options: QueryOptions = {}): Promise<QueryResult> {
   const session = await ensureQuerySession(input, options);
   const { index, freshness, refresh } = session;
-  const changedEntries = await session.getChangedFileEntries();
-  const changed = changedEntries.map((entry) => entry.path);
-  const changedSymbols = await session.getChangedSymbols();
+  const worktree = await getWorktreeState(session);
+  const changedEntries = worktree.entries;
+  const changed = worktree.files;
+  const changedSymbols = worktree.symbols;
   const indexedPaths = new Set(index.files.map((file) => file.path));
   const indexedChanged = changed.filter((file) => indexedPaths.has(file));
   const unindexedChanged = changed.filter((file) => !indexedPaths.has(file));
   const groups = groupDiffImpact(index, changedEntries, changedSymbols, unindexedChanged);
-  const gaps = indexGaps(index, freshness, unindexedChanged);
+  const gaps = [...indexGaps(index, freshness, unindexedChanged), ...worktreeStateGaps(worktree)];
   const impacts = [];
   for (const file of indexedChanged.slice(0, 10)) {
     impacts.push(compactNestedImpactData((await impactQuery(session, { file }, { autoRefresh: false })).data));
@@ -204,6 +207,7 @@ export async function diffImpactQuery(input: QuerySessionInput, options: QueryOp
     "",
     "Known gaps:",
     ...formatGaps(gaps),
+    ...worktreeStateText(worktree),
     "",
     "Use codexa impact for individual files when this list is large."
   ].join("\n");
@@ -212,11 +216,14 @@ export async function diffImpactQuery(input: QuerySessionInput, options: QueryOp
     refresh,
     text: limitText(text, 6000),
     data: {
+      mode: "diff_impact",
       changedFiles: changed.slice(0, 120),
       changedEntries: changedEntries.slice(0, 120),
       changedSymbols: changedSymbols.slice(0, 80).map(compactChangedSymbol),
       indexedChanged: indexedChanged.slice(0, 120),
       unindexedChanged: unindexedChanged.slice(0, 80),
+      worktree: compactWorktreeState(worktree),
+      worktreeDegradationReasons: worktree.degradedReasons,
       groups: groups.slice(0, 20).map(compactDiffGroup),
       impacts,
       gaps
