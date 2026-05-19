@@ -19,8 +19,8 @@ Default behavior:
   4. enables GitHub auto-merge for the PR and waits until it lands
   5. syncs local main to origin/main
   6. bumps package.json/package-lock.json with npm version
-  7. commits the version bump
-  8. runs the tracked GitHub release lane
+  7. commits the version bump and, when pushing, lands it through a release PR
+  8. runs the tracked GitHub release lane from the merged main
   9. verifies GitHub has main, the release tag, and the GitHub Release entry
 
 Release types are npm version release types, defaulting to patch.
@@ -211,7 +211,36 @@ update_branch_and_wait() {
   fi
 
   echo "codexaPublish: waiting for PR #${pr_number} checks."
-  gh pr checks "$pr_number" --repo "$github_repo" --watch --interval 10
+  wait_for_pr_checks "$pr_number" "$github_repo"
+}
+
+wait_for_pr_checks() {
+  local pr_number="$1"
+  local github_repo="$2"
+  local timeout_seconds="${CODEXA_PUBLISH_CHECK_TIMEOUT_SECONDS:-900}"
+  local start now status output
+
+  start="$(date +%s)"
+  while true; do
+    set +e
+    output="$(gh pr checks "$pr_number" --repo "$github_repo" --watch --interval 10 2>&1)"
+    status=$?
+    set -e
+    printf '%s\n' "$output"
+    if [[ "$status" == "0" ]]; then
+      return 0
+    fi
+    if ! grep -qi "no checks reported" <<<"$output"; then
+      return "$status"
+    fi
+
+    now="$(date +%s)"
+    if (( now - start >= timeout_seconds )); then
+      echo "codexaPublish: timed out waiting for PR #${pr_number} checks to appear." >&2
+      return 1
+    fi
+    sleep 10
+  done
 }
 
 merge_pr_and_wait() {
@@ -257,6 +286,45 @@ verify_github_restore_point() {
   git -C "$ROOT" ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null
   gh release view "$tag" --repo "$github_repo" --json tagName,name,url,targetCommitish >/dev/null
   echo "codexaPublish: GitHub restore point verified for ${tag}."
+}
+
+publish_release_bump_if_needed() {
+  local version="$1"
+  local github_repo="$2"
+  local branch pr_number pr_title pr_url
+
+  if [[ "$push_release" != "1" ]]; then
+    echo "codexaPublish: release bump kept local because --no-push was passed."
+    return 0
+  fi
+
+  branch="release/codexa-v${version}"
+  pr_title="Bump Codexa version to v${version}"
+  echo "codexaPublish: publishing version bump through ${branch}."
+  if [[ "$(current_branch)" != "$branch" ]]; then
+    git -C "$ROOT" branch -f "$branch" HEAD
+    git -C "$ROOT" switch "$branch"
+  fi
+  git -C "$ROOT" push -u origin "$branch"
+
+  pr_number="$(
+    gh pr list --repo "$github_repo" --state open --head "$branch" --json number --jq '.[0].number // empty'
+  )"
+  if [[ -z "$pr_number" ]]; then
+    pr_url="$(
+      gh pr create \
+        --repo "$github_repo" \
+        --base main \
+        --head "$branch" \
+        --title "$pr_title" \
+        --body "Release version bump for v${version}. Created by codexaPublish so protected main receives release commits through a pull request."
+    )"
+    pr_number="${pr_url##*/}"
+  fi
+
+  update_branch_and_wait "$pr_number" "$github_repo"
+  merge_pr_and_wait "$pr_number" "$github_repo"
+  sync_main
 }
 
 next_version_for_release_type() {
@@ -460,6 +528,7 @@ npm version "$release_type" --no-git-tag-version
 version="$(node -p "require('./package.json').version")"
 git add package.json package-lock.json
 git commit -m "Bump Codexa version to v${version}"
+publish_release_bump_if_needed "$version" "$github_repo"
 
 npm run release:github -- --tag "v${version}" "${release_args[@]}"
 
