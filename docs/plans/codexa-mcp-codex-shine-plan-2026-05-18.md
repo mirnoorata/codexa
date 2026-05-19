@@ -52,5 +52,5 @@
 
 ## Assumptions
 
-- Codexa remains Codex-first, local-first, and project-agnostic: no hardcoded `/srv/atlas`, no graph DB, no vector DB requirement, no web UI, and no source-mutating MCP tools.
+- Codexa remains Codex-first, local-first, and project-agnostic: no hardcoded machine-local project paths, no graph DB, no vector DB requirement, no web UI, and no source-mutating MCP tools.
 - Market references used: [MCP tool outputs and schemas](https://modelcontextprotocol.io/specification/2025-06-18/server/tools), [MCP Registry](https://modelcontextprotocol.io/registry/about), [GitHub MCP docs](https://docs.github.com/en/enterprise-cloud@latest/copilot/how-tos/provide-context/use-mcp-in-your-ide/use-the-github-mcp-server?tool=webui), [Sourcegraph MCP](https://sourcegraph.com/docs/api/mcp), [Playwright MCP](https://playwright.dev/mcp/introduction), [Context7](https://github.com/upstash/context7#readme), and [Serena](https://github.com/oraios/serena).
