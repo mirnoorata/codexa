@@ -429,11 +429,12 @@ git ls-remote --tags origin refs/tags/v0.2.0
 gh release view v0.2.0 --repo mirnoorata/codexa --json tagName,name,url,targetCommitish
 ```
 
-Local `codexaPublish` wraps that flow. If the current PR branch is dirty, it
-creates one source commit first, pushes that branch, waits for PR checks,
-enables GitHub auto-merge for protected branch policy, waits for the PR to
-land, bumps the version through a release PR when pushing to protected `main`,
-and then runs
+Local `codexaPublish` wraps that flow. Bare `codexaPublish` auto-selects only
+open non-bot `codex/*` PRs that are not currently conflicting with `main`. If
+the current PR branch is dirty, it creates one source commit first, pushes that
+branch, waits for PR checks, enables GitHub auto-merge for protected branch
+policy, waits for the PR to land, bumps the version through a release PR when
+pushing to protected `main`, and then runs
 `release:github`. Pass `--commit-message "Subject"` when the default generated
 source-commit subject would be too vague. Pass `--no-source-commit` to require a
 clean tree.

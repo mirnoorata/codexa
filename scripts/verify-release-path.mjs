@@ -9,6 +9,7 @@ const scripts = packageJson.scripts ?? {};
 requireScriptContains("release:github:dry-run", ["github-release . --dry-run"]);
 requireScriptContains("release:github", ["security:check", "github-release ."]);
 requireScriptContains("security:check", ["check", "audit", "public:snapshot-check", "package:hygiene"]);
+requireScriptContains("lint", ["verify-codexa-publish.sh"]);
 
 requireText("AGENTS.md", [
   "## GitHub Change and Release Path",
@@ -34,11 +35,20 @@ requireText("docs/PUBLIC_RELEASE_CHECKLIST.md", [
 requireText("scripts/codexa-publish.sh", [
   "npm run release:github",
   "commit_current_source_if_dirty",
+  "select_auto_publish_pr",
+  "pr_auto_publish_blocker",
+  "merge conflicts with main",
+  "no checks reported for PR #",
   "--commit-message",
   "--no-source-commit",
   "verify_github_restore_point",
   "gh release view",
   "git -C \"$ROOT\" ls-remote --exit-code --tags origin"
+]);
+requireText("scripts/verify-codexa-publish.sh", [
+  "skipping PR #16 for auto-publish",
+  "PR #16 cannot be published",
+  "no open auto-publishable non-bot codex/* PR found"
 ]);
 requireText("src/cli.ts", [".command(\"github-release\")", "--project-name <name>"]);
 requireText("src/github-release.ts", [

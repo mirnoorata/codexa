@@ -278,6 +278,7 @@ program
   .option("--run-codeql", "run an installed CodeQL CLI for JavaScript/TypeScript and Python and ingest SARIF output", false)
   .option("--codeql-language <language...>", "CodeQL language ids; supported in Codexa helper: javascript-typescript, python", ["javascript-typescript", "python"])
   .option("--codeql-suite <suite>", "CodeQL suite suffix to use with bundled query packs", "code-scanning")
+  .option("--run-shellcheck", "run an installed ShellCheck CLI for tracked shell scripts and ingest findings", false)
   .option("--timeout-ms <n>", "scanner command timeout in milliseconds", parseIntOption, 600_000)
   .option("--index", "reindex after reports are copied or generated", true)
   .option("--no-index", "only copy/generate reports")
@@ -295,6 +296,7 @@ program
         runCodeql: boolean;
         codeqlLanguage: string[];
         codeqlSuite: string;
+        runShellcheck: boolean;
         timeoutMs: number;
         index: boolean;
       }
@@ -309,6 +311,7 @@ program
         runCodeql: opts.runCodeql,
         codeqlLanguages: opts.codeqlLanguage,
         codeqlSuite: opts.codeqlSuite,
+        runShellcheck: opts.runShellcheck,
         timeoutMs: opts.timeoutMs,
         index: opts.index
       });
