@@ -40,6 +40,9 @@ npm run release:github -- --tag vX.Y.Z
   before the PR merge/current-main release step. Use `--commit-message` for a
   better changelog subject, or `--no-source-commit` to restore the old
   clean-tree refusal.
+- When publishing through a PR, `codexaPublish` should satisfy protected branch
+  policy with GitHub auto-merge and wait until the PR lands before bumping,
+  tagging, or creating the GitHub Release.
 - Do not cut official releases from a dirty tree, detached worktree, or
   machine-local project path. The only dirty-tree exception is the tracked
   `codexaPublish` pre-release source commit on the active PR branch or on

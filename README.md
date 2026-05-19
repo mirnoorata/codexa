@@ -431,7 +431,8 @@ gh release view v0.2.0 --repo mirnoorata/codexa --json tagName,name,url,targetCo
 
 Local `codexaPublish` wraps that flow. If the current PR branch is dirty, it
 creates one source commit first, pushes that branch, waits for PR checks,
-squash-merges through GitHub, bumps the version, and then runs
+enables GitHub auto-merge for protected branch policy, waits for the PR to
+land, bumps the version, and then runs
 `release:github`. Pass `--commit-message "Subject"` when the default generated
 source-commit subject would be too vague. Pass `--no-source-commit` to require a
 clean tree.

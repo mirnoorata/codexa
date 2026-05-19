@@ -16,7 +16,7 @@ Default behavior:
   1. resolves the current/latest non-bot codex/* PR unless --current-main is set
   2. commits current dirty source on that PR branch, then pushes it
   3. makes draft PRs ready, updates stale PR branches, and waits for checks
-  4. squash-merges the PR through GitHub
+  4. enables GitHub auto-merge for the PR and waits until it lands
   5. syncs local main to origin/main
   6. bumps package.json/package-lock.json with npm version
   7. commits the version bump
@@ -212,6 +212,40 @@ update_branch_and_wait() {
 
   echo "codexaPublish: waiting for PR #${pr_number} checks."
   gh pr checks "$pr_number" --repo "$github_repo" --watch --interval 10
+}
+
+merge_pr_and_wait() {
+  local pr_number="$1"
+  local github_repo="$2"
+  local timeout_seconds="${CODEXA_PUBLISH_MERGE_TIMEOUT_SECONDS:-900}"
+  local start now state merged_at merge_state
+
+  echo "codexaPublish: enabling auto-merge for PR #${pr_number}."
+  gh pr merge "$pr_number" --auto --squash --delete-branch --repo "$github_repo"
+
+  start="$(date +%s)"
+  while true; do
+    state="$(gh pr view "$pr_number" --repo "$github_repo" --json state --jq '.state')"
+    if [[ "$state" == "MERGED" ]]; then
+      merged_at="$(gh pr view "$pr_number" --repo "$github_repo" --json mergedAt --jq '.mergedAt')"
+      echo "codexaPublish: PR #${pr_number} merged at ${merged_at}."
+      return 0
+    fi
+    if [[ "$state" == "CLOSED" ]]; then
+      echo "codexaPublish: PR #${pr_number} closed without merging; aborting release." >&2
+      return 1
+    fi
+
+    now="$(date +%s)"
+    if (( now - start >= timeout_seconds )); then
+      merge_state="$(gh pr view "$pr_number" --repo "$github_repo" --json mergeStateStatus --jq '.mergeStateStatus')"
+      echo "codexaPublish: timed out waiting for PR #${pr_number} to auto-merge; current merge state is ${merge_state}." >&2
+      echo "codexaPublish: resolve the branch policy blocker, then rerun codexaPublish." >&2
+      return 1
+    fi
+
+    sleep 10
+  done
 }
 
 verify_github_restore_point() {
@@ -414,7 +448,7 @@ if [[ "$use_current_main" != "1" ]]; then
 
   sync_main
   update_branch_and_wait "$pr_number" "$github_repo"
-  gh pr merge "$pr_number" --squash --delete-branch --repo "$github_repo"
+  merge_pr_and_wait "$pr_number" "$github_repo"
   sync_main
 else
   echo "codexaPublish: releasing current main as a ${release_type} release."
