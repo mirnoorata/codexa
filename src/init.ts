@@ -3,6 +3,7 @@ import path from "node:path";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { renderCodexUseContract } from "./codex-contract.js";
 import { buildIndexLocked } from "./indexer.js";
+import { resolveMcpRepoRoot } from "./mcp-repo-root.js";
 import { statusQuery } from "./queries.js";
 
 const EDIT_HOOK_MATCHER = "Edit|MultiEdit|Write|apply_patch";
@@ -30,20 +31,21 @@ export interface InitResult {
 export async function initializeProject(repoInput: string | undefined, options: InitOptions): Promise<InitResult> {
   const repoRoot = resolveInitRepo(repoInput);
   const codexDir = path.join(repoRoot, ".codex");
-  const serverName = options.serverName ?? `codexa-${slugify(path.basename(repoRoot))}`;
+  const serverName = validateServerName(options.serverName ?? `codexa-${slugify(path.basename(repoRoot))}`);
   const cliPath = path.resolve(options.cliPath);
   const configPath = path.join(codexDir, "config.toml");
   const hooksPath = path.join(codexDir, "hooks.json");
+  const writeHooks = options.hooks ?? true;
 
   await mkdir(codexDir, { recursive: true });
   await upsertCodexConfig(configPath, {
     autoRefresh: options.autoRefresh ?? true,
     cliPath,
     repoRoot,
-    serverName
+    serverName,
+    hooks: writeHooks
   });
 
-  const writeHooks = options.hooks ?? true;
   if (writeHooks) {
     await upsertHooksConfig(hooksPath, {
       cliPath,
@@ -66,18 +68,47 @@ export async function initializeProject(repoInput: string | undefined, options: 
 }
 
 export async function sessionStartSummary(repoInput: string | undefined, includeContext: boolean, autoRefresh = false): Promise<string> {
-  const repoRoot = path.resolve(repoInput ?? process.cwd());
+  const configuredRoot = path.resolve(repoInput ?? process.cwd());
+  let repoRoot: string;
+  let resolutionNote: string | undefined;
+  try {
+    const resolution = await resolveMcpRepoRoot(configuredRoot);
+    repoRoot = resolution.repoRoot;
+    if (resolution.source !== "configured-root") {
+      const via = resolution.focusFile ? `${resolution.source}:${resolution.focusFile}` : resolution.source;
+      resolutionNote = `Workspace root: ${configuredRoot} -> focused repo via ${via}`;
+    }
+  } catch (error) {
+    const lines = [`Codexa context for ${configuredRoot}:`];
+    lines.push(`Codexa status unavailable: ${boundedErrorMessage(error)}`);
+    lines.push("Codexa startup hook is advisory; continuing without blocking the session.");
+    return lines.join("\n");
+  }
   const lines = [`Codexa context for ${repoRoot}:`];
-  const status = await statusQuery(repoRoot);
+  if (resolutionNote) {
+    lines.push(resolutionNote);
+  }
+  let status: Awaited<ReturnType<typeof statusQuery>>;
+  try {
+    status = await statusQuery(repoRoot);
+    if (autoRefresh && status.freshness.stale) {
+      await buildIndexLocked({ repoRoot, writeArtifacts: true });
+      status = await statusQuery(repoRoot);
+    }
+  } catch (error) {
+    lines.push(`Codexa status unavailable: ${boundedErrorMessage(error)}`);
+    lines.push("Codexa startup hook is advisory; continuing without blocking the session.");
+    return lines.join("\n");
+  }
   lines.push(...status.text.split(/\r?\n/).slice(0, 6));
 
   if (includeContext) {
-    lines.push("", ...renderCodexUseContract(status.freshness).split(/\r?\n/).slice(0, 44));
+    lines.push("", ...renderCodexUseContract(status.freshness).split(/\r?\n/).slice(0, 78));
     lines.push(`Session-start auto-refresh: ${autoRefresh ? "enabled for follow-up MCP context calls" : "disabled for this cheap startup check"}.`);
   }
 
   lines.push("Codexa MCP is ready.");
-  lines.push("Automatic-use contract: broad task -> focus_brief/session_context; code task -> task_brief; concrete edit -> change_plan with saveSnapshot=true before editing; after edits -> post_edit_review; workflow/runtime change -> workflow_path; API/rename/delete -> callers/callees/dependency_path; finish with test_plan.");
+  lines.push("Automatic-use contract: broad task -> focus_brief/session_context; code task -> task_brief; resume/reuse working memory -> session_memory; concrete edit -> change_plan with saveSnapshot=true before editing; after edits -> post_edit_review; workflow/runtime change -> workflow_path; API/rename/delete -> callers/callees/dependency_path; finish with test_plan.");
   return lines.join("\n");
 }
 
@@ -116,13 +147,16 @@ async function upsertCodexConfig(
     cliPath: string;
     repoRoot: string;
     serverName: string;
+    hooks: boolean;
   }
 ): Promise<void> {
   const existing = await readTextIfExists(configPath);
   let next = stripManagedBlocks(existing);
   next = removeCodexaMcpServerBlocks(next, options);
   next = removeMcpServerBlock(next, options.serverName);
-  next = ensureCodexHooksFeature(next);
+  if (options.hooks) {
+    next = ensureCodexHooksFeature(next);
+  }
   next = trimTrailingBlankLines(next);
   if (next) {
     next += "\n\n";
@@ -411,6 +445,13 @@ function slugify(value: string): string {
   return slug || "repo";
 }
 
+function validateServerName(value: string): string {
+  if (!/^[A-Za-z0-9_-]{1,64}$/u.test(value)) {
+    throw new Error(`Invalid Codexa MCP server name: ${value}`);
+  }
+  return value;
+}
+
 function tomlString(value: string): string {
   return JSON.stringify(value);
 }
@@ -425,4 +466,9 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {
   return error instanceof Error && "code" in error;
+}
+
+function boundedErrorMessage(error: unknown): string {
+  const message = error instanceof Error ? error.message : String(error);
+  return message.replace(/\s+/gu, " ").trim().slice(0, 300) || "unknown error";
 }

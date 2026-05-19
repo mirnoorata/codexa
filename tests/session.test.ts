@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildIndex } from "../src/indexer.js";
+import { contextPackQuery, diffImpactQuery, testPlanQuery } from "../src/queries.js";
 import { createQuerySession } from "../src/query/session.js";
 import { getChangedFileEntries } from "../src/query/worktree.js";
 
@@ -66,6 +67,26 @@ describe("QuerySession", () => {
     ).toBe(true);
   });
 
+  it("propagates degraded worktree state through diff-sensitive query packets", async () => {
+    const repo = await createSessionFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+    const session = await createQuerySession(repo, { autoRefresh: false });
+    await rm(path.join(repo, ".git"), { recursive: true, force: true });
+
+    const context = await contextPackQuery(session, { task: "review current diff", diff: true, includeSnippets: false }, { autoRefresh: false });
+    const diffImpact = await diffImpactQuery(session, { autoRefresh: false });
+    const testPlan = await testPlanQuery(session, true, { autoRefresh: false });
+
+    for (const result of [context, diffImpact, testPlan]) {
+      const data = result.data as { worktree?: { degraded?: boolean }; worktreeDegradationReasons?: string[]; gaps?: string[] };
+      expect(data.worktree?.degraded).toBe(true);
+      expect(data.worktreeDegradationReasons?.length).toBeGreaterThan(0);
+      expect(data.gaps?.some((gap) => gap.startsWith("worktree state unavailable"))).toBe(true);
+      expect(result.text).toContain("Worktree state:");
+      expect(result.text).toContain("unknown");
+    }
+  });
+
   it("reports worktree degradation from the internal getChangedFileEntries when git is unavailable", async () => {
     // Direct unit boundary: even without a session, the worktree module
     // must return { entries: [], degradedReason: <which command failed> }
@@ -74,6 +95,74 @@ describe("QuerySession", () => {
     const filesResult = await getChangedFileEntries(repo);
     expect(filesResult.entries).toEqual([]);
     expect(filesResult.degradedReason).toMatch(/rev-parse/);
+  });
+
+  it("does not run natural-language retrieval when explicit files already define context", async () => {
+    const repo = await createSessionFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+
+    const result = await contextPackQuery(
+      repo,
+      {
+        task: "audit broad performance behavior",
+        files: ["src/main.ts"],
+        diff: false,
+        includeSnippets: false
+      },
+      { autoRefresh: false }
+    );
+    const data = result.data as { retrieval?: unknown; focusFiles?: Array<{ file: { path: string } }> };
+
+    expect(data.retrieval).toBeUndefined();
+    expect(data.focusFiles?.[0]?.file.path).toBe("src/main.ts");
+  });
+
+  it("suppresses test and command guidance for low-quality fallback packets", async () => {
+    const repo = await createSessionFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+
+    const result = await contextPackQuery(
+      repo,
+      {
+        task: "zzzzzzzzzz unmatched context target",
+        diff: false,
+        includeSnippets: false,
+        limit: 5
+      },
+      { autoRefresh: false }
+    );
+    const data = result.data as { actionGuidanceSuppressed?: boolean; tests?: unknown[]; verificationCommands?: unknown[] };
+
+    expect(data.actionGuidanceSuppressed).toBe(true);
+    expect(data.tests).toEqual([]);
+    expect(data.verificationCommands).toEqual([]);
+    expect(result.text).toContain("Likely tests:\n- deferred until Codexa has an explicit file, symbol, or higher-confidence packet.");
+    expect(result.text).toContain("Recommended next MCP call: search");
+    expect(result.text).not.toContain("Recommended next MCP call: find_context");
+    expect(result.text).not.toMatch(/Read first:[\s\S]*\n- none\n\nLikely tests:/u);
+    expect(result.text).not.toContain("If run, these commands would cover:");
+  });
+
+  it("keeps hyphenated plain-English tasks on natural retrieval", async () => {
+    const repo = await createSessionFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+
+    const result = await contextPackQuery(
+      repo,
+      {
+        task: "audit main behavior over-trust under-trust",
+        diff: false,
+        includeSnippets: false,
+        limit: 5
+      },
+      { autoRefresh: false }
+    );
+    const data = result.data as { focusFiles?: Array<{ file: { path: string }; tier: string }>; quality?: { level: string } };
+
+    expect(data.focusFiles?.map((entry) => entry.file.path)).toContain("src/main.ts");
+    expect(data.focusFiles?.every((entry) => entry.tier === "fallback")).toBe(false);
+    expect(data.quality?.level).not.toBe("low");
+    expect(result.text).toContain("natural task retrieval");
   });
 });
 

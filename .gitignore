@@ -5,10 +5,12 @@
 /backups
 .env
 .local/
-docs/plans/
+docs/plans/*
+!docs/plans/codexa-mcp-codex-shine-plan-2026-05-18.md
 docs/architecture/*-plan.md
 .codex/codebase/
 .codex/cache/
+.codex/static-analysis/
 .codex/.codebase.*
 .codex/config.toml
 .codex/hooks.json

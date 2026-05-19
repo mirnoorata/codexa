@@ -60,6 +60,10 @@ serves focused MCP context tools over stdio.
   re-exports, type-only exports, JSX/createElement references, object literal
   methods, project references, and path alias metadata without running an LSP
   daemon.
+- Optional read-only LSP assist for TypeScript, JavaScript, and Python can be
+  enabled with `--lsp` or `CODEXA_LSP=1`. It queries a stdio language server for
+  document symbols, definitions, references, and diagnostics, fails open when no
+  server is configured, and never edits source files.
 - Python package/static analysis resolves relative imports, `__init__.py`
   re-exports, pytest fixture dependencies, class base references, and generic
   FastAPI/Celery/Pydantic/SQLAlchemy hints with heuristic labels where runtime
@@ -85,6 +89,14 @@ serves focused MCP context tools over stdio.
   intent rules. Broad prompts such as "how does queue polling work?" classify
   likely subsystems, explain why, and recommend the next MCP call instead of
   falling back to top-ranked files.
+- Automatic semantic retrieval stores embeddings in
+  `.codex/cache/codexa-semantic-v1/` after `codexa semantic-index <repo>`.
+  After that one-time setup, normal query commands decide whether to use the
+  semantic lane from cache/provider readiness; `--semantic` is only a
+  force/debug override. Providers are OpenAI embeddings or an explicit local
+  JSONL embedding command. Codexa still ships no vector database and does not
+  call embedding providers unless a semantic cache and provider configuration
+  are present, or semantic retrieval is explicitly forced.
 - Explicit graph queries over persisted typed edges: `DEFINES`, `IMPORTS`,
   `CALLS`, `REFERENCES`, `TESTS`, `ROUTE`, `JOB`, and `RISK`.
 - Workflow traces for route/job/manifest execution paths plus generated
@@ -99,14 +111,21 @@ serves focused MCP context tools over stdio.
   compares the actual post-edit dirty tree against that snapshot for drift,
   unplanned files, risk/workflow signals, placeholder risk deltas, and tests
   still unaccounted for.
+- Local diagnostics: `codexa doctor` checks repo wiring, index freshness,
+  generated artifacts, hook setup, and the latest structured hook event.
 - `codexa init` also writes lightweight edit hooks when supported by Codex
   hooks: `hook-pre-edit` reminds Codex when a non-trivial edit lacks a saved
   change-plan snapshot, and `hook-post-edit` runs a bounded post-edit review.
+  The post-edit hook also runs narrowly targeted safe test commands inferred
+  from the review packet, captures structured command reports, and feeds those
+  reports into the persisted outcome without user-supplied `--ran-command`
+  input.
   These hooks are advisory and fail open: setup/query errors print a bounded
   unavailable message and exit successfully so editor tool calls are not
-  blocked. Each successful review writes a compact outcome record under
-  `.codex/cache/codexa-outcomes/`; eval runs summarize those outcomes under
-  `.codex/cache/codexa-evals/`.
+  blocked. Hook runs write compact local JSONL diagnostics under ignored
+  `.codex/cache/codexa-hooks/` state. Each successful review writes a compact
+  outcome record under `.codex/cache/codexa-outcomes/`; eval runs summarize
+  those outcomes under `.codex/cache/codexa-evals/`.
 - Strict evidence tiers in query output: `authoritative`, `derived`,
   `heuristic`, and `fallback`, including test recommendations.
 - Deterministic context quality checks that can warn when a packet is
@@ -118,7 +137,10 @@ serves focused MCP context tools over stdio.
 - Live indexing via `codexa watch <repo>`: a debounced filesystem watcher plus
   git freshness poll keeps `.codex/codebase/` artifacts updated through the
   same locked, atomic, parse-cache-backed index path as manual indexing.
-- No graph DB, vector DB, embeddings, web UI, formal solver, LSP daemon, or
+- Codex plugin packaging under `plugins/codexa/`: the package includes a Codexa
+  skill, plugin manifest, and MCP wrapper so Codex plugin installs can discover
+  the same local context workflow.
+- No graph DB, vector DB, web UI, formal solver, always-on LSP daemon, or
   source-mutating MCP tools.
 
 ## Commands
@@ -130,19 +152,25 @@ absolute path of the repository you want Codexa to index.
 npm install
 npm run build
 npm test
+npm run smoke:package
+npm run benchmark:ci
 
 node dist/cli.js init <repo>
 node dist/cli.js session-start <repo>
 node dist/cli.js hook-pre-edit <repo>
 node dist/cli.js hook-post-edit <repo>
 node dist/cli.js index <repo>
+node dist/cli.js semantic-index <repo> --provider openai
+node dist/cli.js semantic-index <repo> --provider local-command --command ./embed-jsonl
 node dist/cli.js watch <repo>
 node dist/cli.js static-analysis <repo> --semgrep-report /tmp/semgrep.json --codeql-report /tmp/codeql.sarif
+node dist/cli.js doctor <repo>
+node dist/cli.js doctor <repo> --json
 node dist/cli.js status <repo>
 node dist/cli.js repo-map <repo> --budget 1200
 node dist/cli.js find-context <repo> --query "auth middleware"
-node dist/cli.js explain <repo> --file src/app.ts
-node dist/cli.js explain <repo> --symbol usePolling
+node dist/cli.js explain <repo> --file src/app.ts --lsp
+node dist/cli.js explain <repo> --symbol usePolling --lsp
 node dist/cli.js search <repo> --query usePolling
 node dist/cli.js placeholder-report <repo> --limit 20
 node dist/cli.js placeholder-report <repo> --include-tests --include-docs --include-generated
@@ -157,7 +185,7 @@ node dist/cli.js callers <repo> --symbol usePolling
 node dist/cli.js callees <repo> --file src/App.tsx
 node dist/cli.js dependency-path <repo> --from-file src/App.tsx --to-file src/features/use-polling.ts
 node dist/cli.js workflow-path <repo> --query "queue workflow"
-node dist/cli.js change-plan <repo> --task "Change polling behavior safely" --file src/features/use-polling.ts --save-snapshot --task-id polling-update
+node dist/cli.js change-plan <repo> --task "Change polling behavior safely" --file src/features/use-polling.ts --save-snapshot --task-id polling-update --lsp
 node dist/cli.js post-edit-review <repo> --task-id polling-update --ran-command "npm run check"
 node dist/cli.js post-edit-review <repo> --task-id polling-update --ran-command-report '{"command":"npm run check","exitCode":0,"cwd":"<repo>","packageManager":"npm","packageRoot":".","scriptName":"check","args":[],"durationMs":1200,"stdoutSummary":"typecheck and tests passed"}'
 node dist/cli.js post-edit-review <repo> --task-id polling-update --ran-test src/features/use-polling.test.ts
@@ -189,6 +217,33 @@ before answering. Use `--no-auto-refresh` on `repo-map`, `find-context`,
 rewriting it.
 
 After `npm link`, the same commands are available as `codexa ...`.
+
+Semantic retrieval is a two-step installed capability. First build the cache:
+
+```bash
+codexa semantic-index <repo> --provider openai
+codexa semantic-index <repo> --provider local-command --command ./embed-jsonl
+```
+
+After that, `find-context`, `search`, `brief`, `context-pack`, `focus-brief`,
+`session-context`, `workflow-path`, `change-plan`, and `serve` use the semantic
+lane automatically when the cache snapshot matches and the provider can embed
+the query. OpenAI uses `OPENAI_API_KEY` and defaults to
+`text-embedding-3-small`. `local-command` receives JSONL on stdin with
+`{id,text,model,dimensions}` and must return JSON, JSONL, or
+`{embeddings:[...]}` records containing `{id,embedding}`. Use `--semantic` only
+to force diagnostics when auto-detection would skip the lane, and
+`--no-semantic` to disable it for a single call. If the cache is missing, stale,
+or provider settings do not match during forced use, Codexa reports the semantic
+lane as unavailable and returns normal non-semantic context.
+
+LSP assist is also opt-in. Pass `--lsp` to `explain`, `brief`, `context-pack`,
+`change-plan`, or `serve`, or set `CODEXA_LSP=1`. Codexa discovers
+`typescript-language-server --stdio`, `basedpyright-langserver --stdio`, or
+`pyright-langserver --stdio` when available. You can override discovery with
+`CODEXA_LSP_TYPESCRIPT_COMMAND`, `CODEXA_LSP_TYPESCRIPT_ARGS_JSON`,
+`CODEXA_LSP_JAVASCRIPT_COMMAND`, `CODEXA_LSP_JAVASCRIPT_ARGS_JSON`,
+`CODEXA_LSP_PYTHON_COMMAND`, and `CODEXA_LSP_PYTHON_ARGS_JSON`.
 
 To prepare a functional `codera` package for name parking, run:
 
@@ -316,17 +371,76 @@ such as local workspace paths, local home paths, non-example Codexa GitHub
 remotes, GitHub tokens, and private key blocks. It deliberately scans tracked
 files only; ignored generated artifacts and local caches should stay ignored.
 
-Push CI runs the deterministic development gate:
+Push CI runs the deterministic development gate, verifies the packed npm
+tarball from a temporary install, and records a hot-path benchmark artifact:
 
 ```bash
 npm run check
+npm run smoke:package
+npm run benchmark:ci
 ```
+
+`smoke:package` runs `npm pack --json`, installs the generated tarball into a
+temporary consumer project, then exercises the installed `codexa` binary,
+repo initialization, advisory hooks, and MCP startup. `benchmark:ci` rebuilds
+`dist/`, indexes the checkout, measures CLI and MCP hot paths with generous
+CI thresholds, writes `.codex/cache/codexa-benchmarks/latest.json`, and appends
+a Markdown summary when `GITHUB_STEP_SUMMARY` is available.
 
 Release-oriented security checks remain available locally and should be run
 before publication or visibility changes:
 
 ```bash
 npm run security:check
+```
+
+## GitHub Release Timeline
+
+Use GitHub Releases as the visible source timeline for the current project. The
+release command derives the project display name from the target repo's
+`package.json` name, falling back to the repo directory, then creates an
+annotated source tag, pushes `main` and the tag, and creates or updates the
+GitHub Release for that tag:
+
+```bash
+npm run release:github:dry-run -- --tag v0.2.0
+npm run release:github -- --tag v0.2.0
+```
+
+The dry run shows what would be tagged and pushed. The real command runs
+`security:check` first, refuses dirty working trees and non-`main` releases by
+default, disables hidden git credential prompts, and writes release notes with:
+
+- a compare link from the previous `v*` release tag
+- a changelog-style summary grouped by commit purpose
+- a changed-area summary grouped by touched file paths
+- commands to restore a clean checkout from GitHub at the exact release tag
+- commands to branch or add a worktree at the exact release
+- forward-only PR rollback commands using `git revert --no-commit <tag>..HEAD`
+- raw changed-file stats and commit subjects for auditability
+
+For future Codexa changes, ship code to GitHub before cutting the release:
+finish on a named branch, push the branch, merge through the normal GitHub
+flow, then run the release command from a clean `main`. After publishing,
+verify the remote tag and release entry:
+
+```bash
+git ls-remote --tags origin refs/tags/v0.2.0
+gh release view v0.2.0 --repo mirnoorata/codexa --json tagName,name,url,targetCommitish
+```
+
+Local `codexaPublish` wraps that flow. If the current PR branch is dirty, it
+creates one source commit first, pushes that branch, waits for PR checks,
+enables GitHub auto-merge for protected branch policy, waits for the PR to
+land, bumps the version, and then runs
+`release:github`. Pass `--commit-message "Subject"` when the default generated
+source-commit subject would be too vague. Pass `--no-source-commit` to require a
+clean tree.
+
+If you need notes without mutating git or GitHub, run:
+
+```bash
+codexa github-release . --tag v0.2.0 --notes-file /tmp/project-v0.2.0-notes.md --no-push --no-github-release
 ```
 
 If sensitive identifiers were already pushed to a private remote, a clean public
@@ -399,6 +513,12 @@ codexa init
 Codex should initialize the current focused repo, then run the session-start
 check.
 
+The npm package also ships a Codex plugin bundle at `plugins/codexa/`. The
+plugin contains the Codexa skill, plugin manifest, and a small MCP wrapper that
+resolves the focused git repository from `CODEXA_REPO`, Codex workspace
+environment variables, the current directory, or a workspace root with
+`.codex/WORKING.md`, then launches the bundled Codexa MCP server.
+
 ## MCP Configuration
 
 `codexa init` writes the local Codex MCP entry automatically. The generated
@@ -422,6 +542,26 @@ startup_timeout_sec = 10
 tool_timeout_sec = 60
 ```
 
+If an MCP host starts Codexa from a workspace root, `codexa serve
+<workspace-root>` resolves the active repository from
+`<workspace-root>/.codex/WORKING.md` before falling back to the workspace git
+root. The preferred compact marker is:
+
+```markdown
+## Active Focus
+
+- Project: `/absolute/path/to/repo`
+```
+
+The legacy `Focused project: /absolute/path/to/repo` line is still supported.
+The resolver is checked on each tool/resource call, so changing the focused
+project updates MCP routing without restarting the server. Use
+`--workspace-focus-file <path>` or `CODEXA_WORKSPACE_FOCUS_FILE` when the focus
+marker lives somewhere else. Focus-file targets must stay inside the configured
+workspace root. `CODEXA_REPO` and `CODEXA_FOCUSED_REPO` are fallback inputs for
+non-git launch roots and explicit escape hatches for out-of-tree repos; they do
+not override an explicit git repository argument.
+
 The server exposes only context tools. It does not apply patches or expose a
 manual reindex/source-mutation tool, but context queries can auto-refresh the
 generated `.codex/codebase/` cache when freshness checks prove it is missing or
@@ -435,7 +575,8 @@ When auto-refresh is enabled, tools are source-read-only but not strictly
 filesystem-read-only because they may update generated Codexa cache artifacts.
 In that mode Codexa does not advertise context tools as `readOnlyHint: true`;
 use `--no-auto-refresh` when the MCP host needs strict filesystem-read-only
-tool metadata.
+tool metadata. If OpenAI semantic embeddings are enabled for the MCP server,
+semantic-capable context tools advertise `openWorldHint: true`.
 
 Generated artifacts are also exposed as MCP resources:
 `codexa://repo/codebase/README.md`,
@@ -456,7 +597,10 @@ Candidate test commands include provenance such as `package.json` scripts or
 Python test metadata. If Codexa cannot find provenance, it omits the command
 instead of inventing one.
 Post-edit review accepts both `--ran-test` for direct test/accounting entries
-and `--ran-command` for aggregate verification commands. Use
+and `--ran-command` for aggregate verification commands. The generated
+`hook-post-edit` path attempts AutoVerify first: it runs only targeted test
+commands whose package script and runner shape are allowlisted, then passes the
+captured command report into the final review. Use
 `--ran-command-report` when you have structured execution evidence such as
 `cwd`, package manager, package/workspace scope, script name, args, `exitCode`,
 `durationMs`, and short stdout/stderr summaries. Codexa records these command
@@ -503,6 +647,11 @@ setting `CODEXA_SESSIONSTART_CONTEXT=1`. Generated edit hooks are advisory:
 context check is unavailable. The generated helper entry points are
 `session-start`, `hook-pre-edit`, and `hook-post-edit`; normal users usually
 reach them through Codex hooks rather than invoking them directly.
+
+Hook diagnostics are written locally to `.codex/cache/codexa-hooks/events.ndjson`
+and summarized by `codexa doctor <repo>`. The log is ignored state, bounded, and
+intended for answering whether a hook ran, skipped a duplicate tree, or failed
+open.
 
 ## Local State
 

@@ -1,0 +1,20 @@
+{
+  "name": "codexa-local",
+  "interface": {
+    "displayName": "Codexa Local Plugins"
+  },
+  "plugins": [
+    {
+      "name": "codexa",
+      "source": {
+        "source": "local",
+        "path": "./plugins/codexa"
+      },
+      "policy": {
+        "installation": "AVAILABLE",
+        "authentication": "ON_INSTALL"
+      },
+      "category": "Productivity"
+    }
+  ]
+}

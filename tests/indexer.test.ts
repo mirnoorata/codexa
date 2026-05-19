@@ -1,11 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { getGitState } from "../src/git.js";
 import { buildIndex, buildIndexLocked, loadIndex } from "../src/indexer.js";
+import { validateChangePlanTargetCandidate } from "../src/query/post-edit.js";
 import { loadExternalRiskSignals } from "../src/risk-ingest.js";
+import { recordSessionMemory } from "../src/session-memory.js";
 import { updateStaticAnalysisReports } from "../src/static-analysis.js";
 import { CURRENT_VERIFICATION_PROVENANCE } from "../src/types.js";
 import {
@@ -247,6 +249,14 @@ describe("Codexa indexer", () => {
     await writeFile(path.join(repo, "package.json"), JSON.stringify({ scripts: { test: "vitest run" } }, null, 2), "utf8");
     await writeFile(path.join(repo, "src/ready.ts"), "export function ready() { return 1 }\n", "utf8");
     await writeFile(path.join(repo, "src/formatted-empty.ts"), "export function formattedEmpty() {\n}\n", "utf8");
+    await writeFile(path.join(repo, "src/methods.ts"), "export class Box { constructor() {} reset() {} }\nexport const oneArg = value => {}\n", "utf8");
+    await writeFile(
+      path.join(repo, "src/parameter-property.ts"),
+      "interface ClientOptions { endpoint: string }\nexport class Client { constructor(private readonly options: ClientOptions) {} }\nexport class MultilineClient {\n  constructor(private readonly options: ClientOptions) {\n  }\n}\n",
+      "utf8"
+    );
+    await writeFile(path.join(repo, "src/block-comment.ts"), "/**\n * TODO: replace temporary parser fallback\n */\nexport const ready = true\n", "utf8");
+    await writeFile(path.join(repo, "src/uppercase.ts"), "export const token = 'TODO'\n", "utf8");
     await writeFile(path.join(repo, "src/url.ts"), "export const docsUrl = 'https://example.com/TODO'\n", "utf8");
     await writeFile(path.join(repo, "src/regex-detector.ts"), "export const marker = /['\"`](?:todo|placeholder|not implemented)['\"`]/giu\n", "utf8");
     await writeFile(path.join(repo, "src/generated/client.ts"), "export function generatedLater() { throw new Error('not implemented') }\n", "utf8");
@@ -273,6 +283,7 @@ describe("Codexa indexer", () => {
     await writeFile(path.join(repo, "service/work.py"), "def later():\n    raise NotImplementedError('not implemented yet')\n\ndef marker():\n    pass\n", "utf8");
     await writeFile(path.join(repo, "service/strings.py"), "docs_url = 'https://example.com/#TODO'\n# raise NotImplementedError('later')\nreal_value = 1\n", "utf8");
     await writeFile(path.join(repo, "config/seeds.json"), JSON.stringify({ placeholderToken: "REPLACE_ME", real: true }, null, 2), "utf8");
+    await writeFile(path.join(repo, "config/broken.json"), "{\"notManifest\": true,\n", "utf8");
     await writeFile(path.join(repo, "broken/package.json"), "{\"placeholderToken\":\"REPLACE_ME\",\n", "utf8");
     await writeFile(path.join(repo, "docs/todo.md"), "TODO document the placeholder report\n", "utf8");
     await writeFile(path.join(repo, "tests/stub.test.ts"), "it('keeps fixture placeholder text', () => {}) // TODO test fixture\n", "utf8");
@@ -286,10 +297,15 @@ describe("Codexa indexer", () => {
     expect(index.risks.some((risk) => risk.path === "src/existing.ts" && risk.signal === "placeholder.not-implemented" && risk.confidence === "derived")).toBe(true);
     expect(index.risks.some((risk) => risk.path === "src/existing.ts" && risk.signal === "placeholder.no-op-body")).toBe(true);
     expect(index.risks.some((risk) => risk.path === "src/formatted-empty.ts" && risk.signal === "placeholder.no-op-body")).toBe(true);
+    expect(index.risks.some((risk) => risk.path === "src/methods.ts" && risk.signal === "placeholder.no-op-body")).toBe(true);
+    expect(index.risks.some((risk) => risk.path === "src/parameter-property.ts")).toBe(false);
+    expect(index.risks.some((risk) => risk.path === "src/block-comment.ts" && risk.signal === "placeholder.todo-comment")).toBe(true);
+    expect(index.risks.some((risk) => risk.path === "src/uppercase.ts" && risk.signal === "placeholder.dummy-literal")).toBe(true);
     expect(index.risks.some((risk) => risk.path === "src/existing.ts" && risk.signal === "placeholder.dummy-data")).toBe(true);
     expect(index.risks.some((risk) => risk.path === "service/work.py" && risk.signal === "placeholder.not-implemented")).toBe(true);
     expect(index.risks.some((risk) => risk.path === "config/seeds.json" && risk.signal === "placeholder.dummy-literal")).toBe(true);
     expect(index.risks.some((risk) => risk.path === "broken/package.json" && risk.signal === "placeholder.dummy-literal")).toBe(true);
+    expect(index.parserErrors.some((error) => error.path === "config/broken.json")).toBe(true);
     expect(index.parserErrors.some((error) => error.path === "broken/package.json")).toBe(true);
     expect(index.risks.some((risk) => risk.path === "src/url.ts" || risk.path === "src/regex-detector.ts" || risk.path === "service/strings.py")).toBe(false);
     expect(index.risks.some((risk) => risk.path === "src/commented.ts" && risk.signal === "placeholder.placeholder-comment")).toBe(true);
@@ -302,7 +318,7 @@ describe("Codexa indexer", () => {
     expect(defaultData.findings.some((finding) => finding.path.startsWith("tests/") || finding.path.startsWith("docs/") || finding.path.includes("/generated/"))).toBe(false);
     expect(defaultData.excludedByFilter).toBeGreaterThanOrEqual(3);
 
-    const report = await placeholderReportQuery(repo, { includeTests: true, includeDocs: true, includeGenerated: true, limit: 20 }, { autoRefresh: false });
+    const report = await placeholderReportQuery(repo, { includeTests: true, includeDocs: true, includeGenerated: true, limit: 50 }, { autoRefresh: false });
     const reportData = report.data as { findings: Array<{ path: string }>; categories: Record<string, number>; hiddenByLimit: number };
     expect(report.text).toContain("Codexa placeholder report");
     expect(report.text).toContain("placeholder.not-implemented");
@@ -327,7 +343,7 @@ describe("Codexa indexer", () => {
       },
       { autoRefresh: false }
     );
-    await writeFile(path.join(repo, "src/ready.ts"), "export function ready() { throw new Error('not implemented') }\n", "utf8");
+    await writeFile(path.join(repo, "src/ready.ts"), "export function ready() { throw new Error('not implemented') }\nexport function readyAgain() { throw new Error('not implemented') }\n", "utf8");
     const review = await postEditReviewQuery(repo, { taskId: "placeholder-tracking", ranTests: [] }, { autoRefresh: true });
     expect(review.text).toContain("placeholder.not-implemented");
     expect(review.text).toContain("src/ready.ts");
@@ -335,7 +351,7 @@ describe("Codexa indexer", () => {
     const readyDelta = reviewData.riskDeltas.find((delta) => delta.path === "src/ready.ts");
     expect(readyDelta?.before.riskScore).toBe(0);
     expect(readyDelta?.after.riskScore ?? 0).toBeGreaterThan(0);
-    expect(readyDelta?.newSignals.some((signal) => signal.includes("placeholder.not-implemented"))).toBe(true);
+    expect(readyDelta?.newSignals.filter((signal) => signal.includes("placeholder.not-implemented"))).toHaveLength(2);
 
     await changePlanQuery(repo, { task: "remove existing placeholders", files: ["src/existing.ts"], saveSnapshot: true, taskId: "placeholder-removal" }, { autoRefresh: true });
     await writeFile(path.join(repo, "src/existing.ts"), "export function finished() { return 'done' }\n", "utf8");
@@ -375,12 +391,73 @@ describe("Codexa indexer", () => {
     expect(reedited.freshness.reason).toBe("dirty-files-changed");
   });
 
+  it("does not follow symlinked source files outside the repository", async () => {
+    const repo = await createFixtureRepo();
+    const externalDir = await mkdtemp(path.join(os.tmpdir(), "codexa-outside-source-"));
+    const externalSource = path.join(externalDir, "outside.ts");
+    await writeFile(externalSource, "export const leakedOutsideSecret = 'do-not-index-this'\n", "utf8");
+    await symlink(externalSource, path.join(repo, "src/outside-link.ts"));
+
+    const index = await buildIndex({ repoRoot: repo });
+    const artifact = await readFile(path.join(repo, ".codex/codebase/index.json"), "utf8");
+
+    expect(index.files.some((file) => file.path === "src/outside-link.ts")).toBe(false);
+    expect(index.freshness.dirtyFiles).toContain("src/outside-link.ts");
+    expect(index.freshness.dirtyFileHashes["src/outside-link.ts"]).toBe("non-file");
+    expect(artifact).not.toContain("leakedOutsideSecret");
+    expect(artifact).not.toContain("do-not-index-this");
+  });
+
+  it("uses metadata hashes for large or non-source dirty files", async () => {
+    const repo = await createFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+
+    await writeFile(path.join(repo, "large-output.bin"), Buffer.alloc(2 * 1024 * 1024 + 1, "a"));
+    const status = await statusQuery(repo);
+
+    expect(status.freshness.dirtyFiles).toContain("large-output.bin");
+    expect(status.freshness.dirtyFileHashes["large-output.bin"]).toMatch(/^metadata:/u);
+  });
+
+  it("keeps high-severity placeholder findings in the bounded placeholder map", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-placeholder-map-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "docs"));
+    await mkdirp(path.join(repo, "zz"));
+    for (let index = 0; index < 170; index += 1) {
+      await writeFile(path.join(repo, "docs", `todo-${String(index).padStart(3, "0")}.md`), "TODO document this low-risk note\n", "utf8");
+    }
+    await writeFile(path.join(repo, "zz/high.ts"), "export function highRiskLatePath() { throw new Error('not implemented') }\n", "utf8");
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+
+    await buildIndex({ repoRoot: repo });
+    const placeholderMap = await readFile(path.join(repo, ".codex/codebase/placeholder-map.md"), "utf8");
+
+    expect(placeholderMap).toContain("zz/high.ts");
+    expect(placeholderMap).toContain("placeholder.not-implemented");
+  });
+
   it("writes and reuses a parse cache for unchanged files", async () => {
     const repo = await createFixtureRepo();
     await buildIndex({ repoRoot: repo });
     const cachePath = path.join(repo, ".codex/cache/codexa-parse-cache.json");
     const firstCache = JSON.parse(await readFile(cachePath, "utf8")) as { entries: Record<string, unknown> };
     expect(Object.keys(firstCache.entries)).toContain("src/api.ts");
+
+    const poisoned = firstCache as {
+      entries: Record<string, { result?: { symbols?: Array<{ path?: string }> } }>;
+    };
+    const firstApiSymbol = poisoned.entries["src/api.ts"]?.result?.symbols?.[0];
+    if (firstApiSymbol) {
+      firstApiSymbol.path = "src/poisoned.ts";
+    }
+    await writeFile(cachePath, `${JSON.stringify(poisoned)}\n`, "utf8");
+    const rebuilt = await buildIndex({ repoRoot: repo });
+    expect(rebuilt.symbols.some((symbol) => symbol.path === "src/poisoned.ts")).toBe(false);
 
     await buildIndex({ repoRoot: repo });
     const secondCache = JSON.parse(await readFile(cachePath, "utf8")) as { entries: Record<string, unknown> };
@@ -677,6 +754,7 @@ describe("Codexa indexer", () => {
     expect(index.usageSites.some((usage) => usage.path === "sample_api/packages/project.invalid.json" && usage.name === "fake.node")).toBe(false);
     expect(index.risks.some((risk) => risk.path === "docs/report.json" && risk.signal === "node-manifest")).toBe(false);
     expect(index.risks.some((risk) => risk.path === "sample_api/packages/project.invalid.json" && risk.signal === "node-manifest")).toBe(false);
+    expect(index.parserErrors.some((error) => error.path === "docs/broken.json")).toBe(true);
     expect(index.graphEdges.some((edge) => edge.fromPath === "docs/report.json" || edge.toPath === "docs/report.json")).toBe(false);
     expect(index.symbols.some((symbol) => symbol.path === "sample_api/packages/project.media.json" && symbol.kind === "node")).toBe(true);
   });
@@ -801,7 +879,7 @@ describe("Codexa indexer", () => {
 
   it("does not guess ambiguous file or symbol targets", async () => {
     const repo = await createFixtureRepo();
-    await buildIndex({ repoRoot: repo });
+    const index = await buildIndex({ repoRoot: repo });
 
     const symbolImpact = await impactQuery(repo, { symbol: "config" });
     expect(symbolImpact.text).toContain("Ambiguous symbol target");
@@ -814,6 +892,59 @@ describe("Codexa indexer", () => {
     const outside = await impactQuery(repo, { file: path.join(os.tmpdir(), "src/api.ts") });
     expect(outside.text).toContain("No file or symbol matched impact target");
     expect(outside.text).not.toContain("Impact target");
+
+    const baseCandidate = {
+      candidateId: "candidate-test",
+      rank: 0,
+      kind: "symbol" as const,
+      path: "src/api.ts",
+      score: 1,
+      confidence: "derived" as const,
+      evidence: ["test candidate"],
+      missingAnchors: [],
+      nextChangePlanArgs: { symbols: ["missingSymbol"], changeType: "unknown" as const, saveSnapshot: true as const },
+      rawSearchQueries: []
+    };
+    const invalidSymbol = validateChangePlanTargetCandidate(baseCandidate, { index, repoRoot: repo });
+    expect(invalidSymbol.validationStatus).toBe("needs-more-context");
+    expect(invalidSymbol.validationReasons).toContain("symbol target not indexed: missingSymbol");
+
+    const ambiguousSymbol = validateChangePlanTargetCandidate(
+      {
+        ...baseCandidate,
+        nextChangePlanArgs: { symbols: ["config"], changeType: "unknown" as const, saveSnapshot: true as const }
+      },
+      { index, repoRoot: repo }
+    );
+    expect(ambiguousSymbol.validationStatus).toBe("needs-more-context");
+    expect(ambiguousSymbol.validationReasons).toContain("symbol target is ambiguous: config");
+
+    const weakCandidate = validateChangePlanTargetCandidate(
+      {
+        ...baseCandidate,
+        kind: "file" as const,
+        confidence: "fallback" as const,
+        evidence: [],
+        nextChangePlanArgs: { files: ["src/api.ts"], changeType: "unknown" as const, saveSnapshot: true as const }
+      },
+      { index, repoRoot: repo }
+    );
+    expect(weakCandidate.validationStatus).toBe("weak");
+    expect(weakCandidate.wouldPlanEditTargets).toEqual(["src/api.ts"]);
+    expect(weakCandidate.validationReasons).toContain("candidate evidence is fallback");
+
+    const heuristicCandidate = validateChangePlanTargetCandidate(
+      {
+        ...baseCandidate,
+        kind: "file" as const,
+        confidence: "heuristic" as const,
+        evidence: ["lexical path match"],
+        nextChangePlanArgs: { files: ["src/api.ts"], changeType: "unknown" as const, saveSnapshot: true as const }
+      },
+      { index, repoRoot: repo }
+    );
+    expect(heuristicCandidate.validationStatus).toBe("weak");
+    expect(heuristicCandidate.wouldPlanEditTargets).toEqual(["src/api.ts"]);
   });
 
   it("reports changed files that are not in the current index", async () => {
@@ -932,6 +1063,75 @@ describe("Codexa indexer", () => {
     expect(pack.text.length).toBeLessThanOrEqual(900 * 4 + 40);
   });
 
+  it("keeps source-anchored edit packets ready when dirty tests are selected", async () => {
+    const repo = await createFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+    await writeFile(
+      path.join(repo, "tests/test_app.py"),
+      "from service.app import route_thing\n\ndef test_route_dirty():\n    assert route_thing(' A ') == 'A'\n",
+      "utf8"
+    );
+
+    const pack = await taskBriefQuery(
+      repo,
+      {
+        task: "Fix service/app.py route_thing normalization behavior",
+        diff: true,
+        tokenBudget: 1400,
+        limit: 8
+      },
+      { autoRefresh: true }
+    );
+    const data = pack.data as {
+      packetVerdict?: string;
+      actionGuidanceSuppressed?: boolean;
+      focusFiles: Array<{ file: { path: string }; tier: string }>;
+      intentConfidence?: { editReady: boolean; anchors: string[]; missingAnchors: string[] };
+      quality?: { level: string };
+      tests?: unknown[];
+    };
+
+    expect(data.focusFiles.map((entry) => entry.file.path)).toContain("service/app.py");
+    expect(data.focusFiles.map((entry) => entry.file.path)).toContain("tests/test_app.py");
+    expect(data.intentConfidence?.anchors).toContain("service/app.py");
+    expect(data.intentConfidence?.missingAnchors).not.toContain("only test anchors for edit prompt");
+    expect(data.packetVerdict).toBe("edit-ready");
+    expect(data.intentConfidence?.editReady).toBe(true);
+    expect(data.quality?.level).not.toBe("low");
+    expect(data.actionGuidanceSuppressed).toBe(false);
+    expect(data.tests?.length).toBeGreaterThan(0);
+    expect(pack.text).not.toContain("deferred until Codexa has an explicit file, symbol, or higher-confidence packet");
+  });
+
+  it("does not let unrelated dirty files turn broad edit prompts into edit-ready packets", async () => {
+    const repo = await createFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+    await writeFile(path.join(repo, "service/helpers.py"), "def normalize(value):\n    return value.strip().lower()\n", "utf8");
+
+    const pack = await taskBriefQuery(
+      repo,
+      {
+        task: "Change behavior safely",
+        diff: true,
+        tokenBudget: 1400,
+        limit: 8
+      },
+      { autoRefresh: false }
+    );
+    const data = pack.data as {
+      packetVerdict?: string;
+      focusFiles: Array<{ file: { path: string }; tier: string }>;
+      intentConfidence?: { editReady: boolean; anchors: string[]; missingAnchors: string[] };
+    };
+
+    expect(data.focusFiles.map((entry) => entry.file.path)).toContain("service/helpers.py");
+    expect(data.intentConfidence?.anchors).not.toContain("service/helpers.py");
+    expect(data.intentConfidence?.editReady).toBe(false);
+    expect(data.packetVerdict).not.toBe("edit-ready");
+    expect(data.intentConfidence?.missingAnchors).toContain("no selected packet anchors");
+    expect(pack.text).toContain("Recommended next MCP call: search");
+  });
+
   it("answers broad focus, graph, workflow, dependency, and change-plan queries", async () => {
     const repo = await createFixtureRepo();
     await buildIndex({ repoRoot: repo });
@@ -958,6 +1158,241 @@ describe("Codexa indexer", () => {
     expect(ambiguousData.packetVerdict).not.toBe("edit-ready");
     expect(["low", "medium"]).toContain(ambiguousData.quality?.level);
     expect(ambiguousEdit.text).toContain("Recommended next MCP call: search");
+
+    const ambiguousPlan = await changePlanQuery(
+      repo,
+      {
+        task: "Change behavior safely",
+        diff: false,
+        limit: 6,
+        tokenBudget: 1200,
+        saveSnapshot: true,
+        taskId: "ambiguous-change-plan"
+      },
+      { autoRefresh: false }
+    );
+    const ambiguousPlanData = ambiguousPlan.data as {
+      editReadiness?: { editable: boolean; status: string; snapshotBlocked: boolean };
+      plannedEditTargets?: string[];
+      tests?: unknown[];
+      snapshot?: unknown;
+      snapshotBlock?: { taskId: string; path: string };
+      targetCandidates?: Array<{
+        candidateId: string;
+        rank: number;
+        kind: "file" | "symbol";
+        path: string;
+        score: number;
+        validationStatus: "edit-ready" | "needs-more-context" | "weak";
+        validationReasons: string[];
+        wouldPlanEditTargets: string[];
+        wouldRecommendTests: string[];
+        candidateRisk: { score: number; reasons: string[] };
+        evidence: string[];
+        missingAnchors: string[];
+        nextChangePlanArgs: { task?: string; files?: string[]; symbols?: string[]; query?: string; taskId?: string; changeType?: "style" | "api" | "behavior" | "rename" | "delete" | "unknown"; diff?: boolean; saveSnapshot: boolean };
+        rawSearchQueries: string[];
+      }>;
+    };
+    expect(ambiguousPlan.text).toContain("Edit readiness: orientation-only");
+    expect(ambiguousPlan.text).toContain("Task snapshot: not saved");
+    expect(ambiguousPlan.text).toContain("Target candidates:");
+    expect(ambiguousPlanData.editReadiness).toMatchObject({ editable: false, status: "orientation-only", snapshotBlocked: true });
+    expect(ambiguousPlanData.plannedEditTargets).toEqual([]);
+    expect(ambiguousPlanData.tests).toEqual([]);
+    expect(ambiguousPlanData.snapshot).toBeUndefined();
+    expect(ambiguousPlanData.targetCandidates?.length).toBeGreaterThan(0);
+    expect(ambiguousPlanData.targetCandidates?.[0]).toMatchObject({
+      candidateId: expect.stringMatching(/^candidate-/),
+      rank: 1,
+      path: expect.any(String),
+      validationStatus: "edit-ready",
+      validationReasons: expect.any(Array),
+      wouldPlanEditTargets: expect.any(Array),
+      wouldRecommendTests: expect.any(Array),
+      candidateRisk: expect.objectContaining({ score: expect.any(Number), reasons: expect.any(Array) }),
+      evidence: expect.any(Array),
+      missingAnchors: expect.arrayContaining(["file-or-symbol-target"]),
+      nextChangePlanArgs: expect.objectContaining({ saveSnapshot: true, taskId: "ambiguous-change-plan" })
+    });
+    const validationRanks = { "edit-ready": 0, weak: 1, "needs-more-context": 2 };
+    const candidateValidationOrder = (ambiguousPlanData.targetCandidates ?? []).map((candidate) => validationRanks[candidate.validationStatus]);
+    expect(candidateValidationOrder).toEqual([...candidateValidationOrder].sort((left, right) => left - right));
+    const candidateIds = (ambiguousPlanData.targetCandidates ?? []).map((candidate) => candidate.candidateId);
+    expect(new Set(candidateIds).size).toBe(candidateIds.length);
+    expect(
+      Boolean(ambiguousPlanData.targetCandidates?.[0]?.nextChangePlanArgs.files?.length) ||
+        Boolean(ambiguousPlanData.targetCandidates?.[0]?.nextChangePlanArgs.symbols?.length)
+    ).toBe(true);
+    expect(ambiguousPlanData.targetCandidates?.[0]?.evidence.length).toBeGreaterThan(0);
+    expect(ambiguousPlanData.targetCandidates?.[0]?.validationReasons.some((reason) => reason.includes("target resolves"))).toBe(true);
+    expect(ambiguousPlanData.targetCandidates?.[0]?.wouldPlanEditTargets.length).toBeGreaterThan(0);
+    expect(Array.isArray(ambiguousPlanData.targetCandidates?.[0]?.wouldRecommendTests)).toBe(true);
+    expect(ambiguousPlanData.targetCandidates?.[0]?.rawSearchQueries.length).toBeGreaterThan(0);
+    expect(ambiguousPlanData.snapshotBlock).toMatchObject({
+      taskId: "ambiguous-change-plan",
+      path: ".codex/cache/codexa-tasks/ambiguous-change-plan.blocked.json"
+    });
+    await expect(readFile(path.join(repo, ".codex/cache/codexa-tasks/ambiguous-change-plan.json"), "utf8")).rejects.toThrow();
+    const ambiguousLatest = JSON.parse(await readFile(path.join(repo, ".codex/cache/codexa-tasks/latest.json"), "utf8")) as {
+      taskId: string;
+      path: string;
+      blocked: boolean;
+    };
+    expect(ambiguousLatest).toMatchObject({
+      taskId: "ambiguous-change-plan",
+      path: "ambiguous-change-plan.blocked.json",
+      blocked: true
+    });
+    const followedCandidate = ambiguousPlanData.targetCandidates?.[0];
+    expect(followedCandidate).toBeDefined();
+    expect(followedCandidate?.candidateId).toMatch(/^candidate-/);
+    expect(followedCandidate?.validationStatus).toBe("edit-ready");
+    const followedPlan = await changePlanQuery(
+      repo,
+      {
+        taskId: "ambiguous-change-plan",
+        followCandidate: followedCandidate!.candidateId,
+        saveSnapshot: true
+      },
+      { autoRefresh: false }
+    );
+    const followedPlanData = followedPlan.data as {
+      editReadiness?: { editable: boolean; status: string };
+      followCandidate?: { status: string; candidateId: string; plannedEditTargets: string[] };
+      snapshot?: { taskId: string };
+      plannedEditTargets?: string[];
+      targetCandidates?: unknown[];
+    };
+    expect(followedPlan.text).toContain(`Follow candidate: accepted ${followedCandidate?.candidateId}`);
+    expect(followedPlanData.editReadiness).toMatchObject({ editable: true, status: "edit-ready" });
+    expect(followedPlanData.followCandidate).toMatchObject({ status: "accepted", candidateId: followedCandidate?.candidateId });
+    expect(followedPlanData.snapshot?.taskId).toBe("ambiguous-change-plan");
+    expect(followedPlanData.plannedEditTargets).toEqual(followedCandidate?.wouldPlanEditTargets);
+    expect(followedPlanData.followCandidate?.plannedEditTargets).toEqual(followedCandidate?.wouldPlanEditTargets);
+    expect(followedPlanData.targetCandidates).toEqual([]);
+    await expect(readFile(path.join(repo, ".codex/cache/codexa-tasks/ambiguous-change-plan.blocked.json"), "utf8")).rejects.toThrow();
+    const followedLatest = JSON.parse(await readFile(path.join(repo, ".codex/cache/codexa-tasks/latest.json"), "utf8")) as {
+      taskId: string;
+      path: string;
+      blocked?: boolean;
+    };
+    expect(followedLatest).toMatchObject({
+      taskId: "ambiguous-change-plan",
+      path: "ambiguous-change-plan.json"
+    });
+    expect(followedLatest.blocked).toBeUndefined();
+
+    const symbolCandidate = ambiguousPlanData.targetCandidates?.find((candidate) => candidate.kind === "symbol" && candidate.validationStatus === "edit-ready");
+    expect(symbolCandidate).toBeDefined();
+    const followedSymbolPlan = await changePlanQuery(
+      repo,
+      {
+        task: symbolCandidate?.nextChangePlanArgs.task,
+        symbols: symbolCandidate?.nextChangePlanArgs.symbols,
+        query: symbolCandidate?.nextChangePlanArgs.query,
+        taskId: "ambiguous-change-plan-symbol",
+        changeType: symbolCandidate?.nextChangePlanArgs.changeType,
+        diff: symbolCandidate?.nextChangePlanArgs.diff,
+        saveSnapshot: true
+      },
+      { autoRefresh: false }
+    );
+    const followedSymbolData = followedSymbolPlan.data as {
+      editReadiness?: { editable: boolean; status: string };
+      plannedEditTargets?: string[];
+      targetCandidates?: unknown[];
+      snapshot?: { taskId: string };
+    };
+    expect(followedSymbolData.editReadiness).toMatchObject({ editable: true, status: "edit-ready" });
+    expect(followedSymbolData.plannedEditTargets).toEqual(symbolCandidate?.wouldPlanEditTargets);
+    expect(followedSymbolData.targetCandidates).toEqual([]);
+    expect(followedSymbolData.snapshot?.taskId).toBe("ambiguous-change-plan-symbol");
+
+    const generatedIdPlan = await changePlanQuery(
+      repo,
+      {
+        task: "Retarget behavior safely",
+        changeType: "behavior",
+        diff: false,
+        limit: 6,
+        tokenBudget: 1200,
+        saveSnapshot: true
+      },
+      { autoRefresh: false }
+    );
+    const generatedIdData = generatedIdPlan.data as {
+      snapshotBlock?: { taskId: string; path: string };
+      targetCandidates?: Array<{
+        candidateId: string;
+        validationStatus: "edit-ready" | "needs-more-context" | "weak";
+        wouldPlanEditTargets: string[];
+        nextChangePlanArgs: { task?: string; files?: string[]; symbols?: string[]; query?: string; taskId?: string; changeType?: "style" | "api" | "behavior" | "rename" | "delete" | "unknown"; diff?: boolean; saveSnapshot: boolean };
+      }>;
+    };
+    const generatedTaskId = generatedIdData.snapshotBlock?.taskId;
+    expect(generatedTaskId).toBeTruthy();
+    expect(generatedIdData.targetCandidates?.[0]?.nextChangePlanArgs.taskId).toBe(generatedTaskId);
+    const generatedBlockPath = generatedIdData.snapshotBlock?.path;
+    expect(generatedBlockPath).toBeTruthy();
+    const generatedCandidate = generatedIdData.targetCandidates?.[0];
+    expect(generatedCandidate?.candidateId).toMatch(/^candidate-/);
+    expect(generatedCandidate?.validationStatus).toBe("edit-ready");
+    expect(generatedCandidate?.wouldPlanEditTargets.length).toBeGreaterThan(0);
+    const generatedFollowedOutput = execFileSync(
+      process.execPath,
+      [path.join(process.cwd(), "dist/cli.js"), "change-plan", repo, "--task-id", generatedTaskId!, "--follow-candidate", generatedCandidate!.candidateId, "--no-auto-refresh"],
+      { encoding: "utf8" }
+    );
+    expect(generatedFollowedOutput).toContain(`Follow candidate: accepted ${generatedCandidate?.candidateId}`);
+    expect(generatedFollowedOutput).toContain(`Task snapshot: ${generatedTaskId}`);
+    const generatedFollowedSnapshot = JSON.parse(await readFile(path.join(repo, ".codex/cache/codexa-tasks", `${generatedTaskId}.json`), "utf8")) as {
+      changeType: string;
+      input: { changeType?: string; diff?: boolean };
+    };
+    expect(generatedFollowedSnapshot.changeType).toBe("behavior");
+    expect(generatedFollowedSnapshot.input).toMatchObject({ changeType: "behavior", diff: false });
+    await expect(readFile(path.join(repo, generatedBlockPath ?? ""), "utf8")).rejects.toThrow();
+
+    const weakCandidatePlan = await changePlanQuery(
+      repo,
+      {
+        task: "narlple frondicate zindle",
+        diff: false,
+        limit: 4,
+        tokenBudget: 900
+      },
+      { autoRefresh: false }
+    );
+    const weakCandidateData = weakCandidatePlan.data as {
+      targetCandidates?: Array<{ candidateId: string; validationStatus: "edit-ready" | "needs-more-context" | "weak"; validationReasons: string[] }>;
+    };
+    expect(weakCandidateData.targetCandidates?.some((candidate) => candidate.validationStatus === "weak" && candidate.validationReasons.includes("candidate evidence is fallback"))).toBe(true);
+    const weakCandidate = weakCandidateData.targetCandidates?.find((candidate) => candidate.validationStatus === "weak");
+    expect(weakCandidate?.candidateId).toMatch(/^candidate-/);
+    const rejectedWeakFollow = await changePlanQuery(
+      repo,
+      {
+        task: "narlple frondicate zindle",
+        diff: false,
+        limit: 4,
+        tokenBudget: 900,
+        followCandidate: weakCandidate!.candidateId
+      },
+      { autoRefresh: false }
+    );
+    const rejectedWeakFollowData = rejectedWeakFollow.data as {
+      followCandidate?: { status: string; requested: string; reason: string };
+      snapshot?: unknown;
+      plannedEditTargets?: string[];
+    };
+    expect(rejectedWeakFollowData.followCandidate).toMatchObject({
+      status: "rejected",
+      requested: weakCandidate?.candidateId
+    });
+    expect(rejectedWeakFollowData.followCandidate?.reason).toContain("weak");
+    expect(rejectedWeakFollowData.snapshot).toBeUndefined();
+    expect(rejectedWeakFollowData.plannedEditTargets).toEqual([]);
 
     const exactFocus = await focusBriefQuery(repo, { task: "Fix src/api.ts handleThing", diff: false, limit: 4, tokenBudget: 900 }, { autoRefresh: false });
     expect((exactFocus.data as { focusFiles: Array<{ path: string }>; quality: { counts: { derived: number } } }).focusFiles.map((file) => file.path)).toContain("src/api.ts");
@@ -1008,6 +1443,8 @@ describe("Codexa indexer", () => {
 
     const plan = await changePlanQuery(repo, { task: "Change route normalization safely", files: ["service/helpers.py"], diff: false, limit: 6 }, { autoRefresh: false });
     expect(plan.text).toContain("Codexa change plan");
+    expect((plan.data as { editReadiness?: { editable: boolean; status: string }; targetCandidates?: unknown[] }).editReadiness).toMatchObject({ editable: true, status: "edit-ready" });
+    expect((plan.data as { targetCandidates?: unknown[] }).targetCandidates).toEqual([]);
     expect(plan.text).toContain("Read first:");
     expect(plan.text).toContain("tests/test_app.py");
   });
@@ -1038,6 +1475,168 @@ describe("Codexa indexer", () => {
     expect(JSON.stringify(savedPlanSnapshot)).not.toContain(repo);
     expect(savedPlanSnapshot.requiredWorkflowChecks.length).toBeGreaterThan(0);
     expect(savedPlanSnapshot.requiredDependencyChecks.length).toBeGreaterThan(0);
+
+    await changePlanQuery(
+      repo,
+      {
+        task: "Change route normalization safely",
+        files: ["service/helpers.py"],
+        diff: false,
+        limit: 6,
+        saveSnapshot: true,
+        taskId: "reused-task-id"
+      },
+      { autoRefresh: false }
+    );
+    const reusedSnapshotText = await readFile(path.join(repo, ".codex/cache/codexa-tasks/reused-task-id.json"), "utf8");
+    const reusedSnapshot = JSON.parse(reusedSnapshotText) as { createdAt: string };
+    await mkdir(path.join(repo, ".codex/cache/codexa-task-snapshots"), { recursive: true });
+    await writeFile(path.join(repo, ".codex/cache/codexa-task-snapshots/reused-task-id.json"), reusedSnapshotText, "utf8");
+    await writeFile(
+      path.join(repo, ".codex/cache/codexa-task-snapshots/latest.json"),
+      `${JSON.stringify({ schemaVersion: 1, taskId: "reused-task-id", path: "reused-task-id.json", createdAt: reusedSnapshot.createdAt })}\n`,
+      "utf8"
+    );
+    await changePlanQuery(
+      repo,
+      {
+        task: "Change behavior safely",
+        diff: false,
+        limit: 6,
+        tokenBudget: 1200,
+        saveSnapshot: true,
+        taskId: "reused-task-id"
+      },
+      { autoRefresh: false }
+    );
+    await expect(readFile(path.join(repo, ".codex/cache/codexa-tasks/reused-task-id.json"), "utf8")).rejects.toThrow();
+    const reusedTaskReview = await postEditReviewQuery(repo, { taskId: "reused-task-id", ranTests: [], persistOutcome: false }, { autoRefresh: false });
+    const reusedTaskData = reusedTaskReview.data as {
+      snapshot?: unknown;
+      snapshotLoad: { taskId?: string; missingReason?: string };
+    };
+    expect(reusedTaskData.snapshot).toBeUndefined();
+    expect(reusedTaskData.snapshotLoad).toMatchObject({ taskId: "reused-task-id", missingReason: "blocked-plan" });
+
+    await writeFile(path.join(repo, ".codex/cache/codexa-tasks/reused-task-id.blocked.json"), "{not json", "utf8");
+    const malformedBlockedReview = await postEditReviewQuery(repo, { taskId: "reused-task-id", ranTests: [], persistOutcome: false }, { autoRefresh: false });
+    const malformedBlockedReviewData = malformedBlockedReview.data as {
+      snapshot?: unknown;
+      snapshotLoad: { taskId?: string; missingReason?: string; path?: string };
+    };
+    expect(malformedBlockedReviewData.snapshot).toBeUndefined();
+    expect(malformedBlockedReviewData.snapshotLoad).toMatchObject({ taskId: "reused-task-id", missingReason: "invalid-json" });
+    expect(malformedBlockedReviewData.snapshotLoad.path).toContain("reused-task-id.blocked.json");
+    await rm(path.join(repo, ".codex/cache/codexa-tasks/reused-task-id.blocked.json"), { force: true });
+
+    await writeFile(
+      path.join(repo, ".codex/cache/codexa-tasks/invalid-replay-input.blocked.json"),
+      `${JSON.stringify({
+        schemaVersion: 1,
+        kind: "change-plan-snapshot-blocked",
+        taskId: "invalid-replay-input",
+        input: { limit: 3 },
+        reason: "invalid replay input"
+      })}\n`,
+      "utf8"
+    );
+    const invalidReplayFollow = await changePlanQuery(
+      repo,
+      { taskId: "invalid-replay-input", followCandidate: "candidate-invalid-replay" },
+      { autoRefresh: false }
+    );
+    const invalidReplayFollowData = invalidReplayFollow.data as { followCandidate?: { status: string; requested: string; reason: string } };
+    expect(invalidReplayFollow.text).toContain("Follow candidate: rejected");
+    expect(invalidReplayFollowData.followCandidate).toMatchObject({ status: "rejected", requested: "candidate-invalid-replay" });
+    expect(invalidReplayFollowData.followCandidate?.reason).toContain("does not include replayable input");
+
+    const blockedPlan = await changePlanQuery(
+      repo,
+      {
+        task: "Change behavior safely",
+        diff: false,
+        limit: 6,
+        tokenBudget: 1200,
+        saveSnapshot: true,
+        taskId: "blocked-after-valid"
+      },
+      { autoRefresh: false }
+    );
+    expect(blockedPlan.text).toContain("Edit readiness: orientation-only");
+    await expect(readFile(path.join(repo, ".codex/cache/codexa-tasks/blocked-after-valid.json"), "utf8")).rejects.toThrow();
+    const blockedReview = await postEditReviewQuery(repo, { ranTests: [], persistOutcome: false }, { autoRefresh: false });
+    const blockedReviewData = blockedReview.data as {
+      snapshot?: unknown;
+      snapshotLoad: { taskId?: string; missingReason?: string; error?: string };
+      outcome: { persisted: boolean };
+    };
+    expect(blockedReview.text).toContain("Snapshot: unavailable (blocked-plan)");
+    expect(blockedReviewData.snapshot).toBeUndefined();
+    expect(blockedReviewData.snapshotLoad).toMatchObject({ taskId: "blocked-after-valid", missingReason: "blocked-plan" });
+    expect(blockedReviewData.snapshotLoad.error).toBeTruthy();
+    expect(blockedReviewData.outcome.persisted).toBe(false);
+
+    await recordSessionMemory({
+      repoRoot: repo,
+      taskId: "blocked-after-valid",
+      freshness: blockedPlan.freshness,
+      entries: [
+        {
+          kind: "decision",
+          key: "decision:blocked-task",
+          summary: "blocked-after-valid memory stays task-scoped.",
+          provenance: "agent-asserted",
+          confidence: "derived",
+          evidenceTier: "derived",
+          scope: { files: [] }
+        }
+      ]
+    });
+    await recordSessionMemory({
+      repoRoot: repo,
+      taskId: "unrelated-task",
+      freshness: blockedPlan.freshness,
+      entries: [
+        {
+          kind: "decision",
+          key: "decision:unrelated-task",
+          summary: "unrelated memory should not leak into blocked review.",
+          provenance: "agent-asserted",
+          confidence: "derived",
+          evidenceTier: "derived",
+          scope: { files: [] }
+        }
+      ]
+    });
+    const blockedMemoryReview = await postEditReviewQuery(repo, { ranTests: [], persistOutcome: false }, { autoRefresh: false });
+    expect(blockedMemoryReview.text).toContain("blocked-after-valid memory stays task-scoped");
+    expect(blockedMemoryReview.text).not.toContain("unrelated memory should not leak");
+
+    await writeFile(path.join(repo, ".codex/cache/codexa-tasks/latest.json"), "{not json", "utf8");
+    const recoveredBlocked = await postEditReviewQuery(repo, { ranTests: [], persistOutcome: false }, { autoRefresh: false });
+    const recoveredBlockedData = recoveredBlocked.data as {
+      snapshot?: unknown;
+      snapshotLoad: { taskId?: string; missingReason?: string; recoveredLatest?: boolean };
+    };
+    expect(recoveredBlockedData.snapshot).toBeUndefined();
+    expect(recoveredBlockedData.snapshotLoad).toMatchObject({
+      taskId: "blocked-after-valid",
+      missingReason: "blocked-plan",
+      recoveredLatest: true
+    });
+
+    await changePlanQuery(
+      repo,
+      {
+        task: "Change route normalization safely",
+        files: ["service/helpers.py"],
+        diff: false,
+        limit: 6,
+        saveSnapshot: true,
+        taskId: "fixture-normalize"
+      },
+      { autoRefresh: false }
+    );
 
     await writeFile(path.join(repo, "service/helpers.py"), "def normalize(value):\n    return value.strip().lower()\n", "utf8");
     await writeFile(
@@ -1347,6 +1946,20 @@ describe("Codexa indexer", () => {
     expect(waivedAllData.outcome.waivers).toHaveLength(2);
     expect(waivedAllData.outcome.calibrationLabels).toContain("waived-behavior-test");
 
+    const unrelatedWaiver = await postEditReviewQuery(
+      repo,
+      {
+        taskId: "verification-coverage",
+        ranTests: [],
+        ranCommands: [],
+        waivers: [{ kind: "dependency", target: "unrelated dependency", reason: "not touched" }]
+      },
+      { autoRefresh: false }
+    );
+    const unrelatedWaiverData = unrelatedWaiver.data as { testsNotRun: Array<{ path: string }>; driftReasons: string[] };
+    expect(unrelatedWaiverData.testsNotRun.map((test) => test.path)).toContain("tests/shared.test.ts");
+    expect(unrelatedWaiverData.driftReasons).toContain("recommended tests have not been accounted for");
+
     const aggregate = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["npm run check"] }, { autoRefresh: false });
     const aggregateData = aggregate.data as {
       testsNotRun: unknown[];
@@ -1443,6 +2056,21 @@ describe("Codexa indexer", () => {
     expect(serializedRelativeReport).not.toContain("./secret.json");
     expect(serializedRelativeReport).toContain("<outside-repo>");
     expect(serializedRelativeReport).toContain("<rel-path>");
+
+    const persistedSanitizationReport = await postEditReviewQuery(
+      repo,
+      {
+        taskId: "verification-coverage",
+        ranTests: [path.join(repo, "tests/shared.test.ts")],
+        waivedChecks: [`manual check at ${path.join(repo, "private-check.log")}`],
+        waivers: [{ kind: "test", target: path.join(repo, "tests/shared.test.ts"), reason: `manual run at ${path.join(repo, "private-report.log")}` }]
+      },
+      { autoRefresh: false }
+    );
+    const persistedSanitizationData = persistedSanitizationReport.data as { outcome: { path: string } };
+    const persistedSanitization = await readFile(path.join(repo, persistedSanitizationData.outcome.path), "utf8");
+    expect(persistedSanitization).not.toContain(repo);
+    expect(persistedSanitization).toContain("<repo>");
 
     const reportedEnvelope = await postEditReviewQuery(
       repo,
@@ -1745,6 +2373,9 @@ describe("Codexa indexer", () => {
     const simpleIfFlow = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["if true; then npm test; fi"] }, { autoRefresh: false });
     expect((simpleIfFlow.data as { testsNotRun: unknown[] }).testsNotRun).toEqual([]);
 
+    const falseIfFlow = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["if false; then npm test; fi"] }, { autoRefresh: false });
+    expect((falseIfFlow.data as { testsNotRun: Array<{ path: string }> }).testsNotRun.map((test) => test.path)).toContain("tests/shared.test.ts");
+
     const falseAndFallback = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["false && npm test"] }, { autoRefresh: false });
     expect((falseAndFallback.data as { testsNotRun: Array<{ path: string }> }).testsNotRun.map((test) => test.path)).toContain("tests/shared.test.ts");
 
@@ -1903,6 +2534,55 @@ describe("Codexa indexer", () => {
     await writeFile(path.join(repo, "packages/no-scripts/src/plain.ts"), "export function plain(value: string) { return value.trim().toUpperCase() }\n", "utf8");
     const noScriptFallback = await postEditReviewQuery(repo, { taskId: "verification-no-scripts", ranCommands: ["cd packages/no-scripts && npm test"] }, { autoRefresh: true });
     expect((noScriptFallback.data as { testsNotRun: Array<{ path: string }> }).testsNotRun.map((test) => test.path)).toContain("packages/no-scripts/src/plain.test.ts");
+  });
+
+  it("does not recover a legacy snapshot over a malformed current blocked marker", async () => {
+    const repo = await createFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+    await changePlanQuery(
+      repo,
+      {
+        task: "Change route normalization safely",
+        files: ["service/helpers.py"],
+        diff: false,
+        limit: 6,
+        saveSnapshot: true,
+        taskId: "legacy-only"
+      },
+      { autoRefresh: false }
+    );
+    const currentDir = path.join(repo, ".codex/cache/codexa-tasks");
+    const legacyDir = path.join(repo, ".codex/cache/codexa-task-snapshots");
+    const snapshotText = await readFile(path.join(currentDir, "legacy-only.json"), "utf8");
+    const snapshot = JSON.parse(snapshotText) as { createdAt: string };
+    await mkdir(legacyDir, { recursive: true });
+    await writeFile(path.join(legacyDir, "legacy-only.json"), snapshotText, "utf8");
+    await writeFile(
+      path.join(legacyDir, "latest.json"),
+      `${JSON.stringify({ schemaVersion: 1, taskId: "legacy-only", path: "legacy-only.json", createdAt: snapshot.createdAt })}\n`,
+      "utf8"
+    );
+    await rm(path.join(currentDir, "legacy-only.json"), { force: true });
+    await changePlanQuery(
+      repo,
+      {
+        task: "Change route normalization safely",
+        files: ["service/helpers.py"],
+        diff: false,
+        limit: 6,
+        saveSnapshot: true,
+        taskId: "current-valid"
+      },
+      { autoRefresh: false }
+    );
+    await writeFile(path.join(currentDir, "latest.json"), "{not json", "utf8");
+    await writeFile(path.join(currentDir, "current-blocked.blocked.json"), "{not json", "utf8");
+
+    const review = await postEditReviewQuery(repo, { ranTests: [], persistOutcome: false }, { autoRefresh: false });
+    const reviewData = review.data as { snapshot?: unknown; snapshotLoad: { taskId?: string; missingReason?: string; path?: string } };
+    expect(reviewData.snapshot).toBeUndefined();
+    expect(reviewData.snapshotLoad).toMatchObject({ taskId: "current-blocked", missingReason: "invalid-json" });
+    expect(reviewData.snapshotLoad.path).toContain("current-blocked.blocked.json");
   });
 
   it("emits coverage semantics from test-plan", async () => {
@@ -2200,6 +2880,17 @@ describe("Codexa indexer", () => {
     expect(recoveredFromCorruptLive?.files.some((file) => file.path === "src/api.ts")).toBe(true);
     expect(await readFile(path.join(codebaseDir, "index.json"), "utf8")).toContain("\"schemaVersion\"");
 
+    await buildIndex({ repoRoot: repo });
+    const readOnlyBackupDir = path.join(repo, ".codex/.codebase.backup-readonly");
+    await rename(codebaseDir, readOnlyBackupDir);
+    await mkdir(codebaseDir, { recursive: true });
+    await writeFile(path.join(codebaseDir, "index.json"), "{still corrupt", "utf8");
+    const readOnlyStatus = await statusQuery(repo, { recover: false });
+    expect(readOnlyStatus.freshness.missing).toBe(true);
+    expect(await readFile(path.join(codebaseDir, "index.json"), "utf8")).toBe("{still corrupt");
+    const recoveredAfterReadOnly = await loadIndex(repo);
+    expect(recoveredAfterReadOnly?.files.some((file) => file.path === "src/api.ts")).toBe(true);
+
     const indexPath = path.join(repo, ".codex/codebase/index.json");
     const copied = JSON.parse(await readFile(indexPath, "utf8"));
     copied.freshness.repoRoot = "/tmp/not-this-repo";
@@ -2253,6 +2944,39 @@ describe("Codexa indexer", () => {
       expect(defaultSymbol?.source).toBe("typescript-compiler");
       expect(index.usageSites.some((usage) => usage.path === "src/local-default-consumer.ts" && usage.name === "LocalDefault" && usage.targetSymbolId === defaultSymbol?.id)).toBe(true);
     }
+  });
+
+  it("keeps symbol target candidate ids stable across source-position-only reindexing", async () => {
+    const repo = await createFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+    type TargetCandidate = {
+      candidateId: string;
+      kind: "file" | "symbol";
+      path: string;
+      symbol?: { qualifiedName: string; kind: string };
+      nextChangePlanArgs: { symbols?: string[] };
+    };
+    const firstPlan = await changePlanQuery(repo, { task: "Change behavior safely", diff: false, limit: 6, tokenBudget: 1200 }, { autoRefresh: false });
+    const firstCandidates = ((firstPlan.data as { targetCandidates?: TargetCandidate[] }).targetCandidates ?? []);
+    const firstSymbol = firstCandidates.find((candidate) => candidate.kind === "symbol" && candidate.symbol);
+    expect(firstSymbol).toBeDefined();
+
+    const original = await readFile(path.join(repo, firstSymbol!.path), "utf8");
+    await writeFile(path.join(repo, firstSymbol!.path), `// source-position shift only\n${original}`, "utf8");
+    await buildIndex({ repoRoot: repo });
+
+    const shiftedPlan = await changePlanQuery(repo, { task: "Change behavior safely", diff: false, limit: 6, tokenBudget: 1200 }, { autoRefresh: false });
+    const shiftedCandidates = ((shiftedPlan.data as { targetCandidates?: TargetCandidate[] }).targetCandidates ?? []);
+    const shiftedSymbol = shiftedCandidates.find(
+      (candidate) =>
+        candidate.kind === "symbol" &&
+        candidate.path === firstSymbol!.path &&
+        candidate.symbol?.qualifiedName === firstSymbol!.symbol?.qualifiedName &&
+        candidate.symbol?.kind === firstSymbol!.symbol?.kind
+    );
+    expect(shiftedSymbol).toBeDefined();
+    expect(shiftedSymbol?.nextChangePlanArgs.symbols?.[0]).not.toBe(firstSymbol?.nextChangePlanArgs.symbols?.[0]);
+    expect(shiftedSymbol?.candidateId).toBe(firstSymbol?.candidateId);
   });
 
   it("refuses to build a false fresh index outside git", async () => {
@@ -2734,6 +3458,7 @@ async function createManifestGateFixtureRepo(): Promise<string> {
     ),
     "utf8"
   );
+  await writeFile(path.join(repo, "docs/broken.json"), "{\"notManifest\": true,\n", "utf8");
   await writeFile(
     path.join(repo, "sample_api/packages/project.invalid.json"),
     JSON.stringify(

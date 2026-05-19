@@ -5,6 +5,7 @@ export { symbolContextQuery, fileContextQuery } from "./query/inspection.js";
 export { impactQuery, diffImpactQuery } from "./query/impact.js";
 export { testPlanQuery } from "./query/test-plan.js";
 export { contextPackQuery, taskBriefQuery, focusBriefQuery } from "./query/context.js";
+export { sessionMemoryQuery } from "./query/session-memory.js";
 export { callersQuery, calleesQuery, dependencyPathQuery } from "./query/graph-traversal.js";
 export { workflowPathQuery } from "./query/workflow.js";
 export { changePlanQuery, postEditReviewQuery } from "./query/post-edit.js";

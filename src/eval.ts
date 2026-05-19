@@ -78,6 +78,9 @@ export interface ScoredEvalScenario {
     textChars: number;
     dataBytes: number;
     refreshed: boolean;
+    structuredBytes: number;
+    toolHopsToEditReady: number | null;
+    verificationProvenancePresent: boolean;
   };
   comparison: {
     baselineFileRecall: number | null;
@@ -410,7 +413,7 @@ function historicalScenarioFromEntry(repo: string, queryOptions: QueryOptions, e
 async function syntheticScenarios(seed: string): Promise<EvalScenario[]> {
   const fixture = await createSyntheticRepo(seed);
   const queryOptions = { autoRefresh: false };
-  return [
+  const scenarios: EvalScenario[] = [
     {
       id: "synthetic-search-exact-raw-sufficient",
       suite: "synthetic",
@@ -697,6 +700,7 @@ async function syntheticScenarios(seed: string): Promise<EvalScenario[]> {
       }
     }
   ];
+  return scenarios.map((scenario) => ({ cleanupRepoRoot: fixture.repoRoot, ...scenario }));
 }
 
 interface BaselineRun {
@@ -760,6 +764,8 @@ function scoreScenario(scenario: EvalScenario, result: QueryResult, baseline: Ba
   const structuredDataBudget = scenario.oracle.maxDataBytes ?? (scenario.oracle.maxTextChars ? Math.max(128_000, scenario.oracle.maxTextChars * 8) : 128_000);
   const overBudgetedStructuredData = structuredDataBytes > structuredDataBudget;
   const postEditOutcome = postEditOutcomeFromData(result.data);
+  const toolHopsToEditReady = toolHopsToEditReadyFromData(result.data);
+  const verificationProvenancePresent = Boolean(postEditOutcome?.verificationProvenance || verificationProvenanceFromData(result.data));
 
   if (fileRecall !== null && fileRecall < minFileRecall) {
     failures.push(`file recall ${fileRecall.toFixed(2)} < ${minFileRecall.toFixed(2)}`);
@@ -832,7 +838,10 @@ function scoreScenario(scenario: EvalScenario, result: QueryResult, baseline: Ba
       selectedToBaselineRatio,
       textChars: result.text.length,
       dataBytes: structuredDataBytes,
-      refreshed
+      refreshed,
+      structuredBytes: structuredDataBytes,
+      toolHopsToEditReady,
+      verificationProvenancePresent
     },
     comparison: {
       baselineFileRecall,
@@ -919,7 +928,10 @@ function calibrationSummary(scenarios: ScoredEvalScenario[]): EvalResult["data"]
     postEditCalibrationLabels: uniqueInOrder(scenarios.flatMap((scenario) => scenario.calibration.postEditOutcome?.calibrationLabels ?? [])),
     postEditRequiredChecksMissingScenarios: uniqueInOrder(postEditRequiredChecksMissingScenarios),
     postEditAggregateCoverageScenarios: scenarios
-      .filter((scenario) => (scenario.calibration.postEditOutcome?.ranCommands.length ?? 0) > 0 && scenario.calibration.postEditOutcome?.calibrationLabels.includes("aggregate-command-coverage"))
+      .filter((scenario) => {
+        const outcome = scenario.calibration.postEditOutcome;
+        return Boolean(outcome?.calibrationLabels.includes("aggregate-command-coverage") && (outcome.ranCommands.length > 0 || outcome.commandEnvelopes.length > 0));
+      })
       .map((scenario) => scenario.id),
     postEditVerificationMissingScenarios: scenarios.filter((scenario) => (scenario.calibration.postEditOutcome?.verificationMissing ?? 0) > 0).map((scenario) => scenario.id),
     postEditVerdicts,
@@ -1130,6 +1142,36 @@ function postEditOutcomeFromData(data: unknown): ScoredEvalScenario["calibration
     }
   }
   return undefined;
+}
+
+function toolHopsToEditReadyFromData(data: unknown): number | null {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return null;
+  }
+  const record = data as Record<string, unknown>;
+  const mode = typeof record.mode === "string" ? record.mode : undefined;
+  const actionability = typeof record.actionability === "string" ? record.actionability : undefined;
+  const editReady = actionability === "edit_ready" || record.packetVerdict === "edit-ready" || (record.editReadiness && typeof record.editReadiness === "object" && (record.editReadiness as { editable?: unknown }).editable === true);
+  if (editReady) {
+    if (mode === "session_context" || mode === "focus_brief") return 2;
+    if (mode === "task_brief" || mode === "context_pack") return 1;
+    return 0;
+  }
+  for (const key of ["focus", "context", "diff", "plan", "data"]) {
+    const nested = toolHopsToEditReadyFromData(record[key]);
+    if (nested !== null) {
+      return nested;
+    }
+  }
+  return null;
+}
+
+function verificationProvenanceFromData(data: unknown): EvalVerificationProvenance | undefined {
+  if (!data || typeof data !== "object" || Array.isArray(data)) {
+    return undefined;
+  }
+  const record = data as Record<string, unknown>;
+  return extractVerificationProvenance(record.verificationProvenance) ?? verificationProvenanceFromData(record.data);
 }
 
 function extractVerificationProvenance(value: unknown): EvalVerificationProvenance | undefined {
@@ -1500,7 +1542,7 @@ function assertAllowedBaseline(command: string[]): void {
       throw new Error(`baseline command contains unsafe argument: ${arg}`);
     }
   }
-  if (executable === "rg") {
+  if (executable === "rg" && isAllowedRipgrepBaseline(command.slice(1))) {
     return;
   }
   if (isAllowedGitStatusBaseline(command) || isAllowedGitGrepBaseline(command)) {
@@ -1528,6 +1570,10 @@ function isAllowedGitGrepBaseline(command: string[]): boolean {
     }
   }
   return true;
+}
+
+function isAllowedRipgrepBaseline(args: string[]): boolean {
+  return parseRipgrepBaselineArgs(args) !== undefined;
 }
 
 function isUnsafeBaselineArgument(value: string): boolean {
@@ -1574,9 +1620,15 @@ function parseRipgrepBaselineArgs(args: string[]): { pattern: string; paths: str
       continue;
     }
     if (arg === "-e") {
+      if (!args[i + 1]) {
+        return undefined;
+      }
       pattern = args[i + 1];
       i += 1;
       continue;
+    }
+    if (arg.startsWith("-")) {
+      return undefined;
     }
     if (!pattern) {
       pattern = arg;
@@ -1625,10 +1677,11 @@ function isMissingExecutable(error: unknown): boolean {
 
 function baselineFailureScenario(scenario: EvalScenario, error: unknown): ScoredEvalScenario {
   const message = error instanceof Error ? error.message : String(error);
+  const redactPrivate = scenario.privatePack ?? false;
   return {
     id: scenario.id,
     suite: scenario.suite,
-    description: scenario.description,
+    description: redactPrivate ? `External historical task: ${scenario.id}` : scenario.description,
     passed: false,
     score: 0,
     scored: scenario.scored ?? true,
@@ -1646,7 +1699,10 @@ function baselineFailureScenario(scenario: EvalScenario, error: unknown): Scored
       selectedToBaselineRatio: null,
       textChars: 0,
       dataBytes: 0,
-      refreshed: false
+      refreshed: false,
+      structuredBytes: 0,
+      toolHopsToEditReady: null,
+      verificationProvenancePresent: false
     },
     comparison: {
       baselineFileRecall: null,
@@ -1672,8 +1728,12 @@ function baselineFailureScenario(scenario: EvalScenario, error: unknown): Scored
       overBudgetedOutput: false,
       overBudgetedStructuredData: false
     },
-    failures: [`baseline command failed: ${formatBaselineCommands(scenario)}; ${message}`],
-    sample: ""
+    failures: [
+      redactPrivate
+        ? "baseline command failed for external historical task pack: details redacted"
+        : `baseline command failed: ${formatBaselineCommands(scenario)}; ${message}`
+    ],
+    sample: redactPrivate ? "[redacted for external historical task pack]" : ""
   };
 }
 

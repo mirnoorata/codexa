@@ -2,13 +2,18 @@
 import { Command } from "commander";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildIndexLocked } from "./indexer.js";
+import { buildIndexLocked, getFreshness } from "./indexer.js";
 import { checkGithubSync } from "./github-sync.js";
+import { publishProjectGithubRelease } from "./github-release.js";
+import { runDoctor } from "./doctor.js";
 import { initializeProject, sessionStartSummary } from "./init.js";
 import { runLiveIndexer, type LiveIndexEvent } from "./live-index.js";
 import { serveMcp } from "./mcp.js";
+import { resolveMcpRepoRoot } from "./mcp-repo-root.js";
+import { buildSemanticIndex, semanticProviderFromValue, type SemanticProviderKind } from "./semantic-retrieval.js";
 import { updateStaticAnalysisReports } from "./static-analysis.js";
 import { loadTaskSnapshot } from "./task-snapshots.js";
+import { runAutoVerifyForPostEdit } from "./autoverify.js";
 import {
   contextPackQuery,
   callersQuery,
@@ -24,6 +29,7 @@ import {
   postEditReviewQuery,
   repoMapQuery,
   searchQuery,
+  sessionMemoryQuery,
   statusQuery,
   symbolContextQuery,
   taskBriefQuery,
@@ -31,7 +37,16 @@ import {
   workflowPathQuery
 } from "./queries.js";
 import { RAW_SEARCH_EXPLICIT_PATTERN_LIMIT } from "./query/raw-search.js";
-import type { ChangeType, VerificationCommandReport, VerificationWaiver } from "./types.js";
+import {
+  loadPostEditHookReviewState,
+  postEditHookReviewSignature,
+  recordCodexaHookEvent,
+  savePostEditHookReviewState,
+  type CodexaHookEventInput,
+  type CodexaHookName,
+  type PostEditOutcome
+} from "./post-edit-outcomes.js";
+import type { ChangeType, QueryOptions, SessionMemoryInput, VerificationCommandReport, VerificationWaiver } from "./types.js";
 import { runEval } from "./eval.js";
 
 const program = new Command();
@@ -95,14 +110,15 @@ program
   .argument("<repo>", "repository root")
   .description("Cheap hook helper that reminds Codex when no change-plan snapshot exists before an edit.")
   .action(async (repo: string) => {
-    await runAdvisoryHook("change-plan snapshot check", async () => {
-      const resolved = path.resolve(repo);
-      const snapshot = await loadTaskSnapshot(resolved);
+    const { configuredRoot, activeRepoRoot } = await resolveHookRepoRoots(repo);
+    await runAdvisoryHook(configuredRoot, "pre-edit", "change-plan snapshot check", async () => {
+      const snapshot = await loadTaskSnapshot(activeRepoRoot);
       if (!snapshot.snapshot) {
         console.log("Codexa: no change-plan snapshot is available. For code edits, call change_plan with saveSnapshot=true before editing when the task is non-trivial.");
-        return;
+        return { status: "skipped", reason: "missing-change-plan-snapshot", taskId: snapshot.latestTaskId };
       }
       console.log(`Codexa: change-plan snapshot ready (${snapshot.snapshot.taskId}). After edits, post_edit_review will compare planned vs actual work.`);
+      return { status: "ok", reason: "snapshot-ready", taskId: snapshot.snapshot.taskId };
     });
   });
 
@@ -111,17 +127,61 @@ program
   .argument("<repo>", "repository root")
   .description("Bounded hook helper that runs the post-edit review packet after edit tools.")
   .action(async (repo: string) => {
-    await runAdvisoryHook("post-edit review", async () => {
-      const result = await postEditReviewQuery(
-        path.resolve(repo),
+    const { configuredRoot, activeRepoRoot } = await resolveHookRepoRoots(repo);
+    await runAdvisoryHook(configuredRoot, "post-edit", "post-edit review", async () => {
+      const snapshot = await loadTaskSnapshot(activeRepoRoot);
+      const freshness = await getFreshness(activeRepoRoot, undefined, { recover: false });
+      const signature = postEditHookReviewSignature({ freshness, taskId: snapshot.snapshot?.taskId ?? snapshot.latestTaskId });
+      const previous = await loadPostEditHookReviewState(activeRepoRoot);
+      if (previous?.signature === signature) {
+        const verdict = previous.verdict ? `; last verdict ${previous.verdict}` : "";
+        console.log(`Codexa: post-edit review unchanged since last hook run${verdict}.`);
+        return { status: "skipped", reason: "duplicate-dirty-tree", signature, taskId: snapshot.snapshot?.taskId ?? snapshot.latestTaskId, verdict: previous.verdict, outcomeId: previous.outcomeId };
+      }
+      const reviewInput = {
+        tokenBudget: 1200,
+        limit: 5,
+        includeSnippets: false
+      };
+      const initialResult = await postEditReviewQuery(
+        activeRepoRoot,
         {
-          tokenBudget: 1200,
-          limit: 5,
-          includeSnippets: false
+          ...reviewInput,
+          persistOutcome: false
+        },
+        { autoRefresh: true, commandBudgetMs: 15_000, maxResults: 6 }
+      );
+      const autoVerify = await runAutoVerifyForPostEdit(activeRepoRoot, initialResult.data);
+      if (autoVerify.attempted.length > 0) {
+        console.log(`Codexa AutoVerify: ran ${autoVerify.attempted.length} targeted command(s).`);
+        for (const report of autoVerify.reports) {
+          const status = report.exitCode === 0 ? "passed" : `failed exit ${report.exitCode ?? "unknown"}`;
+          const duration = report.durationMs === undefined ? "" : ` in ${report.durationMs}ms`;
+          console.log(`- ${status}${duration}: ${report.command}`);
+        }
+      }
+      if (autoVerify.skipped.length > 0 && autoVerify.attempted.length === 0) {
+        console.log(`Codexa AutoVerify: skipped ${autoVerify.skipped.length} unsafe or unsupported command(s).`);
+        for (const skipped of autoVerify.skipped.slice(0, 4)) {
+          console.log(`- ${skipped}`);
+        }
+      }
+      const result = await postEditReviewQuery(
+        activeRepoRoot,
+        {
+          ...reviewInput,
+          ranCommandReports: autoVerify.reports.length > 0 ? autoVerify.reports : undefined
         },
         { autoRefresh: true, commandBudgetMs: 15_000, maxResults: 6 }
       );
       console.log(compactHookOutput(result.text));
+      const outcome = postEditOutcomeFromQueryResult(result.data);
+      const reviewedSignature = postEditHookReviewSignature({ freshness: result.freshness, taskId: snapshot.snapshot?.taskId ?? snapshot.latestTaskId });
+      await savePostEditHookReviewState(activeRepoRoot, {
+        signature: reviewedSignature,
+        outcome
+      });
+      return { status: "ok", reason: "reviewed", signature: reviewedSignature, taskId: snapshot.snapshot?.taskId ?? snapshot.latestTaskId, verdict: outcome?.verdict, outcomeId: outcome?.outcomeId };
     });
   });
 
@@ -134,6 +194,51 @@ program
     console.log(`Indexed ${index.files.length} files, ${index.symbols.length} symbols, ${index.usageSites.length} usage sites.`);
     console.log(`Artifacts: ${path.join(path.resolve(repo), ".codex/codebase")}`);
   });
+
+program
+  .command("semantic-index")
+  .argument("<repo>", "repository root to embed for optional semantic retrieval")
+  .requiredOption("--provider <provider>", "embedding provider: openai or local-command", parseSemanticProvider)
+  .option("--model <model>", "embedding model name; defaults to provider-specific default")
+  .option("--dimensions <n>", "embedding dimensions when the provider supports it", parseIntOption)
+  .option("--command <command>", "local embedding command for --provider local-command")
+  .option("--arg <arg...>", "argument for the local embedding command; repeat or pass multiple values")
+  .option("--timeout-ms <n>", "embedding provider timeout in milliseconds", parseIntOption, 60_000)
+  .option("--batch-size <n>", "number of chunks to send per provider request", parseIntOption, 64)
+  .option("--max-files <n>", "maximum indexed files to embed", parseIntOption, 750)
+  .description("Build the opt-in semantic retrieval cache under .codex/cache/codexa-semantic-v1.")
+  .action(
+    async (
+      repo: string,
+      opts: {
+        provider: SemanticProviderKind;
+        model?: string;
+        dimensions?: number;
+        command?: string;
+        arg?: string[];
+        timeoutMs: number;
+        batchSize: number;
+        maxFiles: number;
+      }
+    ) => {
+      const repoRoot = path.resolve(repo);
+      const index = await buildIndexLocked({ repoRoot, writeArtifacts: true });
+      const result = await buildSemanticIndex(repoRoot, index, {
+        provider: opts.provider,
+        model: opts.model,
+        dimensions: opts.dimensions,
+        command: opts.command,
+        args: opts.arg,
+        timeoutMs: opts.timeoutMs,
+        batchSize: opts.batchSize,
+        maxFiles: opts.maxFiles
+      });
+      console.log(`Codexa semantic index built for ${result.repoRoot}`);
+      console.log(`Provider: ${result.provider}; model: ${result.model}; dimensions: ${result.dimensions}`);
+      console.log(`Chunks: ${result.chunkCount}`);
+      console.log(`Cache: ${result.cacheDir}`);
+    }
+  );
 
 program
   .command("watch")
@@ -245,10 +350,85 @@ program
   );
 
 program
+  .command("github-release")
+  .argument("[repo]", "repository root; defaults to the current directory", process.cwd())
+  .option("--tag <tag>", "release tag; defaults to v<package.json version>")
+  .option("--title <title>", "GitHub Release title; defaults to <project name> <tag>")
+  .option("--project-name <name>", "project display name for release notes; defaults to package.json name or repo directory")
+  .option("--repo <owner/name>", "GitHub repo slug; defaults to origin remote")
+  .option("--remote <name>", "git remote name", "origin")
+  .option("--branch <branch>", "branch to push; defaults to current branch")
+  .option("--latest <mode>", "GitHub latest marker behavior: auto, true, or false", "auto")
+  .option("--notes-file <path>", "write generated release notes to a file and stop before git/gh mutation")
+  .option("--dry-run", "print intended tag, push, and release actions without mutating git or GitHub", false)
+  .option("--push", "push the branch and tag to GitHub", true)
+  .option("--no-push", "leave branch and tag local")
+  .option("--create-tag", "create the annotated release tag when missing", true)
+  .option("--no-create-tag", "require an existing tag and skip tag creation")
+  .option("--github-release", "create or update the GitHub Release timeline entry", true)
+  .option("--no-github-release", "skip GitHub Release creation/update")
+  .option("--allow-dirty", "allow release notes/dry-run while the working tree is dirty", false)
+  .option("--allow-non-main", "allow releasing from a branch other than main", false)
+  .description("Create a visible GitHub Release with exact continue and forward-only revert commands.")
+  .action(
+    async (
+      repo: string,
+      opts: {
+        tag?: string;
+        title?: string;
+        projectName?: string;
+        repo?: string;
+        remote: string;
+        branch?: string;
+        latest: "auto" | "true" | "false";
+        notesFile?: string;
+        dryRun: boolean;
+        push: boolean;
+        createTag: boolean;
+        githubRelease: boolean;
+        allowDirty: boolean;
+        allowNonMain: boolean;
+      }
+    ) => {
+      const result = await publishProjectGithubRelease(path.resolve(repo), {
+        tag: opts.tag,
+        title: opts.title,
+        projectName: opts.projectName,
+        repo: opts.repo,
+        remote: opts.remote,
+        branch: opts.branch,
+        latest: opts.latest,
+        notesFile: opts.notesFile,
+        dryRun: opts.dryRun,
+        push: opts.push,
+        createTag: opts.createTag,
+        githubRelease: opts.githubRelease,
+        allowDirty: opts.allowDirty,
+        allowNonMain: opts.allowNonMain
+      });
+      console.log(result.text);
+    }
+  );
+
+program
+  .command("doctor")
+  .argument("[repo]", "repository root; defaults to the current directory", process.cwd())
+  .option("--json", "emit structured JSON")
+  .option("--mcp-readiness", "include Codex MCP readiness checks")
+  .description("Diagnose local Codexa wiring, index freshness, hooks, and generated state.")
+  .action(async (repo: string, opts: { json?: boolean; mcpReadiness?: boolean }) => {
+    const result = await runDoctor(path.resolve(repo), { json: opts.json, mcpReadiness: opts.mcpReadiness });
+    console.log(result.text);
+    if (!result.ok) {
+      process.exitCode = 1;
+    }
+  });
+
+program
   .command("status")
   .argument("<repo>", "repository root")
   .description("Report Codexa index freshness and parser status.")
-  .action(async (repo: string) => printQuery(await statusQuery(path.resolve(repo))));
+  .action(async (repo: string) => printQuery(await statusQuery(await resolveQueryRepoRoot(repo))));
 
 program
   .command("repo-map")
@@ -259,7 +439,7 @@ program
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Print the top-ranked repo map, refreshing stale artifacts when needed.")
   .action(async (repo: string, opts: { limit: number; budget: number; autoRefresh: boolean }) =>
-    printQuery(await repoMapQuery(path.resolve(repo), opts.limit, { autoRefresh: opts.autoRefresh }, opts.budget))
+    printQuery(await repoMapQuery(await resolveQueryRepoRoot(repo), opts.limit, { autoRefresh: opts.autoRefresh }, opts.budget))
   );
 
 program
@@ -267,11 +447,20 @@ program
   .argument("<repo>", "repository root")
   .requiredOption("--query <query>", "search query")
   .option("--limit <n>", "maximum matches", parseIntOption, 12)
+  .option("--semantic", "force the semantic retrieval lane even when auto-detection would skip it")
+  .option("--no-semantic", "disable automatic semantic retrieval for this query")
+  .option("--semantic-provider <provider>", "semantic query provider: openai or local-command", parseSemanticProvider)
+  .option("--semantic-model <model>", "semantic embedding model name")
+  .option("--semantic-dimensions <n>", "semantic embedding dimensions", parseIntOption)
+  .option("--semantic-command <command>", "local semantic embedding command for --semantic-provider local-command")
+  .option("--semantic-arg <arg...>", "argument for the local semantic embedding command")
+  .option("--semantic-timeout-ms <n>", "semantic query timeout in milliseconds", parseIntOption)
+  .option("--semantic-batch-size <n>", "semantic query batch size", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Find matching files, symbols, and usage sites.")
-  .action(async (repo: string, opts: { query: string; limit: number; autoRefresh: boolean }) =>
-    printQuery(await findContextQuery(path.resolve(repo), opts.query, opts.limit, { autoRefresh: opts.autoRefresh }))
+  .action(async (repo: string, opts: { query: string; limit: number } & CliQueryOptions) =>
+    printQuery(await findContextQuery(await resolveQueryRepoRoot(repo), opts.query, opts.limit, queryOptionsFromCli(opts)))
   );
 
 program
@@ -282,15 +471,24 @@ program
   .option("--limit <n>", "maximum matches", parseIntOption, 12)
   .option("--raw", "include raw hit lines", true)
   .option("--no-raw", "summarize raw hit files without lines")
+  .option("--semantic", "force the semantic retrieval lane even when auto-detection would skip it")
+  .option("--no-semantic", "disable automatic semantic retrieval for this query")
+  .option("--semantic-provider <provider>", "semantic query provider: openai or local-command", parseSemanticProvider)
+  .option("--semantic-model <model>", "semantic embedding model name")
+  .option("--semantic-dimensions <n>", "semantic embedding dimensions", parseIntOption)
+  .option("--semantic-command <command>", "local semantic embedding command for --semantic-provider local-command")
+  .option("--semantic-arg <arg...>", "argument for the local semantic embedding command")
+  .option("--semantic-timeout-ms <n>", "semantic query timeout in milliseconds", parseIntOption)
+  .option("--semantic-batch-size <n>", "semantic query batch size", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Compare raw search with Codexa-ranked targets, tests, and known gaps.")
-  .action(async (repo: string, opts: { query: string; pattern?: string[]; limit: number; raw: boolean; autoRefresh: boolean }) =>
+  .action(async (repo: string, opts: { query: string; pattern?: string[]; limit: number; raw: boolean } & CliQueryOptions) =>
     printQuery(
       await searchQuery(
-        path.resolve(repo),
+        await resolveQueryRepoRoot(repo),
         { query: opts.query, patterns: opts.pattern, limit: opts.limit, includeRaw: opts.raw },
-        { autoRefresh: opts.autoRefresh }
+        queryOptionsFromCli(opts)
       )
     )
   );
@@ -309,7 +507,7 @@ program
   .action(async (repo: string, opts: { includeTests: boolean; includeDocs: boolean; includeGenerated: boolean; limit: number; budget: number; autoRefresh: boolean }) =>
     printQuery(
       await placeholderReportQuery(
-        path.resolve(repo),
+        await resolveQueryRepoRoot(repo),
         {
           includeTests: opts.includeTests,
           includeDocs: opts.includeDocs,
@@ -327,17 +525,21 @@ program
   .argument("<repo>", "repository root")
   .option("--file <path>", "file to explain")
   .option("--symbol <symbol>", "symbol id or name to explain")
+  .option("--lsp", "include optional read-only LSP assist for TypeScript, JavaScript, or Python")
+  .option("--lsp-timeout-ms <n>", "LSP request timeout in milliseconds", parseIntOption)
+  .option("--lsp-max-files <n>", "maximum files to inspect with LSP assist", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Return compact evidence for a file or symbol.")
-  .action(async (repo: string, opts: { file?: string; symbol?: string; autoRefresh: boolean }) => {
-    const queryOptions = { autoRefresh: opts.autoRefresh };
+  .action(async (repo: string, opts: { file?: string; symbol?: string } & CliQueryOptions) => {
+    const queryOptions = queryOptionsFromCli(opts);
+    const repoRoot = await resolveQueryRepoRoot(repo);
     if (opts.symbol) {
-      printQuery(await symbolContextQuery(path.resolve(repo), opts.symbol, queryOptions));
+      printQuery(await symbolContextQuery(repoRoot, opts.symbol, queryOptions));
       return;
     }
     if (opts.file) {
-      printQuery(await fileContextQuery(path.resolve(repo), opts.file, queryOptions));
+      printQuery(await fileContextQuery(repoRoot, opts.file, queryOptions));
       return;
     }
     throw new Error("explain requires --file or --symbol");
@@ -357,7 +559,7 @@ program
     if (!opts.file && !opts.symbol) {
       throw new Error("impact requires --file or --symbol");
     }
-    printQuery(await impactQuery(path.resolve(repo), opts, { autoRefresh: opts.autoRefresh }));
+    printQuery(await impactQuery(await resolveQueryRepoRoot(repo), opts, { autoRefresh: opts.autoRefresh }));
   });
 
 program
@@ -367,7 +569,7 @@ program
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Return impact context for the current dirty git diff.")
   .action(async (repo: string, opts: { autoRefresh: boolean }) =>
-    printQuery(await diffImpactQuery(path.resolve(repo), { autoRefresh: opts.autoRefresh }))
+    printQuery(await diffImpactQuery(await resolveQueryRepoRoot(repo), { autoRefresh: opts.autoRefresh }))
   );
 
 program
@@ -380,7 +582,7 @@ program
   .description("Recommend targeted tests.")
   .action(async (repo: string, opts: { diff: boolean; changeType: ChangeType; autoRefresh: boolean }) =>
     printQuery(
-      await testPlanQuery(path.resolve(repo), opts.diff, {
+      await testPlanQuery(await resolveQueryRepoRoot(repo), opts.diff, {
         autoRefresh: opts.autoRefresh,
         changeType: opts.changeType
       })
@@ -401,6 +603,18 @@ program
   .option("--limit <n>", "maximum focus items", parseIntOption, 10)
   .option("--snippets", "include source snippets", true)
   .option("--no-snippets", "omit source snippets")
+  .option("--semantic", "force the semantic retrieval lane even when auto-detection would skip it")
+  .option("--no-semantic", "disable automatic semantic retrieval for this query")
+  .option("--semantic-provider <provider>", "semantic query provider: openai or local-command", parseSemanticProvider)
+  .option("--semantic-model <model>", "semantic embedding model name")
+  .option("--semantic-dimensions <n>", "semantic embedding dimensions", parseIntOption)
+  .option("--semantic-command <command>", "local semantic embedding command for --semantic-provider local-command")
+  .option("--semantic-arg <arg...>", "argument for the local semantic embedding command")
+  .option("--semantic-timeout-ms <n>", "semantic query timeout in milliseconds", parseIntOption)
+  .option("--semantic-batch-size <n>", "semantic query batch size", parseIntOption)
+  .option("--lsp", "include optional read-only LSP assist for selected focus files")
+  .option("--lsp-timeout-ms <n>", "LSP request timeout in milliseconds", parseIntOption)
+  .option("--lsp-max-files <n>", "maximum files to inspect with LSP assist", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Build the default Codex-first task brief with bounded impact, risks, tests, freshness, and snippets.")
@@ -417,12 +631,11 @@ program
         budget: number;
         limit: number;
         snippets: boolean;
-        autoRefresh: boolean;
-      }
+      } & CliQueryOptions
     ) =>
       printQuery(
         await taskBriefQuery(
-          path.resolve(repo),
+          await resolveQueryRepoRoot(repo),
           {
             task: opts.task,
             files: opts.file,
@@ -434,7 +647,7 @@ program
             limit: opts.limit,
             includeSnippets: opts.snippets
           },
-          { autoRefresh: opts.autoRefresh }
+          queryOptionsFromCli(opts)
         )
       )
   );
@@ -453,6 +666,18 @@ program
   .option("--limit <n>", "maximum focus items", parseIntOption, 12)
   .option("--snippets", "include source snippets", true)
   .option("--no-snippets", "omit source snippets")
+  .option("--semantic", "force the semantic retrieval lane even when auto-detection would skip it")
+  .option("--no-semantic", "disable automatic semantic retrieval for this query")
+  .option("--semantic-provider <provider>", "semantic query provider: openai or local-command", parseSemanticProvider)
+  .option("--semantic-model <model>", "semantic embedding model name")
+  .option("--semantic-dimensions <n>", "semantic embedding dimensions", parseIntOption)
+  .option("--semantic-command <command>", "local semantic embedding command for --semantic-provider local-command")
+  .option("--semantic-arg <arg...>", "argument for the local semantic embedding command")
+  .option("--semantic-timeout-ms <n>", "semantic query timeout in milliseconds", parseIntOption)
+  .option("--semantic-batch-size <n>", "semantic query batch size", parseIntOption)
+  .option("--lsp", "include optional read-only LSP assist for selected focus files")
+  .option("--lsp-timeout-ms <n>", "LSP request timeout in milliseconds", parseIntOption)
+  .option("--lsp-max-files <n>", "maximum files to inspect with LSP assist", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Build a compact task-shaped Codexa context pack.")
@@ -469,12 +694,11 @@ program
         budget: number;
         limit: number;
         snippets: boolean;
-        autoRefresh: boolean;
-      }
+      } & CliQueryOptions
     ) =>
       printQuery(
         await contextPackQuery(
-          path.resolve(repo),
+          await resolveQueryRepoRoot(repo),
           {
             task: opts.task,
             files: opts.file,
@@ -486,7 +710,7 @@ program
             limit: opts.limit,
             includeSnippets: opts.snippets
           },
-          { autoRefresh: opts.autoRefresh }
+          queryOptionsFromCli(opts)
         )
       )
   );
@@ -499,11 +723,20 @@ program
   .option("--limit <n>", "maximum focus items", parseIntOption, 10)
   .option("--diff", "include current dirty git diff", true)
   .option("--no-diff", "ignore current dirty git diff")
+  .option("--semantic", "force the semantic retrieval lane even when auto-detection would skip it")
+  .option("--no-semantic", "disable automatic semantic retrieval for this query")
+  .option("--semantic-provider <provider>", "semantic query provider: openai or local-command", parseSemanticProvider)
+  .option("--semantic-model <model>", "semantic embedding model name")
+  .option("--semantic-dimensions <n>", "semantic embedding dimensions", parseIntOption)
+  .option("--semantic-command <command>", "local semantic embedding command for --semantic-provider local-command")
+  .option("--semantic-arg <arg...>", "argument for the local semantic embedding command")
+  .option("--semantic-timeout-ms <n>", "semantic query timeout in milliseconds", parseIntOption)
+  .option("--semantic-batch-size <n>", "semantic query batch size", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Classify a broad task, choose likely subsystems, and recommend the next Codexa call.")
-  .action(async (repo: string, opts: { task?: string; budget: number; limit: number; diff: boolean; autoRefresh: boolean }) =>
-    printQuery(await focusBriefQuery(path.resolve(repo), { task: opts.task, tokenBudget: opts.budget, limit: opts.limit, diff: opts.diff }, { autoRefresh: opts.autoRefresh }))
+  .action(async (repo: string, opts: { task?: string; budget: number; limit: number; diff: boolean } & CliQueryOptions) =>
+    printQuery(await focusBriefQuery(await resolveQueryRepoRoot(repo), { task: opts.task, tokenBudget: opts.budget, limit: opts.limit, diff: opts.diff }, queryOptionsFromCli(opts)))
   );
 
 program
@@ -514,11 +747,79 @@ program
   .option("--limit <n>", "maximum focus items", parseIntOption, 10)
   .option("--diff", "include current dirty git diff", true)
   .option("--no-diff", "ignore current dirty git diff")
+  .option("--semantic", "force the semantic retrieval lane even when auto-detection would skip it")
+  .option("--no-semantic", "disable automatic semantic retrieval for this query")
+  .option("--semantic-provider <provider>", "semantic query provider: openai or local-command", parseSemanticProvider)
+  .option("--semantic-model <model>", "semantic embedding model name")
+  .option("--semantic-dimensions <n>", "semantic embedding dimensions", parseIntOption)
+  .option("--semantic-command <command>", "local semantic embedding command for --semantic-provider local-command")
+  .option("--semantic-arg <arg...>", "argument for the local semantic embedding command")
+  .option("--semantic-timeout-ms <n>", "semantic query timeout in milliseconds", parseIntOption)
+  .option("--semantic-batch-size <n>", "semantic query batch size", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Print the Codexa focus/session packet used when Codex focuses a project.")
-  .action(async (repo: string, opts: { task?: string; budget: number; limit: number; diff: boolean; autoRefresh: boolean }) =>
-    printQuery(await focusBriefQuery(path.resolve(repo), { task: opts.task, tokenBudget: opts.budget, limit: opts.limit, diff: opts.diff }, { autoRefresh: opts.autoRefresh }))
+  .action(async (repo: string, opts: { task?: string; budget: number; limit: number; diff: boolean } & CliQueryOptions) =>
+    printQuery(await focusBriefQuery(await resolveQueryRepoRoot(repo), { task: opts.task, tokenBudget: opts.budget, limit: opts.limit, diff: opts.diff }, queryOptionsFromCli(opts)))
+  );
+
+program
+  .command("session-memory")
+  .argument("<repo>", "repository root")
+  .option("--action <action>", "summary, read, remember, or compact", parseSessionMemoryAction, "summary")
+  .option("--session-id <id>", "session memory id; defaults to the latest local session")
+  .option("--task-id <id>", "task snapshot id to filter or attach memory")
+  .option("--task <task>", "task text to attach to remembered entries")
+  .option("--kind <kind...>", "memory kind filter; repeat or pass multiple values")
+  .option("--file <path...>", "file scope filter; repeat or pass multiple values")
+  .option("--symbol <symbol...>", "symbol id scope filter; repeat or pass multiple values")
+  .option("--topic <topic...>", "topic substring filter; repeat or pass multiple values")
+  .option("--entry-json <json...>", "entry JSON for --action remember; repeat for multiple entries")
+  .option("--limit <n>", "maximum entries", parseIntOption, 20)
+  .option("--budget <tokens>", "approximate token budget", parseIntOption, 1800)
+  .option("--include-stale", "include stale entries", true)
+  .option("--no-include-stale", "hide stale entries")
+  .option("--auto-refresh", "refresh a stale or missing index before querying", true)
+  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
+  .description("Read, summarize, compact, or explicitly remember Codexa session working memory.")
+  .action(
+    async (
+      repo: string,
+      opts: {
+        action: NonNullable<SessionMemoryInput["action"]>;
+        sessionId?: string;
+        taskId?: string;
+        task?: string;
+        kind?: string[];
+        file?: string[];
+        symbol?: string[];
+        topic?: string[];
+        entryJson?: string[];
+        limit: number;
+        budget: number;
+        includeStale: boolean;
+      } & CliQueryOptions
+    ) =>
+      printQuery(
+        await sessionMemoryQuery(
+          await resolveQueryRepoRoot(repo),
+          {
+            action: opts.action,
+            sessionId: opts.sessionId,
+            taskId: opts.taskId,
+            task: opts.task,
+            kinds: parseSessionMemoryKinds(opts.kind),
+            files: opts.file,
+            symbols: opts.symbol,
+            topics: opts.topic,
+            entries: parseSessionMemoryEntries(opts.entryJson),
+            limit: opts.limit,
+            tokenBudget: opts.budget,
+            includeStale: opts.includeStale
+          },
+          queryOptionsFromCli(opts)
+        )
+      )
   );
 
 program
@@ -531,7 +832,7 @@ program
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Show graph callers, importers, references, and tests for a target.")
   .action(async (repo: string, opts: { file?: string; symbol?: string; limit: number; autoRefresh: boolean }) =>
-    printQuery(await callersQuery(path.resolve(repo), opts, { autoRefresh: opts.autoRefresh }))
+    printQuery(await callersQuery(await resolveQueryRepoRoot(repo), opts, { autoRefresh: opts.autoRefresh }))
   );
 
 program
@@ -544,7 +845,7 @@ program
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Show graph callees, dependencies, imports, and risk surfaces for a target.")
   .action(async (repo: string, opts: { file?: string; symbol?: string; limit: number; autoRefresh: boolean }) =>
-    printQuery(await calleesQuery(path.resolve(repo), opts, { autoRefresh: opts.autoRefresh }))
+    printQuery(await calleesQuery(await resolveQueryRepoRoot(repo), opts, { autoRefresh: opts.autoRefresh }))
   );
 
 program
@@ -559,7 +860,7 @@ program
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Find a typed dependency path between files or symbols.")
   .action(async (repo: string, opts: { fromFile?: string; fromSymbol?: string; toFile?: string; toSymbol?: string; maxDepth: number; autoRefresh: boolean }) =>
-    printQuery(await dependencyPathQuery(path.resolve(repo), opts, { autoRefresh: opts.autoRefresh }))
+    printQuery(await dependencyPathQuery(await resolveQueryRepoRoot(repo), opts, { autoRefresh: opts.autoRefresh }))
   );
 
 program
@@ -569,11 +870,20 @@ program
   .option("--file <path>", "target file")
   .option("--symbol <symbol>", "target symbol")
   .option("--limit <n>", "maximum workflow traces", parseIntOption, 8)
+  .option("--semantic", "force the semantic retrieval lane even when auto-detection would skip it")
+  .option("--no-semantic", "disable automatic semantic retrieval for this query")
+  .option("--semantic-provider <provider>", "semantic query provider: openai or local-command", parseSemanticProvider)
+  .option("--semantic-model <model>", "semantic embedding model name")
+  .option("--semantic-dimensions <n>", "semantic embedding dimensions", parseIntOption)
+  .option("--semantic-command <command>", "local semantic embedding command for --semantic-provider local-command")
+  .option("--semantic-arg <arg...>", "argument for the local semantic embedding command")
+  .option("--semantic-timeout-ms <n>", "semantic query timeout in milliseconds", parseIntOption)
+  .option("--semantic-batch-size <n>", "semantic query batch size", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Show route/job/manifest workflow traces related to a task, file, or symbol.")
-  .action(async (repo: string, opts: { query?: string; file?: string; symbol?: string; limit: number; autoRefresh: boolean }) =>
-    printQuery(await workflowPathQuery(path.resolve(repo), opts, { autoRefresh: opts.autoRefresh }))
+  .action(async (repo: string, opts: { query?: string; file?: string; symbol?: string; limit: number } & CliQueryOptions) =>
+    printQuery(await workflowPathQuery(await resolveQueryRepoRoot(repo), opts, queryOptionsFromCli(opts)))
   );
 
 program
@@ -590,6 +900,19 @@ program
   .option("--limit <n>", "maximum focus items", parseIntOption, 10)
   .option("--save-snapshot", "save a plan-time task snapshot for post-edit review", false)
   .option("--task-id <id>", "optional id for the saved task snapshot")
+  .option("--follow-candidate <id>", "follow an edit-ready target candidate from a blocked orientation plan")
+  .option("--semantic", "force the semantic retrieval lane even when auto-detection would skip it")
+  .option("--no-semantic", "disable automatic semantic retrieval for this query")
+  .option("--semantic-provider <provider>", "semantic query provider: openai or local-command", parseSemanticProvider)
+  .option("--semantic-model <model>", "semantic embedding model name")
+  .option("--semantic-dimensions <n>", "semantic embedding dimensions", parseIntOption)
+  .option("--semantic-command <command>", "local semantic embedding command for --semantic-provider local-command")
+  .option("--semantic-arg <arg...>", "argument for the local semantic embedding command")
+  .option("--semantic-timeout-ms <n>", "semantic query timeout in milliseconds", parseIntOption)
+  .option("--semantic-batch-size <n>", "semantic query batch size", parseIntOption)
+  .option("--lsp", "include optional read-only LSP assist for selected focus files")
+  .option("--lsp-timeout-ms <n>", "LSP request timeout in milliseconds", parseIntOption)
+  .option("--lsp-max-files <n>", "maximum files to inspect with LSP assist", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Build a Codex edit plan from focus, graph/workflow context, risks, tests, and gaps.")
@@ -607,12 +930,12 @@ program
         limit: number;
         saveSnapshot: boolean;
         taskId?: string;
-        autoRefresh: boolean;
-      }
+        followCandidate?: string;
+      } & CliQueryOptions
     ) =>
       printQuery(
         await changePlanQuery(
-          path.resolve(repo),
+          await resolveQueryRepoRoot(repo),
           {
             task: opts.task,
             files: opts.file,
@@ -623,9 +946,10 @@ program
             tokenBudget: opts.budget,
             limit: opts.limit,
             saveSnapshot: opts.saveSnapshot,
-            taskId: opts.taskId
+            taskId: opts.taskId,
+            followCandidate: opts.followCandidate
           },
-          { autoRefresh: opts.autoRefresh }
+          queryOptionsFromCli(opts)
         )
       )
   );
@@ -673,7 +997,7 @@ program
     ) =>
       printQuery(
         await postEditReviewQuery(
-          path.resolve(repo),
+          await resolveQueryRepoRoot(repo),
           {
             task: opts.task,
             taskId: opts.taskId,
@@ -708,7 +1032,7 @@ program
   .description("Run a structured Codexa quality benchmark with randomized anti-cheat holdouts.")
   .action(async (repo: string, opts: { suite: "all" | "project" | "synthetic" | "historical-fixture" | "task-pack"; seed?: string; taskPack?: string; json?: boolean; autoRefresh: boolean; failOnRefresh: boolean }) => {
     const result = await runEval(
-      path.resolve(repo),
+      await resolveQueryRepoRoot(repo),
       { autoRefresh: opts.autoRefresh },
       { suite: opts.suite, seed: opts.seed, json: opts.json, failOnRefresh: opts.failOnRefresh, taskPackPath: opts.taskPack ? path.resolve(opts.taskPack) : undefined }
     );
@@ -726,17 +1050,42 @@ program
   .option("--no-auto-refresh", "do not refresh a stale or missing index before rendering the context preview")
   .description("Print the lightweight Codexa SessionStart summary used by Codex hooks.")
   .action(async (repo: string | undefined, opts: { context: boolean; autoRefresh: boolean }) => {
-    console.log(await sessionStartSummary(repo, opts.context || process.env.CODEXA_SESSIONSTART_CONTEXT === "1", opts.autoRefresh));
+    const resolved = path.resolve(repo ?? process.cwd());
+    const startedAt = Date.now();
+    const summary = await sessionStartSummary(repo, opts.context || process.env.CODEXA_SESSIONSTART_CONTEXT === "1", opts.autoRefresh);
+    console.log(summary);
+    const unavailable = summary.includes("Codexa status unavailable:");
+    await safeRecordHookEvent(resolved, {
+      hook: "session-start",
+      status: unavailable ? "failed" : "ok",
+      durationMs: Date.now() - startedAt,
+      reason: opts.context || process.env.CODEXA_SESSIONSTART_CONTEXT === "1" ? "context-preview" : "status",
+      error: unavailable ? summary.split(/\r?\n/u).find((line) => line.includes("Codexa status unavailable:")) : undefined
+    });
   });
 
 program
   .command("serve")
   .argument("<repo>", "repository root")
+  .option("--semantic", "force semantic retrieval for MCP task queries when auto-detection would skip it")
+  .option("--no-semantic", "disable automatic semantic retrieval for MCP task queries")
+  .option("--semantic-provider <provider>", "semantic query provider: openai or local-command", parseSemanticProvider)
+  .option("--semantic-model <model>", "semantic embedding model name")
+  .option("--semantic-dimensions <n>", "semantic embedding dimensions", parseIntOption)
+  .option("--semantic-command <command>", "local semantic embedding command for --semantic-provider local-command")
+  .option("--semantic-arg <arg...>", "argument for the local semantic embedding command")
+  .option("--semantic-timeout-ms <n>", "semantic query timeout in milliseconds", parseIntOption)
+  .option("--semantic-batch-size <n>", "semantic query batch size", parseIntOption)
+  .option("--lsp", "enable optional read-only LSP assist for MCP symbol/file/context calls")
+  .option("--lsp-timeout-ms <n>", "LSP request timeout in milliseconds", parseIntOption)
+  .option("--lsp-max-files <n>", "maximum files to inspect with LSP assist", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before answering MCP context tools", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before answering MCP context tools")
+  .option("--session-memory <mode>", "auto-record MCP session memory: auto or off", parseSessionMemoryMode, "auto")
+  .option("--workspace-focus-file <path>", "workspace focus file to consult when <repo> is a workspace launch root")
   .description("Start the stdio MCP server.")
-  .action(async (repo: string, opts: { autoRefresh: boolean }) => {
-    await serveMcp(path.resolve(repo), { autoRefresh: opts.autoRefresh });
+  .action(async (repo: string, opts: CliQueryOptions) => {
+    await serveMcp(path.resolve(repo), queryOptionsFromCli(opts));
   });
 
 program.parseAsync(process.argv).catch((error) => {
@@ -748,9 +1097,56 @@ function printQuery(result: { text: string }) {
   console.log(result.text);
 }
 
+async function resolveQueryRepoRoot(repo: string): Promise<string> {
+  return (await resolveMcpRepoRoot(path.resolve(repo))).repoRoot;
+}
+
 function invokedCliName(): string {
   const basename = path.basename(process.argv[1] ?? "codexa").replace(/\.[cm]?[jt]sx?$/u, "");
   return basename && basename !== "cli" ? basename : "codexa";
+}
+
+type CliQueryOptions = {
+  autoRefresh?: boolean;
+  semantic?: boolean;
+  semanticProvider?: SemanticProviderKind;
+  semanticModel?: string;
+  semanticDimensions?: number;
+  semanticCommand?: string;
+  semanticArg?: string[];
+  semanticTimeoutMs?: number;
+  semanticBatchSize?: number;
+  lsp?: boolean;
+  lspTimeoutMs?: number;
+  lspMaxFiles?: number;
+  sessionMemory?: "auto" | "off";
+  workspaceFocusFile?: string;
+};
+
+function queryOptionsFromCli(opts: CliQueryOptions): QueryOptions {
+  return {
+    autoRefresh: opts.autoRefresh,
+    semantic: opts.semantic,
+    semanticProvider: opts.semanticProvider,
+    semanticModel: opts.semanticModel,
+    semanticDimensions: opts.semanticDimensions,
+    semanticCommand: opts.semanticCommand,
+    semanticArgs: opts.semanticArg,
+    semanticTimeoutMs: opts.semanticTimeoutMs,
+    semanticBatchSize: opts.semanticBatchSize,
+    lsp: opts.lsp,
+    lspTimeoutMs: opts.lspTimeoutMs,
+    lspMaxFiles: opts.lspMaxFiles,
+    sessionMemory: opts.sessionMemory,
+    workspaceFocusFile: opts.workspaceFocusFile ? path.resolve(opts.workspaceFocusFile) : undefined
+  };
+}
+
+function parseSessionMemoryMode(value: string): "auto" | "off" {
+  if (value === "auto" || value === "off") {
+    return value;
+  }
+  throw new Error("session memory mode must be auto or off");
 }
 
 function compactHookOutput(text: string): string {
@@ -791,12 +1187,63 @@ function compactHookOutput(text: string): string {
   return keep.length > 0 ? keep.join("\n") : lines.slice(0, 16).join("\n");
 }
 
-async function runAdvisoryHook(label: string, action: () => Promise<void>): Promise<void> {
+type HookActionResult = Omit<CodexaHookEventInput, "hook" | "durationMs"> | void;
+
+async function resolveHookRepoRoots(repo: string): Promise<{ configuredRoot: string; activeRepoRoot: string }> {
+  const configuredRoot = path.resolve(repo);
   try {
-    await action();
+    const resolution = await resolveMcpRepoRoot(configuredRoot);
+    return { configuredRoot, activeRepoRoot: resolution.repoRoot };
+  } catch {
+    return { configuredRoot, activeRepoRoot: configuredRoot };
+  }
+}
+
+function postEditOutcomeFromQueryResult(data: unknown): PostEditOutcome | undefined {
+  if (!data || typeof data !== "object") {
+    return undefined;
+  }
+  const outcome = (data as { outcome?: unknown }).outcome;
+  if (!outcome || typeof outcome !== "object") {
+    return undefined;
+  }
+  const record = outcome as Partial<PostEditOutcome>;
+  return record.schemaVersion === 1 && typeof record.outcomeId === "string" ? (record as PostEditOutcome) : undefined;
+}
+
+async function runAdvisoryHook(repoRoot: string, hook: CodexaHookName, label: string, action: () => Promise<HookActionResult>): Promise<void> {
+  const startedAt = Date.now();
+  try {
+    const result = await action();
+    await safeRecordHookEvent(repoRoot, {
+      hook,
+      status: result?.status ?? "ok",
+      durationMs: Date.now() - startedAt,
+      reason: result?.reason,
+      taskId: result?.taskId,
+      verdict: result?.verdict,
+      outcomeId: result?.outcomeId,
+      signature: result?.signature
+    });
   } catch (error) {
-    console.log(`Codexa: ${label} unavailable: ${hookErrorMessage(error)}`);
+    const message = hookErrorMessage(error);
+    console.log(`Codexa: ${label} unavailable: ${message}`);
     console.log("Codexa: hook is advisory; continuing without blocking the edit.");
+    await safeRecordHookEvent(repoRoot, {
+      hook,
+      status: "failed",
+      durationMs: Date.now() - startedAt,
+      reason: "unavailable",
+      error: message
+    });
+  }
+}
+
+async function safeRecordHookEvent(repoRoot: string, event: CodexaHookEventInput): Promise<void> {
+  try {
+    await recordCodexaHookEvent(repoRoot, event);
+  } catch {
+    // Hook telemetry is local diagnostics only; it must never make advisory hooks block.
   }
 }
 
@@ -806,8 +1253,12 @@ function hookErrorMessage(error: unknown): string {
 }
 
 function parseIntOption(value: string): number {
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed)) {
+  const trimmed = value.trim();
+  if (!/^[+-]?\d+$/u.test(trimmed)) {
+    throw new Error(`Invalid integer: ${value}`);
+  }
+  const parsed = Number.parseInt(trimmed, 10);
+  if (!Number.isSafeInteger(parsed)) {
     throw new Error(`Invalid integer: ${value}`);
   }
   return parsed;
@@ -819,6 +1270,77 @@ function parseChangeType(value: string): ChangeType {
     return value as ChangeType;
   }
   throw new Error(`Invalid change type: ${value}`);
+}
+
+function parseSessionMemoryAction(value: string): NonNullable<SessionMemoryInput["action"]> {
+  const allowed = new Set<NonNullable<SessionMemoryInput["action"]>>(["read", "remember", "summary", "compact"]);
+  if (allowed.has(value as NonNullable<SessionMemoryInput["action"]>)) {
+    return value as NonNullable<SessionMemoryInput["action"]>;
+  }
+  throw new Error(`Invalid session memory action: ${value}`);
+}
+
+function parseSessionMemoryKinds(values: string[] | undefined): SessionMemoryInput["kinds"] | undefined {
+  return values?.map(parseSessionMemoryKind);
+}
+
+function parseSessionMemoryKind(value: string): NonNullable<SessionMemoryInput["kinds"]>[number] {
+  const allowed = new Set<NonNullable<SessionMemoryInput["kinds"]>[number]>([
+    "viewed",
+    "claim",
+    "ruled_out",
+    "open_question",
+    "next_read",
+    "decision",
+    "verification",
+    "risk",
+    "constraint"
+  ]);
+  if (allowed.has(value as NonNullable<SessionMemoryInput["kinds"]>[number])) {
+    return value as NonNullable<SessionMemoryInput["kinds"]>[number];
+  }
+  throw new Error(`Invalid session memory kind: ${value}`);
+}
+
+function parseSessionMemoryEntries(values: string[] | undefined): SessionMemoryInput["entries"] | undefined {
+  if (!values?.length) {
+    return undefined;
+  }
+  return values.map((value) => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      throw new Error(`Invalid session memory entry JSON: ${value}`);
+    }
+    if (!isCliRecord(parsed)) {
+      throw new Error(`Invalid session memory entry JSON: ${value}`);
+    }
+    const entry = parsed as NonNullable<SessionMemoryInput["entries"]>[number];
+    if (typeof entry.summary !== "string" || entry.summary.trim().length === 0) {
+      throw new Error(`Invalid session memory entry JSON: summary is required`);
+    }
+    const kind = parseSessionMemoryKind(String(entry.kind));
+    if (entry.confidence !== "authoritative" && entry.confidence !== "derived" && entry.confidence !== "heuristic") {
+      throw new Error(`Invalid session memory entry JSON: confidence is required`);
+    }
+    if (entry.evidenceTier !== "authoritative" && entry.evidenceTier !== "derived" && entry.evidenceTier !== "heuristic" && entry.evidenceTier !== "fallback") {
+      throw new Error(`Invalid session memory entry JSON: evidenceTier is required`);
+    }
+    return {
+      ...entry,
+      kind,
+      summary: entry.summary.trim()
+    };
+  });
+}
+
+function parseSemanticProvider(value: string): SemanticProviderKind {
+  const provider = semanticProviderFromValue(value);
+  if (!provider) {
+    throw new Error(`Invalid semantic provider: ${value}`);
+  }
+  return provider;
 }
 
 function parseWaiverOptions(values: string[] | undefined): VerificationWaiver[] | undefined {
@@ -837,6 +1359,10 @@ function parseWaiverOptions(values: string[] | undefined): VerificationWaiver[] 
     }
     return { kind: parsed.kind, target: parsed.target, reason: parsed.reason };
   });
+}
+
+function isCliRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }
 
 function parseCommandReportOptions(values: string[] | undefined): VerificationCommandReport[] | undefined {
@@ -867,7 +1393,7 @@ function parseCommandReportOptions(values: string[] | undefined): VerificationCo
     if (parsed.args !== undefined && parsed.args.length > 80) {
       throw new Error(`Invalid command report JSON: args exceeds 80 entries`);
     }
-    if (parsed.exitCode === undefined || !Number.isInteger(parsed.exitCode) || parsed.exitCode < 0) {
+    if (parsed.exitCode !== undefined && (!Number.isInteger(parsed.exitCode) || parsed.exitCode < 0)) {
       throw new Error(`Invalid command report JSON: ${value}`);
     }
     if (parsed.durationMs !== undefined && (!Number.isFinite(parsed.durationMs) || parsed.durationMs < 0)) {

@@ -1,6 +1,6 @@
 import path from "node:path";
 import { createCommandBudget, runCommand, type CommandBudget, type CommandResult, type RunCommandOptions } from "../command.js";
-import { getGitStateAsync, type GitState } from "../git.js";
+import type { GitState } from "../git.js";
 import type { ChangedFileEntry, ChangedSymbol, CodexaIndex, FreshnessInfo, QueryOptions, RefreshInfo } from "../types.js";
 import { getChangedFileEntries, getChangedSymbols } from "./worktree.js";
 import { requireIndex } from "./runtime.js";
@@ -36,6 +36,11 @@ export interface QuerySession {
 }
 
 export type QuerySessionInput = string | QuerySession;
+export interface QuerySessionIndexState {
+  index: CodexaIndex;
+  freshness: FreshnessInfo;
+  refresh?: RefreshInfo;
+}
 
 const DEFAULT_COMMAND_BUDGET_MS = 10_000;
 const DEFAULT_MAX_RESULT_BYTES = 64 * 1024;
@@ -43,8 +48,13 @@ const DEFAULT_MAX_RESULTS = 50;
 
 export async function createQuerySession(repoRoot: string, options: QueryOptions = {}): Promise<QuerySession> {
   const repo = path.resolve(repoRoot);
-  const { index, freshness, refresh } = await requireIndex(repo, options);
-  const gitState = await getGitStateAsync(repo, { includeFiles: false, includeChurn: false });
+  return createQuerySessionFromIndexState(repo, await requireIndex(repo, options), options);
+}
+
+export function createQuerySessionFromIndexState(repoRoot: string, state: QuerySessionIndexState, options: QueryOptions = {}): QuerySession {
+  const repo = path.resolve(repoRoot);
+  const { index, freshness, refresh } = state;
+  const gitState = gitStateFromFreshness(repo, freshness);
   const warnings: string[] = [];
   const provenance: string[] = [
     `index:${index.freshness.indexedAt}`,
@@ -111,4 +121,15 @@ export async function ensureQuerySession(input: QuerySessionInput, options: Quer
 
 function positiveInt(value: number | undefined, fallback: number): number {
   return Number.isFinite(value) && value !== undefined && value > 0 ? Math.trunc(value) : fallback;
+}
+
+function gitStateFromFreshness(repoRoot: string, freshness: FreshnessInfo): GitState {
+  return {
+    repoRoot,
+    gitRoot: freshness.gitRoot,
+    headCommit: freshness.headCommit,
+    files: [],
+    dirtyFiles: freshness.dirtyFiles,
+    churnByPath: new Map()
+  };
 }

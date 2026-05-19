@@ -560,7 +560,7 @@ function assertAllowedHistoricalBaseline(command: string[], label: string): void
       throw new Error(`${label} contains unsafe baseline argument: ${arg}`);
     }
   }
-  if (executable === "rg") {
+  if (executable === "rg" && isAllowedRipgrepBaseline(command.slice(1))) {
     return;
   }
   if (isAllowedGitStatusBaseline(command) || isAllowedGitGrepBaseline(command)) {
@@ -602,6 +602,29 @@ function isAllowedGitGrepBaseline(command: string[]): boolean {
     }
   }
   return true;
+}
+
+function isAllowedRipgrepBaseline(args: string[]): boolean {
+  let pattern: string | undefined;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "-n" || arg === "--line-number" || arg === "--") {
+      continue;
+    }
+    if (arg === "-e") {
+      if (!args[index + 1]) {
+        return false;
+      }
+      pattern = args[index + 1];
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("-")) {
+      return false;
+    }
+    pattern ??= arg;
+  }
+  return Boolean(pattern);
 }
 
 function isUnsafeRepoRelativePath(value: string): boolean {

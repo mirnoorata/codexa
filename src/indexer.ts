@@ -1,7 +1,6 @@
-import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { setTimeout as sleep } from "node:timers/promises";
+import { acquireCacheLock } from "./cache-lock.js";
 import { buildGraphEdges, extractWorkflowTraces } from "./graph.js";
 import { moduleNameForPath } from "./language.js";
 import { parseFile } from "./parser.js";
@@ -25,7 +24,7 @@ import { normalizePath, stableId, uniqueSorted } from "./util.js";
 import { writeArtifacts } from "./artifacts.js";
 
 export const CODEBASE_DIR = ".codex/codebase";
-const PARSE_CACHE_VERSION = "parse-cache-v1-placeholder-signals-20260429j";
+const PARSE_CACHE_VERSION = "parse-cache-v1-placeholder-signals-20260515a";
 const PARSE_CACHE_PATH = ".codex/cache/codexa-parse-cache.json";
 const INDEX_LOCK_DIR = ".codex/cache/codexa-index.lock";
 const INDEX_LOCK_STALE_MS = 120_000;
@@ -40,15 +39,6 @@ interface ParseCache {
       result: ParseResult;
     }
   >;
-}
-
-interface IndexLockOwner {
-  pid: number;
-  token: string;
-  processStartTime?: string | null;
-  startedAt: string;
-  heartbeatAt: string;
-  repoRoot: string;
 }
 
 export async function buildIndex(options: IndexOptions): Promise<CodexaIndex> {
@@ -186,7 +176,7 @@ async function loadParseCache(repoRoot: string): Promise<ParseCache> {
       return {
         version: parsed.version,
         entries: Object.fromEntries(
-          Object.entries(parsed.entries).filter(([, entry]) => Boolean(entry?.contentHash && typeof entry.sizeBytes === "number" && isParseResult(entry.result)))
+          Object.entries(parsed.entries).filter(([filePath, entry]) => Boolean(entry?.contentHash && typeof entry.sizeBytes === "number" && isParseResult(entry.result) && parseResultMatchesPath(entry.result, filePath)))
         )
       };
     }
@@ -209,6 +199,18 @@ function isParseResult(value: unknown): value is ParseResult {
     Array.isArray(record.testEdges) &&
     Array.isArray(record.risks) &&
     Array.isArray(record.parserErrors)
+  );
+}
+
+function parseResultMatchesPath(result: ParseResult, filePath: string): boolean {
+  return (
+    result.file.path === filePath &&
+    result.symbols.every((fact) => fact.path === filePath) &&
+    result.usageSites.every((fact) => fact.path === filePath) &&
+    result.imports.every((fact) => fact.path === filePath) &&
+    result.testEdges.every((fact) => fact.path === filePath) &&
+    result.risks.every((fact) => fact.path === filePath) &&
+    result.parserErrors.every((fact) => fact.path === filePath)
   );
 }
 
@@ -403,12 +405,9 @@ function normalizeAliasTarget(configDir: string, baseUrl: string, targetPattern:
 
 export async function persistIndex(index: CodexaIndex, outputDir: string): Promise<void> {
   await fs.mkdir(path.join(outputDir, "modules"), { recursive: true });
-  await fs.writeFile(path.join(outputDir, "index.json"), `${JSON.stringify(index, null, 2)}\n`, "utf8");
+  await fs.writeFile(path.join(outputDir, "index.json"), `${JSON.stringify(index)}\n`, "utf8");
   await fs.writeFile(path.join(outputDir, "freshness.json"), `${JSON.stringify(index.freshness, null, 2)}\n`, "utf8");
-  const facts = allFacts(index)
-    .map((fact) => JSON.stringify(fact))
-    .join("\n");
-  await fs.writeFile(path.join(outputDir, "facts.ndjson"), `${facts}\n`, "utf8");
+  await writeFactsNdjson(path.join(outputDir, "facts.ndjson"), allFacts(index));
 }
 
 export async function buildIndexLocked(options: IndexOptions): Promise<CodexaIndex> {
@@ -445,14 +444,34 @@ export async function writeIndexBundle(index: CodexaIndex, outputDir: string): P
   }
 }
 
-export async function loadIndex(repoRoot: string): Promise<CodexaIndex | null> {
+export async function loadIndex(repoRoot: string, options: { recover?: boolean } = {}): Promise<CodexaIndex | null> {
   const outputDir = path.join(path.resolve(repoRoot), CODEBASE_DIR);
-  return (await readIndexBundle(outputDir)) ?? (await recoverIndexBundle(outputDir));
+  const index = await readIndexBundle(outputDir);
+  if (index || options.recover === false) {
+    return index;
+  }
+  return recoverIndexBundle(outputDir);
+}
+
+export async function loadIndexReadOnly(repoRoot: string): Promise<CodexaIndex | null> {
+  return loadIndex(repoRoot, { recover: false });
+}
+
+export async function loadFreshnessReadOnly(repoRoot: string): Promise<FreshnessInfo | null> {
+  return readFreshnessBundle(path.join(path.resolve(repoRoot), CODEBASE_DIR));
 }
 
 async function readIndexBundle(outputDir: string): Promise<CodexaIndex | null> {
   try {
     return normalizeLoadedIndex(JSON.parse(await fs.readFile(path.join(outputDir, "index.json"), "utf8")) as Partial<CodexaIndex>);
+  } catch {
+    return null;
+  }
+}
+
+async function readFreshnessBundle(outputDir: string): Promise<FreshnessInfo | null> {
+  try {
+    return normalizeLoadedFreshness(JSON.parse(await fs.readFile(path.join(outputDir, "freshness.json"), "utf8")) as Partial<FreshnessInfo>);
   } catch {
     return null;
   }
@@ -512,10 +531,56 @@ function normalizeLoadedIndex(index: Partial<CodexaIndex>): CodexaIndex {
   };
 }
 
-export async function getFreshness(repoRoot: string, index?: CodexaIndex | null): Promise<FreshnessInfo> {
+function normalizeLoadedFreshness(freshness: Partial<FreshnessInfo>): FreshnessInfo {
+  if (
+    freshness.schemaVersion !== 1 ||
+    typeof freshness.snapshotId !== "string" ||
+    typeof freshness.repoRoot !== "string" ||
+    typeof freshness.indexedAt !== "string" ||
+    !Array.isArray(freshness.dirtyFiles) ||
+    !Array.isArray(freshness.indexedDirtyFiles) ||
+    !freshness.dirtyFileHashes ||
+    typeof freshness.dirtyFileHashes !== "object" ||
+    !freshness.indexedDirtyFileHashes ||
+    typeof freshness.indexedDirtyFileHashes !== "object" ||
+    typeof freshness.missing !== "boolean" ||
+    typeof freshness.stale !== "boolean" ||
+    typeof freshness.reason !== "string" ||
+    typeof freshness.parserErrorCount !== "number"
+  ) {
+    throw new Error("Codexa freshness bundle is incomplete or unsupported");
+  }
+  return freshness as FreshnessInfo;
+}
+
+export async function getFreshness(repoRoot: string, index?: CodexaIndex | null, options: { recover?: boolean } = {}): Promise<FreshnessInfo> {
   const repo = path.resolve(repoRoot);
   const current = await discoverRepoFreshness(repo);
-  const loaded = index ?? (await loadIndex(repo));
+  if (index !== undefined) {
+    return freshnessFromStored(repo, current, index?.freshness ?? null);
+  }
+
+  const stored = await loadFreshnessReadOnly(repo);
+  if (stored) {
+    const freshness = freshnessFromStored(repo, current, stored);
+    if (!freshness.stale && options.recover !== false && (await indexBundleNewerThanFreshness(repo))) {
+      const loaded = await loadIndex(repo);
+      if (loaded) {
+        return freshnessFromStored(repo, current, loaded.freshness);
+      }
+    }
+    return freshness;
+  }
+
+  const loaded = options.recover === false ? null : await loadIndex(repo);
+  return freshnessFromStored(repo, current, loaded?.freshness ?? null);
+}
+
+function freshnessFromStored(
+  repo: string,
+  current: Awaited<ReturnType<typeof discoverRepoFreshness>>,
+  loaded: FreshnessInfo | null
+): FreshnessInfo {
   if (!loaded) {
     return {
       schemaVersion: 1,
@@ -536,13 +601,13 @@ export async function getFreshness(repoRoot: string, index?: CodexaIndex | null)
   }
 
   const dirtyChanged =
-    current.git.dirtyFiles.join("\n") !== loaded.freshness.indexedDirtyFiles.join("\n") ||
-    stableJson(current.dirtyFileHashes) !== stableJson(loaded.freshness.indexedDirtyFileHashes ?? {});
-  const commitChanged = current.git.headCommit !== loaded.freshness.headCommit;
-  const repoRootChanged = path.resolve(loaded.freshness.repoRoot) !== repo || loaded.freshness.gitRoot !== current.git.gitRoot;
+    current.git.dirtyFiles.join("\n") !== loaded.indexedDirtyFiles.join("\n") ||
+    stableJson(current.dirtyFileHashes) !== stableJson(loaded.indexedDirtyFileHashes ?? {});
+  const commitChanged = current.git.headCommit !== loaded.headCommit;
+  const repoRootChanged = path.resolve(loaded.repoRoot) !== repo || loaded.gitRoot !== current.git.gitRoot;
   const stale = dirtyChanged || commitChanged || repoRootChanged;
   return {
-    ...loaded.freshness,
+    ...loaded,
     repoRoot: repo,
     gitRoot: current.git.gitRoot,
     dirtyFiles: current.git.dirtyFiles,
@@ -555,7 +620,7 @@ export async function getFreshness(repoRoot: string, index?: CodexaIndex | null)
         : repoRootChanged
           ? "repo-root-changed"
           : "dirty-files-changed"
-      : loaded.freshness.reason
+      : loaded.reason
   };
 }
 
@@ -651,139 +716,25 @@ function allFacts(index: CodexaIndex): CodexaFact[] {
   ];
 }
 
+async function writeFactsNdjson(filePath: string, facts: CodexaFact[]): Promise<void> {
+  const handle = await fs.open(filePath, "w");
+  try {
+    for (const fact of facts) {
+      await handle.write(`${JSON.stringify(fact)}\n`);
+    }
+  } finally {
+    await handle.close();
+  }
+}
+
 async function acquireIndexLock(repoRoot: string): Promise<() => Promise<void>> {
-  const lockDir = path.join(repoRoot, INDEX_LOCK_DIR);
-  const ownerPath = path.join(lockDir, "owner.json");
-  const started = Date.now();
-  const owner: IndexLockOwner = {
-    pid: process.pid,
-    token: randomUUID(),
-    processStartTime: await currentProcessStartTime(process.pid),
-    startedAt: new Date().toISOString(),
-    heartbeatAt: new Date().toISOString(),
-    repoRoot
-  };
-  await fs.mkdir(path.dirname(lockDir), { recursive: true });
-  while (true) {
-    try {
-      await fs.mkdir(lockDir, { recursive: false });
-      await writeLockOwner(ownerPath, owner);
-      const heartbeat = setInterval(() => {
-        owner.heartbeatAt = new Date().toISOString();
-        void writeLockOwner(ownerPath, owner).catch(() => undefined);
-      }, Math.max(10_000, Math.floor(INDEX_LOCK_STALE_MS / 3)));
-      heartbeat.unref?.();
-      return async () => {
-        clearInterval(heartbeat);
-        await removeLockIfOwned(lockDir, owner).catch(() => undefined);
-      };
-    } catch (error) {
-      if (!isNodeError(error) || error.code !== "EEXIST") {
-        throw error;
-      }
-      if (await removeStaleLock(lockDir)) {
-        continue;
-      }
-      if (Date.now() - started > 30_000) {
-        throw new Error(`Timed out waiting for Codexa index lock: ${lockDir}`);
-      }
-      await sleep(250);
-    }
-  }
-}
-
-async function removeStaleLock(lockDir: string): Promise<boolean> {
-  const ownerPath = path.join(lockDir, "owner.json");
-  try {
-    const stat = await fs.stat(lockDir);
-    const owner = await readLockOwner(ownerPath);
-    if (owner) {
-      if (!(await lockOwnerStillRunning(owner))) {
-        await fs.rm(lockDir, { recursive: true, force: true });
-        return true;
-      }
-      const heartbeatMs = Date.parse(owner.heartbeatAt || owner.startedAt);
-      if (Date.now() - heartbeatMs <= INDEX_LOCK_STALE_MS) {
-        return false;
-      }
-      return false;
-    }
-    if (Date.now() - stat.mtimeMs <= INDEX_LOCK_STALE_MS) {
-      return false;
-    }
-    await fs.rm(lockDir, { recursive: true, force: true });
-    return true;
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") {
-      return true;
-    }
-    return false;
-  }
-}
-
-async function writeLockOwner(ownerPath: string, owner: IndexLockOwner): Promise<void> {
-  const temp = `${ownerPath}.${process.pid}.${owner.token}.tmp`;
-  await fs.writeFile(temp, `${JSON.stringify(owner)}\n`, "utf8");
-  await fs.rename(temp, ownerPath);
-}
-
-async function readLockOwner(ownerPath: string): Promise<IndexLockOwner | null> {
-  try {
-    const parsed = JSON.parse(await fs.readFile(ownerPath, "utf8")) as Partial<IndexLockOwner>;
-    return typeof parsed.pid === "number" && typeof parsed.token === "string" && typeof parsed.startedAt === "string" && typeof parsed.heartbeatAt === "string"
-      ? {
-          pid: parsed.pid,
-          token: parsed.token,
-          processStartTime: parsed.processStartTime,
-          startedAt: parsed.startedAt,
-          heartbeatAt: parsed.heartbeatAt,
-          repoRoot: typeof parsed.repoRoot === "string" ? parsed.repoRoot : ""
-        }
-      : null;
-  } catch {
-    return null;
-  }
-}
-
-async function removeLockIfOwned(lockDir: string, owner: IndexLockOwner): Promise<void> {
-  const current = await readLockOwner(path.join(lockDir, "owner.json"));
-  if (current?.token === owner.token) {
-    await fs.rm(lockDir, { recursive: true, force: true });
-  }
-}
-
-async function lockOwnerStillRunning(owner: IndexLockOwner): Promise<boolean> {
-  if (!Number.isInteger(owner.pid) || owner.pid <= 0) {
-    return false;
-  }
-  const currentStart = await currentProcessStartTime(owner.pid);
-  if (owner.processStartTime && currentStart) {
-    return owner.processStartTime === currentStart;
-  }
-  try {
-    process.kill(owner.pid, 0);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-async function currentProcessStartTime(pid: number): Promise<string | null> {
-  try {
-    const stat = await fs.readFile(`/proc/${pid}/stat`, "utf8");
-    const closeParen = stat.lastIndexOf(")");
-    if (closeParen < 0) {
-      return null;
-    }
-    const fields = stat.slice(closeParen + 2).trim().split(/\s+/);
-    return fields[19] ?? null;
-  } catch {
-    return null;
-  }
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && "code" in error;
+  return acquireCacheLock({
+    repoRoot,
+    lockDir: INDEX_LOCK_DIR,
+    staleMs: INDEX_LOCK_STALE_MS,
+    timeoutMs: 30_000,
+    label: "Codexa index"
+  });
 }
 
 function countBy(values: string[]): Map<string, number> {
@@ -812,6 +763,19 @@ async function pathExists(candidate: string): Promise<boolean> {
   try {
     await fs.stat(candidate);
     return true;
+  } catch {
+    return false;
+  }
+}
+
+async function indexBundleNewerThanFreshness(repoRoot: string): Promise<boolean> {
+  try {
+    const outputDir = path.join(repoRoot, CODEBASE_DIR);
+    const [indexStat, freshnessStat] = await Promise.all([
+      fs.stat(path.join(outputDir, "index.json")),
+      fs.stat(path.join(outputDir, "freshness.json"))
+    ]);
+    return indexStat.mtimeMs > freshnessStat.mtimeMs;
   } catch {
     return false;
   }

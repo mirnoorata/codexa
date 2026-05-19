@@ -162,7 +162,7 @@ function scanPatternText(input) {
     while ((match = pattern.exec(input.text)) !== null) {
       const line = lineNumberForIndex(input.text, match.index);
       const source = input.source ? `${input.source} ` : "";
-      recordFailure(`${formatLocation(input, line)}: ${source}${rule.label}: ${match[0]}`);
+      recordFailure(`${formatLocation(input, line)}: ${source}${rule.label}: <redacted>`);
       matchCount += 1;
       if (matchCount >= MAX_MATCHES_PER_RULE || !canRecordMoreFailures()) {
         break;

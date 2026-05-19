@@ -4,6 +4,9 @@ import type { Confidence } from "../types.js";
 
 export interface CandidateTestCommand {
   command: string;
+  commandCwd: string;
+  commandExecutable: string;
+  commandArgs: string[];
   source: string;
   confidence: Confidence;
 }
@@ -50,8 +53,12 @@ function packageTestCommand(repoRoot: string, packageDir: string, relativeTestPa
     const packageManager = packageManagerFor(packageRoot, repoRoot);
     const cwd = packageDir === "." ? repoRoot : path.join(repoRoot, packageDir);
     const runner = packageManager === "npm" ? ["npm", "run", scriptName] : [packageManager, "run", scriptName];
+    const args = [...runner.slice(1), "--", relativeTestPath];
     return {
-      command: shellJoin(["cd", cwd]) + " && " + shellJoin([...runner, "--", relativeTestPath]),
+      command: shellJoin(["cd", cwd]) + " && " + shellJoin([runner[0], ...args]),
+      commandCwd: cwd,
+      commandExecutable: runner[0],
+      commandArgs: args,
       source: `${packageDir === "." ? "" : `${packageDir}/`}package.json#scripts.${scriptName}`,
       confidence: "heuristic"
     };
@@ -101,8 +108,12 @@ function pythonTestCommand(repoRoot: string, testPath: string): CandidateTestCom
     return undefined;
   }
   const runner = existsSync(path.join(repoRoot, "uv.lock")) ? ["uv", "run", "pytest"] : ["pytest"];
+  const args = [...runner.slice(1), testPath];
   return {
-    command: shellJoin(["cd", repoRoot]) + " && " + shellJoin([...runner, testPath]),
+    command: shellJoin(["cd", repoRoot]) + " && " + shellJoin([runner[0], ...args]),
+    commandCwd: repoRoot,
+    commandExecutable: runner[0],
+    commandArgs: args,
     source: metadataSources.slice(0, 3).join(", "),
     confidence: "heuristic"
   };

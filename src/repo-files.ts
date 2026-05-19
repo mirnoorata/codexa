@@ -5,6 +5,8 @@ import { getGitStateAsync, type GitState } from "./git.js";
 import { isSourcePath, shouldSkipPath } from "./language.js";
 import { normalizePath } from "./util.js";
 
+const MAX_DIRTY_CONTENT_HASH_BYTES = 2 * 1024 * 1024;
+
 export interface RepoFiles {
   git: GitState;
   dirtyFileHashes: Record<string, string>;
@@ -28,7 +30,7 @@ export async function discoverRepoFiles(repoRoot: string): Promise<RepoFiles> {
       continue;
     }
     const absolutePath = path.join(git.repoRoot, normalized);
-    const stat = await safeStat(absolutePath);
+    const stat = await safeLstat(absolutePath);
     if (!stat?.isFile()) {
       continue;
     }
@@ -68,9 +70,13 @@ async function hashDirtyFiles(repoRoot: string, dirtyFiles: string[]): Promise<R
     dirtyFiles.map(async (file) => {
       const absolutePath = path.join(repoRoot, file);
       try {
-        const stat = await fs.stat(absolutePath);
+        const stat = await fs.lstat(absolutePath);
         if (!stat.isFile()) {
           hashes[file] = "non-file";
+          return;
+        }
+        if (!isSourcePath(file) || stat.size > MAX_DIRTY_CONTENT_HASH_BYTES) {
+          hashes[file] = `metadata:${stat.size}:${Math.trunc(stat.mtimeMs)}`;
           return;
         }
         const content = await fs.readFile(absolutePath);
@@ -83,9 +89,9 @@ async function hashDirtyFiles(repoRoot: string, dirtyFiles: string[]): Promise<R
   return Object.fromEntries(Object.entries(hashes).sort(([a], [b]) => a.localeCompare(b)));
 }
 
-async function safeStat(filePath: string) {
+async function safeLstat(filePath: string) {
   try {
-    return await fs.stat(filePath);
+    return await fs.lstat(filePath);
   } catch {
     return null;
   }

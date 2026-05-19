@@ -10,6 +10,7 @@ import { ensureQuerySession, type QuerySessionInput } from "./session.js";
 import { formatTestRecommendations, recommendTests } from "./tests.js";
 import { findFile, resolveGraphTarget, type ResolvedGraphTarget } from "./targets.js";
 import { retrieveForTask } from "../retrieval.js";
+import { semanticOptionsFromQueryOptions } from "../semantic-retrieval.js";
 import { workflowTierCounts } from "./graph-traversal.js";
 
 export async function workflowPathQuery(
@@ -21,7 +22,7 @@ export async function workflowPathQuery(
   const { index, freshness, refresh, repoRoot } = session;
   const limit = Math.max(1, Math.min(workflowInput.limit ?? 8, session.maxResults));
   const queryText = workflowInput.query?.trim() || workflowInput.symbol || workflowInput.file || "workflow";
-  const retrieval = retrieveForTask(index, queryText, limit);
+  const retrieval = await retrieveForTask(index, queryText, limit, semanticOptionsFromQueryOptions(repoRoot, options));
   let workflows = retrieval.workflows;
   if (workflowInput.file || workflowInput.symbol) {
     const target = resolveGraphTarget(index, repoRoot, { file: workflowInput.file, symbol: workflowInput.symbol });

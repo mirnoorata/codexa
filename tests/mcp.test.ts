@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -34,6 +34,21 @@ function seq<T>(count: number, factory: (index: number) => T): T[] {
 
 function serializedBytes(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
+
+async function createIndexedMcpRepo(parent: string, name: string, fileStem: string, symbol: string): Promise<string> {
+  const repo = path.join(parent, name);
+  await mkdir(path.join(repo, "src"), { recursive: true });
+  await writeFile(path.join(repo, "package.json"), JSON.stringify({ scripts: { test: "vitest run" } }, null, 2), "utf8");
+  await writeFile(path.join(repo, "src", `${fileStem}.ts`), `export function ${symbol}() { return '${symbol}' }\n`, "utf8");
+  execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+  execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+  execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+    cwd: repo,
+    stdio: "ignore"
+  });
+  await buildIndex({ repoRoot: repo });
+  return repo;
 }
 
 function buildContextPacket(mode?: "focus_brief" | "task_brief") {
@@ -200,6 +215,37 @@ function buildTestPlanPacket() {
 function buildChangePlanPacket() {
   return {
     mode: "change_plan",
+    editReadiness: { editable: false, status: "orientation-only", snapshotBlocked: true },
+    snapshotBlock: { taskId: "blocked-snap-1", path: ".codex/cache/codexa-tasks/blocked-snap-1.blocked.json", reason: "context quality is low" },
+    targetCandidates: seq(14, (index) => ({
+      candidateId: `candidate-${index}`,
+      rank: index + 1,
+      kind: index % 2 === 0 ? "file" : "symbol",
+      path: `src/candidate-${index}.ts`,
+      symbol:
+        index % 2 === 0
+          ? undefined
+          : {
+              id: `sym-${index}`,
+              name: `candidate${index}`,
+              qualifiedName: `candidate${index}`,
+              kind: "function"
+            },
+      score: 100 - index,
+      confidence: "derived",
+      evidence: seq(10, (evidenceIndex) => `evidence-${index}-${evidenceIndex}`),
+      missingAnchors: ["file-or-symbol-target", "edit-ready-context"],
+      validationStatus: index % 5 === 0 ? "weak" : "edit-ready",
+      validationReasons: seq(10, (reasonIndex) => `validation-${index}-${reasonIndex}`),
+      wouldPlanEditTargets: seq(10, (targetIndex) => `src/validated-${index}-${targetIndex}.ts`),
+      wouldRecommendTests: seq(10, (testIndex) => `tests/validated-${index}-${testIndex}.test.ts`),
+      candidateRisk: {
+        score: index,
+        reasons: seq(8, (reasonIndex) => `risk-${index}-${reasonIndex}`)
+      },
+      nextChangePlanArgs: { files: [`src/candidate-${index}.ts`], saveSnapshot: true },
+      rawSearchQueries: seq(5, (queryIndex) => `query-${index}-${queryIndex}`)
+    })),
     steps: seq(5, (index) => `step-${index}`),
     focus: buildFocusBriefPacket(),
     context: buildContextPacket(),
@@ -218,6 +264,8 @@ function buildChangePlanPacket() {
       plannedFiles: seq(41, (index) => `src/snapshot-file-${index}.ts`),
       focusFiles: seq(21, (index) => ({ path: `src/snapshot-focus-${index}.ts`, tier: "derived", reasons: [`reason-${index}`], rank: index, riskScore: index })),
       plannedTests: seq(21, (index) => ({ path: `tests/snapshot-${index}.test.ts`, reason: `reason-${index}`, rank: index })),
+      requiredWorkflowCheckCount: 7,
+      requiredDependencyCheckCount: 8,
       requiredWorkflowChecks: seq(2, (index) => ({ target: `workflow-${index}` })),
       requiredDependencyChecks: seq(2, (index) => ({ target: `dependency-${index}` })),
       recipes: seq(9, (index) => `recipe-${index}`),
@@ -242,6 +290,194 @@ function buildChangePlanPacket() {
 }
 
 describe("Codexa MCP server", () => {
+  it("routes workspace-root MCP calls and resources to the focused repository", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-workspace-"));
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const repoA = await createIndexedMcpRepo(workspace, "repo-a", "alpha", "alphaSymbol");
+    const repoB = await createIndexedMcpRepo(workspace, "repo-b", "beta", "betaSymbol");
+    const focusFile = path.join(workspace, ".codex", "WORKING.md");
+    await mkdir(path.dirname(focusFile), { recursive: true });
+    await writeFile(focusFile, `## Session\n\n- Focused project: \`${repoA}\`.\n`, "utf8");
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-workspace-routing-test", version: "0.1.0" });
+    await client.connect(transport);
+
+    try {
+      const firstFreshness = await client.callTool({ name: "freshness", arguments: {} });
+      expect(JSON.stringify(firstFreshness)).toContain(repoA);
+      expect(JSON.stringify(firstFreshness)).not.toContain("Failed to read git status");
+
+      const firstRepoMap = await client.callTool({ name: "repo_map", arguments: { limit: 5 } });
+      expect(JSON.stringify(firstRepoMap)).toContain("src/alpha.ts");
+      expect(JSON.stringify(firstRepoMap)).not.toContain("src/beta.ts");
+
+      const firstResource = await client.readResource({ uri: "codexa://repo/codebase/repo-map.md" });
+      expect(String(firstResource.contents?.[0]?.text)).toContain("src/alpha.ts");
+      expect(String(firstResource.contents?.[0]?.text)).not.toContain("src/beta.ts");
+
+      await writeFile(focusFile, `## Active Focus\n\n- Project: \`${repoB}\`\n`, "utf8");
+
+      const secondSearch = await client.callTool({ name: "find_context", arguments: { query: "betaSymbol", limit: 5 } });
+      expect(JSON.stringify(secondSearch)).toContain(repoB);
+      expect(JSON.stringify(secondSearch)).toContain("betaSymbol");
+      expect(JSON.stringify(secondSearch)).not.toContain("Failed to read git status");
+
+      const secondResource = await client.readResource({ uri: "codexa://repo/codebase/repo-map.md" });
+      expect(String(secondResource.contents?.[0]?.text)).toContain("src/beta.ts");
+      expect(String(secondResource.contents?.[0]?.text)).not.toContain("src/alpha.ts");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("routes workspace-root task briefs from active-session rows before WORKING.md default", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-working-default-"));
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const defaultRepo = await createIndexedMcpRepo(workspace, "default-repo", "alpha", "alphaSymbol");
+    const activeRepo = await createIndexedMcpRepo(workspace, "active-repo", "beta", "betaSymbol");
+    const focusFile = path.join(workspace, ".codex", "WORKING.md");
+    await mkdir(path.dirname(focusFile), { recursive: true });
+    await writeFile(
+      focusFile,
+      [
+        "## Workspace Default",
+        "",
+        `- Default repo: \`${defaultRepo}\`.`,
+        "",
+        "## Active Sessions",
+        "",
+        "| session | agent | repo | task | status | claims | last_seen | next |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        `| codex-test | codex | ${activeRepo} | route task | active | none | now | inspect |`
+      ].join("\n"),
+      "utf8"
+    );
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-working-default-routing-test", version: "0.1.0" });
+    await client.connect(transport);
+
+    try {
+      const taskBrief = await client.callTool({ name: "task_brief", arguments: { task: "change alphaSymbol", tokenBudget: 900, limit: 5 } });
+      const serialized = JSON.stringify(taskBrief);
+      expect(serialized).toContain(activeRepo);
+      expect(serialized).toContain("betaSymbol");
+      expect(serialized).not.toContain(defaultRepo);
+      expect(serialized).not.toContain("Failed to read git status");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("falls back to WORKING.md default when active-session rows are ambiguous", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-working-ambiguous-active-"));
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const defaultRepo = await createIndexedMcpRepo(workspace, "default-repo", "alpha", "alphaSymbol");
+    const otherRepo = await createIndexedMcpRepo(workspace, "other-repo", "beta", "betaSymbol");
+    const focusFile = path.join(workspace, ".codex", "WORKING.md");
+    await mkdir(path.dirname(focusFile), { recursive: true });
+    await writeFile(
+      focusFile,
+      [
+        "## Workspace Default",
+        "",
+        `- Default repo: \`${defaultRepo}\`.`,
+        "",
+        "## Active Sessions",
+        "",
+        "| session | agent | repo | task | status | claims | last_seen | next |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        `| codex-default | codex | ${defaultRepo} | workspace default task | active | none | now | inspect |`,
+        `| codex-other | codex | ${otherRepo} | concurrent repo task | active | none | now | inspect |`
+      ].join("\n"),
+      "utf8"
+    );
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-working-ambiguous-active-test", version: "0.1.0" });
+    await client.connect(transport);
+
+    try {
+      const taskBrief = await client.callTool({ name: "task_brief", arguments: { task: "change alphaSymbol", tokenBudget: 900, limit: 5 } });
+      const serialized = JSON.stringify(taskBrief);
+      expect(serialized).toContain(defaultRepo);
+      expect(serialized).toContain("alphaSymbol");
+      expect(serialized).not.toContain(otherRepo);
+      expect(serialized).not.toContain("Codexa MCP workspace focus is ambiguous");
+      expect(serialized).not.toContain("Failed to read git status");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("does not let stale CODEXA_REPO override an explicit git repo argument", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-explicit-"));
+    const explicitRepo = await createIndexedMcpRepo(workspace, "explicit-repo", "explicit", "explicitSymbol");
+    const staleEnvRepo = await createIndexedMcpRepo(workspace, "stale-env-repo", "stale", "staleSymbol");
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", explicitRepo],
+      env: { CODEXA_REPO: staleEnvRepo },
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-explicit-routing-test", version: "0.1.0" });
+    await client.connect(transport);
+
+    try {
+      const freshness = await client.callTool({ name: "freshness", arguments: {} });
+      expect(JSON.stringify(freshness)).toContain(explicitRepo);
+      expect(JSON.stringify(freshness)).not.toContain(staleEnvRepo);
+
+      const repoMap = await client.callTool({ name: "repo_map", arguments: { limit: 5 } });
+      expect(JSON.stringify(repoMap)).toContain("src/explicit.ts");
+      expect(JSON.stringify(repoMap)).not.toContain("src/stale.ts");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("ignores out-of-tree repo paths from workspace focus files", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-focused-root-"));
+    const outsideParent = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-outside-"));
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const outsideRepo = await createIndexedMcpRepo(outsideParent, "outside-repo", "outside", "outsideSymbol");
+    const outsideLink = path.join(workspace, "outside-link");
+    await symlink(outsideRepo, outsideLink, "dir");
+    const focusFile = path.join(workspace, ".codex", "WORKING.md");
+    await mkdir(path.dirname(focusFile), { recursive: true });
+    await writeFile(focusFile, `## Session\n\n- Focused project: \`${outsideLink}\`.\n`, "utf8");
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-focused-root-boundary-test", version: "0.1.0" });
+    await client.connect(transport);
+
+    try {
+      const freshness = await client.callTool({ name: "freshness", arguments: {} });
+      expect(JSON.stringify(freshness)).toContain(workspace);
+      expect(JSON.stringify(freshness)).not.toContain(outsideRepo);
+    } finally {
+      await client.close();
+    }
+  });
+
   it("exposes bounded context tools with stale-index auto-refresh over stdio", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-"));
     execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
@@ -283,6 +519,7 @@ describe("Codexa MCP server", () => {
         "context_pack",
         "focus_brief",
         "session_context",
+        "session_memory",
         "callers",
         "callees",
         "dependency_path",
@@ -293,6 +530,8 @@ describe("Codexa MCP server", () => {
     );
     const contextTool = tools.tools.find((tool) => tool.name === "context_pack");
     expect(contextTool?.outputSchema).toBeTruthy();
+    expect(JSON.stringify(contextTool?.outputSchema)).toContain("schemaVersion");
+    expect(JSON.stringify(contextTool?.outputSchema)).toContain("actionability");
     expect(contextTool?.annotations?.destructiveHint).toBe(false);
     expect(contextTool?.annotations?.openWorldHint).toBe(false);
     expect(contextTool?.annotations?.readOnlyHint).toBe(false);
@@ -301,8 +540,23 @@ describe("Codexa MCP server", () => {
     expect(searchSchema).toContain("patterns");
     expect(searchSchema).toContain("maxItems");
     expect(searchSchema).toContain("7");
+    const changePlanSchema = JSON.stringify(tools.tools.find((tool) => tool.name === "change_plan")?.inputSchema);
+    expect(changePlanSchema).toContain("followCandidate");
+    const testPlanSchema = JSON.stringify(tools.tools.find((tool) => tool.name === "test_plan")?.inputSchema);
+    expect(testPlanSchema).toContain("changeType");
     expect(tools.tools.find((tool) => tool.name === "impact")?.annotations?.readOnlyHint).toBe(false);
     expect(tools.tools.find((tool) => tool.name === "freshness")?.annotations?.readOnlyHint).toBe(true);
+
+    const freshness = await client.callTool({ name: "freshness", arguments: {} });
+    expect(freshness.structuredContent).toMatchObject({ schemaVersion: 1, mode: expect.any(String), actionability: expect.any(String) });
+    expect(JSON.stringify(freshness.content)).toContain("resource_link");
+
+    const rejectedFollow = await client.callTool({ name: "change_plan", arguments: { taskId: "missing-mcp-follow", followCandidate: "candidate-missing" } });
+    expect(JSON.stringify(rejectedFollow)).toContain("Follow candidate: rejected");
+    expect(((rejectedFollow.structuredContent as { data?: { followCandidate?: { status?: string; requested?: string } } }).data?.followCandidate)).toMatchObject({
+      status: "rejected",
+      requested: "candidate-missing"
+    });
 
     const resources = await client.listResources();
     expect(resources.resources.length).toBeLessThanOrEqual(200);
@@ -330,6 +584,7 @@ describe("Codexa MCP server", () => {
     expect(readme.contents?.[0]?.text).toContain("Codexa Codebase Context");
     const contract = await client.readResource({ uri: "codexa://repo/codebase/codex-contract.md" });
     expect(contract.contents?.[0]?.text).toContain("Automatic Use Rules");
+    expect(contract.contents?.[0]?.text).toContain("Session Memory Protocol");
     const placeholderMap = await client.readResource({ uri: "codexa://repo/codebase/placeholder-map.md" });
     expect(placeholderMap.contents?.[0]?.text).toContain("Placeholder Map");
 
@@ -352,9 +607,16 @@ describe("Codexa MCP server", () => {
     expect(JSON.stringify(repoMap)).toContain("src/index.ts");
 
     await writeFile(path.join(repo, "src/index.ts"), "export function changedSymbol() { return 2 }\n", "utf8");
+    const dirtyFreshness = await client.callTool({ name: "freshness", arguments: {} });
+    expect((dirtyFreshness.structuredContent as { freshness?: { stale?: boolean; reason?: string } }).freshness?.stale).toBe(true);
+    expect((dirtyFreshness.structuredContent as { freshness?: { reason?: string } }).freshness?.reason).toBe("dirty-files-changed");
+    const dirtyFreshnessResource = await client.readResource({ uri: "codexa://repo/codebase/freshness.json" });
+    expect(JSON.parse(String(dirtyFreshnessResource.contents?.[0]?.text)).stale).toBe(true);
     const refreshed = await client.callTool({ name: "find_context", arguments: { query: "changedSymbol", limit: 3 } });
     expect(JSON.stringify(refreshed)).toContain("auto-refreshed from dirty-files-changed");
     expect(JSON.stringify(refreshed)).toContain("changedSymbol");
+    const refreshedFreshnessResource = await client.readResource({ uri: "codexa://repo/codebase/freshness.json" });
+    expect(JSON.parse(String(refreshedFreshnessResource.contents?.[0]?.text)).stale).toBe(false);
 
     const search = await client.callTool({ name: "search", arguments: { query: "changedSymbol", patterns: ["changedSymbol", "changed_symbol"], limit: 3 } });
     expect(JSON.stringify(search)).toContain("Codexa value");
@@ -376,11 +638,16 @@ describe("Codexa MCP server", () => {
         verificationCommands?: string[];
         verificationCoverage?: Array<{ kind: string }>;
         verificationCommandPlan?: Array<{ command: string; covers: string[] }>;
+        sessionMemory?: { autoRecorded?: boolean; writes?: { sessionId?: string; revision?: number; recordedEntryIds?: string[] } };
       };
     };
     expect(contextPackData.data?.verificationCommands?.length).toBeGreaterThan(0);
     expect(contextPackData.data?.verificationCoverage?.length).toBeGreaterThan(0);
     expect(contextPackData.data?.verificationCommandPlan?.length).toBeGreaterThan(0);
+    expect(contextPackData.data?.sessionMemory?.autoRecorded).toBe(true);
+    expect(contextPackData.data?.sessionMemory?.writes?.sessionId).toBeTruthy();
+    expect(contextPackData.data?.sessionMemory?.writes?.revision).toBeGreaterThan(0);
+    expect(contextPackData.data?.sessionMemory?.writes?.recordedEntryIds?.length).toBeGreaterThan(0);
 
     const taskBrief = await client.callTool({ name: "task_brief", arguments: { files: ["src/index.ts"], task: "change behavior", tokenBudget: 900, limit: 5 } });
     expect(JSON.stringify(taskBrief)).toContain("Codexa task brief");
@@ -398,6 +665,56 @@ describe("Codexa MCP server", () => {
 
     const focusBrief = await client.callTool({ name: "focus_brief", arguments: { task: "understand the main workflow", tokenBudget: 900, limit: 5 } });
     expect(JSON.stringify(focusBrief)).toContain("Codexa focus brief");
+
+    const autoMemorySummary = await client.callTool({
+      name: "session_memory",
+      arguments: { action: "summary", kinds: ["viewed", "verification"], limit: 10 }
+    });
+    expect(JSON.stringify(autoMemorySummary)).toContain("Recently viewed:");
+    expect(JSON.stringify(autoMemorySummary)).toContain("context_pack returned");
+    expect(JSON.stringify(autoMemorySummary)).toContain("test_plan recommended");
+
+    const remembered = await client.callTool({
+      name: "session_memory",
+      arguments: {
+        action: "remember",
+        sessionId: "mcp-test-session",
+        taskId: "mcp-changed-symbol",
+        files: ["src/index.ts"],
+        topics: ["mcp test"],
+        entries: [
+          {
+            kind: "decision",
+            key: "decision:mcp-test",
+            summary: "Use the session_memory MCP tool to persist task-local decisions.",
+            provenance: "agent-asserted",
+            confidence: "heuristic",
+            evidenceTier: "derived"
+          }
+        ]
+      }
+    });
+    expect(JSON.stringify(remembered)).toContain("Codexa session memory");
+    const rememberedData = remembered.structuredContent as { data?: { writes?: { recordedEntryIds?: string[] }; memory?: { decisions?: Array<{ confidence: string; provenance: string }> } } };
+    expect(rememberedData.data?.writes?.recordedEntryIds?.length).toBe(1);
+    expect(rememberedData.data?.memory?.decisions?.[0]).toMatchObject({ confidence: "heuristic", provenance: "agent-asserted" });
+
+    const recalled = await client.callTool({
+      name: "session_memory",
+      arguments: { action: "read", sessionId: "mcp-test-session", taskId: "mcp-changed-symbol", kinds: ["decision"], files: ["src/index.ts"] }
+    });
+    expect(JSON.stringify(recalled)).toContain("Use the session_memory MCP tool");
+
+    const memorySummary = await client.callTool({
+      name: "session_memory",
+      arguments: { action: "summary", sessionId: "mcp-test-session", taskId: "mcp-changed-symbol" }
+    });
+    expect(JSON.stringify(memorySummary)).toContain("Decisions:");
+    const cliMemorySummary = execFileSync(process.execPath, [path.join(process.cwd(), "dist/cli.js"), "session-memory", repo, "--action", "summary", "--session-id", "mcp-test-session", "--task-id", "mcp-changed-symbol"], {
+      encoding: "utf8"
+    });
+    expect(cliMemorySummary).toContain("Codexa session memory");
+    expect(cliMemorySummary).toContain("Use the session_memory MCP tool");
 
     const callers = await client.callTool({ name: "callers", arguments: { symbol: "changedSymbol", limit: 5 } });
     expect(JSON.stringify(callers)).toContain("Callers/importers");
@@ -572,8 +889,10 @@ describe("Codexa MCP server", () => {
         waivedVerification: Array.from({ length: 35 }, (_, index) => ({ status: "waived", evidence: [`waiver ${index}`] })),
         workflowChecks: Array.from({ length: 25 }, (_, index) => ({ target: `workflow ${index}` })),
         dependencyChecks: Array.from({ length: 35 }, (_, index) => ({ target: `dependency ${index}` })),
-        snapshot: {
-          plannedFiles: Array.from({ length: 45 }, (_, index) => `src/planned-${index}.ts`)
+      snapshot: {
+          plannedFiles: Array.from({ length: 45 }, (_, index) => `src/planned-${index}.ts`),
+          requiredWorkflowCheckCount: 41,
+          requiredDependencyCheckCount: 42
         },
         outcome: {
           testsNotRun: Array.from({ length: 35 }, (_, index) => ({ path: `tests/missing-${index}.test.ts` })),
@@ -626,6 +945,8 @@ describe("Codexa MCP server", () => {
       };
       snapshot?: {
         plannedFiles: Array<unknown>;
+        requiredWorkflowCheckCount?: number;
+        requiredDependencyCheckCount?: number;
       };
       outcome?: {
         testsNotRun: Array<unknown>;
@@ -650,6 +971,8 @@ describe("Codexa MCP server", () => {
     expect(data.workflowChecks).toHaveLength(20);
     expect(data.dependencyChecks).toHaveLength(30);
     expect(data.snapshot?.plannedFiles).toHaveLength(40);
+    expect(data.snapshot?.requiredWorkflowCheckCount).toBe(41);
+    expect(data.snapshot?.requiredDependencyCheckCount).toBe(42);
     expect(data.truncation).toMatchObject({
       changedSinceSnapshot: { total: 45, returned: 40 },
       tests: { total: 35, returned: 30 },
@@ -782,15 +1105,46 @@ describe("Codexa MCP server", () => {
     expect(compacted.text).toBe("change plan text");
     const data = compacted.data as {
       mode?: string;
+      editReadiness?: { editable?: boolean; status?: string; snapshotBlocked?: boolean };
+      snapshotBlock?: { taskId?: string; path?: string; reason?: string };
+      targetCandidates?: Array<{
+        candidateId?: string;
+        rank?: number;
+        path?: string;
+        evidence?: unknown[];
+        rawSearchQueries?: unknown[];
+        validationStatus?: string;
+        validationReasons?: unknown[];
+        wouldPlanEditTargets?: unknown[];
+        wouldRecommendTests?: unknown[];
+        candidateRisk?: { score?: number; reasons?: unknown[] };
+      }>;
       files?: unknown[];
       plannedEditTargets?: unknown[];
       tests?: unknown[];
-      snapshot?: { taskId?: string; plannedEditTargets?: unknown[]; plannedFiles?: unknown[]; plannedTests?: unknown[] };
+      snapshot?: { taskId?: string; plannedEditTargets?: unknown[]; plannedFiles?: unknown[]; plannedTests?: unknown[]; requiredWorkflowCheckCount?: number; requiredDependencyCheckCount?: number };
       truncation?: Record<string, { total: number; returned: number }>;
       mcp: { mode: string; returnedBytes: number; targetBytes: number; hardBudgetEnforced?: boolean; budgetCompaction?: string };
     };
     expect(data.mode).toBe("change_plan");
     expect(data.mcp.mode).toBe("change_plan");
+    expect(data.editReadiness).toMatchObject({ editable: false, status: "orientation-only", snapshotBlocked: true });
+    expect(data.snapshotBlock).toMatchObject({
+      taskId: "blocked-snap-1",
+      path: ".codex/cache/codexa-tasks/blocked-snap-1.blocked.json",
+      reason: "context quality is low"
+    });
+    expect(data.targetCandidates?.length).toBeGreaterThan(0);
+    expect(data.targetCandidates?.length).toBeLessThanOrEqual(12);
+    expect(data.targetCandidates?.[0]).toMatchObject({ candidateId: "candidate-0", rank: 1, path: "src/candidate-0.ts" });
+    expect(data.targetCandidates?.[0]?.evidence?.length).toBeLessThanOrEqual(8);
+    expect(data.targetCandidates?.[0]?.rawSearchQueries?.length).toBeLessThanOrEqual(4);
+    expect(data.targetCandidates?.[0]?.validationStatus).toBe("weak");
+    expect(data.targetCandidates?.[0]?.validationReasons?.length).toBeLessThanOrEqual(8);
+    expect(data.targetCandidates?.[0]?.wouldPlanEditTargets?.length).toBeLessThanOrEqual(8);
+    expect(data.targetCandidates?.[0]?.wouldRecommendTests?.length).toBeLessThanOrEqual(8);
+    expect(data.targetCandidates?.[0]?.candidateRisk).toMatchObject({ score: 0 });
+    expect(data.targetCandidates?.[0]?.candidateRisk?.reasons?.length).toBeLessThanOrEqual(6);
     expect(data.mcp.returnedBytes).toBe(serializedBytes(data));
     expect(data.mcp.returnedBytes).toBeLessThanOrEqual(data.mcp.targetBytes);
     expect(data.files?.length).toBeGreaterThan(0);
@@ -799,7 +1153,10 @@ describe("Codexa MCP server", () => {
     expect(data.snapshot?.taskId).toBe("snap-1");
     expect(data.snapshot?.plannedFiles?.length).toBeGreaterThan(0);
     expect(data.snapshot?.plannedTests?.length).toBeGreaterThan(0);
+    expect(data.snapshot?.requiredWorkflowCheckCount).toBe(7);
+    expect(data.snapshot?.requiredDependencyCheckCount).toBe(8);
     expect(Object.keys(data.truncation ?? {}).length).toBeGreaterThan(0);
+    expect(Object.keys(data.truncation ?? {}).some((key) => key.startsWith("snapshot."))).toBe(true);
   });
 
   it("hard-enforces final MCP payload budget after metadata is attached", () => {
@@ -891,7 +1248,7 @@ describe("Codexa MCP server", () => {
     expect(data.mcp.returnedBytes).toBeLessThanOrEqual(data.mcp.targetBytes);
   });
 
-  it("marks context tools as strictly read-only when auto-refresh is disabled", async () => {
+  it("marks auto-recording tools as cache writers even when auto-refresh is disabled", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-readonly-"));
     execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
     await mkdir(path.join(repo, "src"), { recursive: true });
@@ -911,14 +1268,70 @@ describe("Codexa MCP server", () => {
     const client = new Client({ name: "codexa-test", version: "0.1.0" });
     await client.connect(transport);
     const tools = await client.listTools();
-    expect(tools.tools.find((tool) => tool.name === "task_brief")?.annotations?.readOnlyHint).toBe(true);
-    expect(tools.tools.find((tool) => tool.name === "task_brief")?.annotations?.idempotentHint).toBe(true);
-    expect(tools.tools.find((tool) => tool.name === "context_pack")?.annotations?.readOnlyHint).toBe(true);
-    expect(tools.tools.find((tool) => tool.name === "context_pack")?.annotations?.idempotentHint).toBe(true);
-    expect(tools.tools.find((tool) => tool.name === "impact")?.annotations?.readOnlyHint).toBe(true);
-    expect(tools.tools.find((tool) => tool.name === "focus_brief")?.annotations?.readOnlyHint).toBe(true);
+    expect(tools.tools.find((tool) => tool.name === "repo_map")?.annotations?.readOnlyHint).toBe(true);
+    expect(tools.tools.find((tool) => tool.name === "task_brief")?.annotations?.readOnlyHint).toBe(false);
+    expect(tools.tools.find((tool) => tool.name === "task_brief")?.annotations?.idempotentHint).toBe(false);
+    expect(tools.tools.find((tool) => tool.name === "context_pack")?.annotations?.readOnlyHint).toBe(false);
+    expect(tools.tools.find((tool) => tool.name === "context_pack")?.annotations?.idempotentHint).toBe(false);
+    expect(tools.tools.find((tool) => tool.name === "impact")?.annotations?.readOnlyHint).toBe(false);
+    expect(tools.tools.find((tool) => tool.name === "focus_brief")?.annotations?.readOnlyHint).toBe(false);
     expect(tools.tools.find((tool) => tool.name === "callers")?.annotations?.readOnlyHint).toBe(true);
-    expect(tools.tools.find((tool) => tool.name === "post_edit_review")?.annotations?.readOnlyHint).toBe(true);
+    expect(tools.tools.find((tool) => tool.name === "post_edit_review")?.annotations?.readOnlyHint).toBe(false);
+    await client.close();
+  });
+
+  it("can disable MCP session-memory auto-recording for a strict read-only launch", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-memory-off-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdir(path.join(repo, "src"), { recursive: true });
+    await writeFile(path.join(repo, "src/index.ts"), "export function main() { return 1 }\n", "utf8");
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    await buildIndex({ repoRoot: repo });
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh", "--session-memory", "off"],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-test", version: "0.1.0" });
+    await client.connect(transport);
+    try {
+      const tools = await client.listTools();
+      expect(tools.tools.find((tool) => tool.name === "task_brief")?.annotations?.readOnlyHint).toBe(true);
+      expect(tools.tools.find((tool) => tool.name === "task_brief")?.annotations?.idempotentHint).toBe(true);
+      await client.callTool({ name: "task_brief", arguments: { task: "inspect main", tokenBudget: 900, limit: 5 } });
+      await expect(readdir(path.join(repo, ".codex/cache/codexa-session-memory"))).rejects.toThrow();
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("marks semantic OpenAI-capable MCP tools as open-world, including change_plan", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-semantic-openworld-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdir(path.join(repo, "src"), { recursive: true });
+    await writeFile(path.join(repo, "src/index.ts"), "export function main() { return 1 }\n", "utf8");
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    await buildIndex({ repoRoot: repo });
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh", "--semantic", "--semantic-provider", "openai"],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-test", version: "0.1.0" });
+    await client.connect(transport);
+    const tools = await client.listTools();
+    expect(tools.tools.find((tool) => tool.name === "search")?.annotations?.openWorldHint).toBe(true);
+    expect(tools.tools.find((tool) => tool.name === "change_plan")?.annotations?.openWorldHint).toBe(true);
     await client.close();
   });
 

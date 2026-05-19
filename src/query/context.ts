@@ -5,6 +5,7 @@ import type { ChangedSymbol, CodexaIndex, ContextPackInput, EvidenceTier, FileFa
 import { limitText, uniqueSorted } from "../util.js";
 import { formatDiffGroups, formatGaps, groupDiffImpact, indexGaps } from "./diff.js";
 import { addContextPackImpactExpansion, verificationRecipes } from "./impact.js";
+import { lspAssistForFiles, lspOptionsFromQueryOptions } from "../lsp/assist.js";
 import { betterTier, clampInt, confidenceTier, fitLinesToTokenBudget, focusTierCounts, formatReasons, formatRecipes, limitTextToTokens, tierScore } from "./formatting.js";
 import { formatWorkflowSummary, recommendNextCodexaCall } from "./graph.js";
 import { assessContextQuality, formatContextQuality, formatValueEstimate, type ContextQuality, valueEstimate } from "./quality.js";
@@ -12,13 +13,17 @@ import { baselineSearchSummary } from "./raw-search.js";
 import { codeLikeQueryFromTask, fileStemQueryTerms, matchReason, matchScore, uniqueFiles } from "./search.js";
 import { freshnessBanner } from "./runtime.js";
 import { ensureQuerySession, type QuerySessionInput } from "./session.js";
+import { compactWorktreeState, getWorktreeState, worktreeStateGaps, worktreeStateText } from "./worktree-state.js";
 import { formatTestRecommendations, recommendTests } from "./tests.js";
 import { findFile, resolveFileTarget, resolveSymbolTarget } from "./targets.js";
 import { coverageForDisplay, formatVerificationCoverage, verificationCommandPlan, verificationCommandsForContext } from "./verification.js";
-import { retrieveForTask, type IntentConfidence, type RetrievalMatch } from "../retrieval.js";
+import { classifyTaskIntent, retrieveForTask, type IntentConfidence, type RetrievalMatch, type RetrievalResult, type TaskIntent } from "../retrieval.js";
+import { semanticOptionsFromQueryOptions } from "../semantic-retrieval.js";
 import { compactChangedSymbol, compactDiffGroup, compactFileFact, compactRetrievalResult, compactWorkflowTrace } from "./compact-data.js";
+import { summarizeSessionMemory } from "../session-memory.js";
 
 type FocusSelectionEntry = { file: FileFact; score: number; reasons: string[]; matchedTerms: string[]; tier: EvidenceTier };
+type PacketFocusEntry = { file: FileFact; reasons: Set<string>; tier: EvidenceTier };
 
 export async function contextPackQuery(input: QuerySessionInput, contextInput: ContextPackInput = {}, options: QueryOptions = {}): Promise<QueryResult> {
   const session = await ensureQuerySession(input, options);
@@ -79,11 +84,15 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
   }
 
   const explicitQuery = contextInput.query?.trim() ?? "";
-  const naturalRetrieval = contextInput.task ? retrieveForTask(index, contextInput.task, Math.max(limit * 2, 12)) : undefined;
   const explicitTargetProvided = requestedFiles.length > 0 || requestedSymbols.length > 0;
   const explicitConfigTarget = requestedResolvedPaths.some(isConfigExpansionPath);
+  const taskIntents = contextInput.task ? classifyTaskIntent(contextInput.task) : [];
   const derivedTaskQuery = explicitQuery || explicitTargetProvided ? "" : codeLikeQueryFromTask(contextInput.task);
   const queryText = explicitQuery || derivedTaskQuery;
+  const naturalRetrieval =
+    contextInput.task && shouldRunNaturalRetrieval(explicitTargetProvided, explicitConfigTarget, taskIntents)
+      ? await retrieveForTask(index, contextInput.task, Math.max(limit * 2, 12), semanticOptionsFromQueryOptions(repoRoot, options))
+      : undefined;
   const naturalExpansionAllowed = Boolean(
     naturalRetrieval &&
       !queryText.trim() &&
@@ -144,9 +153,10 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
   }
 
   const includeDiff = contextInput.diff ?? true;
-  const changedEntries = includeDiff ? await session.getChangedFileEntries() : [];
-  const changed = changedEntries.map((entry) => entry.path);
-  const changedSymbols = includeDiff ? await session.getChangedSymbols() : [];
+  const worktree = includeDiff ? await getWorktreeState(session) : undefined;
+  const changedEntries = worktree?.entries ?? [];
+  const changed = worktree?.files ?? [];
+  const changedSymbols = worktree?.symbols ?? [];
   const indexedPaths = new Set(index.files.map((file) => file.path));
   const unindexedChanged = changed.filter((file) => !indexedPaths.has(file));
   const groups = groupDiffImpact(index, changedEntries, changedSymbols, unindexedChanged).slice(0, 12);
@@ -203,13 +213,15 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       .join(" ");
   const snippets = includeSnippets ? await contextSnippets(repoRoot, index, focusPaths, snippetChangedSymbols, snippetQueryText, limit) : [];
   const nextReads = focusEntries.slice(0, Math.min(8, focusEntries.length)).map((entry) => entry.file.path);
-  const packetIntent = naturalRetrieval ? packetIntentConfidence(naturalRetrieval.intentConfidence, focusEntries, explicitTargetProvided) : undefined;
+  const packetIntent = naturalRetrieval
+    ? packetIntentConfidence(naturalRetrieval.intentConfidence, focusEntries, {
+        explicitTargetProvided,
+        dirtyAnchorAllowed: Boolean(contextInput.task && taskReferencesDirtyContext(contextInput.task) && dirtyDrivesFocus && !broadDirty)
+      })
+    : undefined;
+  const packetDiagnostics = packetIntent ? packetIntentDiagnostics(packetIntent, naturalRetrieval?.diagnostics ?? []) : [];
   const baseline = explicitQuery ? await baselineSearchSummary(repoRoot, queryText) : undefined;
-  const gaps = indexGaps(index, freshness, unindexedChanged);
-  const recipes = verificationRecipes(index, contextSeedPaths, changeType).slice(0, 8);
-  const verificationCommands = verificationCommandsForContext(index, repoRoot, contextSeedPaths, tests, 16);
-  const verificationCoverage = coverageForDisplay(index, verificationCommands, repoRoot);
-  const commandPlan = verificationCommandPlan(verificationCoverage);
+  const gaps = [...indexGaps(index, freshness, unindexedChanged), ...(worktree ? worktreeStateGaps(worktree) : [])];
   const quality = assessContextQuality({
     freshness,
     gaps,
@@ -222,14 +234,36 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     packetVerdict: explicitTargetProvided ? undefined : packetIntent?.verdict,
     discardedAnchorCount: explicitTargetProvided ? 0 : packetIntent?.discardedAnchorCount
   });
+  const suppressActionGuidance = quality.level === "low";
+  const displayedTests = suppressActionGuidance ? [] : tests;
+  const recipes = suppressActionGuidance ? [] : verificationRecipes(index, contextSeedPaths, changeType).slice(0, 8);
+  const verificationCommands = suppressActionGuidance ? [] : verificationCommandsForContext(index, repoRoot, contextSeedPaths, displayedTests, 16);
+  const verificationCoverage = suppressActionGuidance ? [] : coverageForDisplay(index, verificationCommands, repoRoot);
+  const commandPlan = suppressActionGuidance ? [] : verificationCommandPlan(verificationCoverage);
   const value = valueEstimate("context_pack", {
     rawFileCount: baseline?.lines,
     codexaFileCount: focusEntries.length,
     exactTargetCount: requestedFiles.length + requestedSymbols.length,
-    testCount: tests.length,
+    testCount: displayedTests.length,
     parserErrors: index.parserErrors.length,
     affectedCount: changed.length,
     quality
+  });
+  const lspAssist =
+    options.lsp || process.env.CODEXA_LSP === "1"
+      ? await lspAssistForFiles(
+          repoRoot,
+          focusEntries.map((entry) => entry.file),
+          lspOptionsFromQueryOptions(options)
+        )
+      : [];
+  const sessionMemory = await sessionMemoryPreview({
+    repoRoot,
+    freshness,
+    files: focusPaths,
+    symbols: requestedSymbols,
+    topics: contextInput.task ? [contextInput.task] : explicitQuery ? [explicitQuery] : [],
+    limit: 6
   });
 
   const text = [
@@ -241,7 +275,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     packetIntent ? `Packet verdict: ${packetIntent.verdict}; edit-ready ${packetIntent.editReady ? "yes" : "no"}; confidence ${Math.round(packetIntent.confidence * 100)}%` : undefined,
     packetIntent ? `Intent mode: ${packetIntent.mode}; primary ${packetIntent.intent}; anchors ${packetIntent.anchors.slice(0, 4).join(", ") || "none"}` : undefined,
     packetIntent ? `Recommended next MCP call: ${packetIntent.recommendedNextTool}` : undefined,
-    naturalRetrieval?.diagnostics.length ? `Retrieval diagnostics: ${naturalRetrieval.diagnostics.join("; ")}` : undefined,
+    packetDiagnostics.length ? `Retrieval diagnostics: ${packetDiagnostics.join("; ")}` : undefined,
     `Change type: ${changeType}`,
     `Budget: ${tokenBudget} tokens approx; focus files: ${focusEntries.length}; changed files: ${changed.length}`,
     baseline ? `Baseline search: ${baseline.command} returned ${baseline.lines} non-empty lines; Codexa selected ${focusEntries.length} focus files.` : undefined,
@@ -253,19 +287,29 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     ...focusEntries.map((entry) => `- ${entry.file.path}: ${entry.tier}; rank ${entry.file.rank.toFixed(2)}, risk ${entry.file.riskScore.toFixed(1)}; ${formatReasons(entry.reasons)}`),
     groups.length > 0 ? "" : undefined,
     groups.length > 0 ? "Change groups:" : undefined,
-    ...formatDiffGroups(groups),
+    ...(groups.length > 0 ? formatDiffGroups(groups) : []),
     "",
     "Likely tests:",
-    ...formatTestRecommendations(tests),
+    ...(suppressActionGuidance ? ["- deferred until Codexa has an explicit file, symbol, or higher-confidence packet."] : formatTestRecommendations(displayedTests)),
     "",
     "Known gaps:",
     ...formatGaps(gaps),
-    "",
-    "If run, these commands would cover:",
-    ...formatVerificationCoverage(verificationCoverage),
-    "",
-    "Verification recipes:",
-    ...formatRecipes(recipes),
+    ...(worktree ? worktreeStateText(worktree) : []),
+    lspAssist.length > 0 ? "" : undefined,
+    lspAssist.length > 0 ? "LSP assist:" : undefined,
+    ...lspAssist.flatMap((assist) => [
+      `- ${assist.file ?? "unknown"}: ${assist.status}${assist.server ? ` via ${assist.server}` : ""}; symbols ${assist.documentSymbols.length}; diagnostics ${assist.diagnostics.length}`,
+      ...assist.warnings.slice(0, 3).map((warning) => `  warning: ${warning}`)
+    ]),
+    sessionMemory.lines.length > 0 ? "" : undefined,
+    sessionMemory.lines.length > 0 ? "Session memory:" : undefined,
+    ...sessionMemory.lines,
+    suppressActionGuidance ? undefined : "",
+    suppressActionGuidance ? undefined : "If run, these commands would cover:",
+    ...(suppressActionGuidance ? [] : formatVerificationCoverage(verificationCoverage)),
+    suppressActionGuidance ? undefined : "",
+    suppressActionGuidance ? undefined : "Verification recipes:",
+    ...(suppressActionGuidance ? [] : formatRecipes(recipes)),
     snippets.length > 0 ? "" : undefined,
     snippets.length > 0 ? "Evidence snippets:" : undefined,
     ...snippets,
@@ -281,6 +325,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     refresh,
     text: limitTextToTokens(text, tokenBudget),
     data: {
+      mode: "context_pack",
       task: contextInput.task,
       changeType,
       tokenBudget,
@@ -289,16 +334,21 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       changedEntries: changedEntries.slice(0, 120),
       changedSymbols: changedSymbols.slice(0, 80).map(compactChangedSymbol),
       unindexedChanged: unindexedChanged.slice(0, 80),
+      worktree: worktree ? compactWorktreeState(worktree) : undefined,
+      worktreeDegradationReasons: worktree?.degradedReasons ?? [],
       groups: groups.slice(0, 20).map(compactDiffGroup),
-      tests: tests.slice(0, 30),
+      tests: displayedTests.slice(0, 30),
       snippets,
       warnings: uniqueSorted([...session.warnings, ...warnings]),
       nextReads,
       baseline,
       retrieval: naturalRetrieval ? compactRetrievalResult(naturalRetrieval) : undefined,
+      lspAssist,
+      sessionMemory: sessionMemory.data,
       intentConfidence: packetIntent,
       packetVerdict: packetIntent?.verdict,
-      diagnostics: naturalRetrieval?.diagnostics ?? [],
+      diagnostics: packetDiagnostics,
+      actionGuidanceSuppressed: suppressActionGuidance,
       recipes,
       verificationCommands,
       verificationCoverage,
@@ -309,6 +359,16 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       session: { commandBudgetMs: session.commandBudgetMs, maxResultBytes: session.maxResultBytes, maxResults: session.maxResults, provenance: session.provenance }
     }
   };
+}
+
+function shouldRunNaturalRetrieval(explicitTargetProvided: boolean, explicitConfigTarget: boolean, taskIntents: TaskIntent[]): boolean {
+  if (!explicitTargetProvided) {
+    return true;
+  }
+  if (!explicitConfigTarget) {
+    return false;
+  }
+  return taskIntents.some((intent) => intent === "configuration" || intent === "testing" || intent === "implementation");
 }
 
 export async function taskBriefQuery(input: QuerySessionInput, contextInput: ContextPackInput = {}, options: QueryOptions = {}): Promise<QueryResult> {
@@ -338,13 +398,14 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
   const task = focusInput.task?.trim() || "Session start: identify project focus, current changes, workflows, and next Codexa call";
   const limit = clampInt(focusInput.limit ?? 10, 3, session.maxResults);
   const tokenBudget = clampInt(focusInput.tokenBudget ?? 2400, 600, 8000);
-  const retrieval = retrieveForTask(index, task, limit);
+  const retrieval = await retrieveForTask(index, task, limit, semanticOptionsFromQueryOptions(repoRoot, options));
   const includeDiff = focusInput.diff ?? true;
-  const changedEntries = includeDiff ? await session.getChangedFileEntries() : [];
-  const changed = changedEntries.map((entry) => entry.path);
+  const worktree = includeDiff ? await getWorktreeState(session) : undefined;
+  const changedEntries = worktree?.entries ?? [];
+  const changed = worktree?.files ?? [];
   const indexedPaths = new Set(index.files.map((file) => file.path));
   const unindexedChanged = changed.filter((file) => !indexedPaths.has(file));
-  const groups = includeDiff ? groupDiffImpact(index, changedEntries, includeDiff ? await session.getChangedSymbols() : [], unindexedChanged).slice(0, 8) : [];
+  const groups = includeDiff ? groupDiffImpact(index, changedEntries, worktree?.symbols ?? [], unindexedChanged).slice(0, 8) : [];
   const exactMatches: FocusSelectionEntry[] = exactFocusFileMatches(index, task).map((file) => ({
     file,
     score: file.rank + 100,
@@ -395,7 +456,7 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
     retrieval.intentConfidence.recommendedNextTool === nextCall.tool
       ? `${nextCall.tool} - ${nextCall.reason}`
       : `${retrieval.intentConfidence.recommendedNextTool} - ${nextCall.reason}`;
-  const gaps = indexGaps(index, freshness, unindexedChanged);
+  const gaps = [...indexGaps(index, freshness, unindexedChanged), ...(worktree ? worktreeStateGaps(worktree) : [])];
   const quality = assessContextQuality({
     freshness,
     gaps,
@@ -413,6 +474,13 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
     centralFileCount: focusFiles.filter((file) => file.rank >= index.files[Math.min(index.files.length - 1, 5)]?.rank).length,
     packetVerdict: retrieval.intentConfidence.verdict,
     discardedAnchorCount: retrieval.intentConfidence.discardedAnchorCount
+  });
+  const sessionMemory = await sessionMemoryPreview({
+    repoRoot,
+    freshness,
+    files: focusFiles.map((file) => file.path),
+    topics: [task],
+    limit: 6
   });
   const text = [
     freshnessBanner(freshness, refresh),
@@ -442,13 +510,17 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
     ...retrieval.workflows.slice(0, 6).map(formatWorkflowSummary),
     groups.length > 0 ? "" : undefined,
     groups.length > 0 ? "Current change groups:" : undefined,
-    ...formatDiffGroups(groups),
+    ...(groups.length > 0 ? formatDiffGroups(groups) : []),
+    sessionMemory.lines.length > 0 ? "" : undefined,
+    sessionMemory.lines.length > 0 ? "Session memory:" : undefined,
+    ...sessionMemory.lines,
     "",
     "Likely tests:",
     ...formatTestRecommendations(tests),
     "",
     "Known gaps:",
-    ...formatGaps(gaps)
+    ...formatGaps(gaps),
+    ...(worktree ? worktreeStateText(worktree) : [])
   ]
     .filter((line): line is string => line !== undefined)
     .join("\n");
@@ -467,8 +539,11 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
       workflows: retrieval.workflows.slice(0, 12).map(compactWorkflowTrace),
       modules: retrieval.modules.slice(0, 12).map((module) => ({ ...module, files: module.files.slice(0, 40), reasons: module.reasons.slice(0, 12) })),
       groups: groups.slice(0, 12).map(compactDiffGroup),
+      worktree: worktree ? compactWorktreeState(worktree) : undefined,
+      worktreeDegradationReasons: worktree?.degradedReasons ?? [],
       tests: tests.slice(0, 30),
       nextCall,
+      sessionMemory: sessionMemory.data,
       quality,
       gaps
     }
@@ -494,7 +569,7 @@ function focusMatchTier(file: FileFact, task: string, match?: RetrievalMatch): E
 
 function workflowFocusEntries(
   index: CodexaIndex,
-  workflows: NonNullable<ReturnType<typeof retrieveForTask>["workflows"]>,
+  workflows: RetrievalResult["workflows"],
   task: string,
   limit: number
 ): FocusSelectionEntry[] {
@@ -548,9 +623,9 @@ function workflowFocusEntries(
 }
 
 function preferredWorkflowsForTask(
-  workflows: NonNullable<ReturnType<typeof retrieveForTask>["workflows"]>,
+  workflows: RetrievalResult["workflows"],
   task: string
-): NonNullable<ReturnType<typeof retrieveForTask>["workflows"]> {
+): RetrievalResult["workflows"] {
   const lower = task.toLowerCase();
   const preferredKinds = new Set<string>();
   if (/\b(route|routes|endpoint|endpoints|api|request|handler|backend)\b/u.test(lower)) {
@@ -608,19 +683,27 @@ function shouldAddExplicitNaturalMatch(match: RetrievalMatch, explicitConfigTarg
   return /\b(adapter|manifest|node|type_id|node_type)\b/u.test(evidenceText) || /(^|\/)adapters?\//u.test(match.file.path);
 }
 
-function packetIntentConfidence(base: IntentConfidence, focusEntries: Array<{ file: FileFact; reasons: Set<string>; tier: EvidenceTier }>, explicitTargetProvided: boolean): IntentConfidence {
+function packetIntentConfidence(
+  base: IntentConfidence,
+  focusEntries: PacketFocusEntry[],
+  options: { explicitTargetProvided: boolean; dirtyAnchorAllowed: boolean }
+): IntentConfidence {
   const focusPathSet = new Set(focusEntries.map((entry) => entry.file.path));
-  const allowTestAnchors = explicitTargetProvided || base.intent === "testing";
+  const allowTestAnchors = options.explicitTargetProvided || base.intent === "testing";
   const selectedBaseAnchors = base.anchors.filter((anchor) => focusPathSet.has(anchor));
-  const evidenceAnchors = focusEntries
+  const evidenceEntries = focusEntries
     .filter((entry) => entry.tier === "authoritative" || entry.tier === "derived")
-    .filter((entry) => entry.reasons.size > 0)
+    .filter((entry) => entry.reasons.size > 0);
+  const strongEvidenceAnchors = evidenceEntries
+    .filter((entry) => isStrongPacketAnchor(entry, options.dirtyAnchorAllowed))
     .filter((entry) => allowTestAnchors || (!entry.file.test && !isTestPath(entry.file.path)))
     .map((entry) => entry.file.path);
-  const anchors = uniqueSorted([...selectedBaseAnchors, ...evidenceAnchors]).slice(0, 8);
-  const selectedTestOnlyAnchorCount = allowTestAnchors
-    ? 0
-    : focusEntries.filter((entry) => (entry.tier === "authoritative" || entry.tier === "derived") && (entry.file.test || isTestPath(entry.file.path))).length;
+  const anchors = uniqueSorted([...selectedBaseAnchors, ...strongEvidenceAnchors]).slice(0, 8);
+  const nonTestEvidenceCount = evidenceEntries.filter((entry) => !entry.file.test && !isTestPath(entry.file.path)).length;
+  const selectedTestOnlyAnchorCount =
+    allowTestAnchors || anchors.length > 0 || nonTestEvidenceCount > 0
+      ? 0
+      : evidenceEntries.filter((entry) => entry.file.test || isTestPath(entry.file.path)).length;
   const discardedAnchorCount = base.anchors.filter((anchor) => !focusPathSet.has(anchor)).length;
   const missingAnchors = base.missingAnchors.filter((reason) => {
     if (anchors.length > 0 && (reason === "no authoritative or derived edit anchor" || reason === "broad prompt matched only weak lexical evidence")) {
@@ -643,7 +726,8 @@ function packetIntentConfidence(base: IntentConfidence, focusEntries: Array<{ fi
       1,
       base.confidence +
         Math.min(0.16, anchors.length * 0.03) +
-        (explicitTargetProvided && anchors.length > 0 ? 0.08 : 0) -
+        (options.explicitTargetProvided && anchors.length > 0 ? 0.08 : 0) +
+        (options.dirtyAnchorAllowed && anchors.length > 0 ? 0.05 : 0) -
         Math.min(0.3, discardedAnchorCount * 0.05) -
         (missingAnchors.length - base.missingAnchors.length) * 0.18
     )
@@ -661,13 +745,47 @@ function packetIntentConfidence(base: IntentConfidence, focusEntries: Array<{ fi
     missingAnchors: uniqueSorted(missingAnchors),
     editReady,
     verdict,
-    recommendedNextTool: verdict === "edit-ready" ? base.recommendedNextTool : verdict === "orientation-only" ? base.recommendedNextTool : "search",
+    recommendedNextTool: verdict === "edit-ready" ? (base.mode === "edit" ? "task_brief" : "find_context") : verdict === "orientation-only" ? "find_context" : "search",
     reasons: uniqueSorted([
       ...base.reasons.filter((reason) => !/direct anchor/.test(reason)),
       anchors.length > 0 ? `${anchors.length} selected packet anchor(s)` : "no selected packet anchors",
       discardedAnchorCount > 0 ? `${discardedAnchorCount} discarded retrieval anchor(s) not shown in packet` : undefined
     ].filter((entry): entry is string => Boolean(entry)))
   };
+}
+
+function isStrongPacketAnchor(entry: PacketFocusEntry, dirtyAnchorAllowed: boolean): boolean {
+  const reasons = [...entry.reasons].join(" ").toLowerCase();
+  if (reasons.includes("requested file") || reasons.includes("requested symbol")) {
+    return true;
+  }
+  if (dirtyAnchorAllowed && (reasons.includes("dirty diff") || reasons.includes("changed symbol"))) {
+    return true;
+  }
+  return false;
+}
+
+function taskReferencesDirtyContext(task: string): boolean {
+  return /\b(current|dirty|diff|worktree|working tree|changed|changes|unstaged|staged|this change|these changes)\b/iu.test(task);
+}
+
+function packetIntentDiagnostics(intent: IntentConfidence, baseDiagnostics: string[]): string[] {
+  if (intent.editReady) {
+    return [];
+  }
+  const diagnostics = baseDiagnostics.filter(
+    (diagnostic) => !/needs explicit file|raw search likely|broad packet|only test anchors/iu.test(diagnostic)
+  );
+  if (intent.verdict === "needs-target") {
+    diagnostics.push("needs explicit file, symbol, or narrower search before edit planning");
+  }
+  if (intent.verdict === "raw-search-better") {
+    diagnostics.push("raw search likely gives a cleaner first pass than this broad packet");
+  }
+  for (const anchor of intent.missingAnchors) {
+    diagnostics.push(`missing ${anchor}`);
+  }
+  return uniqueSorted(diagnostics);
 }
 
 function uniqueFocusEntries<T extends { file: FileFact; score: number; tier: EvidenceTier }>(entries: T[]): T[] {
@@ -745,6 +863,46 @@ async function contextSnippets(
     await add(symbol.path, symbol.range?.startLine ?? 1, `${symbol.kind} ${symbol.qualifiedName}`);
   }
   return snippets;
+}
+
+async function sessionMemoryPreview(input: {
+  repoRoot: string;
+  freshness: import("../types.js").FreshnessInfo;
+  files?: string[];
+  symbols?: string[];
+  topics?: string[];
+  taskId?: string;
+  limit: number;
+}): Promise<{ lines: string[]; data?: unknown }> {
+  try {
+    const result = await summarizeSessionMemory({
+      repoRoot: input.repoRoot,
+      taskId: input.taskId,
+      files: input.files,
+      symbols: input.symbols,
+      topics: input.topics,
+      freshness: input.freshness,
+      limit: input.limit,
+      includeStale: true
+    });
+    if (result.memory.entries.length === 0) {
+      return { lines: [] };
+    }
+    return {
+      lines: (result.memory.markdown ?? "").split(/\r?\n/u).slice(0, 12),
+      data: {
+        sessionId: result.sessionId,
+        revision: result.revision,
+        entries: result.memory.entries.slice(0, input.limit),
+        warnings: result.warnings
+      }
+    };
+  } catch (error) {
+    return {
+      lines: [`- unavailable: ${error instanceof Error ? error.message : String(error)}`],
+      data: { warning: error instanceof Error ? error.message : String(error) }
+    };
+  }
 }
 
 async function readSnippet(repoRoot: string, filePath: string, centerLine: number, radius: number): Promise<string> {

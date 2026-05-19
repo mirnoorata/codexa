@@ -147,6 +147,9 @@ export function recommendTests(
         rank: candidate.rank,
         evidenceTier: candidate.evidenceTier,
         command: command?.command,
+        commandCwd: command?.commandCwd,
+        commandExecutable: command?.commandExecutable,
+        commandArgs: command?.commandArgs,
         commandSource: command?.source,
         commandConfidence: command?.confidence
       };

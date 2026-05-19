@@ -40,3 +40,60 @@ jobs:
 
       - name: Run Codexa gates
         run: npm run check
+
+  package-smoke:
+    # Keep this as a separate source-to-tarball gate so package installation
+    # failures cannot be hidden by source-tree tests.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run package install smoke
+        run: npm run smoke:package
+
+  benchmark:
+    # Guard only against clear hot-path regressions; thresholds live in the
+    # benchmark script and are intentionally generous for shared CI runners.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Use Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run hot-path benchmark
+        run: npm run benchmark:ci
+
+      - name: Upload benchmark data
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: codexa-hot-path-benchmark
+          path: .codex/cache/codexa-benchmarks/latest.json
+          if-no-files-found: ignore
+          retention-days: 7

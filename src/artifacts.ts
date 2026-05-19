@@ -59,6 +59,7 @@ Use the Codexa MCP tools for focused live questions:
 - \`context_pack\`
 - \`focus_brief\`
 - \`session_context\`
+- \`session_memory\`
 - \`callers\`
 - \`callees\`
 - \`dependency_path\`
@@ -137,6 +138,7 @@ ${index.risks
 
 function renderPlaceholderMap(index: CodexaIndex): string {
   const placeholderRisks = index.risks.filter(isPlaceholderRisk);
+  const fileByPath = new Map(index.files.map((file) => [file.path, file]));
   const fileScores = new Map<string, { count: number; score: number }>();
   for (const risk of placeholderRisks) {
     const current = fileScores.get(risk.path) ?? { count: 0, score: 0 };
@@ -150,7 +152,7 @@ function renderPlaceholderMap(index: CodexaIndex): string {
     return map;
   }, new Map<string, number>()).entries()].sort(([a], [b]) => a.localeCompare(b));
   const contextCounts = [...placeholderRisks.reduce((map, risk) => {
-    const file = index.files.find((candidate) => candidate.path === risk.path);
+    const file = fileByPath.get(risk.path);
     const context = file?.generated
       ? "generated"
       : file?.test
@@ -164,7 +166,9 @@ function renderPlaceholderMap(index: CodexaIndex): string {
   const topFiles = [...fileScores.entries()]
     .sort((a, b) => b[1].score - a[1].score || b[1].count - a[1].count || a[0].localeCompare(b[0]))
     .slice(0, 40);
-  const shownSignals = placeholderRisks.slice(0, 160);
+  const shownSignals = [...placeholderRisks]
+    .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path) || (a.range?.startLine ?? 0) - (b.range?.startLine ?? 0) || a.signal.localeCompare(b.signal))
+    .slice(0, 160);
   return `# Placeholder Map
 
 Freshness: ${index.freshness.stale ? `STALE (${index.freshness.reason})` : index.freshness.reason}
@@ -240,6 +244,9 @@ function renderConventions(index: CodexaIndex): string {
   heuristic-only links, and changed files without symbol ranges.
 - For code edits, use \`change_plan\` with \`saveSnapshot: true\` before editing
   and \`post_edit_review\` after editing.
+- Use \`session_memory\` to recall or explicitly save session-local working
+  memory. Auto-recorded \`viewed\` entries are Codexa-derived; agent claims stay
+  agent-asserted and must not be promoted into codebase facts.
 - Use \`focus_brief\` for broad natural-language tasks before falling back to
   top-ranked files. Use \`workflow_path\` for route/job/process changes and
   \`dependency_path\` for explicit source-to-target relationship questions.

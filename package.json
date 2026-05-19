@@ -19,27 +19,36 @@
     "codexa": "./dist/cli.js"
   },
   "files": [
-    "dist"
+    "dist",
+    "plugins/codexa"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "node scripts/verify-source-hygiene.mjs",
+    "lint": "node scripts/verify-source-hygiene.mjs && node scripts/verify-release-path.mjs",
     "audit": "npm audit --audit-level=moderate",
     "privacy": "node scripts/verify-public-hygiene.mjs",
     "privacy:history": "node scripts/verify-public-hygiene.mjs --history",
     "privacy:release": "npm run privacy && npm run privacy:history",
+    "plugin:hygiene": "node scripts/verify-plugin-package.mjs",
+    "package:hygiene": "node scripts/verify-package-hygiene.mjs && npm run plugin:hygiene",
+    "smoke:package": "node scripts/package-install-smoke.mjs",
+    "benchmark:ci": "npm run build && node scripts/benchmark-hot-paths.mjs --output .codex/cache/codexa-benchmarks/latest.json",
+    "ci:extended": "npm run smoke:package && npm run benchmark:ci",
     "public:snapshot-check": "node scripts/verify-public-snapshot.mjs",
     "clean:private-artifacts": "node scripts/clean-private-artifacts.mjs",
-    "prepare:codera-parking": "node scripts/prepare-codera-parking-package.mjs",
+    "prepare:codera-parking": "node scripts/prepare-codera-parking-package.mjs && node scripts/verify-package-hygiene.mjs .local/release/codera",
     "prepack": "npm run build",
     "prepublishOnly": "npm run security:check",
+    "publish:codexa": "bash scripts/codexa-publish.sh",
     "release:archive": "npm run check && git archive --format=tar.gz --output codexa-public-head.tar.gz HEAD",
+    "release:github:dry-run": "npm run build && node dist/cli.js github-release . --dry-run",
+    "release:github": "npm run security:check && node dist/cli.js github-release .",
     "test": "npm run build && vitest run",
     "test:schema": "vitest run tests/schema.test.ts",
     "test:claude-code": "bash integrations/claude-code/tests/cmd-smoke.sh && bash integrations/claude-code/tests/hook-smoke.sh",
     "check": "npm run typecheck && npm run lint && npm run privacy && npm run test:claude-code && npm test",
-    "security:check": "npm run check && npm run audit && npm run public:snapshot-check",
+    "security:check": "npm run check && npm run audit && npm run public:snapshot-check && npm run package:hygiene",
     "dev": "tsx src/cli.ts"
   },
   "dependencies": {

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { CURRENT_VERIFICATION_PROVENANCE } from "./types.js";
@@ -12,14 +13,23 @@ import type {
   VerificationLedgerEntry,
   VerificationLedgerStatus,
   VerificationProvenance,
-  VerificationWaiver
+  VerificationWaiver,
+  SessionMemoryPointer
 } from "./types.js";
 import { stableId } from "./util.js";
 
 const OUTCOME_DIR = ".codex/cache/codexa-outcomes";
 const LATEST_FILE = "latest.json";
+const LATEST_HOOK_REVIEW_FILE = "latest-hook-review.json";
+const HOOK_EVENT_DIR = ".codex/cache/codexa-hooks";
+const HOOK_EVENTS_FILE = "events.ndjson";
+const LATEST_HOOK_EVENT_FILE = "latest.json";
+const MAX_HOOK_EVENTS_BYTES = 512 * 1024;
+const MAX_HOOK_EVENT_LINES = 200;
 
 export type PostEditVerdict = "continue" | "run_tests" | "inspect" | "replan";
+export type CodexaHookName = "session-start" | "pre-edit" | "post-edit";
+export type CodexaHookEventStatus = "ok" | "skipped" | "failed";
 
 export interface PostEditOutcomeInput {
   repoRoot: string;
@@ -51,6 +61,7 @@ export interface PostEditOutcomeInput {
   verificationCoverage: VerificationCoverage[];
   verificationLedger: VerificationLedgerEntry[];
   verificationProvenance?: VerificationProvenance;
+  sessionMemory?: SessionMemoryPointer;
   riskDeltas: PostEditRiskDelta[];
   quality?: { level?: unknown; counts?: unknown };
   confidence?: {
@@ -117,11 +128,39 @@ export interface PostEditOutcome {
   verificationCoverage: VerificationCoverage[];
   verificationLedger: VerificationLedgerEntry[];
   verificationProvenance: VerificationProvenance;
+  sessionMemory?: SessionMemoryPointer;
   riskDeltas: PostEditRiskDelta[];
   hookSummary: PostEditHookSummary;
   qualityLevel?: string;
   confidence?: Record<Confidence | "fallback", number>;
   calibrationLabels: string[];
+}
+
+export interface PostEditHookReviewState {
+  schemaVersion: 1;
+  signature: string;
+  createdAt: string;
+  outcomeId?: string;
+  taskId?: string;
+  verdict?: PostEditVerdict;
+}
+
+export interface CodexaHookEventInput {
+  hook: CodexaHookName;
+  status: CodexaHookEventStatus;
+  durationMs: number;
+  reason?: string;
+  taskId?: string;
+  verdict?: PostEditVerdict;
+  outcomeId?: string;
+  signature?: string;
+  error?: string;
+}
+
+export interface CodexaHookEvent extends CodexaHookEventInput {
+  schemaVersion: 1;
+  createdAt: string;
+  repoRoot: ".";
 }
 
 export function buildPostEditOutcome(input: PostEditOutcomeInput, createdAt = new Date().toISOString()): PostEditOutcome {
@@ -152,15 +191,16 @@ export function buildPostEditOutcome(input: PostEditOutcomeInput, createdAt = ne
     recommendedTests: compactTests(input.tests, repoRoot),
     testsNotRun: compactTests(input.testsNotRun, repoRoot),
     missedLikelyTests: compactTests(input.missedLikelyTests, repoRoot),
-    ranTests: input.ranTests,
+    ranTests: input.ranTests.map((test) => sanitizeText(test, repoRoot) ?? ""),
     ranCommands: input.ranCommands.map((command) => sanitizeText(command, repoRoot) ?? ""),
     ranCommandReports: compactCommandReports(input.ranCommandReports, repoRoot),
     commandEnvelopes: compactCommandEnvelopes(input.commandEnvelopes, repoRoot),
-    waivedChecks: input.waivedChecks,
-    waivers: input.waivers,
+    waivedChecks: input.waivedChecks.map((check) => sanitizeText(check, repoRoot) ?? ""),
+    waivers: compactWaivers(input.waivers, repoRoot),
     verificationCoverage: compactCoverage(input.verificationCoverage, repoRoot),
     verificationLedger: compactLedger(input.verificationLedger, repoRoot),
     verificationProvenance: input.verificationProvenance ?? CURRENT_VERIFICATION_PROVENANCE,
+    sessionMemory: input.sessionMemory,
     riskDeltas: input.riskDeltas,
     hookSummary: hookSummary(input),
     qualityLevel: typeof input.quality?.level === "string" ? input.quality.level : undefined,
@@ -188,10 +228,161 @@ export async function savePostEditOutcome(input: PostEditOutcomeInput): Promise<
   return { outcome, path: outcomePath, relativePath: path.posix.join(OUTCOME_DIR, `${outcome.outcomeId}.json`) };
 }
 
+export function postEditHookReviewSignature(input: { freshness: FreshnessInfo; taskId?: string }): string {
+  return createHash("sha1")
+    .update(
+      JSON.stringify({
+        taskId: input.taskId ?? null,
+        snapshotId: input.freshness.snapshotId,
+        indexedAt: input.freshness.indexedAt,
+        headCommit: input.freshness.headCommit,
+        dirtyFiles: input.freshness.dirtyFiles,
+        dirtyFileHashes: input.freshness.dirtyFileHashes
+      })
+    )
+    .digest("hex");
+}
+
+export async function loadPostEditHookReviewState(repoRoot: string): Promise<PostEditHookReviewState | null> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(path.join(path.resolve(repoRoot), OUTCOME_DIR, LATEST_HOOK_REVIEW_FILE), "utf8")) as Partial<PostEditHookReviewState>;
+    if (parsed.schemaVersion === 1 && typeof parsed.signature === "string" && typeof parsed.createdAt === "string") {
+      return {
+        schemaVersion: 1,
+        signature: parsed.signature,
+        createdAt: parsed.createdAt,
+        outcomeId: typeof parsed.outcomeId === "string" ? parsed.outcomeId : undefined,
+        taskId: typeof parsed.taskId === "string" ? parsed.taskId : undefined,
+        verdict: isPostEditVerdict(parsed.verdict) ? parsed.verdict : undefined
+      };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+export async function savePostEditHookReviewState(repoRoot: string, input: { signature: string; outcome?: PostEditOutcome }): Promise<void> {
+  const repo = path.resolve(repoRoot);
+  const dir = path.join(repo, OUTCOME_DIR);
+  await fs.mkdir(dir, { recursive: true });
+  await atomicJsonWrite(path.join(dir, LATEST_HOOK_REVIEW_FILE), {
+    schemaVersion: 1,
+    signature: input.signature,
+    createdAt: new Date().toISOString(),
+    outcomeId: input.outcome?.outcomeId,
+    taskId: input.outcome?.taskId,
+    verdict: input.outcome?.verdict
+  });
+}
+
+export async function recordCodexaHookEvent(repoRoot: string, input: CodexaHookEventInput): Promise<void> {
+  const repo = path.resolve(repoRoot);
+  const codexDir = path.join(repo, ".codex");
+  if (!(await pathExists(codexDir))) {
+    return;
+  }
+  const dir = path.join(repo, HOOK_EVENT_DIR);
+  await fs.mkdir(dir, { recursive: true });
+  const event = compactHookEvent(repo, input);
+  const eventsPath = path.join(dir, HOOK_EVENTS_FILE);
+  await trimHookEventsIfNeeded(eventsPath);
+  await fs.appendFile(eventsPath, `${JSON.stringify(event)}\n`, "utf8");
+  await atomicJsonWrite(path.join(dir, LATEST_HOOK_EVENT_FILE), event);
+}
+
+export async function loadLatestCodexaHookEvent(repoRoot: string): Promise<CodexaHookEvent | null> {
+  try {
+    const parsed = JSON.parse(await fs.readFile(path.join(path.resolve(repoRoot), HOOK_EVENT_DIR, LATEST_HOOK_EVENT_FILE), "utf8")) as Partial<CodexaHookEvent>;
+    if (
+      parsed.schemaVersion === 1 &&
+      parsed.repoRoot === "." &&
+      isHookName(parsed.hook) &&
+      isHookEventStatus(parsed.status) &&
+      typeof parsed.createdAt === "string" &&
+      typeof parsed.durationMs === "number"
+    ) {
+      return {
+        schemaVersion: 1,
+        createdAt: parsed.createdAt,
+        repoRoot: ".",
+        hook: parsed.hook,
+        status: parsed.status,
+        durationMs: parsed.durationMs,
+        reason: typeof parsed.reason === "string" ? parsed.reason : undefined,
+        taskId: typeof parsed.taskId === "string" ? parsed.taskId : undefined,
+        verdict: isPostEditVerdict(parsed.verdict) ? parsed.verdict : undefined,
+        outcomeId: typeof parsed.outcomeId === "string" ? parsed.outcomeId : undefined,
+        signature: typeof parsed.signature === "string" ? parsed.signature : undefined,
+        error: typeof parsed.error === "string" ? parsed.error : undefined
+      };
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+export function codexaHookEventsRelativePath(): string {
+  return path.posix.join(HOOK_EVENT_DIR, HOOK_EVENTS_FILE);
+}
+
 function stableOutcomeId(repoRoot: string, input: PostEditOutcomeInput, createdAt: string): string {
   const task = (input.taskId ?? input.task).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "post-edit";
   const suffix = stableId("post-edit-outcome", repoRoot, input.taskId, input.task, input.verdict, input.changedFiles.join("\n"), createdAt);
   return `${task}-${createdAt.replace(/[-:TZ.]/g, "").slice(0, 14)}-${suffix}`.slice(0, 120);
+}
+
+function isPostEditVerdict(value: unknown): value is PostEditVerdict {
+  return value === "continue" || value === "run_tests" || value === "inspect" || value === "replan";
+}
+
+function isHookName(value: unknown): value is CodexaHookName {
+  return value === "session-start" || value === "pre-edit" || value === "post-edit";
+}
+
+function isHookEventStatus(value: unknown): value is CodexaHookEventStatus {
+  return value === "ok" || value === "skipped" || value === "failed";
+}
+
+function compactHookEvent(repoRoot: string, input: CodexaHookEventInput): CodexaHookEvent {
+  return {
+    schemaVersion: 1,
+    createdAt: new Date().toISOString(),
+    repoRoot: ".",
+    hook: input.hook,
+    status: input.status,
+    durationMs: Math.max(0, Math.round(input.durationMs)),
+    reason: sanitizeText(input.reason, repoRoot),
+    taskId: sanitizeText(input.taskId, repoRoot),
+    verdict: input.verdict,
+    outcomeId: sanitizeText(input.outcomeId, repoRoot),
+    signature: sanitizeText(input.signature, repoRoot),
+    error: sanitizeText(input.error, repoRoot)
+  };
+}
+
+async function trimHookEventsIfNeeded(eventsPath: string): Promise<void> {
+  try {
+    const stat = await fs.stat(eventsPath);
+    if (stat.size < MAX_HOOK_EVENTS_BYTES) {
+      return;
+    }
+    const text = await fs.readFile(eventsPath, "utf8");
+    const lines = text.split(/\r?\n/u).filter(Boolean).slice(-MAX_HOOK_EVENT_LINES);
+    await fs.writeFile(eventsPath, `${lines.join("\n")}\n`, "utf8");
+  } catch {
+    return;
+  }
+}
+
+async function pathExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function compactTests(tests: TestRecommendation[], repoRoot: string): PostEditOutcome["recommendedTests"] {
@@ -250,6 +441,14 @@ function compactCommandEnvelopes(envelopes: VerificationCommandEnvelope[], repoR
     stderrSummary: sanitizeText(envelope.stderrSummary, repoRoot),
     outputSummary: sanitizeText(envelope.outputSummary, repoRoot),
     args: sanitizeArgs(envelope.args, repoRoot) ?? []
+  }));
+}
+
+function compactWaivers(waivers: VerificationWaiver[], repoRoot: string): VerificationWaiver[] {
+  return waivers.map((waiver) => ({
+    kind: waiver.kind,
+    target: sanitizeText(waiver.target, repoRoot) ?? "",
+    reason: sanitizeText(waiver.reason, repoRoot) ?? ""
   }));
 }
 

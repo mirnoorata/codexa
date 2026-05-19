@@ -204,10 +204,17 @@ Neither of these is failure. Both are normal open-source lifecycles.
 - Glance at open issues. Close anything you would not pick up in the next six
   months, with a short "out of scope / not planned" note. Issues that sit
   open for a year with no reply are worse for everyone than closed issues.
-- Cut a release if there are shipped changes. Example:
-  `git tag -a v0.2.0 -m "Codexa v0.2.0: short summary of what shipped"`,
-  push the tag, let `npm publish` go (or run it locally). Releases give
-  Dependabot and downstream users something to pin against.
+- Cut a release if there are shipped changes:
+  `npm run release:github -- --tag v0.2.0`. This runs the release gate, pushes
+  the project source tag, and creates the GitHub Release timeline entry with
+  a changelog-style summary, changed-area summary, exact GitHub restore
+  commands, exact branch/worktree commands, and a forward-only rollback branch
+  recipe.
+  Releases give Dependabot and downstream users something to pin against.
+- Verify the visible GitHub surfaces before calling the release done:
+  `git ls-remote --tags origin refs/tags/v0.2.0` and
+  `gh release view v0.2.0 --repo mirnoorata/codexa --json tagName,name,url,targetCommitish`.
+  If either check is empty, the change is not released yet.
 
 ---
 
@@ -220,8 +227,10 @@ Neither of these is failure. Both are normal open-source lifecycles.
 - **A commit went out with a real secret:** rotate the secret first, push
   second. Force-pushing to remove it from history does not help — it is
   already cached. Rotation is the only real fix.
-- **A PR you merged broke main:** revert the merge commit
-  (`git revert -m 1 <sha>`). Do not force-push `main`. Forward-only.
+- **A PR you merged broke main:** use the most recent GitHub Release notes'
+  "Revert Changes Via PR" block to create a forward-only rollback branch. If
+  the bad change is a single merge commit, `git revert -m 1 <sha>` is fine.
+  Do not force-push `main`.
 - **Harassment in an issue or PR:** lock the thread (`Lock conversation`),
   add a maintainer reply explaining why, consider blocking the user from the
   repo (`Settings → Moderation options → Block user`). `CODE_OF_CONDUCT.md`
