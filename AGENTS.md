@@ -43,6 +43,9 @@ npm run release:github -- --tag vX.Y.Z
 - When publishing through a PR, `codexaPublish` should satisfy protected branch
   policy with GitHub auto-merge and wait until the PR lands before bumping,
   tagging, or creating the GitHub Release.
+- The version bump is also a protected-main change. When pushing is enabled,
+  `codexaPublish` should land `package.json` / `package-lock.json` bumps through
+  a release PR before creating the tag and GitHub Release.
 - Do not cut official releases from a dirty tree, detached worktree, or
   machine-local project path. The only dirty-tree exception is the tracked
   `codexaPublish` pre-release source commit on the active PR branch or on
