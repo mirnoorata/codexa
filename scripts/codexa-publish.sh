@@ -13,7 +13,7 @@ Usage: codexaPublish [release_type] [pr_number] [options]
 One-command Codexa source release path.
 
 Default behavior:
-  1. resolves the current/latest non-bot codex/* PR unless --current-main is set
+  1. resolves the current/latest publishable non-bot codex/* PR unless --current-main is set
   2. commits current dirty source on that PR branch, then pushes it
   3. makes draft PRs ready, updates stale PR branches, and waits for checks
   4. enables GitHub auto-merge for the PR and waits until it lands
@@ -218,7 +218,7 @@ wait_for_pr_checks() {
   local pr_number="$1"
   local github_repo="$2"
   local timeout_seconds="${CODEXA_PUBLISH_CHECK_TIMEOUT_SECONDS:-900}"
-  local start now status output
+  local start now status output reported_pending=0
 
   start="$(date +%s)"
   while true; do
@@ -226,12 +226,17 @@ wait_for_pr_checks() {
     output="$(gh pr checks "$pr_number" --repo "$github_repo" --watch --interval 10 2>&1)"
     status=$?
     set -e
-    printf '%s\n' "$output"
     if [[ "$status" == "0" ]]; then
+      printf '%s\n' "$output"
       return 0
     fi
     if ! grep -qi "no checks reported" <<<"$output"; then
+      printf '%s\n' "$output"
       return "$status"
+    fi
+    if [[ "$reported_pending" != "1" ]]; then
+      echo "codexaPublish: no checks reported for PR #${pr_number} yet; waiting for GitHub Actions to attach checks."
+      reported_pending=1
     fi
 
     now="$(date +%s)"
@@ -241,6 +246,53 @@ wait_for_pr_checks() {
     fi
     sleep 10
   done
+}
+
+pr_auto_publish_blocker() {
+  local pr_number="$1"
+  local github_repo="$2"
+  local pr_state merge_state mergeable view
+
+  view="$(
+    gh pr view "$pr_number" \
+      --repo "$github_repo" \
+      --json state,mergeStateStatus,mergeable \
+      --jq '[.state, (.mergeStateStatus // ""), (.mergeable // "")] | @tsv'
+  )"
+  IFS=$'\t' read -r pr_state merge_state mergeable <<<"$view"
+
+  if [[ "$pr_state" != "OPEN" ]]; then
+    printf 'state is %s' "$pr_state"
+    return 0
+  fi
+  if [[ "$mergeable" == "CONFLICTING" || "$merge_state" == "DIRTY" ]]; then
+    printf 'merge conflicts with main'
+    return 0
+  fi
+
+  return 1
+}
+
+select_auto_publish_pr() {
+  local github_repo="$1"
+  local candidate candidates blocker
+
+  candidates="$(
+    gh pr list --repo "$github_repo" --state open --limit 50 --json number,updatedAt,headRefName,author \
+      --jq '[.[] | select((.headRefName | startswith("codex/")) and (.author.is_bot == false))] | sort_by(.updatedAt) | reverse | .[].number'
+  )"
+
+  while IFS= read -r candidate; do
+    [[ -z "$candidate" ]] && continue
+    if blocker="$(pr_auto_publish_blocker "$candidate" "$github_repo")"; then
+      echo "codexaPublish: skipping PR #${candidate} for auto-publish: ${blocker}." >&2
+      continue
+    fi
+    printf '%s\n' "$candidate"
+    return 0
+  done <<<"$candidates"
+
+  return 1
 }
 
 merge_pr_and_wait() {
@@ -487,15 +539,12 @@ if [[ "$use_current_main" != "1" ]]; then
       pr_number="$(gh pr view --repo "$github_repo" --json number --jq '.number' 2>/dev/null || true)"
     fi
     if [[ -z "$pr_number" ]]; then
-      pr_number="$(
-        gh pr list --repo "$github_repo" --state open --limit 50 --json number,updatedAt,headRefName,author \
-          --jq '[.[] | select((.headRefName | startswith("codex/")) and (.author.is_bot == false))] | sort_by(.updatedAt) | reverse | .[0].number // empty'
-      )"
+      pr_number="$(select_auto_publish_pr "$github_repo" || true)"
     fi
   fi
 
   if [[ -z "$pr_number" ]]; then
-    echo "codexaPublish: no open non-bot codex/* PR found. Pass a PR number or use codexaPublish --current-main." >&2
+    echo "codexaPublish: no open auto-publishable non-bot codex/* PR found. Pass a PR number or use codexaPublish --current-main." >&2
     exit 1
   fi
 
@@ -504,6 +553,10 @@ if [[ "$use_current_main" != "1" ]]; then
   pr_title="$(gh pr view "$pr_number" --repo "$github_repo" --json title --jq '.title')"
   if [[ "$explicit_pr" != "1" ]] && { [[ "$pr_author" == app/* ]] || [[ "$pr_head" == dependabot/* ]]; }; then
     echo "codexaPublish: refused to auto-publish bot PR #${pr_number} (${pr_title}). Pass the PR number explicitly if you really want it." >&2
+    exit 1
+  fi
+  if blocker="$(pr_auto_publish_blocker "$pr_number" "$github_repo")"; then
+    echo "codexaPublish: PR #${pr_number} cannot be published: ${blocker}. Resolve it or pass another PR." >&2
     exit 1
   fi
 

@@ -25,7 +25,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "node scripts/verify-source-hygiene.mjs && node scripts/verify-release-path.mjs",
+    "lint": "node scripts/verify-source-hygiene.mjs && node scripts/verify-release-path.mjs && bash scripts/verify-codexa-publish.sh",
     "audit": "npm audit --audit-level=moderate",
     "privacy": "node scripts/verify-public-hygiene.mjs",
     "privacy:history": "node scripts/verify-public-hygiene.mjs --history",

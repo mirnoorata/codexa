@@ -19,19 +19,20 @@ export interface StaticAnalysisOptions {
   runCodeql?: boolean;
   codeqlLanguages?: string[];
   codeqlSuite?: string;
+  runShellcheck?: boolean;
   timeoutMs?: number;
   index?: boolean;
 }
 
 export interface StaticAnalysisReport {
-  kind: "semgrep" | "codeql" | "sarif" | "generic";
+  kind: "semgrep" | "codeql" | "sarif" | "generic" | "shellcheck";
   source: string;
   path: string;
   copied: boolean;
 }
 
 export interface StaticAnalysisRun {
-  tool: "semgrep" | "codeql";
+  tool: "semgrep" | "codeql" | "shellcheck";
   command: string;
   reports: string[];
 }
@@ -74,6 +75,12 @@ export async function updateStaticAnalysisReports(repoInput: string, options: St
     const run = await runCodeql(repoRoot, options.codeqlLanguages ?? ["javascript-typescript", "python"], options.codeqlSuite ?? "code-scanning", timeoutMs);
     runs.push(run);
     reports.push(...run.reports.map((relativePath) => ({ kind: "codeql" as const, source: "codeql database analyze", path: relativePath, copied: false })));
+  }
+
+  if (options.runShellcheck) {
+    const run = await runShellcheck(repoRoot, timeoutMs);
+    runs.push(run);
+    reports.push(...run.reports.map((relativePath) => ({ kind: "shellcheck" as const, source: "shellcheck", path: relativePath, copied: false })));
   }
 
   const staticRiskCount = (await loadExternalRiskSignals(repoRoot, "static-analysis-preview", new Date().toISOString())).length;
@@ -177,6 +184,51 @@ async function runCodeql(repoRoot: string, languages: string[], suite: string, t
   };
 }
 
+async function runShellcheck(repoRoot: string, timeoutMs: number): Promise<StaticAnalysisRun> {
+  const output = path.join(repoRoot, STATIC_ANALYSIS_DIR, "shellcheck.json");
+  await fs.mkdir(path.dirname(output), { recursive: true });
+  const files = await discoverShellFiles(repoRoot, timeoutMs);
+  const args = ["--format=json", ...files];
+  if (files.length === 0) {
+    await writeShellcheckRiskReport(output, repoRoot, [], files);
+    return {
+      tool: "shellcheck",
+      command: "shellcheck --format=json <no shell files>",
+      reports: [normalizePath(path.relative(repoRoot, output))]
+    };
+  }
+
+  const result = await runCommand("shellcheck", args, {
+    cwd: repoRoot,
+    env: externalScannerEnv(),
+    timeoutMs,
+    maxBufferBytes: 16 * 1024 * 1024,
+    okExitCodes: [0, 1]
+  });
+  if (result.ok) {
+    const parsed = parseShellcheckComments(result.stdout);
+    await writeShellcheckRiskReport(output, repoRoot, parsed, files);
+    return {
+      tool: "shellcheck",
+      command: commandForDisplay("shellcheck", args),
+      reports: [normalizePath(path.relative(repoRoot, output))]
+    };
+  }
+
+  const code = (result.error as NodeJS.ErrnoException | undefined)?.code;
+  if (result.exitCode === null && code === "ENOENT") {
+    throw new Error("shellcheck is not installed or not on PATH. Install it separately, then rerun this Codexa command.");
+  }
+  if (result.timedOut) {
+    throw new Error(`shellcheck timed out after ${timeoutMs}ms.`);
+  }
+  if (result.truncated) {
+    throw new Error("shellcheck exceeded Codexa's external scanner output buffer.");
+  }
+  const details = [result.stderr, result.stdout].filter(Boolean).join("\n").trim();
+  throw new Error(`shellcheck failed${details ? `: ${details.slice(0, 2000)}` : ""}`);
+}
+
 async function runExternal(command: string, args: string[], options: { cwd: string; timeoutMs: number }): Promise<void> {
   const result = await runCommand(command, args, {
     cwd: options.cwd,
@@ -235,6 +287,211 @@ function reportFileName(kind: StaticAnalysisReport["kind"], source: string): str
   const base = path.basename(source, path.extname(source)).replace(/[^a-zA-Z0-9._-]/g, "-").slice(0, 80) || "report";
   const hash = stableId(kind, source);
   return `${kind}-${base}-${hash}${ext}`;
+}
+
+async function discoverShellFiles(repoRoot: string, timeoutMs: number): Promise<string[]> {
+  const tracked = await runCommand("git", ["ls-files", "--cached", "--others", "--exclude-standard", "-z"], {
+    cwd: repoRoot,
+    env: externalScannerEnv(),
+    timeoutMs: Math.min(timeoutMs, 30_000),
+    maxBufferBytes: 8 * 1024 * 1024,
+    okExitCodes: [0]
+  });
+  const candidates = tracked.ok ? tracked.stdout.split("\0").filter(Boolean) : await walkShellFileCandidates(repoRoot);
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    const relativePath = normalizePath(candidate);
+    if (seen.has(relativePath) || shouldSkipShellCandidate(relativePath)) {
+      continue;
+    }
+    const absolutePath = path.join(repoRoot, relativePath);
+    const stat = await fs.stat(absolutePath).catch(() => null);
+    if (!stat?.isFile()) {
+      continue;
+    }
+    if (isShellPath(relativePath) || (await hasShellShebang(absolutePath))) {
+      seen.add(relativePath);
+      result.push(relativePath);
+    }
+  }
+  return result.sort((a, b) => a.localeCompare(b));
+}
+
+async function walkShellFileCandidates(repoRoot: string): Promise<string[]> {
+  const result: string[] = [];
+  const ignoredDirs = new Set([".git", ".codex", "node_modules", "dist", "build", "coverage", "__pycache__", ".venv", "venv"]);
+  async function walk(relativeDir: string, depth: number): Promise<void> {
+    if (depth > 8 || result.length >= 5000) {
+      return;
+    }
+    const absoluteDir = path.join(repoRoot, relativeDir);
+    let entries: Array<{ name: string; isDirectory(): boolean; isFile(): boolean }>;
+    try {
+      entries = (await fs.readdir(absoluteDir, { withFileTypes: true })).map((entry) => ({
+        name: entry.name.toString(),
+        isDirectory: () => entry.isDirectory(),
+        isFile: () => entry.isFile()
+      }));
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      const relativePath = normalizePath(path.join(relativeDir, entry.name));
+      if (entry.isDirectory()) {
+        if (!ignoredDirs.has(entry.name)) {
+          await walk(relativePath, depth + 1);
+        }
+        continue;
+      }
+      if (entry.isFile()) {
+        result.push(relativePath);
+      }
+    }
+  }
+  await walk("", 0);
+  return result;
+}
+
+function shouldSkipShellCandidate(relativePath: string): boolean {
+  return (
+    relativePath.startsWith(".codex/") ||
+    relativePath.startsWith(".git/") ||
+    relativePath.includes("/node_modules/") ||
+    relativePath.includes("/dist/") ||
+    relativePath.includes("/build/")
+  );
+}
+
+function isShellPath(relativePath: string): boolean {
+  return /\.(bash|bats|ksh|sh|zsh)$/i.test(relativePath);
+}
+
+async function hasShellShebang(absolutePath: string): Promise<boolean> {
+  let handle: fs.FileHandle | undefined;
+  try {
+    handle = await fs.open(absolutePath, "r");
+    const buffer = Buffer.alloc(256);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
+    const firstLine = buffer.subarray(0, bytesRead).toString("utf8").split(/\r?\n/, 1)[0] ?? "";
+    return /^#!.*\b(?:ba|z|k)?sh\b/.test(firstLine) || /^#!.*\b(?:env\s+)?sh\b/.test(firstLine);
+  } catch {
+    return false;
+  } finally {
+    await handle?.close().catch(() => undefined);
+  }
+}
+
+interface ShellcheckComment {
+  file?: unknown;
+  line?: unknown;
+  level?: unknown;
+  code?: unknown;
+  message?: unknown;
+}
+
+function parseShellcheckComments(stdout: string): ShellcheckComment[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(stdout || "{}");
+  } catch {
+    return [];
+  }
+  if (Array.isArray(parsed)) {
+    return parsed.filter(isShellcheckComment);
+  }
+  if (parsed && typeof parsed === "object") {
+    const comments = (parsed as { comments?: unknown }).comments;
+    if (Array.isArray(comments)) {
+      return comments.filter(isShellcheckComment);
+    }
+  }
+  return [];
+}
+
+function isShellcheckComment(value: unknown): value is ShellcheckComment {
+  return Boolean(value && typeof value === "object");
+}
+
+async function writeShellcheckRiskReport(output: string, repoRoot: string, comments: ShellcheckComment[], files: string[]): Promise<void> {
+  const risks = comments.flatMap((comment) => {
+    const filePath = stringValue(comment.file);
+    const normalizedPath = filePath ? normalizeShellcheckPath(filePath, repoRoot) : undefined;
+    const code = numberValue(comment.code);
+    const message = stringValue(comment.message) ?? "ShellCheck finding";
+    if (!normalizedPath || !code) {
+      return [];
+    }
+    const severity = shellcheckSeverity(stringValue(comment.level));
+    return [
+      {
+        path: normalizedPath,
+        line: numberValue(comment.line),
+        signal: `shellcheck.SC${code}`,
+        severity,
+        confidence: "authoritative",
+        score: shellcheckScore(severity),
+        reason: message
+      }
+    ];
+  });
+  await fs.writeFile(
+    output,
+    `${JSON.stringify(
+      {
+        tool: "shellcheck",
+        generatedAt: new Date().toISOString(),
+        files,
+        risks
+      },
+      null,
+      2
+    )}\n`,
+    "utf8"
+  );
+}
+
+function normalizeShellcheckPath(filePath: string, repoRoot: string): string | undefined {
+  if (path.isAbsolute(filePath)) {
+    if (!isSubpath(filePath, repoRoot)) {
+      return undefined;
+    }
+    return normalizePath(path.relative(repoRoot, filePath));
+  }
+  const normalized = normalizePath(filePath);
+  if (normalized === ".." || normalized.startsWith("../") || path.isAbsolute(normalized)) {
+    return undefined;
+  }
+  return normalized;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value.trim() : undefined;
+}
+
+function numberValue(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function shellcheckSeverity(level: string | undefined): string {
+  const normalized = level?.toLowerCase();
+  if (normalized === "error") {
+    return "ERROR";
+  }
+  if (normalized === "warning") {
+    return "WARNING";
+  }
+  return "INFO";
+}
+
+function shellcheckScore(severity: string): number {
+  if (severity === "ERROR") {
+    return 3;
+  }
+  if (severity === "WARNING") {
+    return 2;
+  }
+  return 1;
 }
 
 function dedupeReports(reports: StaticAnalysisReport[]): StaticAnalysisReport[] {
@@ -321,6 +578,6 @@ function renderStaticAnalysisSummary(
       lines.push(`- ${run.tool}: ${run.command}`);
     }
   }
-  lines.push("", "License boundary: Codexa ingests reports from user-installed tools; it does not vendor Semgrep or CodeQL engines, rules, query packs, or binaries.");
+  lines.push("", "License boundary: Codexa ingests reports from user-installed tools; it does not vendor Semgrep, CodeQL, ShellCheck, rules, query packs, or binaries.");
   return lines.join("\n");
 }

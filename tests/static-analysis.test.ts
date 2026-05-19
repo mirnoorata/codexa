@@ -62,9 +62,63 @@ describe("static-analysis scanner runners", () => {
     }
   });
 
+  it("runs ShellCheck and converts findings into Codexa risks", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-static-analysis-shellcheck-"));
+    await mkdir(path.join(repo, "scripts"), { recursive: true });
+    await writeFile(path.join(repo, "scripts/test.sh"), "#!/usr/bin/env bash\necho $value\n", "utf8");
+
+    const binDir = await mkdtemp(path.join(os.tmpdir(), "codexa-static-analysis-shellcheck-bin-"));
+    const fakeShellcheck = path.join(binDir, "shellcheck");
+    await writeFile(
+      fakeShellcheck,
+      [
+        "#!/usr/bin/env node",
+        "const args = process.argv.slice(2);",
+        "if (!args.includes('--format=json')) process.exit(2);",
+        "const file = args[args.length - 1];",
+        "process.stdout.write(JSON.stringify({ comments: [{ file, line: 2, level: 'warning', code: 2086, message: 'Double quote to prevent globbing and word splitting.' }] }));",
+        "process.exit(1);"
+      ].join("\n"),
+      "utf8"
+    );
+    await chmod(fakeShellcheck, 0o755);
+
+    const oldPath = process.env.PATH;
+    process.env.PATH = `${binDir}${path.delimiter}${oldPath ?? ""}`;
+    try {
+      const result = await updateStaticAnalysisReports(repo, {
+        runShellcheck: true,
+        index: false,
+        timeoutMs: 5_000
+      });
+      const shellcheckReport = result.reports.find((report) => report.kind === "shellcheck");
+      expect(shellcheckReport?.path).toBe(".codex/static-analysis/shellcheck.json");
+      expect(result.runs[0]?.tool).toBe("shellcheck");
+      expect(result.staticRiskCount).toBe(1);
+
+      const report = JSON.parse(await readFile(path.join(repo, ".codex/static-analysis/shellcheck.json"), "utf8")) as {
+        risks: Array<{ path: string; signal: string; severity: string; confidence: string; line: number; reason: string }>;
+      };
+      expect(report.risks[0]).toMatchObject({
+        path: "scripts/test.sh",
+        signal: "shellcheck.SC2086",
+        severity: "WARNING",
+        confidence: "authoritative",
+        line: 2
+      });
+    } finally {
+      if (oldPath === undefined) {
+        delete process.env.PATH;
+      } else {
+        process.env.PATH = oldPath;
+      }
+    }
+  });
+
   it("reports missing optional scanner binaries explicitly", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-static-analysis-missing-"));
     await writeFile(path.join(repo, "README.md"), "# fixture\n", "utf8");
+    await writeFile(path.join(repo, "test.sh"), "echo hi\n", "utf8");
     const binDir = await mkdtemp(path.join(os.tmpdir(), "codexa-static-analysis-empty-bin-"));
     const oldPath = process.env.PATH;
     process.env.PATH = binDir;
@@ -84,6 +138,14 @@ describe("static-analysis scanner runners", () => {
           timeoutMs: 1_000
         })
       ).rejects.toThrow("codeql is not installed or not on PATH");
+
+      await expect(
+        updateStaticAnalysisReports(repo, {
+          runShellcheck: true,
+          index: false,
+          timeoutMs: 1_000
+        })
+      ).rejects.toThrow("shellcheck is not installed or not on PATH");
     } finally {
       if (oldPath === undefined) {
         delete process.env.PATH;
