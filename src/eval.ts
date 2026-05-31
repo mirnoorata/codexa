@@ -1313,6 +1313,19 @@ function uniqueInOrder(values: string[]): string[] {
 }
 
 function renderEval(data: EvalResult["data"]): string {
+  const qualityObservations = [
+    ...data.calibrationSummary.rawRgBetterScenarios.map((id) => `- raw baseline better: ${id}`),
+    ...(data.calibrationSummary.missingExpectedTests.length > 0 ? [`- missing expected tests: ${data.calibrationSummary.missingExpectedTests.join(", ")}`] : []),
+    ...(data.calibrationSummary.missingExpectedChangedFiles.length > 0 ? [`- missing planned changed files: ${data.calibrationSummary.missingExpectedChangedFiles.join(", ")}`] : []),
+    ...(data.calibrationSummary.heuristicHeavyScenarios.length > 0 ? [`- heuristic-heavy scenarios: ${data.calibrationSummary.heuristicHeavyScenarios.join(", ")}`] : []),
+    ...(data.calibrationSummary.overBudgetedOutputScenarios.length > 0 ? [`- over-budgeted output: ${data.calibrationSummary.overBudgetedOutputScenarios.join(", ")}`] : []),
+    ...(data.calibrationSummary.overBudgetedStructuredDataScenarios.length > 0 ? [`- over-budgeted structured data: ${data.calibrationSummary.overBudgetedStructuredDataScenarios.join(", ")}`] : []),
+    ...(data.calibrationSummary.postEditMissedTests.length > 0 ? [`- post-edit missed tests: ${data.calibrationSummary.postEditMissedTests.join(", ")}`] : []),
+    ...(data.calibrationSummary.postEditRequiredChecksMissingScenarios.length > 0 ? [`- post-edit missing required checks: ${data.calibrationSummary.postEditRequiredChecksMissingScenarios.join(", ")}`] : []),
+    ...(data.calibrationSummary.postEditAggregateCoverageScenarios.length > 0 ? [`- post-edit aggregate command coverage: ${data.calibrationSummary.postEditAggregateCoverageScenarios.join(", ")}`] : []),
+    ...(data.calibrationSummary.postEditVerificationMissingScenarios.length > 0 ? [`- post-edit verification still missing: ${data.calibrationSummary.postEditVerificationMissingScenarios.join(", ")}`] : []),
+    ...(data.calibrationSummary.postEditCalibrationLabels.length > 0 ? [`- post-edit labels: ${data.calibrationSummary.postEditCalibrationLabels.join(", ")}`] : [])
+  ];
   const lines = [
     "Codexa eval benchmark",
     `Suite: ${data.suite}`,
@@ -1323,18 +1336,8 @@ function renderEval(data: EvalResult["data"]): string {
     "Anti-cheat controls:",
     ...data.antiCheat.map((item) => `- ${item}`),
     "",
-    "Codexa made it worse signals:",
-    ...(data.calibrationSummary.rawRgBetterScenarios.length > 0 ? data.calibrationSummary.rawRgBetterScenarios.map((id) => `- raw baseline better: ${id}`) : ["- none"]),
-    ...(data.calibrationSummary.missingExpectedTests.length > 0 ? [`- missing expected tests: ${data.calibrationSummary.missingExpectedTests.join(", ")}`] : []),
-    ...(data.calibrationSummary.missingExpectedChangedFiles.length > 0 ? [`- missing planned changed files: ${data.calibrationSummary.missingExpectedChangedFiles.join(", ")}`] : []),
-    ...(data.calibrationSummary.heuristicHeavyScenarios.length > 0 ? [`- heuristic-heavy scenarios: ${data.calibrationSummary.heuristicHeavyScenarios.join(", ")}`] : []),
-    ...(data.calibrationSummary.overBudgetedOutputScenarios.length > 0 ? [`- over-budgeted output: ${data.calibrationSummary.overBudgetedOutputScenarios.join(", ")}`] : []),
-    ...(data.calibrationSummary.overBudgetedStructuredDataScenarios.length > 0 ? [`- over-budgeted structured data: ${data.calibrationSummary.overBudgetedStructuredDataScenarios.join(", ")}`] : []),
-    ...(data.calibrationSummary.postEditMissedTests.length > 0 ? [`- post-edit missed tests: ${data.calibrationSummary.postEditMissedTests.join(", ")}`] : []),
-    ...(data.calibrationSummary.postEditRequiredChecksMissingScenarios.length > 0 ? [`- post-edit missing required checks: ${data.calibrationSummary.postEditRequiredChecksMissingScenarios.join(", ")}`] : []),
-    ...(data.calibrationSummary.postEditAggregateCoverageScenarios.length > 0 ? [`- post-edit aggregate command coverage: ${data.calibrationSummary.postEditAggregateCoverageScenarios.join(", ")}`] : []),
-    ...(data.calibrationSummary.postEditVerificationMissingScenarios.length > 0 ? [`- post-edit verification still missing: ${data.calibrationSummary.postEditVerificationMissingScenarios.join(", ")}`] : []),
-    ...(data.calibrationSummary.postEditCalibrationLabels.length > 0 ? [`- post-edit labels: ${data.calibrationSummary.postEditCalibrationLabels.join(", ")}`] : []),
+    "Codexa quality observations:",
+    ...(qualityObservations.length > 0 ? qualityObservations : ["- none"]),
     ""
   ];
   for (const scenario of data.scenarios) {

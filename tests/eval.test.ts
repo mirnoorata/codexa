@@ -18,6 +18,10 @@ describe("Codexa eval benchmark", () => {
     expect(result.data.scenarios.length).toBeGreaterThanOrEqual(4);
     expect(second.data.scenarios.length).toBe(result.data.scenarios.length);
     expect(result.text).toContain("Anti-cheat controls");
+    expect(result.text).toContain("Codexa quality observations");
+    expect(result.text).not.toContain("Codexa made it worse signals");
+    const qualityObservationSection = result.text.split("Codexa quality observations:\n")[1]?.split("\n\n")[0] ?? "";
+    expect(qualityObservationSection).not.toMatch(/^- none\n-/m);
     expect(result.data.scenarios.every((scenario) => scenario.metrics.refreshed === false)).toBe(true);
     expect(result.data.scenarios.some((scenario) => scenario.id === "synthetic-ts-impact-decoy-control")).toBe(true);
     expect(result.data.scenarios.some((scenario) => scenario.id === "synthetic-session-context-seedless")).toBe(true);
@@ -54,7 +58,7 @@ describe("Codexa eval benchmark", () => {
     expect(changePlanScenario?.plannedFiles).toContain("src/shared.ts");
     expect(postEditScenario?.plannedFiles).toContain("src/shared.ts");
     expect(result.data.calibrationSummary.rawRgBetterScenarios).toHaveLength(0);
-    expect(result.text).toContain("Codexa made it worse signals");
+    expect(result.text).toContain("Codexa quality observations");
   });
 
   it("loads strict external historical task packs without leaking source samples", async () => {

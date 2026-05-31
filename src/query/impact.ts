@@ -408,7 +408,7 @@ export function addContextPackImpactExpansion(
   seeds: Map<string, string>,
   changeType: ChangeType,
   limit: number,
-  addFocus: (filePath: string, reason: string, rank?: number, tier?: EvidenceTier) => void
+  addFocus: (filePath: string, reason: string, rank?: number, tier?: EvidenceTier, source?: "graph_impact") => void
 ): void {
   if (seeds.size === 0) {
     return;
@@ -436,7 +436,7 @@ export function addContextPackImpactExpansion(
     for (const entry of entries) {
       const tier = evidenceTierForImpact(entry);
       const rank = tier === "authoritative" ? 10 : tier === "derived" ? 6 : 3;
-      addFocus(entry.file.path, `impact from ${seed.reason}: ${formatReasons(entry.reasons, 3)}`, rank, tier);
+      addFocus(entry.file.path, `impact from ${seed.reason}: ${formatReasons(entry.reasons, 3)}`, rank, tier, "graph_impact");
     }
   }
 }

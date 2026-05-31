@@ -42,7 +42,7 @@ export async function statusQuery(repoRoot: string, options: { recover?: boolean
     `Dirty files: ${freshness.dirtyFiles.length}`,
     `Parser errors: ${freshness.parserErrorCount}`
   ].join("\n");
-  return { freshness, text, data: freshness };
+  return { freshness, text, data: { mode: "freshness", ...freshness } };
 }
 
 export function freshnessBanner(freshness: FreshnessInfo, refresh?: RefreshInfo): string {

@@ -50,6 +50,34 @@ type McpOptionalQueryInput = Record<string, unknown> & {
 
 const MCP_ACTIONABILITY_VALUES = ["orientation", "edit_ready", "blocked", "review", "verify", "done", "needs_target", "raw_search_better", "raw_search_sufficient", "inspect_first"] as const;
 type McpActionability = (typeof MCP_ACTIONABILITY_VALUES)[number];
+type McpToolPolicyOptions = {
+  autoRefresh: boolean;
+  sessionMemoryMode: string;
+  input?: Record<string, unknown>;
+  data?: Record<string, unknown>;
+};
+type McpToolPolicy = {
+  name: string;
+  tier: string;
+  phase: string;
+  readOnly: boolean;
+  writeEffects: string;
+  useWhen: string;
+  avoidWhen: string;
+  nextToolUse: string[];
+};
+const sourceContextToolNames = new Set([
+  "repo_map",
+  "search",
+  "placeholder_report",
+  "symbol_context",
+  "diff_impact",
+  "callers",
+  "callees",
+  "dependency_path",
+  "workflow_path"
+]);
+const memoryRecordingToolNames = new Set(["find_context", "impact", "test_plan", "task_brief", "context_pack", "focus_brief", "session_context", "post_edit_review"]);
 
 export async function serveMcp(repoRoot: string, options: QueryOptions = { autoRefresh: true }): Promise<void> {
   const configuredRepoRoot = path.resolve(repoRoot);
@@ -113,6 +141,16 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
     blockingReasons: z.array(z.string()),
     nextTools: z.array(z.string())
   });
+  const toolPolicySchema = z.object({
+    name: z.string(),
+    tier: z.string(),
+    phase: z.string(),
+    readOnly: z.boolean(),
+    writeEffects: z.string(),
+    useWhen: z.string(),
+    avoidWhen: z.string(),
+    nextToolUse: z.array(z.string())
+  });
   const worktreeSchema = z.object({
     knownClean: z.boolean(),
     degraded: z.boolean(),
@@ -135,6 +173,7 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
     refresh: refreshSchema,
     quality: z.unknown().optional(),
     lifecycle: lifecycleSchema,
+    toolPolicy: toolPolicySchema.optional(),
     worktree: worktreeSchema,
     verificationProvenance: verificationProvenanceSchema,
     truncation: mcpTruncationSchema.optional(),
@@ -264,7 +303,14 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
     lspTimeoutMs: input.lspTimeoutMs ?? queryOptions.lspTimeoutMs,
     lspMaxFiles: input.lspMaxFiles ?? queryOptions.lspMaxFiles
   });
-  const runTool = async (producer: (session: QuerySession) => Promise<QueryResult>, autoRecord?: { toolName: string; input?: Record<string, unknown> }) => {
+  const policyOptions: McpToolPolicyOptions = { autoRefresh: queryOptions.autoRefresh ?? true, sessionMemoryMode };
+  const runTool = async (
+    producer: (session: QuerySession) => Promise<QueryResult>,
+    toolContext: string | { toolName: string; input?: Record<string, unknown>; autoRecord?: boolean }
+  ) => {
+    const toolName = typeof toolContext === "string" ? toolContext : toolContext.toolName;
+    const toolInput = typeof toolContext === "string" ? undefined : toolContext.input;
+    const autoRecord = typeof toolContext === "string" || toolContext.autoRecord === false ? undefined : toolContext;
     const activeRepoRoot = await resolveActiveRepoRoot();
     return toToolResult(
       await safeQuery(async () => {
@@ -274,7 +320,9 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
         const result = compactMcpResult(memoryResult);
         await notifyResourceListChangedAfterRefresh(server, session);
         return result;
-      }, activeRepoRoot)
+      }, activeRepoRoot),
+      toolName,
+      { ...policyOptions, input: toolInput }
     );
   };
 
@@ -341,7 +389,7 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
     },
     async () => {
       const activeRepoRoot = await resolveActiveRepoRoot();
-      return toToolResult(await safeQuery(() => statusQuery(activeRepoRoot, { recover: false }), activeRepoRoot));
+      return toToolResult(await safeQuery(() => statusQuery(activeRepoRoot, { recover: false }), activeRepoRoot), "freshness", policyOptions);
     }
   );
 
@@ -354,7 +402,7 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
       outputSchema,
       annotations: sourceContextAnnotations
     },
-    async ({ limit, tokenBudget }) => runTool((session) => repoMapQuery(session, limit ?? 20, queryOptions, tokenBudget ?? 1500))
+    async ({ limit, tokenBudget }) => runTool((session) => repoMapQuery(session, limit ?? 20, queryOptions, tokenBudget ?? 1500), "repo_map")
   );
 
   server.registerTool(
@@ -386,7 +434,7 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
       annotations: sourceContextAnnotations
     },
     async (input) =>
-      runTool((session) => searchQuery(session, { query: input.query, patterns: input.patterns, limit: input.limit ?? 12, includeRaw: input.includeRaw ?? true }, toolQueryOptions(input)))
+      runTool((session) => searchQuery(session, { query: input.query, patterns: input.patterns, limit: input.limit ?? 12, includeRaw: input.includeRaw ?? true }, toolQueryOptions(input)), "search")
   );
 
   server.registerTool(
@@ -404,7 +452,7 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
       outputSchema,
       annotations: sourceContextAnnotations
     },
-    async (input) => runTool((session) => placeholderReportQuery(session, input, queryOptions))
+    async (input) => runTool((session) => placeholderReportQuery(session, input, queryOptions), "placeholder_report")
   );
 
   server.registerTool(
@@ -416,7 +464,7 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
       outputSchema,
       annotations: sourceContextAnnotations
     },
-    async (input) => runTool((session) => symbolContextQuery(session, input.symbol, toolQueryOptions(input)))
+    async (input) => runTool((session) => symbolContextQuery(session, input.symbol, toolQueryOptions(input)), "symbol_context")
   );
 
   server.registerTool(
@@ -445,7 +493,7 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
       outputSchema,
       annotations: sourceContextAnnotations
     },
-    async () => runTool((session) => diffImpactQuery(session, queryOptions))
+    async () => runTool((session) => diffImpactQuery(session, queryOptions), "diff_impact")
   );
 
   server.registerTool(
@@ -598,7 +646,7 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
         openWorldHint: false
       }
     },
-    async (input) => runTool((session) => sessionMemoryQuery(session, input as SessionMemoryInput, queryOptions))
+    async (input) => runTool((session) => sessionMemoryQuery(session, input as SessionMemoryInput, queryOptions), { toolName: "session_memory", input, autoRecord: false })
   );
 
   const graphTargetSchema = {
@@ -616,7 +664,7 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
       outputSchema,
       annotations: sourceContextAnnotations
     },
-    async (input) => runTool((session) => callersQuery(session, input, queryOptions))
+    async (input) => runTool((session) => callersQuery(session, input, queryOptions), "callers")
   );
 
   server.registerTool(
@@ -628,7 +676,7 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
       outputSchema,
       annotations: sourceContextAnnotations
     },
-    async (input) => runTool((session) => calleesQuery(session, input, queryOptions))
+    async (input) => runTool((session) => calleesQuery(session, input, queryOptions), "callees")
   );
 
   server.registerTool(
@@ -646,7 +694,7 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
       outputSchema,
       annotations: sourceContextAnnotations
     },
-    async (input) => runTool((session) => dependencyPathQuery(session, input, queryOptions))
+    async (input) => runTool((session) => dependencyPathQuery(session, input, queryOptions), "dependency_path")
   );
 
   server.registerTool(
@@ -664,7 +712,7 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
       outputSchema,
       annotations: sourceContextAnnotations
     },
-    async (input) => runTool((session) => workflowPathQuery(session, input, toolQueryOptions(input)))
+    async (input) => runTool((session) => workflowPathQuery(session, input, toolQueryOptions(input)), "workflow_path")
   );
 
   server.registerTool(
@@ -756,7 +804,9 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
           const result = compactMcpResult(memoryResult);
           await notifyResourceListChangedAfterRefresh(server, session);
           return result;
-        }, activeRepoRoot)
+        }, activeRepoRoot),
+        "post_edit_review",
+        { ...policyOptions, input }
       );
     }
   );
@@ -1290,6 +1340,7 @@ function compactContextPacketData(data: Record<string, unknown>, mode: string): 
     groups: limit("groups", data.groups, 20, compactGroup),
     tests: limit("tests", data.tests, 30, compactTestRecommendation),
     snippets: limit("snippets", data.snippets, 12),
+    contextSources: limit("contextSources", data.contextSources, 12),
     warnings: limit("warnings", data.warnings, 20),
     nextReads: limit("nextReads", data.nextReads, 20),
     baseline: data.baseline,
@@ -2114,8 +2165,8 @@ function compactSnapshotLoad(value: unknown): unknown {
   };
 }
 
-function toToolResult(result: { text: string; data: unknown; freshness: unknown; refresh?: unknown }) {
-  const envelope = buildMcpEnvelope(result);
+function toToolResult(result: { text: string; data: unknown; freshness: unknown; refresh?: unknown }, toolName: string, policyOptions: McpToolPolicyOptions) {
+  const envelope = buildMcpEnvelope(result, toolName, policyOptions);
   return {
     content: [
       {
@@ -2128,7 +2179,7 @@ function toToolResult(result: { text: string; data: unknown; freshness: unknown;
   };
 }
 
-function buildMcpEnvelope(result: { data: unknown; freshness: unknown; refresh?: unknown }): Record<string, unknown> & {
+function buildMcpEnvelope(result: { data: unknown; freshness: unknown; refresh?: unknown }, toolName: string, policyOptions: McpToolPolicyOptions): Record<string, unknown> & {
   schemaVersion: 1;
   mode: string;
   actionability: McpActionability;
@@ -2143,6 +2194,7 @@ function buildMcpEnvelope(result: { data: unknown; freshness: unknown; refresh?:
   const lifecycle = lifecycleForMcpData(mode, record);
   const relatedResources = relatedResourcesForMode(mode);
   const worktree = worktreeForMcpData(record);
+  const toolPolicy = mcpToolPolicyForTool(toolName, { ...policyOptions, data: record });
   return {
     schemaVersion: 1,
     mode,
@@ -2152,12 +2204,100 @@ function buildMcpEnvelope(result: { data: unknown; freshness: unknown; refresh?:
     refresh: result.refresh ?? { refreshed: false },
     quality: record.quality,
     lifecycle,
+    toolPolicy,
     worktree,
     verificationProvenance: record.verificationProvenance ?? CURRENT_VERIFICATION_PROVENANCE,
     truncation: record.truncation,
     nextTools: lifecycle.nextTools,
     relatedResources
   };
+}
+
+function mcpToolPolicyForTool(toolName: string, options: McpToolPolicyOptions): McpToolPolicy | undefined {
+  const tool = MCP_TOOL_CATALOG.find((entry) => entry.name === toolName);
+  if (!tool) {
+    return undefined;
+  }
+  const readOnly = effectiveMcpToolReadOnly(tool.name, options);
+  return {
+    name: tool.name,
+    tier: tool.tier,
+    phase: tool.phase,
+    readOnly,
+    writeEffects: effectiveMcpToolWriteEffects(tool.name, tool.writeEffects, options, readOnly),
+    useWhen: tool.useWhen,
+    avoidWhen: tool.avoidWhen,
+    nextToolUse: [...tool.nextToolUse]
+  };
+}
+
+function effectiveMcpToolReadOnly(toolName: string, options: McpToolPolicyOptions): boolean {
+  if (toolName === "freshness") {
+    return true;
+  }
+  if (toolName === "change_plan") {
+    return !options.autoRefresh && options.sessionMemoryMode === "off" && !changePlanWritesTaskSnapshot(options);
+  }
+  if (toolName === "session_memory") {
+    return !options.autoRefresh && !sessionMemoryActionWrites(options.input);
+  }
+  if (memoryRecordingToolNames.has(toolName)) {
+    return options.sessionMemoryMode === "off" && !options.autoRefresh;
+  }
+  if (sourceContextToolNames.has(toolName)) {
+    return !options.autoRefresh;
+  }
+  return false;
+}
+
+function effectiveMcpToolWriteEffects(toolName: string, catalogWriteEffects: string, options: McpToolPolicyOptions, readOnly: boolean): string {
+  if (readOnly) {
+    return "none";
+  }
+  const effects = new Set<string>();
+  if (toolName === "change_plan") {
+    if (changePlanWritesTaskSnapshot(options)) {
+      effects.add("task-snapshot-cache");
+    }
+    if (options.sessionMemoryMode !== "off") {
+      effects.add("session-memory-auto");
+    }
+  } else if (toolName === "session_memory") {
+    if (sessionMemoryActionWrites(options.input)) {
+      effects.add("explicit-memory-cache");
+    }
+  } else if (memoryRecordingToolNames.has(toolName)) {
+    if (options.sessionMemoryMode !== "off") {
+      effects.add("session-memory-auto");
+    }
+  } else if (catalogWriteEffects !== "session-memory-auto" && catalogWriteEffects !== "none") {
+    effects.add(catalogWriteEffects);
+  } else if (catalogWriteEffects !== "none" && options.sessionMemoryMode !== "off") {
+    effects.add("session-memory-auto");
+  }
+  if (options.autoRefresh && (sourceContextToolNames.has(toolName) || memoryRecordingToolNames.has(toolName) || toolName === "change_plan" || toolName === "session_memory")) {
+    effects.add("index-cache-if-auto-refresh");
+  }
+  if (effects.size === 0 && memoryRecordingToolNames.has(toolName) && options.sessionMemoryMode === "off") {
+    return "none";
+  }
+  if (effects.size === 0 && (toolName === "change_plan" || toolName === "session_memory")) {
+    return "none";
+  }
+  return effects.size > 0 ? [...effects].join("+") : catalogWriteEffects === "none" ? "none" : catalogWriteEffects;
+}
+
+function inputBoolean(input: Record<string, unknown> | undefined, key: string): boolean {
+  return input?.[key] === true;
+}
+
+function changePlanWritesTaskSnapshot(options: McpToolPolicyOptions): boolean {
+  return inputBoolean(options.input, "saveSnapshot") || isRecord(options.data?.snapshot) || isRecord(options.data?.snapshotBlock);
+}
+
+function sessionMemoryActionWrites(input: Record<string, unknown> | undefined): boolean {
+  const action = typeof input?.action === "string" ? input.action : "summary";
+  return action === "remember" || action === "compact";
 }
 
 function ensureMcpDataMode(data: unknown): unknown {

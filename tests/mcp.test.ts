@@ -305,6 +305,15 @@ describe("Codexa MCP server", () => {
 
     expect(primaryTools).toEqual(["session_context", "task_brief", "change_plan", "post_edit_review", "test_plan", "search"]);
     expect(MCP_TOOL_CATALOG.find((tool) => tool.name === "workflow_path")).toMatchObject({ tier: "advanced" });
+    expect(MCP_TOOL_CATALOG.find((tool) => tool.name === "change_plan")).toMatchObject({
+      useWhen: expect.stringContaining("saveSnapshot=true"),
+      avoidWhen: expect.stringContaining("post_edit_review")
+    });
+    expect(MCP_TOOL_CATALOG.find((tool) => tool.name === "search")).toMatchObject({
+      readOnly: false,
+      writeEffects: expect.stringContaining("index-cache-if-auto-refresh"),
+      useWhen: expect.stringContaining("Narrow ambiguous tasks")
+    });
   });
 
   it("routes workspace-root MCP calls and resources to the focused repository", async () => {
@@ -494,6 +503,53 @@ describe("Codexa MCP server", () => {
     }
   });
 
+  it("routes a shared workspace WORKING.md shape through an explicit current Codex session", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-srv-working-shape-"));
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const oldRepo = await createIndexedMcpRepo(workspace, "old-repo", "old", "oldSymbol");
+    const currentRepo = await createIndexedMcpRepo(workspace, "current-repo", "current", "currentSymbol");
+    const focusFile = path.join(workspace, ".codex", "WORKING.md");
+    await mkdir(path.dirname(focusFile), { recursive: true });
+    await writeFile(
+      focusFile,
+      [
+        "# WORKING.md - Current Workspace State",
+        "",
+        "## Workspace Default",
+        "",
+        `- Default repo: \`${workspace}\`.`,
+        "- Active project focus: shared workspace interface via the workspace root.",
+        "",
+        "## Active Sessions",
+        "",
+        "| session | agent | repo | task | status | claims | last_seen | next |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        `| codex-old-session | codex | ${oldRepo} | previous task | done | none | earlier | wait |`,
+        `| codex-current-session | codex | ${currentRepo} | current task | active | none | now | implement |`
+      ].join("\n"),
+      "utf8"
+    );
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace, "--workspace-session", "codex-current-session"],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-srv-working-shape-routing-test", version: "0.1.0" });
+    await client.connect(transport);
+
+    try {
+      const taskBrief = await client.callTool({ name: "task_brief", arguments: { task: "change currentSymbol", tokenBudget: 900, limit: 5 } });
+      const serialized = JSON.stringify(taskBrief);
+      expect(serialized).toContain(currentRepo);
+      expect(serialized).toContain("currentSymbol");
+      expect(serialized).not.toContain(oldRepo);
+      expect(serialized).not.toContain("Failed to read git status");
+    } finally {
+      await client.close();
+    }
+  });
+
   it("does not let stale CODEXA_REPO override an explicit git repo argument", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-explicit-"));
     const explicitRepo = await createIndexedMcpRepo(workspace, "explicit-repo", "explicit", "explicitSymbol");
@@ -662,8 +718,35 @@ describe("Codexa MCP server", () => {
     expect(tools.tools.find((tool) => tool.name === "freshness")?.annotations?.readOnlyHint).toBe(true);
 
     const freshness = await client.callTool({ name: "freshness", arguments: {} });
-    expect(freshness.structuredContent).toMatchObject({ schemaVersion: 1, mode: expect.any(String), actionability: expect.any(String) });
+    expect(freshness.structuredContent).toMatchObject({
+      schemaVersion: 1,
+      mode: "freshness",
+      actionability: expect.any(String),
+      toolPolicy: {
+        name: "freshness",
+        readOnly: true,
+        useWhen: expect.stringContaining("Check whether indexed artifacts")
+      }
+    });
     expect(JSON.stringify(freshness.content)).toContain("resource_link");
+
+    const sourcePolicyCases: Array<[string, Record<string, unknown>]> = [
+      ["search", { query: "main", limit: 3 }],
+      ["repo_map", { limit: 3 }],
+      ["symbol_context", { symbol: "main" }],
+      ["callers", { file: "src/index.ts", limit: 3 }],
+      ["workflow_path", { query: "main", limit: 3 }]
+    ];
+    for (const [name, args] of sourcePolicyCases) {
+      const result = await client.callTool({ name, arguments: args });
+      const toolPolicy = (result.structuredContent as { toolPolicy?: { name?: string; readOnly?: boolean; writeEffects?: string } }).toolPolicy;
+      const listed = tools.tools.find((tool) => tool.name === name);
+      expect(toolPolicy).toMatchObject({
+        name,
+        readOnly: listed?.annotations?.readOnlyHint,
+        writeEffects: expect.stringContaining("index-cache-if-auto-refresh")
+      });
+    }
 
     const rejectedFollow = await client.callTool({ name: "change_plan", arguments: { taskId: "missing-mcp-follow", followCandidate: "candidate-missing" } });
     expect(JSON.stringify(rejectedFollow)).toContain("Follow candidate: rejected");
@@ -671,6 +754,26 @@ describe("Codexa MCP server", () => {
       status: "rejected",
       requested: "candidate-missing"
     });
+
+    const blockedPlan = await client.callTool({
+      name: "change_plan",
+      arguments: { task: "Change main", diff: false, limit: 6, tokenBudget: 1200, saveSnapshot: true, taskId: "mcp-follow-policy" }
+    });
+    const blockedPlanData = blockedPlan.structuredContent as {
+      data?: {
+        snapshotBlock?: { taskId?: string };
+        targetCandidates?: Array<{ candidateId: string; validationStatus?: string }>;
+      };
+    };
+    const acceptedCandidate = blockedPlanData.data?.targetCandidates?.find((candidate) => candidate.validationStatus === "edit-ready");
+    expect(blockedPlanData.data?.snapshotBlock).toMatchObject({ taskId: "mcp-follow-policy" });
+    expect(acceptedCandidate?.candidateId).toMatch(/^candidate-/);
+    const acceptedFollow = await client.callTool({
+      name: "change_plan",
+      arguments: { taskId: "mcp-follow-policy", followCandidate: acceptedCandidate!.candidateId }
+    });
+    expect(((acceptedFollow.structuredContent as { data?: { followCandidate?: { status?: string } } }).data?.followCandidate)).toMatchObject({ status: "accepted" });
+    expect((acceptedFollow.structuredContent as { toolPolicy?: { writeEffects?: string } }).toolPolicy?.writeEffects).toContain("task-snapshot-cache");
 
     const resources = await client.listResources();
     expect(resources.resources.length).toBeLessThanOrEqual(200);
@@ -749,12 +852,14 @@ describe("Codexa MCP server", () => {
     expect(JSON.stringify(contextPack)).toContain("changedSymbol");
     const contextPackData = contextPack.structuredContent as {
       data?: {
+        contextSources?: Array<{ source?: string; fileCount?: number }>;
         verificationCommands?: string[];
         verificationCoverage?: Array<{ kind: string }>;
         verificationCommandPlan?: Array<{ command: string; covers: string[] }>;
         sessionMemory?: { autoRecorded?: boolean; writes?: { sessionId?: string; revision?: number; recordedEntryIds?: string[] } };
       };
     };
+    expect(contextPackData.data?.contextSources?.map((entry) => entry.source)).toContain("lexical_query");
     expect(contextPackData.data?.verificationCommands?.length).toBeGreaterThan(0);
     expect(contextPackData.data?.verificationCoverage?.length).toBeGreaterThan(0);
     expect(contextPackData.data?.verificationCommandPlan?.length).toBeGreaterThan(0);
@@ -768,11 +873,13 @@ describe("Codexa MCP server", () => {
     expect(JSON.stringify(taskBrief)).toContain("mode");
     const taskBriefData = taskBrief.structuredContent as {
       data?: {
+        contextSources?: Array<{ source?: string; fileCount?: number }>;
         verificationCommands?: string[];
         verificationCoverage?: Array<{ kind: string }>;
         verificationCommandPlan?: Array<{ command: string; covers: string[] }>;
       };
     };
+    expect(taskBriefData.data?.contextSources?.map((entry) => entry.source)).toContain("explicit_target");
     expect(taskBriefData.data?.verificationCommands?.length).toBeGreaterThan(0);
     expect(taskBriefData.data?.verificationCoverage?.length).toBeGreaterThan(0);
     expect(taskBriefData.data?.verificationCommandPlan?.length).toBeGreaterThan(0);
@@ -833,12 +940,21 @@ describe("Codexa MCP server", () => {
     const callers = await client.callTool({ name: "callers", arguments: { symbol: "changedSymbol", limit: 5 } });
     expect(JSON.stringify(callers)).toContain("Callers/importers");
 
+    const unsavedChangePlan = await client.callTool({
+      name: "change_plan",
+      arguments: { task: "change changedSymbol safely", symbols: ["changedSymbol"], tokenBudget: 1000, limit: 5 }
+    });
+    expect((unsavedChangePlan.structuredContent as { toolPolicy?: { writeEffects?: string } }).toolPolicy?.writeEffects).toBe("session-memory-auto+index-cache-if-auto-refresh");
+
     const changePlan = await client.callTool({
       name: "change_plan",
       arguments: { task: "change changedSymbol safely", symbols: ["changedSymbol"], tokenBudget: 1000, limit: 5, saveSnapshot: true, taskId: "mcp-changed-symbol" }
     });
     expect(JSON.stringify(changePlan)).toContain("Codexa change plan");
     expect(JSON.stringify(changePlan)).toContain("Task snapshot: mcp-changed-symbol");
+    expect((changePlan.structuredContent as { toolPolicy?: { writeEffects?: string } }).toolPolicy?.writeEffects).toBe(
+      "task-snapshot-cache+session-memory-auto+index-cache-if-auto-refresh"
+    );
 
     await writeFile(path.join(repo, "src/index.ts"), "export function changedSymbol() { return 3 }\n", "utf8");
     const indexMtimeBeforePostEdit = (await stat(path.join(repo, ".codex/codebase/index.json"))).mtimeMs;
@@ -1429,6 +1545,85 @@ describe("Codexa MCP server", () => {
       expect(tools.tools.find((tool) => tool.name === "task_brief")?.annotations?.idempotentHint).toBe(true);
       await client.callTool({ name: "task_brief", arguments: { task: "inspect main", tokenBudget: 900, limit: 5 } });
       await expect(readdir(path.join(repo, ".codex/cache/codexa-session-memory"))).rejects.toThrow();
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("does not claim session-memory writes when only auto-refresh cache writes are possible", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-memory-off-refresh-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdir(path.join(repo, "src"), { recursive: true });
+    await writeFile(path.join(repo, "src/index.ts"), "export function main() { return 1 }\n", "utf8");
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    await buildIndex({ repoRoot: repo });
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--session-memory", "off"],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-test", version: "0.1.0" });
+    await client.connect(transport);
+    try {
+      const result = await client.callTool({ name: "task_brief", arguments: { task: "inspect main", tokenBudget: 900, limit: 5 } });
+      const policy = (result.structuredContent as { toolPolicy?: { readOnly?: boolean; writeEffects?: string } }).toolPolicy;
+      expect(policy).toMatchObject({
+        readOnly: false,
+        writeEffects: "index-cache-if-auto-refresh"
+      });
+      expect(policy?.writeEffects).not.toContain("session-memory-auto");
+      await expect(readdir(path.join(repo, ".codex/cache/codexa-session-memory"))).rejects.toThrow();
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("reports session_memory auto-refresh cache effects when auto-refresh is enabled", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-session-memory-refresh-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdir(path.join(repo, "src"), { recursive: true });
+    await writeFile(path.join(repo, "src/index.ts"), "export function main() { return 1 }\n", "utf8");
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    await buildIndex({ repoRoot: repo });
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-test", version: "0.1.0" });
+    await client.connect(transport);
+    try {
+      const result = await client.callTool({ name: "session_memory", arguments: { action: "summary", limit: 3 } });
+      expect((result.structuredContent as { toolPolicy?: { readOnly?: boolean; writeEffects?: string } }).toolPolicy).toMatchObject({
+        readOnly: false,
+        writeEffects: "index-cache-if-auto-refresh"
+      });
+      const remembered = await client.callTool({
+        name: "session_memory",
+        arguments: {
+          action: "remember",
+          entries: [
+            {
+              kind: "decision",
+              summary: "Record a policy write for the MCP policy regression.",
+              provenance: "agent-asserted",
+              confidence: "heuristic",
+              evidenceTier: "derived"
+            }
+          ]
+        }
+      });
+      expect((remembered.structuredContent as { toolPolicy?: { writeEffects?: string } }).toolPolicy?.writeEffects).toBe("explicit-memory-cache+index-cache-if-auto-refresh");
     } finally {
       await client.close();
     }

@@ -23,7 +23,16 @@ import { compactChangedSymbol, compactDiffGroup, compactFileFact, compactRetriev
 import { summarizeSessionMemory } from "../session-memory.js";
 
 type FocusSelectionEntry = { file: FileFact; score: number; reasons: string[]; matchedTerms: string[]; tier: EvidenceTier };
-type PacketFocusEntry = { file: FileFact; reasons: Set<string>; tier: EvidenceTier };
+type ContextSourceKind = "explicit_target" | "natural_retrieval" | "lexical_query" | "dirty_worktree" | "graph_impact" | "workflow_trace" | "test_evidence" | "rank_fallback";
+type ContextSourceProvenance = { source: ContextSourceKind; reason: string; tier: EvidenceTier };
+type PacketFocusEntry = { file: FileFact; reasons: Set<string>; tier: EvidenceTier; provenance: ContextSourceProvenance[] };
+type ContextSourceSummary = {
+  source: ContextSourceKind;
+  fileCount: number;
+  evidenceTierCounts: Record<EvidenceTier, number>;
+  sampleFiles: string[];
+  sampleReasons: string[];
+};
 
 export async function contextPackQuery(input: QuerySessionInput, contextInput: ContextPackInput = {}, options: QueryOptions = {}): Promise<QueryResult> {
   const session = await ensureQuerySession(input, options);
@@ -33,16 +42,23 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
   const includeSnippets = contextInput.includeSnippets ?? true;
   const changeType = contextInput.changeType ?? "unknown";
   const warnings = [...session.warnings];
-  const focus = new Map<string, { file: FileFact; reasons: Set<string>; rank: number; tier: EvidenceTier }>();
+  const focus = new Map<string, { file: FileFact; reasons: Set<string>; rank: number; tier: EvidenceTier; provenance: ContextSourceProvenance[] }>();
   const impactSeeds = new Map<string, string>();
-  const addFocus = (filePath: string, reason: string, rank = 1, tier: EvidenceTier = "derived") => {
+  const addFocus = (filePath: string, reason: string, rank = 1, tier: EvidenceTier = "derived", source?: ContextSourceKind) => {
     const file = findFile(index, filePath);
     if (!file) {
       warnings.push(`unindexed file ${filePath}`);
       return;
     }
-    const existing = focus.get(file.path) ?? { file, reasons: new Set<string>(), rank: file.rank, tier };
+    const existing = focus.get(file.path) ?? { file, reasons: new Set<string>(), rank: file.rank, tier, provenance: [] };
     existing.reasons.add(reason);
+    const sources = source ? [source] : contextSourcesForReason(reason);
+    for (const provenanceSource of sources.length > 0 ? sources : ["rank_fallback" as const]) {
+      const provenanceTier = provenanceSource === "lexical_query" && tier === "authoritative" ? "derived" : tier;
+      if (!existing.provenance.some((entry) => entry.source === provenanceSource && entry.reason === reason && entry.tier === provenanceTier)) {
+        existing.provenance.push({ source: provenanceSource, reason, tier: provenanceTier });
+      }
+    }
     existing.rank += rank;
     existing.tier = betterTier(existing.tier, tier);
     focus.set(file.path, existing);
@@ -58,7 +74,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     }
     if (resolved.file) {
       requestedResolvedPaths.push(resolved.file.path);
-      addFocus(resolved.file.path, "requested file", 100, "authoritative");
+      addFocus(resolved.file.path, "requested file", 100, "authoritative", "explicit_target");
       impactSeeds.set(resolved.file.path, "requested file");
     } else {
       warnings.push(`missing file ${requested}`);
@@ -73,10 +89,10 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       continue;
     }
     if (resolved.symbol) {
-      addFocus(resolved.symbol.path, `requested symbol ${resolved.symbol.qualifiedName}`, 100, "authoritative");
+      addFocus(resolved.symbol.path, `requested symbol ${resolved.symbol.qualifiedName}`, 100, "authoritative", "explicit_target");
       impactSeeds.set(resolved.symbol.path, `requested symbol ${resolved.symbol.qualifiedName}`);
       for (const usage of index.usageSites.filter((site) => site.targetSymbolId === resolved.symbol!.id).slice(0, 12)) {
-        addFocus(usage.path, `uses ${resolved.symbol.qualifiedName}`, 4, confidenceTier(usage.confidence));
+        addFocus(usage.path, `uses ${resolved.symbol.qualifiedName}`, 4, confidenceTier(usage.confidence), "graph_impact");
       }
     } else {
       warnings.push(`missing symbol ${requested}`);
@@ -87,14 +103,22 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
   const explicitTargetProvided = requestedFiles.length > 0 || requestedSymbols.length > 0;
   const explicitConfigTarget = requestedResolvedPaths.some(isConfigExpansionPath);
   const taskIntents = contextInput.task ? classifyTaskIntent(contextInput.task) : [];
-  const derivedTaskQuery = explicitQuery || explicitTargetProvided ? "" : codeLikeQueryFromTask(contextInput.task);
+  const dirtyContextHint = Boolean(contextInput.task && taskReferencesDirtyContext(contextInput.task) && !explicitTargetProvided && !explicitQuery);
+  const includeDiff = contextInput.diff ?? true;
+  const worktree = includeDiff ? await getWorktreeState(session) : undefined;
+  const changedEntries = worktree?.entries ?? [];
+  const changed = worktree?.files ?? [];
+  const changedSymbols = worktree?.symbols ?? [];
+  const dirtyContextTask = dirtyContextHint && includeDiff && changed.length > 0;
+  const derivedTaskQuery = explicitQuery || explicitTargetProvided || dirtyContextTask ? "" : codeLikeQueryFromTask(contextInput.task);
   const queryText = explicitQuery || derivedTaskQuery;
   const naturalRetrieval =
-    contextInput.task && shouldRunNaturalRetrieval(explicitTargetProvided, explicitConfigTarget, taskIntents)
+    contextInput.task && !dirtyContextTask && shouldRunNaturalRetrieval(explicitTargetProvided, explicitConfigTarget, taskIntents)
       ? await retrieveForTask(index, contextInput.task, Math.max(limit * 2, 12), semanticOptionsFromQueryOptions(repoRoot, options))
       : undefined;
   const naturalExpansionAllowed = Boolean(
     naturalRetrieval &&
+      !dirtyContextTask &&
       !queryText.trim() &&
       (!explicitTargetProvided ||
         (explicitConfigTarget &&
@@ -108,19 +132,19 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     for (const file of index.files) {
       const score = matchScore(queryText, file.path);
       if (score > 0) {
-        addFocus(file.path, `path ${matchReason(score)} ${queryText}`, score, score >= 9 ? "derived" : "heuristic");
+        addFocus(file.path, `path ${matchReason(score)} ${queryText}`, score, score >= 9 ? "derived" : "heuristic", "lexical_query");
       }
     }
     for (const symbol of index.symbols) {
       const score = Math.max(matchScore(queryText, symbol.name), matchScore(queryText, symbol.qualifiedName), matchScore(queryText, symbol.path));
       if (score > 0) {
-        addFocus(symbol.path, `symbol ${matchReason(score)} ${symbol.qualifiedName}`, score + 1, score >= 9 ? confidenceTier(symbol.confidence) : "heuristic");
+        addFocus(symbol.path, `symbol ${matchReason(score)} ${symbol.qualifiedName}`, score + 1, score >= 9 ? confidenceTier(symbol.confidence) : "heuristic", "lexical_query");
       }
     }
     for (const usage of index.usageSites) {
       const score = Math.max(matchScore(queryText, usage.name), matchScore(queryText, usage.text), matchScore(queryText, usage.path));
       if (score > 0) {
-        addFocus(usage.path, `usage ${matchReason(score)} ${usage.name}`, score, confidenceTier(usage.confidence));
+        addFocus(usage.path, `usage ${matchReason(score)} ${usage.name}`, score, confidenceTier(usage.confidence), "lexical_query");
       }
     }
   }
@@ -137,7 +161,8 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
         match.file.path,
         `natural task retrieval ${match.matchedTerms.slice(0, 6).join(", ") || "intent"}: ${formatReasons(match.reasons, 3)}`,
         Math.max(2, match.score * scoreScale),
-        laneBacked ? "derived" : "heuristic"
+        laneBacked ? "derived" : "heuristic",
+        "natural_retrieval"
       );
       if (laneBacked || match.score >= 4) {
         impactSeeds.set(match.file.path, "natural task retrieval");
@@ -146,17 +171,12 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     if (!explicitTargetProvided) {
       for (const workflow of naturalRetrieval.workflows.slice(0, 4)) {
         for (const filePath of workflow.relatedFiles.slice(0, 6)) {
-          addFocus(filePath, `workflow ${workflow.title}`, Math.max(2, workflow.rank / 4), confidenceTier(workflow.confidence));
+          addFocus(filePath, `workflow ${workflow.title}`, Math.max(2, workflow.rank / 4), confidenceTier(workflow.confidence), "workflow_trace");
         }
       }
     }
   }
 
-  const includeDiff = contextInput.diff ?? true;
-  const worktree = includeDiff ? await getWorktreeState(session) : undefined;
-  const changedEntries = worktree?.entries ?? [];
-  const changed = worktree?.files ?? [];
-  const changedSymbols = worktree?.symbols ?? [];
   const indexedPaths = new Set(index.files.map((file) => file.path));
   const unindexedChanged = changed.filter((file) => !indexedPaths.has(file));
   const groups = groupDiffImpact(index, changedEntries, changedSymbols, unindexedChanged).slice(0, 12);
@@ -166,44 +186,70 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     warnings.push(`broad dirty tree (${changed.length} files) kept as diff context, not read-first focus`);
   }
   if (dirtyDrivesFocus) {
-    for (const file of changed.filter((candidate) => indexedPaths.has(candidate)).slice(0, limit * 2)) {
-      addFocus(file, "dirty diff", 6, "authoritative");
-      impactSeeds.set(file, "dirty diff");
-    }
-    for (const entry of changedSymbols.slice(0, limit * 2)) {
-      addFocus(entry.symbol.path, `changed symbol ${entry.symbol.qualifiedName}`, 6, "derived");
-      impactSeeds.set(entry.symbol.path, `changed symbol ${entry.symbol.qualifiedName}`);
+    const dirtyRepresentativeLimit = dirtyContextTask ? Math.max(1, Math.min(2, Math.ceil(limit / 5))) : limit * 2;
+    const dirtyRepresentativePaths = new Set<string>();
+    if (dirtyContextTask) {
+      for (const group of groups.slice(0, dirtyRepresentativeLimit)) {
+        const representative = representativeFileForDiffGroup(index, group.files);
+        if (representative) {
+          dirtyRepresentativePaths.add(representative.path);
+          addFocus(representative.path, `change-group representative ${group.module}`, 12, group.kind === "unknown" ? "fallback" : "authoritative", "dirty_worktree");
+          impactSeeds.set(representative.path, `change-group representative ${group.module}`);
+        }
+      }
+      if (dirtyRepresentativePaths.size === 0) {
+        for (const file of changed.filter((candidate) => indexedPaths.has(candidate)).slice(0, dirtyRepresentativeLimit)) {
+          dirtyRepresentativePaths.add(file);
+          addFocus(file, "dirty diff", 6, "authoritative", "dirty_worktree");
+          impactSeeds.set(file, "dirty diff");
+        }
+      }
+    } else {
+      for (const file of changed.filter((candidate) => indexedPaths.has(candidate)).slice(0, limit * 2)) {
+        addFocus(file, "dirty diff", 6, "authoritative", "dirty_worktree");
+        impactSeeds.set(file, "dirty diff");
+      }
+      for (const entry of changedSymbols.slice(0, limit * 2)) {
+        addFocus(entry.symbol.path, `changed symbol ${entry.symbol.qualifiedName}`, 6, "derived", "dirty_worktree");
+        impactSeeds.set(entry.symbol.path, `changed symbol ${entry.symbol.qualifiedName}`);
+      }
     }
     for (const group of groups) {
-      const representative = group.files
-        .map((filePath) => findFile(index, filePath))
-        .filter((file): file is FileFact => Boolean(file))
-        .sort((a, b) => b.riskScore - a.riskScore || b.rank - a.rank || a.path.localeCompare(b.path))[0];
+      if (dirtyContextTask && dirtyRepresentativePaths.size >= dirtyRepresentativeLimit) {
+        break;
+      }
+      const representative = representativeFileForDiffGroup(index, group.files);
       if (representative) {
-        addFocus(representative.path, `change-group representative ${group.module}`, 5, group.kind === "unknown" ? "fallback" : "derived");
+        if (dirtyContextTask) {
+          dirtyRepresentativePaths.add(representative.path);
+        }
+        addFocus(representative.path, `change-group representative ${group.module}`, 5, group.kind === "unknown" ? "fallback" : "derived", "dirty_worktree");
       }
     }
   }
 
-  addContextPackImpactExpansion(index, impactSeeds, changeType, limit, addFocus);
+  if (!dirtyContextTask) {
+    addContextPackImpactExpansion(index, impactSeeds, changeType, limit, addFocus);
+  }
   if (requestedFiles.length > 0 || requestedSymbols.length > 0 || queryText.trim() || naturalExpansionAllowed) {
     const testSeedPaths = uniqueSorted([...impactSeeds.keys(), ...focus.keys()]);
     for (const test of recommendTests(index, testSeedPaths, repoRoot).slice(0, Math.max(1, Math.min(4, Math.floor(limit / 2))))) {
-      addFocus(test.path, `likely test: ${test.reason}`, test.evidenceTier === "authoritative" ? 18 : test.evidenceTier === "derived" ? 14 : 8, test.evidenceTier ?? "derived");
+      addFocus(test.path, `likely test: ${test.reason}`, test.evidenceTier === "authoritative" ? 18 : test.evidenceTier === "derived" ? 14 : 8, test.evidenceTier ?? "derived", "test_evidence");
     }
   }
 
   if (focus.size === 0) {
     for (const file of index.files.slice(0, limit)) {
-      addFocus(file.path, "top-ranked fallback", 1, "fallback");
+      addFocus(file.path, "top-ranked fallback", 1, "fallback", "rank_fallback");
     }
   }
 
   const focusEntries = [...focus.values()].sort((a, b) => tierScore(a.tier) - tierScore(b.tier) || b.rank - a.rank || a.file.path.localeCompare(b.file.path)).slice(0, limit);
   const focusPaths = focusEntries.map((entry) => entry.file.path);
-  const contextSeedPaths = dirtyDrivesFocus ? uniqueSorted([...focusPaths, ...changed]) : focusPaths;
+  const contextSeedPaths = dirtyContextTask ? focusPaths : dirtyDrivesFocus ? uniqueSorted([...focusPaths, ...changed]) : focusPaths;
   const snippetChangedSymbols = dirtyDrivesFocus ? changedSymbols : changedSymbols.filter((entry) => impactSeeds.has(entry.symbol.path));
-  const tests = recommendTests(index, contextSeedPaths, repoRoot).slice(0, 12);
+  const testLimit = dirtyContextTask ? Math.max(1, Math.min(2, contextSeedPaths.length)) : 12;
+  const tests = recommendTests(index, contextSeedPaths, repoRoot).slice(0, testLimit);
   const snippetQueryText =
     queryText ||
     contextInput.task ||
@@ -270,6 +316,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     topics: contextInput.task ? [contextInput.task] : explicitQuery ? [explicitQuery] : [],
     limit: 6
   });
+  const contextSources = summarizeContextSources(focusEntries);
 
   const text = [
     freshnessBanner(freshness, refresh),
@@ -284,6 +331,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     packetDiagnostics.length ? `Retrieval diagnostics: ${packetDiagnostics.join("; ")}` : undefined,
     `Change type: ${changeType}`,
     `Budget: ${tokenBudget} tokens approx; focus files: ${focusEntries.length}; changed files: ${changed.length}`,
+    contextSources.length > 0 ? `Context sources: ${formatContextSources(contextSources)}` : undefined,
     baseline ? `Baseline search: ${baseline.command} returned ${baseline.lines} non-empty lines; Codexa selected ${focusEntries.length} focus files.` : undefined,
     warnings.length + session.warnings.length > 0
       ? `Warnings: ${uniqueSorted([...session.warnings, ...warnings]).join("; ")}`
@@ -345,6 +393,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       groups: groups.slice(0, 20).map(compactDiffGroup),
       tests: displayedTests.slice(0, 30),
       snippets,
+      contextSources,
       warnings: uniqueSorted([...session.warnings, ...warnings]),
       nextReads,
       baseline,
@@ -366,6 +415,100 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       session: { commandBudgetMs: session.commandBudgetMs, maxResultBytes: session.maxResultBytes, maxResults: session.maxResults, provenance: session.provenance }
     }
   };
+}
+
+function summarizeContextSources(focusEntries: Array<{ file: FileFact; provenance: ContextSourceProvenance[] }>): ContextSourceSummary[] {
+  const summaries = new Map<ContextSourceKind, { fileTiers: Map<string, EvidenceTier>; reasons: Set<string> }>();
+  const add = (source: ContextSourceKind, filePath: string, tier: EvidenceTier, reason: string) => {
+    const summary =
+      summaries.get(source) ?? {
+        fileTiers: new Map<string, EvidenceTier>(),
+        reasons: new Set<string>()
+      };
+    summary.fileTiers.set(filePath, betterTier(summary.fileTiers.get(filePath) ?? "fallback", tier));
+    summary.reasons.add(reason);
+    summaries.set(source, summary);
+  };
+
+  for (const entry of focusEntries) {
+    if (entry.provenance.length === 0) {
+      add("rank_fallback", entry.file.path, "fallback", "ranked context selection");
+      continue;
+    }
+    for (const provenance of entry.provenance) {
+      add(provenance.source, entry.file.path, provenance.tier, provenance.reason);
+    }
+  }
+
+  const priority: ContextSourceKind[] = ["explicit_target", "dirty_worktree", "natural_retrieval", "graph_impact", "workflow_trace", "test_evidence", "lexical_query", "rank_fallback"];
+  return [...summaries.entries()]
+    .map(([source, summary]) => {
+      const evidenceTierCounts: Record<EvidenceTier, number> = { authoritative: 0, derived: 0, heuristic: 0, fallback: 0 };
+      for (const tier of summary.fileTiers.values()) {
+        evidenceTierCounts[tier] += 1;
+      }
+      return {
+        source,
+        fileCount: summary.fileTiers.size,
+        evidenceTierCounts,
+        sampleFiles: [...summary.fileTiers.keys()].sort().slice(0, 6),
+        sampleReasons: [...summary.reasons].sort().slice(0, 6)
+      };
+    })
+    .sort((a, b) => priority.indexOf(a.source) - priority.indexOf(b.source) || b.fileCount - a.fileCount || a.source.localeCompare(b.source));
+}
+
+function contextSourcesForReason(reason: string): ContextSourceKind[] {
+  const lower = reason.toLowerCase();
+  if (lower.startsWith("likely test")) {
+    return ["test_evidence"];
+  }
+  const sources: ContextSourceKind[] = [];
+  if (lower === "requested file" || lower.startsWith("requested symbol ")) {
+    sources.push("explicit_target");
+  }
+  if (lower.includes("dirty diff") || lower.includes("changed symbol") || lower.includes("change-group representative")) {
+    sources.push("dirty_worktree");
+  }
+  if (lower.includes("natural task retrieval")) {
+    sources.push("natural_retrieval");
+  }
+  if (lower.includes("impact from") || lower.includes("imports ") || lower.includes("uses ") || lower.includes("call ") || lower.includes("reference ")) {
+    sources.push("graph_impact");
+  }
+  if (lower.startsWith("workflow ") || lower.includes("workflow entry") || lower.includes("workflow test candidate")) {
+    sources.push("workflow_trace");
+  }
+  if (lower.includes("likely test") || lower.includes("tests ")) {
+    sources.push("test_evidence");
+  }
+  if (lower.startsWith("path ") || lower.startsWith("symbol ") || lower.startsWith("usage ")) {
+    sources.push("lexical_query");
+  }
+  if (lower.includes("top-ranked fallback") || lower.includes("ranked project entry point")) {
+    sources.push("rank_fallback");
+  }
+  return sources;
+}
+
+function formatContextSources(sources: ContextSourceSummary[]): string {
+  return sources
+    .slice(0, 8)
+    .map((source) => {
+      const tiers = (["authoritative", "derived", "heuristic", "fallback"] as EvidenceTier[])
+        .map((tier) => (source.evidenceTierCounts[tier] > 0 ? `${source.evidenceTierCounts[tier]} ${tier}` : undefined))
+        .filter((entry): entry is string => Boolean(entry))
+        .join(", ");
+      return `${source.source} ${source.fileCount} file${source.fileCount === 1 ? "" : "s"}${tiers ? ` (${tiers})` : ""}`;
+    })
+    .join("; ");
+}
+
+function representativeFileForDiffGroup(index: CodexaIndex, files: string[]): FileFact | undefined {
+  return files
+    .map((filePath) => findFile(index, filePath))
+    .filter((file): file is FileFact => Boolean(file))
+    .sort((a, b) => b.riskScore - a.riskScore || b.rank - a.rank || a.path.localeCompare(b.path))[0];
 }
 
 function shouldRunNaturalRetrieval(explicitTargetProvided: boolean, explicitConfigTarget: boolean, taskIntents: TaskIntent[]): boolean {
@@ -765,11 +908,10 @@ function packetIntentConfidence(
 }
 
 function isStrongPacketAnchor(entry: PacketFocusEntry, dirtyAnchorAllowed: boolean): boolean {
-  const reasons = [...entry.reasons].join(" ").toLowerCase();
-  if (reasons.includes("requested file") || reasons.includes("requested symbol")) {
+  if (entry.provenance.some((item) => item.source === "explicit_target")) {
     return true;
   }
-  if (dirtyAnchorAllowed && (reasons.includes("dirty diff") || reasons.includes("changed symbol"))) {
+  if (dirtyAnchorAllowed && entry.provenance.some((item) => item.source === "dirty_worktree")) {
     return true;
   }
   return false;
