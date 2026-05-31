@@ -127,10 +127,11 @@ serves focused MCP context tools over stdio.
 - `codexa init` also writes lightweight edit hooks when supported by Codex
   hooks: `hook-pre-edit` reminds Codex when a non-trivial edit lacks a saved
   change-plan snapshot, and `hook-post-edit` runs a bounded post-edit review.
-  If `CODEXA_AUTOVERIFY=1` or `CODEXA_AUTOVERIFY=true` is set, the post-edit
-  hook can also run narrowly targeted safe test commands inferred from the
-  review packet, capture structured command reports, and feed those reports into
-  the persisted outcome without user-supplied `--ran-command` input.
+  If user-owned autonomy is set to `full-access` with `codexa autonomy`, or
+  `CODEXA_AUTOVERIFY=1` / `CODEXA_AUTOVERIFY=true` is set, the post-edit hook
+  can also run narrowly targeted safe test commands inferred from the review
+  packet, capture structured command reports, and feed those reports into the
+  persisted outcome without user-supplied `--ran-command` input.
   These hooks are advisory and fail open: setup/query errors print a bounded
   unavailable message and exit successfully so editor tool calls are not
   blocked. Hook runs write compact local JSONL diagnostics under ignored
@@ -687,6 +688,9 @@ stale. `change_plan` can also write a small task snapshot under
 used by `post_edit_review` to detect drift after Codex edits files. Refreshes
 are guarded by a cross-process lock file under `.codex/cache/` and stale locks
 are recovered before a new index is published.
+MCP `post_edit_review` never spawns verification commands, even when the MCP
+server process inherits `CODEXA_AUTOVERIFY=1`; execution is limited to the
+generated CLI hook path described below.
 MCP tools include structured output schemas and non-destructive annotations.
 When auto-refresh is enabled, tools are source-read-only but not strictly
 filesystem-read-only because they may update generated Codexa cache artifacts.
@@ -717,11 +721,39 @@ Post-edit review accepts both `--ran-test` for direct test/accounting entries
 and `--ran-command` for aggregate verification commands. The generated
 `hook-post-edit` path attempts AutoVerify first: it runs only targeted test
 commands whose package script and runner shape are allowlisted, and only when
-the user environment sets `CODEXA_AUTOVERIFY=1` or `CODEXA_AUTOVERIFY=true`.
-Repo-local config is not execution consent; without that external opt-in the
-hook records the recommended commands as skipped and does not spawn repo code.
-When AutoVerify does run, it passes the captured command report into the final
-review. Use
+user-owned autonomy is `full-access` or the user environment sets
+`CODEXA_AUTOVERIFY=1` / `CODEXA_AUTOVERIFY=true`. Repo-local config is not
+execution consent; without that external opt-in the hook records the
+recommended commands as skipped and does not spawn repo code. To make this
+persistent for a trusted repo without per-run input:
+
+```bash
+codexa autonomy /path/to/repo --mode full-access
+```
+
+Use `codexa autonomy --global --mode full-access` only when all Codexa-hooked
+repos on that machine should inherit the same full-access profile. A repo
+specific policy still wins, so `codexa autonomy /path/to/repo --mode read-only`
+is the per-repo safety brake.
+When AutoVerify does run, it is still local test-code execution, not a sandbox.
+It uses a scrubbed child environment with isolated home/config/cache paths,
+rejects lifecycle hooks, shell syntax, package-manager shell execution,
+code-loading/config flags, unscoped commands, unsafe executables, and targets
+outside the repo. Package scripts are inspected for a safe runner shape and then
+lowered to the direct runner command, resolving validated Node package runners
+from the package-local `node_modules/.bin` entry or from a safe system path
+without invoking the package-manager shell. Project `.npmrc`/package-manager
+shell configuration is not part of the execution path. It then emits an
+in-memory runner report with policy metadata, target realpaths, dirty-tree
+hashes, timeout status, and source-mutation detection. Source/test/provenance
+mutations are detected after execution and marked as non-covering; they are not
+prevented at the filesystem boundary. `post_edit_review` trusts runner evidence
+only for the current snapshot/task and dirty tree; stale, timed-out, failed,
+source-mutating, or digest-mismatched reports are shown as non-covering evidence
+rather than verification coverage. Public CLI/MCP `ranCommandReports` cannot
+spoof trusted runner fields.
+
+Use
 `--ran-command-report` when you have structured execution evidence such as
 `cwd`, package manager, package/workspace scope, script name, args, `exitCode`,
 `durationMs`, and short stdout/stderr summaries. Codexa records these command

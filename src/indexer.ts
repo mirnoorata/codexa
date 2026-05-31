@@ -2,11 +2,11 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { acquireCacheLock } from "./cache-lock.js";
 import { buildGraphEdges, extractWorkflowTraces } from "./graph.js";
-import { moduleNameForPath } from "./language.js";
+import { isGeneratedPath, isTestPath, languageForPath, moduleNameForPath } from "./language.js";
 import { parseFile } from "./parser.js";
-import { discoverRepoFiles, discoverRepoFreshness } from "./repo-files.js";
+import { discoverRepoFiles, discoverRepoFreshness, MAX_INDEXED_SOURCE_BYTES, type RepoSkippedFile, type RepoSourceFile } from "./repo-files.js";
 import { type ImportAliasRule, relinkUsageIds, resolveIndexLinks } from "./resolver.js";
-import { loadExternalRiskSignals } from "./risk-ingest.js";
+import { externalRiskReportSnapshot, loadExternalRiskSignalReport, type ExternalRiskReportDiagnostic } from "./risk-ingest.js";
 import { loadOutcomeRankSignals, type OutcomeRankSignals } from "./outcome-ranking.js";
 import { applyPythonSemanticAssist } from "./semantic/python.js";
 import { applyTypeScriptSemanticAssist } from "./semantic/typescript.js";
@@ -19,6 +19,7 @@ import type {
   GraphEdgeFact,
   IndexOptions,
   ModuleClusterFact,
+  ParserErrorFact,
   ParseResult,
   RepoSnapshotFact,
   RiskSignalFact
@@ -31,6 +32,7 @@ const PARSE_CACHE_VERSION = "parse-cache-v1-placeholder-signals-20260515a";
 const PARSE_CACHE_PATH = ".codex/cache/codexa-parse-cache.json";
 const INDEX_LOCK_DIR = ".codex/cache/codexa-index.lock";
 const INDEX_LOCK_STALE_MS = 120_000;
+const PYTHON_SEMANTIC_SOURCE_TOTAL_BYTES = 16 * 1024 * 1024;
 
 interface ParseCache {
   version: string;
@@ -61,18 +63,16 @@ export async function buildIndex(options: IndexOptions): Promise<CodexaIndex> {
     headCommit: discovered.git.headCommit,
     dirtyFiles: discovered.git.dirtyFiles
   };
-
   const parseCache = await loadParseCache(repoRoot);
   const nextCache: ParseCache = { version: PARSE_CACHE_VERSION, entries: {} };
   let parseCacheHits = 0;
-  const parsed = await mapLimit(discovered.files, 12, async (file) => {
+  const parsedSourceFiles = await mapLimit(discovered.files, 12, async (file) => {
     const parseInput = {
       repoRoot,
       relativePath: file.path,
       absolutePath: file.absolutePath,
       dirty: file.dirty,
       sizeBytes: file.sizeBytes,
-      sourceText: file.sourceText,
       snapshotId,
       indexedAt
     };
@@ -95,6 +95,7 @@ export async function buildIndex(options: IndexOptions): Promise<CodexaIndex> {
     };
     return result;
   });
+  const parsed = [...parsedSourceFiles, ...discovered.skippedFiles.map((file) => skippedFileParseResult(file, snapshotId, indexedAt))].sort((a, b) => a.file.path.localeCompare(b.file.path));
   const aliases = await loadImportAliases(repoRoot, discovered.files.map((file) => file.path));
 
   const initial: CodexaIndex = {
@@ -114,7 +115,10 @@ export async function buildIndex(options: IndexOptions): Promise<CodexaIndex> {
       missing: false,
       stale: false,
       reason: discovered.git.dirtyFiles.length > 0 ? "fresh-with-dirty-overlay" : "fresh",
-      parserErrorCount: 0
+      parserErrorCount: 0,
+      externalRiskReportHashes: {},
+      indexedExternalRiskReportHashes: {},
+      externalRiskReportDiagnostics: []
     },
     files: parsed.map((result) => ({
       ...result.file,
@@ -136,11 +140,24 @@ export async function buildIndex(options: IndexOptions): Promise<CodexaIndex> {
     parserErrors: parsed.flatMap((result) => result.parserErrors)
   };
 
-  const [externalRisks, externalSymbols] = await Promise.all([
-    loadExternalRiskSignals(repoRoot, snapshotId, indexedAt),
+  const [externalRiskReport, externalSymbols] = await Promise.all([
+    loadExternalRiskSignalReport(repoRoot, snapshotId, indexedAt),
     loadExternalSymbolReportFacts(repoRoot, snapshotId, indexedAt, new Set(discovered.git.dirtyFiles))
   ]);
-  const withExternalRisks = mergeExternalSymbolFacts({ ...initial, risks: dedupeRiskSignals([...initial.risks, ...externalRisks]) }, externalSymbols);
+  const withExternalRisks = mergeExternalSymbolFacts(
+    {
+      ...initial,
+      freshness: {
+        ...initial.freshness,
+        externalRiskReportHashes: externalRiskReport.reportHashes,
+        indexedExternalRiskReportHashes: externalRiskReport.reportHashes,
+        externalRiskReportDiagnostics: externalRiskReport.diagnostics
+      },
+      risks: dedupeRiskSignals([...initial.risks, ...externalRiskReport.risks]),
+      parserErrors: [...initial.parserErrors, ...externalRiskReport.diagnostics.map((diagnostic) => riskReportParserError(diagnostic, snapshotId, indexedAt))]
+    },
+    externalSymbols
+  );
   const withTypeScriptSemanticAssist = await applyTypeScriptSemanticAssist(withExternalRisks, {
     repoRoot,
     files: discovered.files.map((file) => ({
@@ -150,11 +167,7 @@ export async function buildIndex(options: IndexOptions): Promise<CodexaIndex> {
     }))
   });
   const withPythonSemanticAssist = applyPythonSemanticAssist(withTypeScriptSemanticAssist, {
-    files: discovered.files.map((file) => ({
-      path: file.path,
-      sourceText: file.sourceText,
-      contentHash: file.contentHash
-    }))
+    files: await loadPythonSemanticSourceFiles(discovered.files)
   });
   const linked = relinkUsageIds(resolveIndexLinks(withPythonSemanticAssist, aliases));
   const outcomeSignals = await loadOutcomeRankSignals(repoRoot, discovered.git.headCommit, new Set(linked.files.map((file) => file.path)));
@@ -174,6 +187,90 @@ export async function buildIndex(options: IndexOptions): Promise<CodexaIndex> {
   }
 
   return finalIndex;
+}
+
+function riskReportParserError(diagnostic: ExternalRiskReportDiagnostic, snapshotId: string, indexedAt: string): ParserErrorFact {
+  return {
+    id: stableId("external-risk-report-diagnostic", diagnostic.path, diagnostic.reason, diagnostic.sizeBytes ?? 0, diagnostic.limitBytes ?? 0),
+    type: "ParserError",
+    path: diagnostic.path,
+    source: "static-analysis",
+    confidence: "heuristic",
+    snapshotId,
+    indexedAt,
+    message:
+      diagnostic.reason === "report-too-large"
+        ? `Skipped external risk report ${diagnostic.path}: ${formatBytes(diagnostic.sizeBytes ?? 0)} exceeds Codexa's ${formatBytes(diagnostic.limitBytes ?? 0)} report cap`
+        : `Skipped external risk report ${diagnostic.path}: invalid JSON`
+  };
+}
+
+function skippedFileParseResult(file: RepoSkippedFile, snapshotId: string, indexedAt: string): ParseResult {
+  const language = languageForPath(file.path);
+  return {
+    file: {
+      id: stableId("file", file.path),
+      type: "File",
+      path: file.path,
+      source: "git",
+      confidence: "authoritative",
+      snapshotId,
+      indexedAt,
+      language,
+      sizeBytes: file.sizeBytes,
+      dirty: file.dirty,
+      generated: isGeneratedPath(file.path),
+      test: isTestPath(file.path)
+    },
+    symbols: [],
+    usageSites: [],
+    imports: [],
+    testEdges: [],
+    risks: [],
+    parserErrors: [
+      {
+        id: stableId("parser-error", file.path, file.reason, file.sizeBytes),
+        type: "ParserError",
+        path: file.path,
+        source: "git",
+        confidence: "heuristic",
+        snapshotId,
+        indexedAt,
+        message: `Skipped source parsing for ${file.path}: ${formatBytes(file.sizeBytes)} exceeds Codexa's ${formatBytes(MAX_INDEXED_SOURCE_BYTES)} per-file index cap`
+      }
+    ]
+  };
+}
+
+async function loadPythonSemanticSourceFiles(files: RepoSourceFile[]): Promise<Array<{ path: string; sourceText: string; contentHash: string }>> {
+  const selected: Array<{ path: string; sourceText: string; contentHash: string }> = [];
+  let totalBytes = 0;
+  for (const file of files.filter((entry) => entry.path.endsWith(".py"))) {
+    if (totalBytes + file.sizeBytes > PYTHON_SEMANTIC_SOURCE_TOTAL_BYTES) {
+      continue;
+    }
+    try {
+      selected.push({
+        path: file.path,
+        sourceText: await fs.readFile(file.absolutePath, "utf8"),
+        contentHash: file.contentHash
+      });
+      totalBytes += file.sizeBytes;
+    } catch {
+      // The file may have been removed between git discovery and semantic assist.
+    }
+  }
+  return selected;
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 * 1024) {
+    return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
+  }
+  if (bytes >= 1024) {
+    return `${(bytes / 1024).toFixed(1)} KiB`;
+  }
+  return `${bytes} bytes`;
 }
 
 async function loadParseCache(repoRoot: string): Promise<ParseCache> {
@@ -597,30 +694,31 @@ function normalizeLoadedFreshness(freshness: Partial<FreshnessInfo>): FreshnessI
 
 export async function getFreshness(repoRoot: string, index?: CodexaIndex | null, options: { recover?: boolean } = {}): Promise<FreshnessInfo> {
   const repo = path.resolve(repoRoot);
-  const current = await discoverRepoFreshness(repo);
+  const [current, riskReports] = await Promise.all([discoverRepoFreshness(repo), externalRiskReportSnapshot(repo)]);
   if (index !== undefined) {
-    return freshnessFromStored(repo, current, index?.freshness ?? null);
+    return freshnessFromStored(repo, current, riskReports, index?.freshness ?? null);
   }
 
   const stored = await loadFreshnessReadOnly(repo);
   if (stored) {
-    const freshness = freshnessFromStored(repo, current, stored);
+    const freshness = freshnessFromStored(repo, current, riskReports, stored);
     if (!freshness.stale && options.recover !== false && (await indexBundleNewerThanFreshness(repo))) {
       const loaded = await loadIndex(repo);
       if (loaded) {
-        return freshnessFromStored(repo, current, loaded.freshness);
+        return freshnessFromStored(repo, current, riskReports, loaded.freshness);
       }
     }
     return freshness;
   }
 
   const loaded = options.recover === false ? null : await loadIndex(repo);
-  return freshnessFromStored(repo, current, loaded?.freshness ?? null);
+  return freshnessFromStored(repo, current, riskReports, loaded?.freshness ?? null);
 }
 
 function freshnessFromStored(
   repo: string,
   current: Awaited<ReturnType<typeof discoverRepoFreshness>>,
+  riskReports: Awaited<ReturnType<typeof externalRiskReportSnapshot>>,
   loaded: FreshnessInfo | null
 ): FreshnessInfo {
   if (!loaded) {
@@ -635,6 +733,9 @@ function freshnessFromStored(
       indexedDirtyFiles: [],
       dirtyFileHashes: current.dirtyFileHashes,
       indexedDirtyFileHashes: {},
+      externalRiskReportHashes: riskReports.reportHashes,
+      indexedExternalRiskReportHashes: {},
+      externalRiskReportDiagnostics: riskReports.diagnostics,
       missing: true,
       stale: true,
       reason: "missing-index",
@@ -645,15 +746,20 @@ function freshnessFromStored(
   const dirtyChanged =
     current.git.dirtyFiles.join("\n") !== loaded.indexedDirtyFiles.join("\n") ||
     stableJson(current.dirtyFileHashes) !== stableJson(loaded.indexedDirtyFileHashes ?? {});
+  const indexedExternalRiskReportHashes = loaded.indexedExternalRiskReportHashes ?? loaded.externalRiskReportHashes ?? {};
+  const externalRiskReportsChanged = stableJson(riskReports.reportHashes) !== stableJson(indexedExternalRiskReportHashes);
   const commitChanged = current.git.headCommit !== loaded.headCommit;
   const repoRootChanged = path.resolve(loaded.repoRoot) !== repo || loaded.gitRoot !== current.git.gitRoot;
-  const stale = dirtyChanged || commitChanged || repoRootChanged;
+  const stale = dirtyChanged || externalRiskReportsChanged || commitChanged || repoRootChanged;
   return {
     ...loaded,
     repoRoot: repo,
     gitRoot: current.git.gitRoot,
     dirtyFiles: current.git.dirtyFiles,
     dirtyFileHashes: current.dirtyFileHashes,
+    externalRiskReportHashes: riskReports.reportHashes,
+    indexedExternalRiskReportHashes,
+    externalRiskReportDiagnostics: riskReports.diagnostics,
     missing: false,
     stale,
     reason: stale
@@ -661,7 +767,9 @@ function freshnessFromStored(
         ? "head-commit-changed"
         : repoRootChanged
           ? "repo-root-changed"
-          : "dirty-files-changed"
+          : externalRiskReportsChanged
+            ? "external-risk-reports-changed"
+            : "dirty-files-changed"
       : loaded.reason
   };
 }

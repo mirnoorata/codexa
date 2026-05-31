@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { CURRENT_VERIFICATION_PROVENANCE } from "./types.js";
+import type { AutoVerifyReportRunner } from "./autoverify.js";
 import type {
   Confidence,
   FreshnessInfo,
@@ -17,6 +18,8 @@ import type {
   SessionMemoryPointer
 } from "./types.js";
 import { stableId } from "./util.js";
+
+type OutcomeCommandReport = VerificationCommandReport & { runner?: AutoVerifyReportRunner };
 
 const OUTCOME_DIR = ".codex/cache/codexa-outcomes";
 const LATEST_FILE = "latest.json";
@@ -55,7 +58,7 @@ export interface PostEditOutcomeInput {
   missedLikelyTests: TestRecommendation[];
   ranTests: string[];
   ranCommands: string[];
-  ranCommandReports: VerificationCommandReport[];
+  ranCommandReports: OutcomeCommandReport[];
   commandEnvelopes: VerificationCommandEnvelope[];
   waivedChecks: string[];
   waivers: VerificationWaiver[];
@@ -123,7 +126,7 @@ export interface PostEditOutcome {
   missedLikelyTests: Array<Pick<TestRecommendation, "path" | "reason" | "rank" | "evidenceTier" | "command" | "commandSource" | "commandConfidence" | "provenance">>;
   ranTests: string[];
   ranCommands: string[];
-  ranCommandReports: VerificationCommandReport[];
+  ranCommandReports: OutcomeCommandReport[];
   commandEnvelopes: VerificationCommandEnvelope[];
   waivedChecks: string[];
   waivers: VerificationWaiver[];
@@ -145,6 +148,7 @@ export interface PostEditHookReviewState {
   outcomeId?: string;
   taskId?: string;
   verdict?: PostEditVerdict;
+  autoVerifyStatus?: "off" | "covered" | "skipped" | "failed" | "non_covering";
 }
 
 export interface CodexaHookEventInput {
@@ -231,11 +235,12 @@ export async function savePostEditOutcome(input: PostEditOutcomeInput): Promise<
   return { outcome, path: outcomePath, relativePath: path.posix.join(OUTCOME_DIR, `${outcome.outcomeId}.json`) };
 }
 
-export function postEditHookReviewSignature(input: { freshness: FreshnessInfo; taskId?: string }): string {
+export function postEditHookReviewSignature(input: { freshness: FreshnessInfo; taskId?: string; autoVerifyMode?: string }): string {
   return createHash("sha1")
     .update(
       JSON.stringify({
         taskId: input.taskId ?? null,
+        autoVerifyMode: input.autoVerifyMode ?? "autoverify:off",
         snapshotId: input.freshness.snapshotId,
         indexedAt: input.freshness.indexedAt,
         headCommit: input.freshness.headCommit,
@@ -256,7 +261,8 @@ export async function loadPostEditHookReviewState(repoRoot: string): Promise<Pos
         createdAt: parsed.createdAt,
         outcomeId: typeof parsed.outcomeId === "string" ? parsed.outcomeId : undefined,
         taskId: typeof parsed.taskId === "string" ? parsed.taskId : undefined,
-        verdict: isPostEditVerdict(parsed.verdict) ? parsed.verdict : undefined
+        verdict: isPostEditVerdict(parsed.verdict) ? parsed.verdict : undefined,
+        autoVerifyStatus: isAutoVerifyStatus(parsed.autoVerifyStatus) ? parsed.autoVerifyStatus : undefined
       };
     }
   } catch {
@@ -265,7 +271,7 @@ export async function loadPostEditHookReviewState(repoRoot: string): Promise<Pos
   return null;
 }
 
-export async function savePostEditHookReviewState(repoRoot: string, input: { signature: string; outcome?: PostEditOutcome }): Promise<void> {
+export async function savePostEditHookReviewState(repoRoot: string, input: { signature: string; outcome?: PostEditOutcome; autoVerifyStatus?: PostEditHookReviewState["autoVerifyStatus"] }): Promise<void> {
   const repo = path.resolve(repoRoot);
   const dir = path.join(repo, OUTCOME_DIR);
   await fs.mkdir(dir, { recursive: true });
@@ -275,7 +281,8 @@ export async function savePostEditHookReviewState(repoRoot: string, input: { sig
     createdAt: new Date().toISOString(),
     outcomeId: input.outcome?.outcomeId,
     taskId: input.outcome?.taskId,
-    verdict: input.outcome?.verdict
+    verdict: input.outcome?.verdict,
+    autoVerifyStatus: input.autoVerifyStatus
   });
 }
 
@@ -348,6 +355,10 @@ function isHookEventStatus(value: unknown): value is CodexaHookEventStatus {
   return value === "ok" || value === "skipped" || value === "failed";
 }
 
+function isAutoVerifyStatus(value: unknown): value is NonNullable<PostEditHookReviewState["autoVerifyStatus"]> {
+  return value === "off" || value === "covered" || value === "skipped" || value === "failed" || value === "non_covering";
+}
+
 function compactHookEvent(repoRoot: string, input: CodexaHookEventInput): CodexaHookEvent {
   return {
     schemaVersion: 1,
@@ -414,7 +425,7 @@ function compactCoverage(coverage: VerificationCoverage[], repoRoot: string): Ve
   }));
 }
 
-function compactCommandReports(reports: VerificationCommandReport[], repoRoot: string): VerificationCommandReport[] {
+function compactCommandReports(reports: OutcomeCommandReport[], repoRoot: string): OutcomeCommandReport[] {
   return reports.map((report) => ({
     ...report,
     command: sanitizeText(report.command, repoRoot) ?? "",
@@ -427,8 +438,22 @@ function compactCommandReports(reports: VerificationCommandReport[], repoRoot: s
     stdoutSummary: sanitizeText(report.stdoutSummary, repoRoot),
     stderrSummary: sanitizeText(report.stderrSummary, repoRoot),
     outputSummary: sanitizeText(report.outputSummary, repoRoot),
-    args: sanitizeArgs(report.args, repoRoot)
+    args: sanitizeArgs(report.args, repoRoot),
+    runner: compactRunner(report.runner, repoRoot)
   }));
+}
+
+function compactRunner(runner: AutoVerifyReportRunner | undefined, repoRoot: string): AutoVerifyReportRunner | undefined {
+  if (!runner) {
+    return undefined;
+  }
+  return {
+    ...runner,
+    cwdRealpath: sanitizePathField(runner.cwdRealpath, repoRoot) ?? runner.cwdRealpath,
+    targetRealpaths: runner.targetRealpaths.map((target) => sanitizePathField(target, repoRoot) ?? target),
+    allowedBy: runner.allowedBy.map((reason) => sanitizeText(reason, repoRoot) ?? reason),
+    skippedReason: sanitizeText(runner.skippedReason, repoRoot)
+  };
 }
 
 function compactCommandEnvelopes(envelopes: VerificationCommandEnvelope[], repoRoot: string): VerificationCommandEnvelope[] {
@@ -502,7 +527,8 @@ function sanitizeArgs(args: string[] | undefined, repoRoot: string): string[] | 
 
 function redactSecretText(value: string | undefined): string | undefined {
   return value
-    ?.replace(/((?:--?|[A-Z_]*)(?:token|secret|password|passwd|pwd|api[-_]?key|access[-_]?key|auth|credential|cookie)[A-Z0-9_-]*(?:=|\s+))([^\s;|)\]'",]+)/giu, "$1<redacted>")
+    ?.replace(/(^|[\s([,{])((?:--?[a-z0-9-]*(?:token|secret|password|passwd|pwd|api[-_]?key|access[-_]?key|auth|credential|cookie)[a-z0-9-]*)(?:=|\s+))([^\s;|)\]'",]+)/giu, "$1$2<redacted>")
+    .replace(/(\b[A-Z_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|PWD|API_?KEY|ACCESS_?KEY|AUTH|CREDENTIAL|COOKIE)[A-Z0-9_]*=)([^\s;|)\]'",]+)/gu, "$1<redacted>")
     .replace(/\b(Bearer)\s+[A-Za-z0-9._~+/-]+=*/giu, "$1 <redacted>");
 }
 

@@ -4,6 +4,8 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildIndexLocked, getFreshness } from "./indexer.js";
+import { acquireCacheLock } from "./cache-lock.js";
+import { defaultAutonomyMode, effectiveAutonomyMode, parseAutonomyMode, setAutonomyMode } from "./autonomy.js";
 import { checkGithubSync } from "./github-sync.js";
 import { publishProjectGithubRelease } from "./github-release.js";
 import { runDoctor } from "./doctor.js";
@@ -14,7 +16,8 @@ import { resolveMcpRepoRoot } from "./mcp-repo-root.js";
 import { buildSemanticIndex, semanticProviderFromValue, type SemanticProviderKind } from "./semantic-retrieval.js";
 import { updateStaticAnalysisReports } from "./static-analysis.js";
 import { loadTaskSnapshot } from "./task-snapshots.js";
-import { runAutoVerifyForPostEdit } from "./autoverify.js";
+import { autoVerifyPolicySignature, runAutoVerifyForPostEdit, sanitizeAutoVerifyText } from "./autoverify.js";
+import { postEditReviewWithTrustedRunnerReports } from "./query/post-edit.js";
 import {
   contextPackQuery,
   callersQuery,
@@ -107,6 +110,32 @@ program
   );
 
 program
+  .command("autonomy")
+  .argument("[repo]", "repository root for a repo-specific user policy; omitted with --global sets the user default")
+  .option("--mode <mode>", "set user-owned autonomy mode: read-only or full-access", parseAutonomyOption)
+  .option("--global", "set the user default instead of a repo-specific policy", false)
+  .option("--json", "print JSON")
+  .description("Inspect or set Codexa's user-owned autonomy policy. Repo config cannot enable execution.")
+  .action(async (repo: string | undefined, opts: { mode?: ReturnType<typeof parseAutonomyOption>; global: boolean; json?: boolean }) => {
+    const repoRoot = repo ? path.resolve(repo) : process.cwd();
+    const status = opts.mode
+      ? await setAutonomyMode({ repoRoot: opts.global ? undefined : repoRoot, global: opts.global || !repo, mode: opts.mode })
+      : opts.global
+        ? await defaultAutonomyMode()
+        : await effectiveAutonomyMode(repoRoot);
+    if (opts.json) {
+      console.log(JSON.stringify(status, null, 2));
+      return;
+    }
+    console.log(`Codexa autonomy: ${status.mode}`);
+    console.log(`Source: ${status.source}`);
+    console.log(`Config: ${status.configPath}`);
+    if (status.repoRoot) {
+      console.log(`Repo: ${status.repoRoot}`);
+    }
+  });
+
+program
   .command("hook-pre-edit")
   .argument("<repo>", "repository root")
   .description("Cheap hook helper that reminds Codex when no change-plan snapshot exists before an edit.")
@@ -132,59 +161,75 @@ program
     const configuredRoot = path.resolve(repo);
     await runAdvisoryHook(configuredRoot, "post-edit", "post-edit review", async () => {
       const { activeRepoRoot } = await resolveHookRepoRoots(repo);
-      const snapshot = await loadTaskSnapshot(activeRepoRoot);
-      const freshness = await getFreshness(activeRepoRoot, undefined, { recover: false });
-      const signature = postEditHookReviewSignature({ freshness, taskId: snapshot.snapshot?.taskId ?? snapshot.latestTaskId });
-      const previous = await loadPostEditHookReviewState(activeRepoRoot);
-      if (previous?.signature === signature) {
-        const verdict = previous.verdict ? `; last verdict ${previous.verdict}` : "";
-        console.log(`Codexa: post-edit review unchanged since last hook run${verdict}.`);
-        return { status: "skipped", reason: "duplicate-dirty-tree", signature, taskId: snapshot.snapshot?.taskId ?? snapshot.latestTaskId, verdict: previous.verdict, outcomeId: previous.outcomeId };
+      const release = await tryAcquirePostEditHookLock(activeRepoRoot);
+      if (!release) {
+        console.log("Codexa: post-edit review skipped because another Codexa post-edit hook is active.");
+        return { status: "skipped", reason: "post-edit-hook-lock-active" };
       }
-      const reviewInput = {
-        tokenBudget: 1200,
-        limit: 5,
-        includeSnippets: false
-      };
-      const initialResult = await postEditReviewQuery(
-        activeRepoRoot,
-        {
-          ...reviewInput,
-          persistOutcome: false
-        },
-        { autoRefresh: true, commandBudgetMs: 15_000, maxResults: 6 }
-      );
-      const autoVerify = await runAutoVerifyForPostEdit(activeRepoRoot, initialResult.data);
-      if (autoVerify.attempted.length > 0) {
-        console.log(`Codexa AutoVerify: ran ${autoVerify.attempted.length} targeted command(s).`);
-        for (const report of autoVerify.reports) {
-          const status = report.exitCode === 0 ? "passed" : `failed exit ${report.exitCode ?? "unknown"}`;
-          const duration = report.durationMs === undefined ? "" : ` in ${report.durationMs}ms`;
-          console.log(`- ${status}${duration}: ${report.command}`);
+      try {
+        const snapshot = await loadTaskSnapshot(activeRepoRoot);
+        const taskId = snapshot.snapshot?.taskId ?? snapshot.latestTaskId;
+        const hookSnapshotAmbiguity = snapshot.snapshot?.taskId ? await latestHookSnapshotAmbiguity(activeRepoRoot, snapshot.snapshot.taskId) : undefined;
+        const autoVerifyMode = await postEditAutoVerifyMode(activeRepoRoot);
+        const freshness = await getFreshness(activeRepoRoot, undefined, { recover: false });
+        const signature = postEditHookReviewSignature({ freshness, taskId, autoVerifyMode });
+        const previous = await loadPostEditHookReviewState(activeRepoRoot);
+        if (previous?.signature === signature && duplicatePostEditReviewCanSkip(previous.autoVerifyStatus)) {
+          const verdict = previous.verdict ? `; last verdict ${previous.verdict}` : "";
+          console.log(`Codexa: post-edit review unchanged since last hook run${verdict}.`);
+          return { status: "skipped", reason: "duplicate-dirty-tree", signature, taskId, verdict: previous.verdict, outcomeId: previous.outcomeId };
         }
-      }
-      if (autoVerify.skipped.length > 0 && autoVerify.attempted.length === 0) {
-        console.log(`Codexa AutoVerify: skipped ${autoVerify.skipped.length} unsafe or unsupported command(s).`);
-        for (const skipped of autoVerify.skipped.slice(0, 4)) {
-          console.log(`- ${skipped}`);
+        const reviewInput = {
+          tokenBudget: 1200,
+          limit: 5,
+          includeSnippets: false,
+          taskId: snapshot.snapshot?.taskId
+        };
+        const initialResult = await postEditReviewQuery(
+          activeRepoRoot,
+          {
+            ...reviewInput,
+            persistOutcome: false
+          },
+          { autoRefresh: true, commandBudgetMs: 15_000, maxResults: 6 }
+        );
+        const autoVerifySkipReason = hookSnapshotAmbiguity ?? ambiguousSnapshotAutoVerifySkipReason(initialResult.data);
+        const autoVerify = autoVerifySkipReason
+          ? { reports: [], attempted: [], skipped: [autoVerifySkipReason] }
+          : await runAutoVerifyForPostEdit(activeRepoRoot, initialResult.data);
+        if (autoVerify.attempted.length > 0) {
+          console.log(`Codexa AutoVerify: ran ${autoVerify.attempted.length} targeted command(s).`);
+          for (const report of autoVerify.reports) {
+            const status = autoVerifyReportStatus(report);
+            const duration = report.durationMs === undefined ? "" : ` in ${report.durationMs}ms`;
+            console.log(`- ${status}${duration}: ${sanitizeAutoVerifyText(report.command, activeRepoRoot) ?? "<redacted-command>"}`);
+          }
         }
+        if (autoVerify.skipped.length > 0 && autoVerify.attempted.length === 0) {
+          console.log(`Codexa AutoVerify: skipped ${autoVerify.skipped.length} unsafe or unsupported command(s).`);
+          for (const skipped of autoVerify.skipped.slice(0, 4)) {
+            console.log(`- ${sanitizeAutoVerifyText(skipped, activeRepoRoot) ?? "<redacted-command>"}`);
+          }
+        }
+        const result = await postEditReviewWithTrustedRunnerReports(
+          activeRepoRoot,
+          reviewInput,
+          autoVerify.reports,
+          { autoRefresh: true, commandBudgetMs: 15_000, maxResults: 6 }
+        );
+        console.log(compactHookOutput(result.text));
+        const outcome = postEditOutcomeFromQueryResult(result.data);
+        const autoVerifyStatus = summarizeAutoVerifyStatus(autoVerify);
+        const reviewedSignature = postEditHookReviewSignature({ freshness: result.freshness, taskId, autoVerifyMode });
+        await savePostEditHookReviewState(activeRepoRoot, {
+          signature: reviewedSignature,
+          outcome,
+          autoVerifyStatus
+        });
+        return { status: "ok", reason: "reviewed", signature: reviewedSignature, taskId, verdict: outcome?.verdict, outcomeId: outcome?.outcomeId };
+      } finally {
+        await release();
       }
-      const result = await postEditReviewQuery(
-        activeRepoRoot,
-        {
-          ...reviewInput,
-          ranCommandReports: autoVerify.reports.length > 0 ? autoVerify.reports : undefined
-        },
-        { autoRefresh: true, commandBudgetMs: 15_000, maxResults: 6 }
-      );
-      console.log(compactHookOutput(result.text));
-      const outcome = postEditOutcomeFromQueryResult(result.data);
-      const reviewedSignature = postEditHookReviewSignature({ freshness: result.freshness, taskId: snapshot.snapshot?.taskId ?? snapshot.latestTaskId });
-      await savePostEditHookReviewState(activeRepoRoot, {
-        signature: reviewedSignature,
-        outcome
-      });
-      return { status: "ok", reason: "reviewed", signature: reviewedSignature, taskId: snapshot.snapshot?.taskId ?? snapshot.latestTaskId, verdict: outcome?.verdict, outcomeId: outcome?.outcomeId };
     });
   });
 
@@ -1229,6 +1274,85 @@ async function codexaConfigExists(repoRoot: string): Promise<boolean> {
   }
 }
 
+async function tryAcquirePostEditHookLock(repoRoot: string): Promise<(() => Promise<void>) | null> {
+  try {
+    return await acquireCacheLock({
+      repoRoot,
+      lockDir: ".codex/cache/codexa-post-edit-hook.lock",
+      staleMs: 120_000,
+      timeoutMs: 30_000,
+      label: "Codexa post-edit hook"
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("Timed out waiting for Codexa post-edit hook lock")) {
+      return null;
+    }
+    throw error;
+  }
+}
+
+async function postEditAutoVerifyMode(repoRoot: string): Promise<string> {
+  const autonomy = await effectiveAutonomyMode(repoRoot);
+  return autonomy.mode === "full-access"
+    ? `autoverify:${autoVerifyPolicySignature()}`
+    : "autoverify:off";
+}
+
+function duplicatePostEditReviewCanSkip(autoVerifyStatus: string | undefined): boolean {
+  return autoVerifyStatus === undefined || autoVerifyStatus === "off" || autoVerifyStatus === "covered" || autoVerifyStatus === "skipped";
+}
+
+function ambiguousSnapshotAutoVerifySkipReason(data: unknown): string | undefined {
+  if (!isCliRecord(data) || !isCliRecord(data.snapshotLoad) || data.snapshotLoad.ambiguousLatest !== true) {
+    return undefined;
+  }
+  const reason = typeof data.snapshotLoad.ambiguityReason === "string" ? `: ${data.snapshotLoad.ambiguityReason}` : "";
+  return `ambiguous change-plan snapshot${reason}; pass an exact taskId before AutoVerify can run`;
+}
+
+async function latestHookSnapshotAmbiguity(repoRoot: string, latestTaskId: string): Promise<string | undefined> {
+  try {
+    const entries = await fs.readdir(path.join(repoRoot, ".codex/cache/codexa-tasks"));
+    const otherSnapshots = entries.filter((entry) => entry.endsWith(".json") && entry !== "latest.json" && !entry.endsWith(".blocked.json") && entry !== `${latestTaskId}.json`);
+    if (otherSnapshots.length === 0) {
+      return undefined;
+    }
+    return `ambiguous change-plan snapshot: hook selected latest snapshot ${latestTaskId} while ${otherSnapshots.length} other snapshot(s) exist; pass an exact taskId before AutoVerify can run`;
+  } catch {
+    return undefined;
+  }
+}
+
+function autoVerifyReportStatus(report: VerificationCommandReport): string {
+  const runner = "runner" in report && report.runner && typeof report.runner === "object"
+    ? (report.runner as { sourceMutationDetected?: unknown; timedOut?: unknown })
+    : undefined;
+  if (runner?.sourceMutationDetected === true) {
+    return "non-covering: source mutation detected";
+  }
+  if (runner?.timedOut === true) {
+    return "non-covering: timed out";
+  }
+  return report.exitCode === 0 ? "passed" : `failed exit ${report.exitCode ?? "unknown"}`;
+}
+
+function summarizeAutoVerifyStatus(autoVerify: Awaited<ReturnType<typeof runAutoVerifyForPostEdit>>): "off" | "covered" | "skipped" | "failed" | "non_covering" {
+  if (autoVerify.reports.some((report) => report.runner.sourceMutationDetected || report.runner.timedOut)) {
+    return "non_covering";
+  }
+  if (autoVerify.reports.some((report) => report.exitCode !== 0)) {
+    return "failed";
+  }
+  if (autoVerify.reports.length > 0) {
+    return "covered";
+  }
+  if (autoVerify.skipped.length > 0) {
+    return "skipped";
+  }
+  return "off";
+}
+
 function postEditOutcomeFromQueryResult(data: unknown): PostEditOutcome | undefined {
   if (!data || typeof data !== "object") {
     return undefined;
@@ -1292,6 +1416,10 @@ function parseIntOption(value: string): number {
     throw new Error(`Invalid integer: ${value}`);
   }
   return parsed;
+}
+
+function parseAutonomyOption(value: string) {
+  return parseAutonomyMode(value);
 }
 
 function parseChangeType(value: string): ChangeType {

@@ -232,7 +232,7 @@ async function upsertHooksConfig(hooksPath: string, options: { cliPath: string; 
         type: "command",
         command: `node ${shellQuote(options.cliPath)} hook-post-edit ${shellQuote(options.repoRoot)}`,
         statusMessage: "Running Codexa post-edit review",
-        timeout: 20
+        timeout: 90
       }
     ]
   });

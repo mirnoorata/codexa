@@ -1,8 +1,9 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { sanitizeAutoVerifyText } from "../src/autoverify.js";
 
 describe("Codexa hook CLI", () => {
   it("rejects malformed integer options instead of truncating them", async () => {
@@ -14,6 +15,41 @@ describe("Codexa hook CLI", () => {
 
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain("Invalid integer: 12abc");
+  });
+
+  it("reports the global autonomy policy when setting --global inside a repo", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-autonomy-global-"));
+    const codexaHome = await mkdtemp(path.join(os.tmpdir(), "codexa-autonomy-home-"));
+    const cli = path.resolve(process.cwd(), "dist/cli.js");
+    const env = testEnv({ CODEXA_HOME: codexaHome });
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+
+    const repoPolicy = spawnSync(process.execPath, [cli, "autonomy", repo, "--mode", "full-access", "--json"], {
+      cwd: repo,
+      env,
+      encoding: "utf8"
+    });
+    expect(repoPolicy.status).toBe(0);
+    expect(JSON.parse(repoPolicy.stdout)).toMatchObject({ mode: "full-access", source: "user-repo-policy" });
+
+    const globalPolicy = spawnSync(process.execPath, [cli, "autonomy", "--global", "--mode", "read-only", "--json"], {
+      cwd: repo,
+      env,
+      encoding: "utf8"
+    });
+
+    expect(globalPolicy.status).toBe(0);
+    expect(JSON.parse(globalPolicy.stdout)).toMatchObject({ mode: "read-only", source: "user-default-policy" });
+    expect(JSON.parse(globalPolicy.stdout).repoRoot).toBeUndefined();
+
+    const inspectedGlobal = spawnSync(process.execPath, [cli, "autonomy", "--global", "--json"], {
+      cwd: repo,
+      env,
+      encoding: "utf8"
+    });
+    expect(inspectedGlobal.status).toBe(0);
+    expect(JSON.parse(inspectedGlobal.stdout)).toMatchObject({ mode: "read-only", source: "user-default-policy" });
+    expect(JSON.parse(inspectedGlobal.stdout).repoRoot).toBeUndefined();
   });
 
   it("keeps hook-post-edit advisory when query setup fails", async () => {
@@ -305,12 +341,86 @@ describe("Codexa hook CLI", () => {
 
     const postEdit = spawnSync(process.execPath, [cli, "hook-post-edit", repo], {
       cwd: process.cwd(),
-      encoding: "utf8"
+      encoding: "utf8",
+      env: testEnv({ CODEXA_HOME: await mkdtemp(path.join(os.tmpdir(), "codexa-autonomy-off-")) })
     });
     expect(postEdit.status).toBe(0);
     expect(postEdit.stdout).toContain("Codexa AutoVerify: skipped 1 unsafe or unsupported command(s).");
-    expect(postEdit.stdout).toContain("AutoVerify execution requires CODEXA_AUTOVERIFY=1");
+    expect(postEdit.stdout).toContain("AutoVerify execution requires user full-access autonomy");
     expect(postEdit.stdout).not.toContain("Codexa AutoVerify: ran");
+  });
+
+  it("does not suppress AutoVerify when a later hook run enables it for the same dirty tree", async () => {
+    const repo = await createAutoVerifyFixtureRepo({ test: "node --test" });
+    const codexaHome = await mkdtemp(path.join(os.tmpdir(), "codexa-autonomy-toggle-"));
+    const cli = path.resolve(process.cwd(), "dist/cli.js");
+
+    const plan = spawnSync(
+      process.execPath,
+      [cli, "change-plan", repo, "--task", "Tighten main formatting", "--file", "src/main.js", "--save-snapshot", "--task-id", "hook-autoverify-toggle"],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: testEnv({ CODEXA_HOME: codexaHome })
+      }
+    );
+    expect(plan.status).toBe(0);
+    await writeFile(path.join(repo, "src/main.js"), "export function main() {\n  return 1;\n}\n", "utf8");
+
+    const withoutAutoVerify = spawnSync(process.execPath, [cli, "hook-post-edit", repo], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: testEnv({ CODEXA_HOME: codexaHome })
+    });
+    expect(withoutAutoVerify.status).toBe(0);
+    expect(withoutAutoVerify.stdout).toContain("Codexa AutoVerify: skipped 1 unsafe or unsupported command(s).");
+
+    const withAutoVerify = spawnSync(process.execPath, [cli, "hook-post-edit", repo], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: testEnv({ CODEXA_HOME: codexaHome, CODEXA_AUTOVERIFY: "1" })
+    });
+    expect(withAutoVerify.status).toBe(0);
+    expect(withAutoVerify.stdout).toContain("Codexa AutoVerify: ran 1 targeted command(s).");
+    expect(withAutoVerify.stdout).not.toContain("post-edit review unchanged since last hook run");
+  });
+
+  it("skips AutoVerify when hook-post-edit only has an ambiguous latest snapshot", async () => {
+    const repo = await createAutoVerifyFixtureRepo({ test: "node --test" });
+    const cli = path.resolve(process.cwd(), "dist/cli.js");
+
+    const firstPlan = spawnSync(process.execPath, [cli, "change-plan", repo, "--task", "Old task", "--file", "src/main.js", "--save-snapshot", "--task-id", "hook-autoverify-ambiguous-old"], {
+      cwd: process.cwd(),
+      encoding: "utf8"
+    });
+    expect(firstPlan.status).toBe(0);
+    const latestPlan = spawnSync(process.execPath, [cli, "change-plan", repo, "--task", "Latest task", "--file", "src/main.js", "--save-snapshot", "--task-id", "hook-autoverify-ambiguous-latest"], {
+      cwd: process.cwd(),
+      encoding: "utf8"
+    });
+    expect(latestPlan.status).toBe(0);
+    await writeFile(path.join(repo, "src/main.js"), "export function main() {\n  return 1;\n}\n", "utf8");
+
+    const postEdit = spawnSync(process.execPath, [cli, "hook-post-edit", repo], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: { ...process.env, CODEXA_AUTOVERIFY: "1" }
+    });
+
+    expect(postEdit.status).toBe(0);
+    expect(postEdit.stdout).toContain("Codexa AutoVerify: skipped 1 unsafe or unsupported command(s).");
+    expect(postEdit.stdout).toContain("ambiguous change-plan snapshot");
+    expect(postEdit.stdout).toContain("pass an exact taskId before AutoVerify can run");
+    expect(postEdit.stdout).not.toContain("Codexa AutoVerify: ran");
+
+    const duplicatePostEdit = spawnSync(process.execPath, [cli, "hook-post-edit", repo], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: { ...process.env, CODEXA_AUTOVERIFY: "1" }
+    });
+    expect(duplicatePostEdit.status).toBe(0);
+    expect(duplicatePostEdit.stdout).toContain("post-edit review unchanged since last hook run");
+    expect(duplicatePostEdit.stdout).not.toContain("Codexa post-edit review");
   });
 
   it("does not trust repo-local config to enable AutoVerify execution", async () => {
@@ -332,11 +442,87 @@ describe("Codexa hook CLI", () => {
 
     const postEdit = spawnSync(process.execPath, [cli, "hook-post-edit", repo], {
       cwd: process.cwd(),
-      encoding: "utf8"
+      encoding: "utf8",
+      env: testEnv({ CODEXA_HOME: await mkdtemp(path.join(os.tmpdir(), "codexa-autonomy-off-")) })
     });
     expect(postEdit.status).toBe(0);
     expect(postEdit.stdout).toContain("Codexa AutoVerify: skipped 1 unsafe or unsupported command(s).");
-    expect(postEdit.stdout).toContain("AutoVerify execution requires CODEXA_AUTOVERIFY=1");
+    expect(postEdit.stdout).toContain("AutoVerify execution requires user full-access autonomy");
+    expect(postEdit.stdout).not.toContain("Codexa AutoVerify: ran");
+  });
+
+  it("auto-runs trusted verification from user-owned full-access autonomy without per-run AutoVerify env", async () => {
+    const repo = await createAutoVerifyFixtureRepo({ test: "node --test" });
+    const codexaHome = await mkdtemp(path.join(os.tmpdir(), "codexa-autonomy-full-"));
+    const cli = path.resolve(process.cwd(), "dist/cli.js");
+    const setPolicy = spawnSync(process.execPath, [cli, "autonomy", repo, "--mode", "full-access"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: testEnv({ CODEXA_HOME: codexaHome })
+    });
+    expect(setPolicy.status).toBe(0);
+    expect(setPolicy.stdout).toContain("Codexa autonomy: full-access");
+
+    const plan = spawnSync(
+      process.execPath,
+      [cli, "change-plan", repo, "--task", "Tighten main formatting", "--file", "src/main.js", "--save-snapshot", "--task-id", "hook-autonomy-full-access"],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: testEnv({ CODEXA_HOME: codexaHome })
+      }
+    );
+    expect(plan.status).toBe(0);
+    await writeFile(path.join(repo, "src/main.js"), "export function main() {\n  return 1;\n}\n", "utf8");
+
+    const postEdit = spawnSync(process.execPath, [cli, "hook-post-edit", repo], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: testEnv({ CODEXA_HOME: codexaHome })
+    });
+    expect(postEdit.status).toBe(0);
+    expect(postEdit.stdout).toContain("Codexa AutoVerify: ran 1 targeted command(s).");
+    expect(postEdit.stdout).toContain("passed");
+  });
+
+  it("lets a repo-specific read-only policy override global full-access autonomy", async () => {
+    const repo = await createAutoVerifyFixtureRepo({ test: "node --test" });
+    const codexaHome = await mkdtemp(path.join(os.tmpdir(), "codexa-autonomy-global-"));
+    const cli = path.resolve(process.cwd(), "dist/cli.js");
+    const setGlobal = spawnSync(process.execPath, [cli, "autonomy", "--global", "--mode", "full-access"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: testEnv({ CODEXA_HOME: codexaHome })
+    });
+    expect(setGlobal.status).toBe(0);
+    const setRepo = spawnSync(process.execPath, [cli, "autonomy", repo, "--mode", "read-only"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: testEnv({ CODEXA_HOME: codexaHome })
+    });
+    expect(setRepo.status).toBe(0);
+    expect(setRepo.stdout).toContain("Codexa autonomy: read-only");
+
+    const plan = spawnSync(
+      process.execPath,
+      [cli, "change-plan", repo, "--task", "Tighten main formatting", "--file", "src/main.js", "--save-snapshot", "--task-id", "hook-autonomy-read-only-override"],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: testEnv({ CODEXA_HOME: codexaHome })
+      }
+    );
+    expect(plan.status).toBe(0);
+    await writeFile(path.join(repo, "src/main.js"), "export function main() {\n  return 1;\n}\n", "utf8");
+
+    const postEdit = spawnSync(process.execPath, [cli, "hook-post-edit", repo], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: testEnv({ CODEXA_HOME: codexaHome })
+    });
+    expect(postEdit.status).toBe(0);
+    expect(postEdit.stdout).toContain("Codexa AutoVerify: skipped 1 unsafe or unsupported command(s).");
+    expect(postEdit.stdout).toContain("current: read-only via user-repo-policy");
     expect(postEdit.stdout).not.toContain("Codexa AutoVerify: ran");
   });
 
@@ -369,12 +555,47 @@ describe("Codexa hook CLI", () => {
     );
     expect(outcomeFiles).toHaveLength(1);
     const outcome = JSON.parse(await readFile(path.join(repo, ".codex/cache/codexa-outcomes", outcomeFiles[0]), "utf8")) as {
-      ranCommandReports: Array<{ command: string; exitCode?: number }>;
+      ranCommandReports: Array<{ command: string; cwd?: string; args?: string[]; exitCode?: number; runner?: { policyId?: string; reportKind?: string; sourceMutationDetected?: boolean; envMode?: string } }>;
       verificationLedger: Array<{ target: string; status: string; evidence: string[] }>;
     };
     expect(outcome.ranCommandReports[0]).toMatchObject({ exitCode: 0 });
-    expect(outcome.ranCommandReports[0]).toMatchObject({ cwd: "<repo>", args: ["run", "test", "--", "tests/main.test.js"] });
+    expect(outcome.ranCommandReports[0]).toMatchObject({ cwd: "<repo>", args: ["--", "tests/main.test.js"] });
+    expect(outcome.ranCommandReports[0].runner).toMatchObject({
+      reportKind: "codexa-autoverify-report",
+      policyId: "local-targeted-tests-v1",
+      envMode: "minimal",
+      sourceMutationDetected: false
+    });
     expect(outcome.ranCommandReports[0]?.command).toContain("npm run test -- tests/main.test.js");
+    expect(outcome.verificationLedger.find((entry) => entry.target === "tests/main.test.js")).toMatchObject({ status: "covered" });
+  });
+
+  it("keeps AutoVerify dirty hashes aligned when Codexa is rooted in a git subdirectory", async () => {
+    const repo = await createNestedAutoVerifyFixtureRepo();
+    const cli = path.resolve(process.cwd(), "dist/cli.js");
+    const plan = spawnSync(process.execPath, [cli, "change-plan", repo, "--task", "Tighten nested main formatting", "--file", "src/main.js", "--save-snapshot", "--task-id", "hook-autoverify-nested-root"], {
+      cwd: process.cwd(),
+      encoding: "utf8"
+    });
+    expect(plan.status).toBe(0);
+    await writeFile(path.join(repo, "src/main.js"), "export function main() {\n  return 1;\n}\n", "utf8");
+
+    const postEdit = spawnSync(process.execPath, [cli, "hook-post-edit", repo], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: { ...process.env, CODEXA_AUTOVERIFY: "1" }
+    });
+    expect(postEdit.status).toBe(0);
+    expect(postEdit.stdout).toContain("Codexa AutoVerify: ran 1 targeted command(s).");
+
+    const outcomeFiles = (await readdir(path.join(repo, ".codex/cache/codexa-outcomes"))).filter(
+      (entry) => entry.endsWith(".json") && entry !== "latest.json" && entry !== "latest-hook-review.json"
+    );
+    const outcome = JSON.parse(await readFile(path.join(repo, ".codex/cache/codexa-outcomes", outcomeFiles[0]), "utf8")) as {
+      driftReasons: string[];
+      verificationLedger: Array<{ target: string; status: string }>;
+    };
+    expect(outcome.driftReasons).not.toContain("recommended tests have not been accounted for");
     expect(outcome.verificationLedger.find((entry) => entry.target === "tests/main.test.js")).toMatchObject({ status: "covered" });
   });
 
@@ -383,9 +604,17 @@ describe("Codexa hook CLI", () => {
     for (const scripts of [
       { pretest: "node -e \"require('fs').writeFileSync('deployed.txt','bad')\"", test: "node --test" },
       { test: "node --test", posttest: "node -e \"require('fs').writeFileSync('deployed.txt','bad')\"" },
-      { test: "node --test && node -e \"require('fs').writeFileSync('deployed.txt','bad')\"" }
+      { test: "node --test && node -e \"require('fs').writeFileSync('deployed.txt','bad')\"" },
+      { test: "NODE_OPTIONS=--require ./evil.cjs node --test" },
+      { test: "node --test --require ./evil.cjs" },
+      { test: "vitest run --config ./evil.config.js" }
     ]) {
-      const repo = await createAutoVerifyFixtureRepo(scripts);
+      const repo = await createAutoVerifyFixtureRepo(
+        scripts,
+        "main.test.js",
+        undefined,
+        { "evil.cjs": "require('node:fs').writeFileSync('deployed.txt', 'bad')\n" }
+      );
       const plan = spawnSync(process.execPath, [cli, "change-plan", repo, "--task", "Tighten main formatting", "--file", "src/main.js", "--save-snapshot", "--task-id", "hook-autoverify-unsafe"], {
         cwd: process.cwd(),
         encoding: "utf8"
@@ -402,6 +631,57 @@ describe("Codexa hook CLI", () => {
       expect(postEdit.stdout).toContain("Codexa AutoVerify: skipped 1 unsafe or unsupported command(s).");
       await expect(readFile(path.join(repo, "deployed.txt"), "utf8")).rejects.toThrow();
     }
+  });
+
+  it("executes safe package scripts as direct runners instead of package-manager shells", async () => {
+    const repo = await createAutoVerifyFixtureRepo({ test: "node --test" });
+    const evilShell = path.join(repo, "evil.sh");
+    await writeFile(evilShell, "#!/bin/sh\nprintf bad > deployed.txt\nexec /bin/sh \"$@\"\n", "utf8");
+    await chmod(evilShell, 0o755);
+    await writeFile(path.join(repo, ".npmrc"), `script-shell=${evilShell}\n`, "utf8");
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "add npmrc bypass fixture"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    const cli = path.resolve(process.cwd(), "dist/cli.js");
+    const plan = spawnSync(process.execPath, [cli, "change-plan", repo, "--task", "Tighten main formatting", "--file", "src/main.js", "--save-snapshot", "--task-id", "hook-autoverify-script-shell"], {
+      cwd: process.cwd(),
+      encoding: "utf8"
+    });
+    expect(plan.status).toBe(0);
+    await writeFile(path.join(repo, "src/main.js"), "export function main() {\n  return 1;\n}\n", "utf8");
+
+    const postEdit = spawnSync(process.execPath, [cli, "hook-post-edit", repo], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: { ...process.env, CODEXA_AUTOVERIFY: "1" }
+    });
+    expect(postEdit.status).toBe(0);
+    expect(postEdit.stdout).toContain("Codexa AutoVerify: ran 1 targeted command(s).");
+    expect(postEdit.stdout).toContain("passed");
+    await expect(readFile(path.join(repo, "deployed.txt"), "utf8")).rejects.toThrow();
+  });
+
+  it("resolves validated package scripts through package-local runner bins", async () => {
+    const repo = await createAutoVerifyFixtureRepo({ test: "vitest run" });
+    await addFakeVitestBin(repo);
+    const cli = path.resolve(process.cwd(), "dist/cli.js");
+    const plan = spawnSync(process.execPath, [cli, "change-plan", repo, "--task", "Tighten main formatting", "--file", "src/main.js", "--save-snapshot", "--task-id", "hook-autoverify-local-vitest"], {
+      cwd: process.cwd(),
+      encoding: "utf8"
+    });
+    expect(plan.status).toBe(0);
+    await writeFile(path.join(repo, "src/main.js"), "export function main() {\n  return 1;\n}\n", "utf8");
+
+    const postEdit = spawnSync(process.execPath, [cli, "hook-post-edit", repo], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: { ...process.env, CODEXA_AUTOVERIFY: "1" }
+    });
+    expect(postEdit.status).toBe(0);
+    expect(postEdit.stdout).toContain("Codexa AutoVerify: ran 1 targeted command(s).");
+    expect(postEdit.stdout).toContain("passed");
   });
 
   it("does not execute shell metacharacters from recommended test paths", async () => {
@@ -422,6 +702,191 @@ describe("Codexa hook CLI", () => {
     expect(postEdit.status).toBe(0);
     expect(postEdit.stdout).toContain("Codexa AutoVerify: skipped 1 unsafe or unsupported command(s).");
     await expect(readFile(path.join(repo, "shell-pwned.test.js"), "utf8")).rejects.toThrow();
+  });
+
+  it("runs AutoVerify with a minimal child environment and redacts runner output", async () => {
+    const secret = "open-secret-value-for-redaction";
+    const repo = await createAutoVerifyFixtureRepo(
+      { test: "node --test" },
+      "main.test.js",
+      [
+        "import test from 'node:test';",
+        "import assert from 'node:assert/strict';",
+        "import { main } from '../src/main.js';",
+        "",
+        `process.on('exit', () => process.stdout.write('Bearer ${secret} ' + new URL('../src/main.js', import.meta.url).pathname + '\\n'));`,
+        "",
+        "test('main returns value with minimal env', () => {",
+        "  for (const key of ['OPENAI_API_KEY', 'GITHUB_TOKEN', 'NODE_OPTIONS', 'PYTHONPATH', 'CODEXA_AUTOVERIFY']) {",
+        "    assert.equal(process.env[key], undefined, `${key} should not leak into AutoVerify`);",
+        "  }",
+        "  assert.equal(process.env.NPM_CONFIG_USERCONFIG?.includes('private-npmrc'), false);",
+        "  assert.equal(process.env.CODEXA_VERIFY, '1');",
+        "  assert.equal(main(), 1);",
+        "});",
+        ""
+      ].join("\n")
+    );
+    const cli = path.resolve(process.cwd(), "dist/cli.js");
+    const plan = spawnSync(process.execPath, [cli, "change-plan", repo, "--task", "Tighten main formatting", "--file", "src/main.js", "--save-snapshot", "--task-id", "hook-autoverify-min-env"], {
+      cwd: process.cwd(),
+      encoding: "utf8"
+    });
+    expect(plan.status).toBe(0);
+    await writeFile(path.join(repo, "src/main.js"), "export function main() {\n  return 1;\n}\n", "utf8");
+
+    const hookEnv = {
+      ...process.env,
+      CODEXA_AUTOVERIFY: "1",
+      [["OPENAI", "API", "KEY"].join("_")]: secret,
+      [["GITHUB", "TOKEN"].join("_")]: "github-secret-value",
+      NODE_OPTIONS: "--no-warnings",
+      NPM_CONFIG_USERCONFIG: "/tmp/private-npmrc",
+      PYTHONPATH: "/tmp/private-pythonpath"
+    };
+    const postEdit = spawnSync(process.execPath, [cli, "hook-post-edit", repo], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: hookEnv
+    });
+    expect(postEdit.status).toBe(0);
+    expect(postEdit.stdout).toContain("Codexa AutoVerify: ran 1 targeted command(s).");
+    expect(postEdit.stdout).toContain("passed");
+
+    const outcomeFiles = (await readdir(path.join(repo, ".codex/cache/codexa-outcomes"))).filter(
+      (entry) => entry.endsWith(".json") && entry !== "latest.json" && entry !== "latest-hook-review.json"
+    );
+    const outcomeText = await readFile(path.join(repo, ".codex/cache/codexa-outcomes", outcomeFiles[0]), "utf8");
+    expect(outcomeText).not.toContain(secret);
+    expect(outcomeText).not.toContain(repo);
+    const sanitizedProbe = sanitizeAutoVerifyText(`Bearer ${secret} ${path.join(repo, "src/main.js")}`, repo);
+    expect(sanitizedProbe).toContain("Bearer <redacted>");
+    expect(sanitizedProbe).toContain("<repo>/src/main.js");
+  });
+
+  it("marks AutoVerify reports as non-covering when tests mutate source or create source files", async () => {
+    const repo = await createAutoVerifyFixtureRepo(
+      { test: "node --test" },
+      "main.test.js",
+      [
+        "import test from 'node:test';",
+        "import assert from 'node:assert/strict';",
+        "import { writeFileSync } from 'node:fs';",
+        "import { main } from '../src/main.js';",
+        "",
+        "test('main returns value but mutates source', () => {",
+        "  assert.equal(main(), 1);",
+        "  writeFileSync(new URL('../src/main.js', import.meta.url), 'export function main() {\\n  return 999\\n}\\n');",
+        "  writeFileSync(new URL('../src/generated.js', import.meta.url), 'export const generated = true\\n');",
+        "});",
+        ""
+      ].join("\n")
+    );
+    const cli = path.resolve(process.cwd(), "dist/cli.js");
+    const plan = spawnSync(process.execPath, [cli, "change-plan", repo, "--task", "Tighten main formatting", "--file", "src/main.js", "--save-snapshot", "--task-id", "hook-autoverify-source-mutation"], {
+      cwd: process.cwd(),
+      encoding: "utf8"
+    });
+    expect(plan.status).toBe(0);
+    await writeFile(path.join(repo, "src/main.js"), "export function main() {\n  return 1;\n}\n", "utf8");
+
+    const postEdit = spawnSync(process.execPath, [cli, "hook-post-edit", repo], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: { ...process.env, CODEXA_AUTOVERIFY: "1" }
+    });
+    expect(postEdit.status).toBe(0);
+    expect(postEdit.stdout).toContain("Codexa AutoVerify: ran 1 targeted command(s).");
+    expect(postEdit.stdout).toContain("non-covering: source mutation detected");
+
+    const outcomeFiles = (await readdir(path.join(repo, ".codex/cache/codexa-outcomes"))).filter(
+      (entry) => entry.endsWith(".json") && entry !== "latest.json" && entry !== "latest-hook-review.json"
+    );
+    const outcome = JSON.parse(await readFile(path.join(repo, ".codex/cache/codexa-outcomes", outcomeFiles[0]), "utf8")) as {
+      driftReasons: string[];
+      ranCommandReports: Array<{ runner?: { sourceMutationDetected?: boolean } }>;
+      verificationLedger: Array<{ target: string; status: string; evidence: string[] }>;
+    };
+    expect(outcome.ranCommandReports[0].runner).toMatchObject({ sourceMutationDetected: true });
+    expect(outcome.verificationLedger.find((entry) => entry.target === "tests/main.test.js")).toMatchObject({ status: "missing" });
+    expect(outcome.driftReasons).toContain("recommended tests have not been accounted for");
+    await expect(readFile(path.join(repo, "src/generated.js"), "utf8")).resolves.toContain("generated");
+  });
+
+  it("marks AutoVerify reports as non-covering when tests mutate Codexa provenance", async () => {
+    const repo = await createAutoVerifyFixtureRepo(
+      { test: "node --test" },
+      "main.test.js",
+      [
+        "import test from 'node:test';",
+        "import assert from 'node:assert/strict';",
+        "import { mkdirSync, writeFileSync } from 'node:fs';",
+        "import { main } from '../src/main.js';",
+        "",
+        "test('main returns value but mutates Codexa provenance', () => {",
+        "  assert.equal(main(), 1);",
+        "  const dir = new URL('../.codex/cache/codexa-task-snapshots/', import.meta.url);",
+        "  mkdirSync(dir, { recursive: true });",
+        "  writeFileSync(new URL('tampered.json', dir), '{\"tampered\":true}\\n');",
+        "});",
+        ""
+      ].join("\n")
+    );
+    const cli = path.resolve(process.cwd(), "dist/cli.js");
+    const plan = spawnSync(process.execPath, [cli, "change-plan", repo, "--task", "Tighten main formatting", "--file", "src/main.js", "--save-snapshot", "--task-id", "hook-autoverify-provenance-mutation"], {
+      cwd: process.cwd(),
+      encoding: "utf8"
+    });
+    expect(plan.status).toBe(0);
+    await writeFile(path.join(repo, "src/main.js"), "export function main() {\n  return 1;\n}\n", "utf8");
+
+    const postEdit = spawnSync(process.execPath, [cli, "hook-post-edit", repo], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: { ...process.env, CODEXA_AUTOVERIFY: "1" }
+    });
+    expect(postEdit.status).toBe(0);
+    expect(postEdit.stdout).toContain("non-covering: source mutation detected");
+
+    const outcomeFiles = (await readdir(path.join(repo, ".codex/cache/codexa-outcomes"))).filter(
+      (entry) => entry.endsWith(".json") && entry !== "latest.json" && entry !== "latest-hook-review.json"
+    );
+    const outcome = JSON.parse(await readFile(path.join(repo, ".codex/cache/codexa-outcomes", outcomeFiles[0]), "utf8")) as {
+      ranCommandReports: Array<{ runner?: { sourceMutationDetected?: boolean } }>;
+      verificationLedger: Array<{ target: string; status: string }>;
+    };
+    expect(outcome.ranCommandReports[0].runner).toMatchObject({ sourceMutationDetected: true });
+    expect(outcome.verificationLedger.find((entry) => entry.target === "tests/main.test.js")).toMatchObject({ status: "missing" });
+  });
+
+  it("marks nested-root AutoVerify reports as non-covering when tests mutate git worktree source outside the active repo", async () => {
+    const repo = await createNestedAutoVerifyFixtureRepo([
+      "import test from 'node:test';",
+      "import assert from 'node:assert/strict';",
+      "import { writeFileSync } from 'node:fs';",
+      "import { main } from '../src/main.js';",
+      "",
+      "test('main returns value but mutates sibling source', () => {",
+      "  assert.equal(main(), 1);",
+      "  writeFileSync(new URL('../../../shared.js', import.meta.url), 'export const shared = true\\n');",
+      "});",
+      ""
+    ].join("\n"));
+    const cli = path.resolve(process.cwd(), "dist/cli.js");
+    const plan = spawnSync(process.execPath, [cli, "change-plan", repo, "--task", "Tighten nested main formatting", "--file", "src/main.js", "--save-snapshot", "--task-id", "hook-autoverify-nested-outside-mutation"], {
+      cwd: process.cwd(),
+      encoding: "utf8"
+    });
+    expect(plan.status).toBe(0);
+    await writeFile(path.join(repo, "src/main.js"), "export function main() {\n  return 1;\n}\n", "utf8");
+
+    const postEdit = spawnSync(process.execPath, [cli, "hook-post-edit", repo], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: { ...process.env, CODEXA_AUTOVERIFY: "1" }
+    });
+    expect(postEdit.status).toBe(0);
+    expect(postEdit.stdout).toContain("non-covering: source mutation detected");
   });
 
   it("skips duplicate hook-post-edit reviews for an unchanged dirty tree", async () => {
@@ -606,6 +1071,17 @@ describe("Codexa hook CLI", () => {
   });
 });
 
+function testEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
+  const env = { ...process.env, ...extra };
+  if (!Object.prototype.hasOwnProperty.call(extra, "CODEXA_AUTOVERIFY")) {
+    delete env.CODEXA_AUTOVERIFY;
+  }
+  if (!Object.prototype.hasOwnProperty.call(extra, "CODEXA_AUTONOMY")) {
+    delete env.CODEXA_AUTONOMY;
+  }
+  return env;
+}
+
 async function createHookFixtureRepo(): Promise<string> {
   const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-hook-dedupe-"));
   execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
@@ -633,7 +1109,12 @@ async function createWorkspaceGitRepo(workspace: string, name: string, stem: str
   return repo;
 }
 
-async function createAutoVerifyFixtureRepo(scripts: Record<string, string>, testFileName = "main.test.js"): Promise<string> {
+async function createAutoVerifyFixtureRepo(
+  scripts: Record<string, string>,
+  testFileName = "main.test.js",
+  testSource?: string,
+  extraFiles: Record<string, string> = {}
+): Promise<string> {
   const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-hook-autoverify-"));
   execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
   await mkdir(path.join(repo, "src"), { recursive: true });
@@ -642,12 +1123,61 @@ async function createAutoVerifyFixtureRepo(scripts: Record<string, string>, test
   await writeFile(path.join(repo, "src/main.js"), "export function main() {\n  return 1\n}\n", "utf8");
   await writeFile(
     path.join(repo, "tests", testFileName),
-    "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { main } from '../src/main.js';\n\ntest('main returns value', () => {\n  assert.equal(main(), 1);\n});\n",
+    testSource ?? "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { main } from '../src/main.js';\n\ntest('main returns value', () => {\n  assert.equal(main(), 1);\n});\n",
     "utf8"
   );
+  for (const [relativePath, content] of Object.entries(extraFiles)) {
+    await mkdir(path.dirname(path.join(repo, relativePath)), { recursive: true });
+    await writeFile(path.join(repo, relativePath), content, "utf8");
+  }
   execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
   execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
     cwd: repo,
+    stdio: "ignore"
+  });
+  return repo;
+}
+
+async function addFakeVitestBin(repo: string): Promise<void> {
+  const binPath = path.join(repo, "node_modules", ".bin", "vitest");
+  await mkdir(path.dirname(binPath), { recursive: true });
+  await writeFile(
+    binPath,
+    [
+      "#!/usr/bin/env node",
+      "import { spawnSync } from 'node:child_process';",
+      "const args = process.argv.slice(2);",
+      "const nodeTestArgs = args[0] === 'run' ? args.slice(1) : args;",
+      "const result = spawnSync(process.execPath, ['--test', ...nodeTestArgs], { stdio: 'inherit' });",
+      "process.exit(result.status ?? 1);",
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  await chmod(binPath, 0o755);
+  execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+  execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "add local vitest bin"], {
+    cwd: repo,
+    stdio: "ignore"
+  });
+}
+
+async function createNestedAutoVerifyFixtureRepo(testSource?: string): Promise<string> {
+  const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-hook-autoverify-nested-"));
+  const repo = path.join(workspace, "packages", "app");
+  execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+  await mkdir(path.join(repo, "src"), { recursive: true });
+  await mkdir(path.join(repo, "tests"), { recursive: true });
+  await writeFile(path.join(repo, "package.json"), JSON.stringify({ type: "module", scripts: { test: "node --test" } }, null, 2), "utf8");
+  await writeFile(path.join(repo, "src/main.js"), "export function main() {\n  return 1\n}\n", "utf8");
+  await writeFile(
+    path.join(repo, "tests/main.test.js"),
+    testSource ?? "import test from 'node:test';\nimport assert from 'node:assert/strict';\nimport { main } from '../src/main.js';\n\ntest('main returns value', () => {\n  assert.equal(main(), 1);\n});\n",
+    "utf8"
+  );
+  execFileSync("git", ["add", "."], { cwd: workspace, stdio: "ignore" });
+  execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+    cwd: workspace,
     stdio: "ignore"
   });
   return repo;

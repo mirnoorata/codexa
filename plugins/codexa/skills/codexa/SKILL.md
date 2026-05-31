@@ -1,6 +1,6 @@
 ---
 name: codexa
-description: Use Codexa's repository context server for Codex-native task briefs, change plans, post-edit reviews, dependency/workflow tracing, and targeted verification before or after code edits.
+description: Use Codexa's repository context server for Codex-native task briefs, change plans, post-edit reviews, dependency/workflow tracing, verification planning, and evidence review before or after code edits.
 ---
 
 # Codexa Workflow
@@ -15,7 +15,7 @@ Use this skill when a task involves understanding, editing, reviewing, or verify
 4. For code edits, debugging, reviews, or non-trivial refactors, call `task_brief` before reading or editing source.
 5. For symbol-level changes, call `symbol_context` or `impact` when you need callers, callees, implementations, tests, risks, edge evidence, or the next exact Codexa tool.
 6. Before non-trivial edits, call `change_plan` with `saveSnapshot=true` so Codexa can compare the plan with the final dirty tree and planned-test provenance.
-7. After edits, call `post_edit_review` and pass any commands or test reports that were actually run. Treat degraded snapshot tests as evidence to inspect or rerun, not as trusted coverage.
+7. After edits, call `post_edit_review` and pass any commands or test reports that were actually run. Treat degraded snapshot tests as evidence to inspect or rerun, not as trusted coverage. MCP `post_edit_review` is review-only; AutoVerify execution is limited to the Codexa hook path when the user environment enables it.
 8. For workflow/runtime/API/rename/delete changes, use `workflow_path`, `callers`, `callees`, or `dependency_path` before editing shared surfaces.
 9. Finish with `test_plan` when the verification surface is unclear.
 

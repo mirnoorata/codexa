@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { effectiveAutonomyMode, type CodexaAutonomyStatus } from "./autonomy.js";
 import { getFreshness } from "./indexer.js";
 import { MCP_TOOL_CATALOG } from "./mcp-tool-catalog.js";
 import { resolveMcpRepoRoot, type McpRepoRootResolution, type McpRepoRootResolutionOptions } from "./mcp-repo-root.js";
@@ -150,6 +151,7 @@ async function checkMcpReadiness(
   typedEnvelope: boolean;
   sessionMemoryMode: "auto" | "off";
   autoVerifyOptIn: boolean;
+  autonomy: CodexaAutonomyStatus;
   semanticCache: boolean;
   lspConfigured: boolean;
   toolSurface: {
@@ -189,7 +191,8 @@ async function checkMcpReadiness(
   const packageJson = await readJsonIfExists(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../package.json"));
   const packageRecord = packageJson && typeof packageJson === "object" ? (packageJson as Record<string, unknown>) : {};
   const sessionMemoryMode = /^\s*session_memory\s*=\s*"off"\s*$/imu.test(configText ?? "") ? "off" : "auto";
-  const autoVerifyOptIn = process.env.CODEXA_AUTOVERIFY === "1" || process.env.CODEXA_AUTOVERIFY?.toLowerCase() === "true";
+  const autonomy = await effectiveAutonomyMode(repoRoot);
+  const autoVerifyOptIn = autonomy.mode === "full-access";
   const semanticCache = await exists(path.join(repoRoot, ".codex/cache/codexa-semantic-v1/manifest.json"));
   const lspConfigured = Boolean(process.env.CODEXA_LSP === "1" || process.env.CODEXA_LSP_TYPESCRIPT_COMMAND || process.env.CODEXA_LSP_JAVASCRIPT_COMMAND || process.env.CODEXA_LSP_PYTHON_COMMAND);
   const latestEval = await readJsonIfExists(path.join(repoRoot, ".codex/cache/codexa-evals/latest.json"));
@@ -273,6 +276,7 @@ async function checkMcpReadiness(
     typedEnvelope: true,
     sessionMemoryMode,
     autoVerifyOptIn,
+    autonomy,
     semanticCache,
     lspConfigured,
     toolSurface,
@@ -600,7 +604,7 @@ function renderDoctor(data: DoctorResult["data"]): string {
     lines.push(`- source mutation tools: ${data.mcpReadiness.toolSurface.sourceMutationTools.length > 0 ? data.mcpReadiness.toolSurface.sourceMutationTools.join(", ") : "none"}`);
     lines.push(`- latest eval: ${formatLatestEval(data.mcpReadiness.latestEval)}`);
     lines.push(`- session memory: ${data.mcpReadiness.sessionMemoryMode}`);
-    lines.push(`- AutoVerify opted in: ${data.mcpReadiness.autoVerifyOptIn ? "yes" : "no"}`);
+    lines.push(`- AutoVerify opted in: ${data.mcpReadiness.autoVerifyOptIn ? "yes" : "no"} (${data.mcpReadiness.autonomy.source})`);
     lines.push(`- semantic cache: ${data.mcpReadiness.semanticCache ? "present" : "missing"}`);
     lines.push(`- LSP configured: ${data.mcpReadiness.lspConfigured ? "yes" : "no"}`);
     lines.push(`- package: ${data.mcpReadiness.packageMetadata.name ?? "unknown"} ${data.mcpReadiness.packageMetadata.version ?? "unknown"}`);

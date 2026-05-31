@@ -397,6 +397,9 @@ export interface FreshnessInfo {
   stale: boolean;
   reason: string;
   parserErrorCount: number;
+  externalRiskReportHashes?: Record<string, string>;
+  indexedExternalRiskReportHashes?: Record<string, string>;
+  externalRiskReportDiagnostics?: Array<{ path: string; reason: string; sizeBytes?: number; limitBytes?: number }>;
 }
 
 export interface CodexaIndex {
@@ -539,6 +542,20 @@ export interface PostEditReviewInput {
   waivedChecks?: string[];
   waivers?: VerificationWaiver[];
   persistOutcome?: boolean;
+}
+
+export interface AutoVerifyCandidate {
+  schemaVersion: 1;
+  taskId: string;
+  snapshotDigest: string;
+  commandId: string;
+  command: string;
+  commandExecutable: string;
+  commandArgs: string[];
+  commandCwd: string;
+  targetPaths: string[];
+  source: "explicit" | "authoritative-test-edge" | "derived-impact" | "heuristic" | "legacy";
+  rank: number;
 }
 
 export interface FocusBriefInput {

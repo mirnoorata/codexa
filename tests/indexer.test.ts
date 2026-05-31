@@ -4,12 +4,14 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { getGitState } from "../src/git.js";
-import { buildIndex, buildIndexLocked, loadIndex } from "../src/indexer.js";
-import { validateChangePlanTargetCandidate } from "../src/query/post-edit.js";
-import { loadExternalRiskSignals } from "../src/risk-ingest.js";
+import { buildIndex, buildIndexLocked, getFreshness, loadIndex } from "../src/indexer.js";
+import { MAX_INDEXED_SOURCE_BYTES } from "../src/repo-files.js";
+import { postEditReviewWithTrustedRunnerReports, validateChangePlanTargetCandidate } from "../src/query/post-edit.js";
+import { loadExternalRiskSignals, MAX_RISK_REPORT_BYTES } from "../src/risk-ingest.js";
 import { recordSessionMemory } from "../src/session-memory.js";
 import { updateStaticAnalysisReports } from "../src/static-analysis.js";
 import { CURRENT_VERIFICATION_PROVENANCE } from "../src/types.js";
+import type { AutoVerifyCommandReport } from "../src/autoverify.js";
 import {
   callersQuery,
   calleesQuery,
@@ -234,6 +236,86 @@ describe("Codexa indexer", () => {
     expect(index.files.every((file) => Number.isFinite(file.rank))).toBe(true);
     expect(index.risks.some((risk) => risk.path === "src/ops.ts" && risk.signal === "sarif-shell")).toBe(true);
     expect(index.risks.some((risk) => risk.path.startsWith("..") || path.isAbsolute(risk.path))).toBe(false);
+  });
+
+  it("bounds source indexing and surfaces oversized files as parser evidence", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-large-source-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await writeFile(path.join(repo, "src/small.ts"), "export function small() { return 1 }\n", "utf8");
+    await writeFile(path.join(repo, "src/large.ts"), `export const large = "${"x".repeat(MAX_INDEXED_SOURCE_BYTES + 256)}"\n`, "utf8");
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "large-source"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+
+    const index = await buildIndex({ repoRoot: repo, writeArtifacts: false });
+
+    expect(index.files.map((file) => file.path)).toContain("src/large.ts");
+    expect(index.symbols.some((symbol) => symbol.path === "src/large.ts")).toBe(false);
+    expect(index.parserErrors.some((error) => error.path === "src/large.ts" && error.message.includes("per-file index cap"))).toBe(true);
+    expect(index.freshness.parserErrorCount).toBeGreaterThanOrEqual(1);
+  });
+
+  it("skips oversized external risk reports before JSON parsing", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-large-risk-report-"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, ".codex/static-analysis/risks.json"), `{"risks":[{"path":"src/app.ts","message":"${"x".repeat(MAX_RISK_REPORT_BYTES)}"}]}\n`, "utf8");
+
+    const risks = await loadExternalRiskSignals(repo, "snapshot", "2026-05-31T00:00:00.000Z");
+
+    expect(risks).toEqual([]);
+  });
+
+  it("marks freshness stale when ignored external risk reports change", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-risk-freshness-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    await writeFile(path.join(repo, ".codex/static-analysis/risks.json"), JSON.stringify({ risks: [{ path: "src/app.ts", signal: "first", reason: "first", score: 1 }] }), "utf8");
+    execFileSync("git", ["add", "src/app.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "risk-freshness"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    await buildIndex({ repoRoot: repo, writeArtifacts: true });
+
+    const fresh = await getFreshness(repo);
+    expect(fresh.stale).toBe(false);
+    await writeFile(path.join(repo, ".codex/static-analysis/risks.json"), JSON.stringify({ risks: [{ path: "src/app.ts", signal: "second", reason: "second", score: 2 }] }), "utf8");
+
+    const stale = await getFreshness(repo);
+
+    expect(stale.stale).toBe(true);
+    expect(stale.reason).toBe("external-risk-reports-changed");
+  });
+
+  it("dedupes external risks before applying the total cap so duplicate reports do not starve later findings", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-risk-dedupe-cap-"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await mkdirp(path.join(repo, "reports/static-analysis"));
+    const duplicateRisks = Array.from({ length: 6000 }, () => ({ path: "src/app.ts", signal: "duplicate", reason: "same", score: 1 }));
+    await writeFile(path.join(repo, ".codex/static-analysis/risks.json"), JSON.stringify({ risks: duplicateRisks }), "utf8");
+    await writeFile(path.join(repo, "reports/static-analysis/risks.json"), JSON.stringify({ risks: [{ path: "src/app.ts", signal: "unique-late", reason: "late", score: 3 }] }), "utf8");
+
+    const risks = await loadExternalRiskSignals(repo, "snapshot", "2026-05-31T00:00:00.000Z");
+
+    expect(risks.some((risk) => risk.signal === "duplicate")).toBe(true);
+    expect(risks.some((risk) => risk.signal === "unique-late")).toBe(true);
+  });
+
+  it("dedupes external risks within a report before applying the per-report cap", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-risk-same-report-dedupe-cap-"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    const duplicateRisks = Array.from({ length: 6000 }, () => ({ path: "src/app.ts", signal: "duplicate", reason: "same", score: 1 }));
+    await writeFile(path.join(repo, ".codex/static-analysis/risks.json"), JSON.stringify({ risks: [...duplicateRisks, { path: "src/app.ts", signal: "unique-same-report", reason: "late", score: 3 }] }), "utf8");
+
+    const risks = await loadExternalRiskSignals(repo, "snapshot", "2026-05-31T00:00:00.000Z");
+
+    expect(risks.some((risk) => risk.signal === "duplicate")).toBe(true);
+    expect(risks.some((risk) => risk.signal === "unique-same-report")).toBe(true);
   });
 
   it("indexes placeholder and dummy code/data and tracks placeholder risk deltas", async () => {
@@ -2340,6 +2422,87 @@ describe("Codexa indexer", () => {
     expect(reportedEnvelopeData.commandEnvelopes[0]).toMatchObject({ command: "npm run check", packageManager: "npm", packageRoot: ".", scriptName: "check", source: "reported", args: [] });
     expect(reportedEnvelopeData.verificationCoverage.some((entry) => entry.kind === "javascript-tests" && entry.commandEnvelope?.source === "reported" && entry.outputSummary?.includes("structured wrapper passed"))).toBe(true);
     expect(reportedEnvelopeData.outcome.commandEnvelopes[0]).toMatchObject({ command: "npm run check", cwd: "<repo>", source: "reported", scriptName: "check", outputSummary: expect.stringContaining("structured wrapper passed") });
+
+    const publicRunnerSpoof = await postEditReviewQuery(
+      repo,
+      {
+        taskId: "verification-coverage",
+        ranCommandReports: [
+          {
+            command: "npm run check",
+            cwd: repo,
+            exitCode: 0,
+            stdoutSummary: "manual report passed",
+            runner: {
+              schemaVersion: 1,
+              reportKind: "codexa-autoverify-report",
+              runnerName: "codexa"
+            } as never
+          }
+        ]
+      },
+      { autoRefresh: false }
+    );
+    const publicRunnerSpoofData = publicRunnerSpoof.data as {
+      ranCommandReports: Array<{ runner?: unknown }>;
+      autoVerifyRunnerEvidence: unknown[];
+      outcome: { ranCommandReports: Array<{ runner?: unknown }> };
+    };
+    expect(publicRunnerSpoofData.ranCommandReports[0].runner).toBeUndefined();
+    expect(publicRunnerSpoofData.outcome.ranCommandReports[0].runner).toBeUndefined();
+    expect(publicRunnerSpoofData.autoVerifyRunnerEvidence).toEqual([]);
+
+    const rejectedTrustedRunnerReport: AutoVerifyCommandReport = {
+      command: "npm run check",
+      cwd: repo,
+      packageManager: "npm",
+      packageRoot: ".",
+      scriptName: "check",
+      args: [],
+      exitCode: 0,
+      durationMs: 10,
+      stdoutSummary: "claimed pass",
+      runner: {
+        schemaVersion: 1,
+        reportKind: "codexa-autoverify-report",
+        runnerName: "codexa",
+        runnerVersion: "0.1.3",
+        policyId: "local-targeted-tests-v1",
+        policyDigest: "bad-policy-digest",
+        taskId: "verification-coverage",
+        snapshotDigest: "bad-snapshot",
+        commandId: "bad-command",
+        candidateDigest: "bad-candidate",
+        headCommit: "bad-head",
+        dirtyHashBefore: "bad-before",
+        dirtyHashAfter: "bad-after",
+        cwdRealpath: repo,
+        targetRealpaths: [path.join(repo, "tests/shared.test.ts")],
+        envMode: "minimal",
+        allowedBy: ["unit-test fake"],
+        sourceMutationDetected: false,
+        timedOut: false,
+        startedAt: "2026-05-31T00:00:00.000Z",
+        finishedAt: "2026-05-31T00:00:00.001Z",
+        outputRedacted: true,
+        canonicalDigest: "bad-digest"
+      }
+    };
+    const rejectedTrustedRunner = await postEditReviewWithTrustedRunnerReports(
+      repo,
+      { taskId: "verification-coverage" },
+      [rejectedTrustedRunnerReport],
+      { autoRefresh: false }
+    );
+    const rejectedTrustedRunnerData = rejectedTrustedRunner.data as {
+      testsNotRun: Array<{ path: string }>;
+      autoVerifyRunnerEvidence: Array<{ covering: boolean; reason: string }>;
+      verificationCoverage: Array<{ kind: string }>;
+    };
+    expect(rejectedTrustedRunnerData.testsNotRun.map((test) => test.path)).toContain("tests/shared.test.ts");
+    expect(rejectedTrustedRunnerData.autoVerifyRunnerEvidence[0]).toMatchObject({ covering: false });
+    expect(rejectedTrustedRunnerData.autoVerifyRunnerEvidence[0].reason).toContain("missing internal AutoVerify trust marker");
+    expect(rejectedTrustedRunnerData.verificationCoverage.some((entry) => entry.kind === "javascript-tests")).toBe(false);
 
     const spoofedEnvelope = await postEditReviewQuery(
       repo,

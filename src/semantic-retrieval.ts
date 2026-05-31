@@ -1,8 +1,8 @@
-import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import fsSync from "node:fs";
 import path from "node:path";
+import { runCommand } from "./command.js";
 import type { CodexaIndex, FileFact, QueryOptions } from "./types.js";
 import { stableId, uniqueSorted } from "./util.js";
 
@@ -20,6 +20,7 @@ const MAX_PREVIEW_CHARS = 280;
 const MAX_SEMANTIC_MANIFEST_BYTES = 128 * 1024;
 const MAX_SEMANTIC_VECTOR_BYTES = 64 * 1024 * 1024;
 const MAX_SEMANTIC_VECTOR_RECORDS = 100_000;
+const MAX_LOCAL_COMMAND_OUTPUT_BYTES = 16 * 1024 * 1024;
 
 export type SemanticProviderKind = "openai" | "local-command";
 
@@ -448,31 +449,47 @@ async function embedWithLocalCommand(items: Array<{ id: string; text: string }>,
   return parseLocalEmbeddingOutput(stdout);
 }
 
-function runLocalEmbeddingCommand(command: string, args: string[], input: string, timeoutMs: number): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error(`semantic local-command timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-    child.stdout.on("data", (chunk) => stdout.push(Buffer.from(chunk)));
-    child.stderr.on("data", (chunk) => stderr.push(Buffer.from(chunk)));
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      if (code !== 0) {
-        reject(new Error(`semantic local-command exited ${code}: ${Buffer.concat(stderr).toString("utf8").slice(0, 600)}`));
-        return;
-      }
-      resolve(Buffer.concat(stdout).toString("utf8"));
-    });
-    child.stdin.end(input, "utf8");
+async function runLocalEmbeddingCommand(command: string, args: string[], input: string, timeoutMs: number): Promise<string> {
+  const result = await runCommand(command, args, {
+    env: localEmbeddingCommandEnv(),
+    input,
+    killProcessGroup: true,
+    maxBufferBytes: MAX_LOCAL_COMMAND_OUTPUT_BYTES,
+    timeoutMs
   });
+  if (!result.ok) {
+    if (result.timedOut) {
+      throw new Error(`semantic local-command timed out after ${timeoutMs}ms`);
+    }
+    if (result.truncated) {
+      throw new Error(`semantic local-command exceeded Codexa's ${MAX_LOCAL_COMMAND_OUTPUT_BYTES} byte output cap`);
+    }
+    const status = result.exitCode === null ? `signal ${result.signal ?? "unknown"}` : `exit ${result.exitCode}`;
+    throw new Error(`semantic local-command failed with ${status}: ${result.stderr.slice(0, 600)}`);
+  }
+  return result.stdout;
+}
+
+function localEmbeddingCommandEnv(): NodeJS.ProcessEnv {
+  const allowed = [
+    "PATH",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "LANG",
+    "LC_ALL",
+    "SystemRoot",
+    "WINDIR",
+    "ComSpec",
+    "PATHEXT"
+  ];
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of allowed) {
+    if (process.env[key] !== undefined) {
+      env[key] = process.env[key];
+    }
+  }
+  return env;
 }
 
 function parseLocalEmbeddingOutput(output: string): Map<string, number[]> {

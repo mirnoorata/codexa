@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { buildIndexLocked } from "./indexer.js";
-import { loadExternalRiskSignals } from "./risk-ingest.js";
+import { loadExternalRiskSignalReport, type ExternalRiskReportDiagnostic } from "./risk-ingest.js";
 import { validateCodexaSymbolReportFile } from "./symbol-report-ingest.js";
 import type { CodexaIndex } from "./types.js";
 import { isSubpath, normalizePath, stableId } from "./util.js";
@@ -88,7 +88,8 @@ export async function updateStaticAnalysisReports(repoInput: string, options: St
     reports.push(...run.reports.map((relativePath) => ({ kind: "shellcheck" as const, source: "shellcheck", path: relativePath, copied: false })));
   }
 
-  const staticRiskCount = (await loadExternalRiskSignals(repoRoot, "static-analysis-preview", new Date().toISOString())).length;
+  const staticRiskReport = await loadExternalRiskSignalReport(repoRoot, "static-analysis-preview", new Date().toISOString());
+  const staticRiskCount = staticRiskReport.risks.length;
   const index = options.index === false ? undefined : await buildIndexLocked({ repoRoot, writeArtifacts: true });
   return {
     repoRoot,
@@ -96,7 +97,7 @@ export async function updateStaticAnalysisReports(repoInput: string, options: St
     runs,
     staticRiskCount,
     index,
-    text: renderStaticAnalysisSummary(repoRoot, dedupeReports(reports), runs, staticRiskCount, index)
+    text: renderStaticAnalysisSummary(repoRoot, dedupeReports(reports), runs, staticRiskCount, staticRiskReport.diagnostics, index)
   };
 }
 
@@ -567,6 +568,7 @@ function renderStaticAnalysisSummary(
   reports: StaticAnalysisReport[],
   runs: StaticAnalysisRun[],
   staticRiskCount: number,
+  diagnostics: ExternalRiskReportDiagnostic[],
   index: CodexaIndex | undefined
 ): string {
   const lines = [
@@ -580,6 +582,14 @@ function renderStaticAnalysisSummary(
     lines.push("", "Reports:");
     for (const report of reports) {
       lines.push(`- ${report.path}: ${report.kind}${report.copied ? "; copied" : "; existing/generated"}`);
+    }
+  }
+  if (diagnostics.length > 0) {
+    lines.push("", "Report diagnostics:");
+    for (const diagnostic of diagnostics.slice(0, 12)) {
+      const size = diagnostic.sizeBytes === undefined ? "" : ` (${diagnostic.sizeBytes} bytes`;
+      const cap = diagnostic.limitBytes === undefined ? "" : `; cap ${diagnostic.limitBytes} bytes`;
+      lines.push(`- ${diagnostic.path}: ${diagnostic.reason}${size ? `${size}${cap})` : ""}`);
     }
   }
   if (runs.length > 0) {

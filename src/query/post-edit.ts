@@ -18,7 +18,10 @@ import { buildPostEditOutcome, savePostEditOutcome, type PostEditCheckResult, ty
 import { pointerForSessionMemory, readSessionMemory } from "../session-memory.js";
 import { loadTaskSnapshot, saveBlockedTaskSnapshot, saveTaskSnapshot, type TaskSnapshotLoadResult } from "../task-snapshots.js";
 import { CURRENT_VERIFICATION_PROVENANCE } from "../types.js";
+import { isTrustedAutoVerifyCommandReport } from "../autoverify.js";
+import type { AutoVerifyCommandReport, AutoVerifyReportRunner } from "../autoverify.js";
 import type {
+  AutoVerifyCandidate,
   ChangedFileEntry,
   ChangePlanInput,
   ChangeType,
@@ -44,6 +47,12 @@ import type {
   WorkflowTraceFact
 } from "../types.js";
 import { limitText, stableId, uniqueSorted } from "../util.js";
+
+interface PostEditReviewInternalInput {
+  trustedRunnerReports?: AutoVerifyCommandReport[];
+}
+
+type DisplayCommandReport = VerificationCommandReport & { runner?: AutoVerifyReportRunner };
 
 export async function changePlanQuery(
   sessionInput: QuerySessionInput,
@@ -1150,6 +1159,24 @@ export async function postEditReviewQuery(
   input: PostEditReviewInput = {},
   options: QueryOptions = {}
 ): Promise<QueryResult> {
+  return postEditReviewQueryInternal(sessionInput, input, options, {});
+}
+
+export async function postEditReviewWithTrustedRunnerReports(
+  sessionInput: QuerySessionInput,
+  input: PostEditReviewInput = {},
+  trustedRunnerReports: AutoVerifyCommandReport[] = [],
+  options: QueryOptions = {}
+): Promise<QueryResult> {
+  return postEditReviewQueryInternal(sessionInput, input, options, { trustedRunnerReports });
+}
+
+async function postEditReviewQueryInternal(
+  sessionInput: QuerySessionInput,
+  input: PostEditReviewInput,
+  options: QueryOptions,
+  internal: PostEditReviewInternalInput
+): Promise<QueryResult> {
   const session = await ensureQuerySession(sessionInput, options);
   const { index, freshness, refresh, repoRoot } = session;
   const tokenBudget = clampInt(input.tokenBudget ?? 2800, 600, 10000);
@@ -1279,7 +1306,14 @@ export async function postEditReviewQuery(
   ).slice(0, 12);
   const ranTests = input.ranTests ?? [];
   const ranCommands = input.ranCommands ?? [];
-  const ranCommandReports = input.ranCommandReports ?? [];
+  const manualRanCommandReports = (input.ranCommandReports ?? []).map(stripRunnerMetadata);
+  const runnerReview = await reviewTrustedRunnerReports(internal.trustedRunnerReports ?? [], {
+    freshness,
+    snapshot,
+    repoRoot
+  });
+  const ranCommandReports = [...manualRanCommandReports, ...runnerReview.coveringReports];
+  const displayedRanCommandReports = [...manualRanCommandReports, ...runnerReview.displayReports];
   const waivedChecks = input.waivedChecks ?? [];
   const waivers = input.waivers ?? [];
   const preliminaryVerificationCoverage = verificationEvidenceForCommandReports(index, ranCommands, ranCommandReports, repoRoot).coverage;
@@ -1333,13 +1367,19 @@ export async function postEditReviewQuery(
   const verificationLedger = verification.ledger;
   const testsNotRun = verification.testsNotRun;
   const waivedVerification = verificationLedger.filter((entry) => entry.status === "waived");
-  const dataRanCommandReports = ranCommandReports.map((report) => sanitizeCommandReportForDisplay(report, repoRoot));
+  const dataRanCommandReports = displayedRanCommandReports.map((report) => sanitizeCommandReportForDisplay(report, repoRoot));
   const dataRanCommands = ranCommands.map((command) => sanitizeCommandText(command, repoRoot));
   const dataCommandEnvelopes = commandEnvelopes.map((envelope) => sanitizeCommandEnvelopeForDisplay(envelope, repoRoot));
   const dataVerificationCoverage = verificationCoverage.map((entry) => sanitizeCoverageForDisplay(entry, repoRoot));
   const dataVerificationLedger = verificationLedger.map((entry) => sanitizeLedgerForDisplay(entry, repoRoot));
   const dataWaivedVerification = dataVerificationLedger.filter((entry) => entry.status === "waived");
   const missedLikelyTests = testsNotRun;
+  const autoVerifyCandidates = buildAutoVerifyCandidates({
+    snapshot,
+    testsNotRun,
+    reviewTargets,
+    repoRoot
+  });
   const hasTestVerificationAccounting = verificationLedger.some((entry) => entry.kind === "test" && (entry.status === "covered" || entry.status === "waived"));
   const hasCredibleVerificationEvidence = hasRelevantVerificationEvidence({
     verificationLedger,
@@ -1469,7 +1509,7 @@ export async function postEditReviewQuery(
     missedLikelyTests,
     ranTests,
     ranCommands,
-    ranCommandReports,
+    ranCommandReports: displayedRanCommandReports,
     commandEnvelopes,
     waivedChecks,
     waivers,
@@ -1551,8 +1591,9 @@ export async function postEditReviewQuery(
 	    ...degradedSnapshotTests.map((test) => `- ${test.path}: ${test.provenance?.degradedReason ?? "provenance does not match current review scope"}`),
 	    ranTests.length > 0 ? `Reported ran tests: ${ranTests.join(", ")}` : "Reported ran tests: none",
     dataRanCommands.length > 0 ? `Reported ran commands: ${dataRanCommands.join(" | ")}` : "Reported ran commands: none",
-    dataRanCommandReports.length > 0 ? `Reported command reports: ${dataRanCommandReports.map(formatCommandReport).join(" | ")}` : "Reported command reports: none",
-    dataCommandEnvelopes.length > 0 ? `Command envelopes: ${dataCommandEnvelopes.map(formatCommandEnvelope).join(" | ")}` : "Command envelopes: none",
+	    dataRanCommandReports.length > 0 ? `Reported command reports: ${dataRanCommandReports.map(formatCommandReport).join(" | ")}` : "Reported command reports: none",
+	    runnerReview.reviewEntries.length > 0 ? `AutoVerify runner evidence: ${runnerReview.reviewEntries.map(formatRunnerReviewEntry).join(" | ")}` : undefined,
+	    dataCommandEnvelopes.length > 0 ? `Command envelopes: ${dataCommandEnvelopes.map(formatCommandEnvelope).join(" | ")}` : "Command envelopes: none",
     waivedChecks.length > 0 ? `Explicit waivers: ${waivedChecks.join(" | ")}` : "Explicit waivers: none",
     waivers.length > 0 ? `Structured waivers: ${waivers.map((waiver) => `${waiver.kind}:${waiver.target} (${waiver.reason})`).join(" | ")}` : "Structured waivers: none",
     "",
@@ -1624,7 +1665,16 @@ export async function postEditReviewQuery(
       missedLikelyTests: limitArray(missedLikelyTests, 30),
       ranTests,
       ranCommands: dataRanCommands,
-      ranCommandReports: dataRanCommandReports,
+	      ranCommandReports: dataRanCommandReports,
+	      autoVerifyCandidates: limitArray(autoVerifyCandidates, 30),
+	      autoVerifyRunnerEvidence: runnerReview.reviewEntries.map((entry) => ({
+	        command: sanitizeCommandText(entry.command, repoRoot),
+	        covering: entry.covering,
+	        reason: sanitizeSummary(entry.reason, repoRoot) ?? entry.reason,
+	        policyId: entry.policyId,
+	        sourceMutationDetected: entry.sourceMutationDetected,
+	        timedOut: entry.timedOut
+	      })),
       commandEnvelopes: dataCommandEnvelopes,
       waivedChecks,
       waivers,
@@ -1889,7 +1939,155 @@ function formatCheckResults(checks: PostEditCheckResult[]): string[] {
   return checks.slice(0, 12).map((check) => `- ${check.status}: ${check.target}; ${check.confidence}; ${check.reason}`);
 }
 
-function sanitizeCommandReportForDisplay(report: VerificationCommandReport, repoRoot: string): VerificationCommandReport {
+interface AutoVerifyRunnerReviewEntry {
+  command: string;
+  covering: boolean;
+  reason: string;
+  policyId?: string;
+  sourceMutationDetected?: boolean;
+  timedOut?: boolean;
+}
+
+const AUTO_VERIFY_POLICY_DIGEST = stableId(
+  "local-targeted-tests-v1",
+  "hook-only",
+  "minimal-env",
+  "targeted-tests",
+  "no-shell",
+  "no-lifecycle-hooks",
+  "source-mutation-non-covering"
+);
+
+async function reviewTrustedRunnerReports(
+  reports: AutoVerifyCommandReport[],
+  ctx: { freshness: { headCommit: string | null; dirtyFiles: string[]; dirtyFileHashes: Record<string, string> }; snapshot: TaskSnapshot | undefined; repoRoot: string }
+): Promise<{ coveringReports: AutoVerifyCommandReport[]; displayReports: AutoVerifyCommandReport[]; reviewEntries: AutoVerifyRunnerReviewEntry[] }> {
+  const repoRealRoot = await fs.realpath(ctx.repoRoot).catch(() => path.resolve(ctx.repoRoot));
+  const currentDirtyHash = dirtyHashFromFreshness(ctx.freshness);
+  const snapshotDigest = ctx.snapshot ? autoVerifySnapshotDigest(ctx.snapshot) : undefined;
+  const coveringReports: AutoVerifyCommandReport[] = [];
+  const displayReports: AutoVerifyCommandReport[] = [];
+  const reviewEntries: AutoVerifyRunnerReviewEntry[] = [];
+  for (const report of reports) {
+    const reasons = runnerReportRejectionReasons(report, {
+      currentDirtyHash,
+      snapshotDigest,
+      taskId: ctx.snapshot?.taskId,
+      repoRealRoot
+    });
+    displayReports.push(report);
+    const covering = reasons.length === 0;
+    if (covering) {
+      coveringReports.push(report);
+    }
+    reviewEntries.push({
+      command: sanitizeCommandText(report.command, ctx.repoRoot),
+      covering,
+      reason: sanitizeSummary(covering ? "fresh trusted AutoVerify report" : reasons.join("; "), ctx.repoRoot) ?? "runner evidence unavailable",
+      policyId: report.runner?.policyId,
+      sourceMutationDetected: report.runner?.sourceMutationDetected,
+      timedOut: report.runner?.timedOut
+    });
+  }
+  return { coveringReports, displayReports, reviewEntries };
+}
+
+function runnerReportRejectionReasons(
+  report: AutoVerifyCommandReport,
+  ctx: { currentDirtyHash: string; snapshotDigest?: string; taskId?: string; repoRealRoot: string }
+): string[] {
+  const runner = report.runner;
+  const reasons: string[] = [];
+  if (!isTrustedAutoVerifyCommandReport(report)) {
+    return ["missing internal AutoVerify trust marker"];
+  }
+  if (!runner || runner.schemaVersion !== 1 || runner.reportKind !== "codexa-autoverify-report" || runner.runnerName !== "codexa") {
+    return ["missing trusted AutoVerify runner metadata"];
+  }
+  if (runner.policyId !== "local-targeted-tests-v1") reasons.push("unexpected runner policy");
+  if (runner.policyDigest !== AUTO_VERIFY_POLICY_DIGEST) reasons.push("unexpected runner policy digest");
+  if (runner.envMode !== "minimal") reasons.push("unexpected runner environment");
+  if (!runner.outputRedacted) reasons.push("runner output was not redacted");
+  if (report.exitCode !== 0) reasons.push(report.exitCode === undefined ? "missing exit code" : `exit code ${report.exitCode}`);
+  if (!report.cwd) reasons.push("missing cwd");
+  if (runner.timedOut) reasons.push("runner timed out");
+  if (runner.sourceMutationDetected) reasons.push("source mutation detected");
+  if (runner.skippedReason) reasons.push(runner.skippedReason);
+  if (ctx.taskId && runner.taskId !== ctx.taskId) reasons.push("task id mismatch");
+  if (ctx.snapshotDigest && runner.snapshotDigest !== ctx.snapshotDigest) reasons.push("snapshot digest mismatch");
+  if (runner.dirtyHashAfter !== ctx.currentDirtyHash) reasons.push("stale dirty tree");
+  if (!absoluteSubpath(runner.cwdRealpath, ctx.repoRealRoot)) reasons.push("runner cwd outside repo");
+  if (runner.targetRealpaths.length === 0) reasons.push("missing runner targets");
+  if (runner.targetRealpaths.some((target) => !absoluteSubpath(target, ctx.repoRealRoot))) reasons.push("runner target outside repo");
+  if (runner.canonicalDigest !== runnerReportDigest(report, runner)) reasons.push("runner digest mismatch");
+  return reasons;
+}
+
+function runnerReportDigest(report: AutoVerifyCommandReport, runner: AutoVerifyReportRunner): string {
+  return stableId(
+    "codexa-autoverify-report",
+    report.command,
+    report.exitCode,
+    runner.policyId,
+    runner.policyDigest,
+    runner.taskId,
+    runner.snapshotDigest,
+    runner.commandId,
+    runner.candidateDigest,
+    runner.headCommit ?? "null",
+    runner.dirtyHashBefore,
+    runner.dirtyHashAfter,
+    runner.cwdRealpath,
+    JSON.stringify(runner.targetRealpaths),
+    runner.envMode,
+    JSON.stringify(runner.allowedBy),
+    runner.sourceMutationDetected ? "mutated" : "clean",
+    runner.timedOut ? "timed-out" : "not-timed-out",
+    runner.outputRedacted ? "redacted" : "not-redacted",
+    runner.signal ?? "",
+    runner.skippedReason ?? ""
+  );
+}
+
+function stripRunnerMetadata(report: VerificationCommandReport): VerificationCommandReport {
+  return {
+    command: report.command,
+    cwd: report.cwd,
+    packageManager: report.packageManager,
+    workspace: report.workspace,
+    packageRoot: report.packageRoot,
+    packageName: report.packageName,
+    scriptName: report.scriptName,
+    args: report.args,
+    exitCode: report.exitCode,
+    durationMs: report.durationMs,
+    stdoutSummary: report.stdoutSummary,
+    stderrSummary: report.stderrSummary,
+    outputSummary: report.outputSummary
+  };
+}
+
+function dirtyHashFromFreshness(freshness: { headCommit: string | null; dirtyFiles: string[]; dirtyFileHashes: Record<string, string> }): string {
+  return stableId(
+    "autoverify-dirty-tree",
+    freshness.headCommit ?? "null",
+    JSON.stringify({
+      dirtyFiles: [...freshness.dirtyFiles].sort(),
+      dirtyFileHashes: Object.fromEntries(Object.entries(freshness.dirtyFileHashes).sort(([a], [b]) => a.localeCompare(b)))
+    })
+  );
+}
+
+function autoVerifySnapshotDigest(snapshot: TaskSnapshot): string {
+  return stableId("autoverify-snapshot", snapshot.taskId, snapshot.createdAt, JSON.stringify(snapshot.plannedEditTargets), JSON.stringify(snapshot.plannedTests.map((test) => test.path)));
+}
+
+function absoluteSubpath(candidate: string, parent: string): boolean {
+  const relative = path.relative(path.resolve(parent), path.resolve(candidate));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function sanitizeCommandReportForDisplay(report: DisplayCommandReport, repoRoot: string): DisplayCommandReport {
   return {
     ...report,
     command: sanitizeCommandText(report.command, repoRoot),
@@ -1902,7 +2100,21 @@ function sanitizeCommandReportForDisplay(report: VerificationCommandReport, repo
     stdoutSummary: sanitizeSummary(report.stdoutSummary, repoRoot),
     stderrSummary: sanitizeSummary(report.stderrSummary, repoRoot),
     outputSummary: sanitizeSummary(report.outputSummary, repoRoot),
-    args: sanitizeCommandArgs(report.args, repoRoot)
+    args: sanitizeCommandArgs(report.args, repoRoot),
+    runner: sanitizeRunnerForDisplay(report.runner, repoRoot)
+  };
+}
+
+function sanitizeRunnerForDisplay(runner: AutoVerifyReportRunner | undefined, repoRoot: string): AutoVerifyReportRunner | undefined {
+  if (!runner) {
+    return undefined;
+  }
+  return {
+    ...runner,
+    cwdRealpath: sanitizePathField(runner.cwdRealpath, repoRoot) ?? runner.cwdRealpath,
+    targetRealpaths: runner.targetRealpaths.map((target) => sanitizePathField(target, repoRoot) ?? target),
+    allowedBy: runner.allowedBy.map((reason) => sanitizeSummary(reason, repoRoot) ?? reason),
+    skippedReason: sanitizeSummary(runner.skippedReason, repoRoot)
   };
 }
 
@@ -1982,7 +2194,8 @@ function sanitizeCommandArgs(args: string[] | undefined, repoRoot: string): stri
 
 function redactSecretText(value: string | undefined): string | undefined {
   return value
-    ?.replace(/((?:--?|[A-Z_]*)(?:token|secret|password|passwd|pwd|api[-_]?key|access[-_]?key|auth|credential|cookie)[A-Z0-9_-]*(?:=|\s+))([^\s;|)\]'",]+)/giu, "$1<redacted>")
+    ?.replace(/(^|[\s([,{])((?:--?[a-z0-9-]*(?:token|secret|password|passwd|pwd|api[-_]?key|access[-_]?key|auth|credential|cookie)[a-z0-9-]*)(?:=|\s+))([^\s;|)\]'",]+)/giu, "$1$2<redacted>")
+    .replace(/(\b[A-Z_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|PWD|API_?KEY|ACCESS_?KEY|AUTH|CREDENTIAL|COOKIE)[A-Z0-9_]*=)([^\s;|)\]'",]+)/gu, "$1<redacted>")
     .replace(/\b(Bearer)\s+[A-Za-z0-9._~+/-]+=*/giu, "$1 <redacted>");
 }
 
@@ -2038,6 +2251,10 @@ function formatCommandReport(report: VerificationCommandReport): string {
   return `${report.command} (${status}${cwd}${duration}${summary ? `; ${summary}` : ""})`;
 }
 
+function formatRunnerReviewEntry(entry: AutoVerifyRunnerReviewEntry): string {
+  return `${entry.covering ? "trusted" : "non-covering"} ${entry.command} (${entry.reason})`;
+}
+
 function formatCommandEnvelope(envelope: VerificationCommandEnvelope): string {
   const manager = envelope.packageManager ? `${envelope.packageManager}` : "unknown manager";
   const script = envelope.scriptName ? ` ${envelope.scriptName}` : "";
@@ -2078,6 +2295,44 @@ function compactSnapshotForData(snapshot: TaskSnapshot | undefined): unknown {
     requiredWorkflowCheckCount: snapshot.requiredWorkflowChecks.length,
     requiredDependencyCheckCount: snapshot.requiredDependencyChecks.length
   };
+}
+
+function buildAutoVerifyCandidates(input: { snapshot: TaskSnapshot | undefined; testsNotRun: TestRecommendation[]; reviewTargets: string[]; repoRoot: string }): AutoVerifyCandidate[] {
+  const snapshot = input.snapshot;
+  if (!snapshot) {
+    return [];
+  }
+  const snapshotDigest = autoVerifySnapshotDigest(snapshot);
+  return input.testsNotRun
+    .filter((test) => test.command && test.commandCwd && test.commandExecutable && test.commandArgs)
+    .map((test, index) => {
+      const command = test.command!;
+      const commandCwd = test.commandCwd!;
+      const commandExecutable = test.commandExecutable!;
+      const commandArgs = test.commandArgs!;
+      return {
+        schemaVersion: 1,
+        taskId: snapshot.taskId,
+        snapshotDigest,
+        commandId: stableId("autoverify-command", snapshot.taskId, command, commandCwd, JSON.stringify(commandArgs)),
+        command,
+        commandExecutable,
+        commandArgs,
+        commandCwd,
+        targetPaths: uniqueSorted([test.path, ...(test.provenance?.targetPaths ?? input.reviewTargets)]),
+        source: autoVerifyCandidateSource(test.provenance),
+        rank: test.rank - index / 100
+      } satisfies AutoVerifyCandidate;
+    });
+}
+
+function autoVerifyCandidateSource(provenance: TestRecommendationProvenance | undefined): AutoVerifyCandidate["source"] {
+  const sources = provenance?.sources ?? [];
+  if (sources.includes("explicit_target")) return "explicit";
+  if (sources.includes("authoritative_test_edge")) return "authoritative-test-edge";
+  if (sources.includes("derived_import") || sources.includes("derived_impact_expansion") || sources.includes("package_import") || sources.includes("outcome_history")) return "derived-impact";
+  if (sources.length > 0) return "heuristic";
+  return "legacy";
 }
 
 function stableSessionMemoryHash(value: string): string {

@@ -6,11 +6,25 @@ import { isSourcePath, shouldSkipPath } from "./language.js";
 import { normalizePath } from "./util.js";
 
 const MAX_DIRTY_CONTENT_HASH_BYTES = 2 * 1024 * 1024;
+export const MAX_INDEXED_SOURCE_BYTES = 2 * 1024 * 1024;
+
+export interface RepoSourceFile {
+  path: string;
+  absolutePath: string;
+  dirty: boolean;
+  sizeBytes: number;
+  contentHash: string;
+}
+
+export interface RepoSkippedFile extends RepoSourceFile {
+  reason: "source-file-too-large";
+}
 
 export interface RepoFiles {
   git: GitState;
   dirtyFileHashes: Record<string, string>;
-  files: Array<{ path: string; absolutePath: string; dirty: boolean; sizeBytes: number; contentHash: string; sourceText: string }>;
+  files: RepoSourceFile[];
+  skippedFiles: RepoSkippedFile[];
 }
 
 export interface RepoFreshnessFiles {
@@ -22,7 +36,8 @@ export async function discoverRepoFiles(repoRoot: string): Promise<RepoFiles> {
   const git = await getGitStateAsync(repoRoot);
   const dirtySet = new Set(git.dirtyFiles);
   const dirtyFileHashes = await hashDirtyFiles(git.repoRoot, git.dirtyFiles);
-  const selected = new Map<string, { path: string; absolutePath: string; dirty: boolean; sizeBytes: number; contentHash: string; sourceText: string }>();
+  const selected = new Map<string, RepoSourceFile>();
+  const skipped = new Map<string, RepoSkippedFile>();
 
   for (const file of git.files) {
     const normalized = normalizePath(file);
@@ -34,21 +49,31 @@ export async function discoverRepoFiles(repoRoot: string): Promise<RepoFiles> {
     if (!stat?.isFile()) {
       continue;
     }
-    const sourceText = await fs.readFile(absolutePath, "utf8");
+    if (stat.size > MAX_INDEXED_SOURCE_BYTES) {
+      skipped.set(normalized, {
+        path: normalized,
+        absolutePath,
+        dirty: dirtySet.has(normalized),
+        sizeBytes: stat.size,
+        contentHash: metadataHash(stat),
+        reason: "source-file-too-large"
+      });
+      continue;
+    }
     selected.set(normalized, {
       path: normalized,
       absolutePath,
       dirty: dirtySet.has(normalized),
       sizeBytes: stat.size,
-      contentHash: hashText(sourceText),
-      sourceText
+      contentHash: await hashFileContent(absolutePath)
     });
   }
 
   return {
     git,
     dirtyFileHashes,
-    files: [...selected.values()].sort((a, b) => a.path.localeCompare(b.path))
+    files: [...selected.values()].sort((a, b) => a.path.localeCompare(b.path)),
+    skippedFiles: [...skipped.values()].sort((a, b) => a.path.localeCompare(b.path))
   };
 }
 
@@ -60,8 +85,12 @@ export async function discoverRepoFreshness(repoRoot: string): Promise<RepoFresh
   };
 }
 
-function hashText(sourceText: string): string {
-  return createHash("sha1").update(sourceText).digest("hex");
+async function hashFileContent(filePath: string): Promise<string> {
+  return createHash("sha1").update(await fs.readFile(filePath)).digest("hex");
+}
+
+function metadataHash(stat: { size: number; mtimeMs: number }): string {
+  return `metadata:${stat.size}:${Math.trunc(stat.mtimeMs)}`;
 }
 
 async function hashDirtyFiles(repoRoot: string, dirtyFiles: string[]): Promise<Record<string, string>> {

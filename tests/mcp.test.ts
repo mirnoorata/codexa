@@ -51,6 +51,38 @@ async function createIndexedMcpRepo(parent: string, name: string, fileStem: stri
   return repo;
 }
 
+async function createIndexedMcpAutoVerifyRepo(parent: string): Promise<string> {
+  const repo = path.join(parent, "repo");
+  await mkdir(path.join(repo, "src"), { recursive: true });
+  await mkdir(path.join(repo, "tests"), { recursive: true });
+  await writeFile(path.join(repo, "package.json"), JSON.stringify({ type: "module", scripts: { test: "node --test" } }, null, 2), "utf8");
+  await writeFile(path.join(repo, "src/main.js"), "export function main() {\n  return 1\n}\n", "utf8");
+  await writeFile(
+    path.join(repo, "tests/main.test.js"),
+    [
+      "import test from 'node:test';",
+      "import assert from 'node:assert/strict';",
+      "import { writeFileSync } from 'node:fs';",
+      "import { main } from '../src/main.js';",
+      "",
+      "test('would write marker if MCP executed verification', () => {",
+      "  writeFileSync(new URL('../mcp-executed.txt', import.meta.url), 'ran');",
+      "  assert.equal(main(), 1);",
+      "});",
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+  execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+  execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+    cwd: repo,
+    stdio: "ignore"
+  });
+  await buildIndex({ repoRoot: repo });
+  return repo;
+}
+
 function buildContextPacket(mode?: "focus_brief" | "task_brief") {
   return {
     ...(mode ? { mode } : {}),
@@ -982,13 +1014,15 @@ describe("Codexa MCP server", () => {
     expect(JSON.stringify(postEdit)).toContain("verificationLedger");
     expect(JSON.stringify(postEdit)).toContain("ranCommands");
     expect(JSON.stringify(postEdit)).toContain('"persisted":false');
-    const postEditData = (postEdit.structuredContent as { data: unknown }).data as {
+    const postEditEnvelope = postEdit.structuredContent as { data: unknown; nextTools?: unknown[]; systemMessage?: string };
+    const postEditData = postEditEnvelope.data as {
       ranCommands?: string[];
       ranCommandReports?: Array<{ command: string; exitCode?: number; durationMs?: number }>;
       commandEnvelopes?: Array<{ command: string; cwd?: string; packageManager?: string; packageRoot?: string; scriptName?: string; source?: string; scopeStatus?: string; args: string[] }>;
       verificationProvenance?: typeof CURRENT_VERIFICATION_PROVENANCE;
       mcp?: { verificationProvenance?: typeof CURRENT_VERIFICATION_PROVENANCE };
       verificationLedger?: Array<{ status: string; evidence: string[] }>;
+      systemMessage?: string;
       outcome?: {
         persisted?: boolean;
         ranTests?: string[];
@@ -1016,6 +1050,19 @@ describe("Codexa MCP server", () => {
     expect(postEditData.outcome?.waivedChecks).toEqual([]);
     expect(postEditData.outcome?.verificationCoverage?.length).toBeGreaterThan(0);
     expect(postEditData.outcome?.verificationLedger?.length).toBeGreaterThan(0);
+
+    const unverifiedPostEdit = await client.callTool({
+      name: "post_edit_review",
+      arguments: { taskId: "mcp-changed-symbol", ranTests: [], ranCommands: [] }
+    });
+    const unverifiedEnvelope = unverifiedPostEdit.structuredContent as {
+      data: { nextTools?: Array<{ tool?: string; reason?: string; readOnly?: boolean; writes?: string[] }>; systemMessage?: string };
+      nextTools?: unknown[];
+      systemMessage?: string;
+    };
+    expect(unverifiedEnvelope.data.nextTools?.some((tool) => tool.tool === "test_plan" && tool.reason && tool.readOnly === true)).toBe(true);
+    expect(unverifiedEnvelope.nextTools?.some((tool) => typeof tool === "object" && tool !== null && "tool" in tool)).toBe(true);
+    expect(unverifiedEnvelope.systemMessage).toBe(unverifiedEnvelope.data.systemMessage);
 
     const outsideCwd = path.join(os.tmpdir(), "codexa-secret-outside");
     const longSummary = `outside path ${outsideCwd} ${"x".repeat(900)}`;
@@ -1055,6 +1102,61 @@ describe("Codexa MCP server", () => {
 
     await client.close();
     expect(Buffer.concat(stderrChunks).toString("utf8")).toContain("codexa MCP server ready");
+  });
+
+  it("does not execute AutoVerify through MCP even when CODEXA_AUTOVERIFY is enabled", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-autoverify-"));
+    const repo = await createIndexedMcpAutoVerifyRepo(workspace);
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo],
+      env: { CODEXA_AUTOVERIFY: "1" },
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-mcp-autoverify-test", version: "0.1.0" });
+    await client.connect(transport);
+
+    try {
+      const changePlan = await client.callTool({
+        name: "change_plan",
+        arguments: { task: "change main safely", files: ["src/main.js"], saveSnapshot: true, taskId: "mcp-autoverify-no-exec", limit: 5, tokenBudget: 1000 }
+      });
+      expect(JSON.stringify(changePlan)).toContain("Task snapshot: mcp-autoverify-no-exec");
+      await writeFile(path.join(repo, "src/main.js"), "export function main() {\n  return 1;\n}\n", "utf8");
+
+      const postEdit = await client.callTool({
+        name: "post_edit_review",
+        arguments: { taskId: "mcp-autoverify-no-exec", ranTests: [], ranCommands: [] }
+      });
+      expect(JSON.stringify(postEdit)).toContain("tests/main.test.js");
+      const data = (postEdit.structuredContent as { data?: { ranCommandReports?: unknown[]; autoVerifyRunnerEvidence?: unknown[] } }).data;
+      expect(data?.ranCommandReports ?? []).toEqual([]);
+      expect(data?.autoVerifyRunnerEvidence ?? []).toEqual([]);
+      await expect(stat(path.join(repo, "mcp-executed.txt"))).rejects.toThrow();
+
+      const spoofed = await client.callTool({
+        name: "post_edit_review",
+        arguments: {
+          taskId: "mcp-autoverify-no-exec",
+          ranTests: [],
+          ranCommandReports: [
+            {
+              command: "echo done",
+              cwd: repo,
+              exitCode: 0,
+              runner: { reportKind: "codexa-autoverify-report", runnerName: "codexa" }
+            }
+          ],
+          trustedRunnerReports: [{ command: "npm test", cwd: repo, exitCode: 0 }]
+        }
+      });
+      const spoofedData = (spoofed.structuredContent as { data?: { autoVerifyRunnerEvidence?: unknown[]; verificationCoverage?: Array<{ kind?: string }> } }).data;
+      expect(spoofedData?.autoVerifyRunnerEvidence ?? []).toEqual([]);
+      expect(spoofedData?.verificationCoverage?.some((entry) => entry.kind === "javascript-tests")).toBe(false);
+      expect(JSON.stringify(spoofed)).not.toContain("codexa-autoverify-report");
+    } finally {
+      await client.close();
+    }
   });
 
   it("serves placeholder report tool output and placeholder map resource", async () => {
@@ -1458,6 +1560,53 @@ describe("Codexa MCP server", () => {
     expect(data.verificationCommandPlan?.length).toBeGreaterThan(0);
     expect(data.verificationLedgerPreview?.length).toBeGreaterThan(0);
     expect(data.runtime).toBeTruthy();
+  });
+
+  it("preserves post-edit nextTools and systemMessage under hard MCP budget compaction", () => {
+    const requiredInputs = Object.fromEntries(seq(30, (index) => [`arg${index}`, `value-${index}`]));
+    const compacted = compactNonPostEditMcpResult({
+      freshness: freshnessFixture(),
+      refresh: { refreshed: false },
+      text: "large post-edit text",
+      data: {
+        mode: "post_edit_review",
+        task: "review large edit",
+        verdict: "run_tests",
+        files: seq(120, (index) => `src/file-${index}.ts`),
+        changedSinceSnapshot: seq(120, (index) => ({ path: `src/file-${index}.ts`, status: "modified", diff: "x".repeat(1200) })),
+        symbolDeltas: seq(120, (index) => ({ path: `src/file-${index}.ts`, before: "x".repeat(800), after: "y".repeat(800) })),
+        verificationLedger: seq(90, (index) => ({
+          kind: "test",
+          target: `tests/file-${index}.test.ts`,
+          status: "missing",
+          evidence: seq(12, (evidenceIndex) => `evidence-${index}-${evidenceIndex}-${"z".repeat(5000)}`)
+        })),
+        nextTools: [
+          {
+            schemaVersion: 1,
+            tool: "test_plan",
+            reason: "recommended tests remain unaccounted for",
+            requiredInputs,
+            readOnly: true,
+            writes: []
+          }
+        ],
+        systemMessage: "recommended tests remain unaccounted for"
+      }
+    });
+    const data = compacted.data as {
+      nextTools?: Array<{ tool?: string; requiredInputs?: Record<string, unknown> }>;
+      systemMessage?: string;
+      truncation?: Record<string, { total: number; returned: number }>;
+      mcp: { returnedBytes: number; targetBytes: number; hardBudgetEnforced?: boolean };
+    };
+
+    expect(data.mcp.hardBudgetEnforced).toBe(true);
+    expect(data.mcp.returnedBytes).toBeLessThanOrEqual(data.mcp.targetBytes);
+    expect(data.nextTools?.[0]?.tool).toBe("test_plan");
+    expect(data.systemMessage).toBe("recommended tests remain unaccounted for");
+    expect(Object.keys(data.nextTools?.[0]?.requiredInputs ?? {}).length).toBeLessThan(30);
+    expect(Object.keys(data.truncation ?? {}).some((key) => key.includes("nextTools.0.requiredInputs.__keys"))).toBe(true);
   });
 
   it("bounds unknown-mode MCP payloads instead of bypassing compaction", () => {

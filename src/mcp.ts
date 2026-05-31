@@ -127,7 +127,10 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
     missing: z.boolean(),
     stale: z.boolean(),
     reason: z.string(),
-    parserErrorCount: z.number()
+    parserErrorCount: z.number(),
+    externalRiskReportHashes: z.record(z.string(), z.string()).optional(),
+    indexedExternalRiskReportHashes: z.record(z.string(), z.string()).optional(),
+    externalRiskReportDiagnostics: z.array(z.object({ path: z.string(), reason: z.string(), sizeBytes: z.number().optional(), limitBytes: z.number().optional() })).optional()
   });
   const refreshSchema = z.object({
     refreshed: z.boolean(),
@@ -187,6 +190,7 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
     verificationProvenance: verificationProvenanceSchema,
     truncation: mcpTruncationSchema.optional(),
 	    nextTools: z.array(guidedNextToolSchema.or(z.string())).optional(),
+    systemMessage: z.string().optional(),
     relatedResources: z.array(mcpRelatedResourceSchema).optional()
   };
   const sourceContextAnnotations = {
@@ -1035,7 +1039,7 @@ function enforceMcpStructuredBudget(
   const hardCompacted = compactGenericValue(dataWithoutMetrics, { arrayLimit: 12, objectKeyLimit: 40, maxDepth: 6 }, hardTruncation);
   const hardClamped = clampLargeStrings(hardCompacted, 240);
   const hardRecord = isRecord(hardClamped.value) ? hardClamped.value : { value: hardClamped.value };
-  const hardData = withMergedTruncation(typeof hardRecord.mode === "string" ? hardRecord : { mode, ...hardRecord }, hardTruncation);
+  const hardData = withMergedTruncation(reattachGuidanceFields(typeof hardRecord.mode === "string" ? hardRecord : { mode, ...hardRecord }, dataWithoutMetrics, hardTruncation), hardTruncation);
   const hardResult = attachMcpMetrics(hardData, {
     ...structuredData,
     compacted: true,
@@ -1079,6 +1083,8 @@ function enforceMcpStructuredBudget(
       targetCandidates: Array.isArray(dataWithoutMetrics.targetCandidates) ? dataWithoutMetrics.targetCandidates.slice(0, 8).map(compactTargetCandidate) : dataWithoutMetrics.targetCandidates,
       packetVerdict: dataWithoutMetrics.packetVerdict,
       verificationProvenance: dataWithoutMetrics.verificationProvenance,
+      nextTools: compactNextTools(dataWithoutMetrics.nextTools, fallbackTruncation),
+      systemMessage: stringValue(dataWithoutMetrics.systemMessage),
       runtime: compactSession(dataWithoutMetrics.runtime),
       truncation: fallbackTruncation
     },
@@ -1103,6 +1109,8 @@ function buildMcpBudgetSummaryData(data: Record<string, unknown>, mode: string, 
     snapshotBlock: compactSnapshotBlock(data.snapshotBlock),
     targetCandidates: compactSummaryArray("targetCandidates", data.targetCandidates, 8, truncation, compactTargetCandidate),
     packetVerdict: data.packetVerdict,
+    nextTools: compactNextTools(data.nextTools, truncation),
+    systemMessage: stringValue(data.systemMessage),
     files: compactSummaryArray("files", data.files, 12, truncation),
     plannedEditTargets: compactSummaryArray("plannedEditTargets", data.plannedEditTargets, 12, truncation),
     changedFiles: compactSummaryArray("changedFiles", data.changedFiles, 12, truncation),
@@ -1118,6 +1126,15 @@ function buildMcpBudgetSummaryData(data: Record<string, unknown>, mode: string, 
     snapshot: compactBudgetSnapshot(data.snapshot, truncation),
     runtime: compactSession(data.runtime),
     truncation
+  };
+}
+
+function reattachGuidanceFields(record: Record<string, unknown>, source: Record<string, unknown>, truncation: McpTruncation): Record<string, unknown> {
+  const nextTools = compactNextTools(source.nextTools, truncation);
+  return {
+    ...record,
+    ...(nextTools === undefined ? {} : { nextTools }),
+    ...(typeof source.systemMessage === "string" ? { systemMessage: source.systemMessage } : {})
   };
 }
 
@@ -1261,6 +1278,8 @@ export function compactPostEditMcpResult(result: QueryResult): QueryResult {
       quality: data.quality,
       driftReasons: data.driftReasons,
       nextActions: data.nextActions,
+      nextTools: compactNextTools(data.nextTools, truncation),
+      systemMessage: stringValue(data.systemMessage),
       truncation: Object.keys(truncation).length > 0 ? truncation : undefined,
       snapshotLoad: compactSnapshotLoad(data.snapshotLoad),
       snapshot: snapshot
@@ -1379,6 +1398,8 @@ function compactContextPacketData(data: Record<string, unknown>, mode: string): 
     worktree: data.worktree,
     worktreeDegradationReasons: data.worktreeDegradationReasons,
     gaps: limit("gaps", data.gaps, 30),
+    nextTools: compactNextTools(data.nextTools, limit.truncation),
+    systemMessage: stringValue(data.systemMessage),
     session: compactSession(data.session),
     sessionMemory: data.sessionMemory,
     runtime: data.runtime,
@@ -1407,6 +1428,8 @@ function compactFocusBriefData(data: Record<string, unknown>): McpCompactionResu
     worktree: data.worktree,
     worktreeDegradationReasons: data.worktreeDegradationReasons,
     gaps: limit("gaps", data.gaps, 30),
+    nextTools: compactNextTools(data.nextTools, limit.truncation),
+    systemMessage: stringValue(data.systemMessage),
     runtime: data.runtime,
     truncation: Object.keys(limit.truncation).length > 0 ? limit.truncation : undefined
   };
@@ -1437,6 +1460,8 @@ function compactChangePlanData(data: Record<string, unknown>): McpCompactionResu
     requiredWorkflowChecks: limit("requiredWorkflowChecks", data.requiredWorkflowChecks, 20, compactCheck),
     requiredDependencyChecks: limit("requiredDependencyChecks", data.requiredDependencyChecks, 30, compactCheck),
     sessionMemory: data.sessionMemory,
+    nextTools: compactNextTools(data.nextTools, limit.truncation),
+    systemMessage: stringValue(data.systemMessage),
     snapshot: snapshot
       ? {
           taskId: snapshot.taskId,
@@ -1576,6 +1601,8 @@ function compactTestPlanData(data: Record<string, unknown>): McpCompactionResult
     worktree: data.worktree,
     worktreeDegradationReasons: data.worktreeDegradationReasons,
     gaps: limit("gaps", data.gaps, 30),
+    nextTools: compactNextTools(data.nextTools, limit.truncation),
+    systemMessage: stringValue(data.systemMessage),
     runtime: data.runtime,
     truncation: Object.keys(limit.truncation).length > 0 ? limit.truncation : undefined
   };
@@ -1674,6 +1701,35 @@ function compactTestRecommendation(value: unknown): unknown {
   };
 }
 
+function compactNextTools(value: unknown, truncation?: McpTruncation, pathName = "nextTools"): unknown {
+  if (!Array.isArray(value)) {
+    return value;
+  }
+  if (value.length > 8 && truncation) {
+    truncation[pathName] = { total: value.length, returned: 8 };
+  }
+  return value.slice(0, 8).map((entry, index) => compactNextTool(entry, truncation, `${pathName}.${index}`));
+}
+
+function compactNextTool(value: unknown, truncation?: McpTruncation, pathName = "nextTools.entry"): unknown {
+  if (typeof value === "string") {
+    return value;
+  }
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return value;
+  }
+  const record = value as Record<string, unknown>;
+  const localTruncation: McpTruncation = {};
+  return {
+    schemaVersion: record.schemaVersion,
+    tool: record.tool,
+    reason: typeof record.reason === "string" ? record.reason.slice(0, 240) : record.reason,
+    requiredInputs: compactGenericValue(record.requiredInputs, { arrayLimit: 8, objectKeyLimit: 16, maxDepth: 3 }, truncation ?? localTruncation, `${pathName}.requiredInputs`),
+    readOnly: record.readOnly,
+    writes: limitArray(record.writes, 8)
+  };
+}
+
 function compactCommandEnvelope(value: unknown): unknown {
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     return value;
@@ -1755,7 +1811,8 @@ function redactMcpText(value: string | undefined): string | undefined {
 
 function redactSecretText(value: string | undefined): string | undefined {
   return value
-    ?.replace(/((?:--?|[A-Z_]*)(?:token|secret|password|passwd|pwd|api[-_]?key|access[-_]?key|auth|credential|cookie)[A-Z0-9_-]*(?:=|\s+))([^\s;|)\]'",]+)/giu, "$1<redacted>")
+    ?.replace(/(^|[\s([,{])((?:--?[a-z0-9-]*(?:token|secret|password|passwd|pwd|api[-_]?key|access[-_]?key|auth|credential|cookie)[a-z0-9-]*)(?:=|\s+))([^\s;|)\]'",]+)/giu, "$1$2<redacted>")
+    .replace(/(\b[A-Z_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|PWD|API_?KEY|ACCESS_?KEY|AUTH|CREDENTIAL|COOKIE)[A-Z0-9_]*=)([^\s;|)\]'",]+)/gu, "$1<redacted>")
     .replace(/\b(Bearer)\s+[A-Za-z0-9._~+/-]+=*/giu, "$1 <redacted>");
 }
 
@@ -2186,7 +2243,9 @@ function compactSnapshotLoad(value: unknown): unknown {
     path: typeof record.path === "string" ? record.path.split("/.codex/").pop()?.replace(/^/, ".codex/") ?? record.path : record.path,
     missingReason: record.missingReason,
     error: record.error,
-    recoveredLatest: record.recoveredLatest
+    recoveredLatest: record.recoveredLatest,
+    ambiguousLatest: record.ambiguousLatest,
+    ambiguityReason: record.ambiguityReason
   };
 }
 
@@ -2217,6 +2276,7 @@ function buildMcpEnvelope(result: { data: unknown; freshness: unknown; refresh?:
   const record = isRecord(data) ? data : {};
   const mode = typeof record.mode === "string" ? record.mode : "unknown";
   const lifecycle = lifecycleForMcpData(mode, record);
+  const guidance = guidanceForMcpEnvelope(record, lifecycle.nextTools);
   const relatedResources = relatedResourcesForMode(mode);
   const worktree = worktreeForMcpData(record);
   const toolPolicy = mcpToolPolicyForTool(toolName, { ...policyOptions, data: record });
@@ -2233,8 +2293,19 @@ function buildMcpEnvelope(result: { data: unknown; freshness: unknown; refresh?:
     worktree,
     verificationProvenance: record.verificationProvenance ?? CURRENT_VERIFICATION_PROVENANCE,
     truncation: record.truncation,
-	    nextTools: Array.isArray(record.nextTools) ? record.nextTools : lifecycle.nextTools,
+    nextTools: guidance.nextTools,
+    systemMessage: guidance.systemMessage,
     relatedResources
+  };
+}
+
+function guidanceForMcpEnvelope(record: Record<string, unknown>, lifecycleNextTools: string[]): { nextTools: unknown[]; systemMessage?: string } {
+  const explicitNextTools = Array.isArray(record.nextTools);
+  const nextTools = explicitNextTools ? (compactNextTools(record.nextTools) as unknown[]) : lifecycleNextTools;
+  const explicitSystemMessage = stringValue(record.systemMessage);
+  return {
+    nextTools,
+    systemMessage: explicitSystemMessage ?? (explicitNextTools ? undefined : lifecycleNextTools[0])
   };
 }
 

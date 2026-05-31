@@ -558,11 +558,28 @@ evidence, and records compact outcome data in
 `.codex/cache/codexa-outcomes/`. Eval runs persist aggregate calibration data
 under `.codex/cache/codexa-evals/` so noisy cases, missing tests, heuristic-heavy
 packets, and raw-search-better cases become regression material.
-AutoVerify execution from hooks is disabled unless the user environment sets
-`CODEXA_AUTOVERIFY=1` or `CODEXA_AUTOVERIFY=true`; repo-local config cannot opt
-the hook into spawning test commands. When enabled, AutoVerify still runs only
-allowlisted targeted test commands and feeds structured command reports back
-into `post_edit_review`.
+AutoVerify execution from hooks is disabled unless user-owned autonomy is
+`full-access` or the user environment sets `CODEXA_AUTOVERIFY=1` or
+`CODEXA_AUTOVERIFY=true`; repo-local config cannot opt the hook into spawning
+test commands. `codexa autonomy <repo> --mode full-access` stores that policy
+outside the repo for no-prompt trusted operation. When enabled, AutoVerify still
+runs only allowlisted targeted test commands and feeds structured command
+reports back into `post_edit_review`. The runner uses a minimal environment,
+does not inherit
+secret env vars, `CODEXA_AUTOVERIFY`, `NODE_OPTIONS`, or Python path overrides,
+and runs with isolated home/config/cache paths. It rejects package lifecycle
+hooks, package-manager shell execution, unsafe executables, and
+code-loading/config flags. Safe package scripts are inspected and then lowered
+to direct runner commands, resolving validated Node package runners from the
+package-local `node_modules/.bin` entry or from a safe system path, so project
+`.npmrc`/package-manager shell configuration is not used for execution. This is
+not a sandbox: repo test code still executes locally with the user's filesystem
+permissions.
+Any source/test/Codexa-provenance mutation detected after execution is marked
+non-covering rather than prevented. Trusted runner treatment is internal to the
+hook's final review pass: public CLI/MCP `ranCommandReports` are stripped of
+runner metadata, and MCP `post_edit_review` never spawns commands even if the
+server environment has AutoVerify enabled.
 
 ### Benchmark Integrity
 
