@@ -8,6 +8,7 @@ import { addContextPackImpactExpansion, verificationRecipes } from "./impact.js"
 import { lspAssistForFiles, lspOptionsFromQueryOptions } from "../lsp/assist.js";
 import { betterTier, clampInt, confidenceTier, fitLinesToTokenBudget, focusTierCounts, formatReasons, formatRecipes, limitTextToTokens, tierScore } from "./formatting.js";
 import { formatWorkflowSummary, recommendNextCodexaCall } from "./graph.js";
+import { nextTool } from "./next-tools.js";
 import { assessContextQuality, formatContextQuality, formatValueEstimate, type ContextQuality, valueEstimate } from "./quality.js";
 import { baselineSearchSummary } from "./raw-search.js";
 import { codeLikeQueryFromTask, fileStemQueryTerms, matchReason, matchScore, uniqueFiles } from "./search.js";
@@ -317,6 +318,15 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     limit: 6
   });
   const contextSources = summarizeContextSources(focusEntries);
+  const nextTools = [
+    packetIntent?.verdict === "needs-target" || packetIntent?.verdict === "orientation-only"
+      ? nextTool(packetIntent.recommendedNextTool, "context packet needs a narrower edit target", { task: contextInput.task ?? explicitQuery })
+      : undefined,
+    focusPaths.length > 0
+      ? nextTool("change_plan", "save the focused edit plan and planned verification before editing", { task: contextInput.task, files: focusPaths.slice(0, 8), changeType, saveSnapshot: true }, true, [".codex/cache/codexa-task-snapshots"])
+      : undefined,
+    displayedTests.length > 0 ? nextTool("test_plan", "inspect targeted verification for the focused files", { files: focusPaths.slice(0, 8) }) : undefined
+  ].filter((tool): tool is ReturnType<typeof nextTool> => Boolean(tool));
 
   const text = [
     freshnessBanner(freshness, refresh),
@@ -411,8 +421,10 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       verificationCommandPlan: commandPlan,
       value,
       quality,
-      gaps,
-      session: { commandBudgetMs: session.commandBudgetMs, maxResultBytes: session.maxResultBytes, maxResults: session.maxResults, provenance: session.provenance }
+	      gaps,
+	      nextTools,
+	      systemMessage: nextTools[0]?.reason,
+	      session: { commandBudgetMs: session.commandBudgetMs, maxResultBytes: session.maxResultBytes, maxResults: session.maxResults, provenance: session.provenance }
     }
   };
 }

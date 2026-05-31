@@ -1,7 +1,10 @@
 import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
+import { impactQuery } from "../src/query/impact.js";
+import { symbolContextQuery } from "../src/query/inspection.js";
 import { updateStaticAnalysisReports } from "../src/static-analysis.js";
 
 describe("static-analysis scanner runners", () => {
@@ -153,5 +156,117 @@ describe("static-analysis scanner runners", () => {
         process.env.PATH = oldPath;
       }
     }
+  });
+
+  it("imports bounded external symbol reports into degraded symbol context and impact", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-static-analysis-symbol-report-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdir(path.join(repo, "src"), { recursive: true });
+    await writeFile(path.join(repo, "src/lib.rs"), "pub fn start_server() {}\n", "utf8");
+    await writeFile(path.join(repo, "src/main.rs"), "fn main() { crate::start_server(); }\n", "utf8");
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], { cwd: repo, stdio: "ignore" });
+
+    const reportPath = path.join(repo, "reports", "symbols-source.json");
+    await mkdir(path.dirname(reportPath), { recursive: true });
+    await writeFile(
+      reportPath,
+      JSON.stringify(
+        {
+          schemaVersion: 1,
+          tool: "fixture-symbol-tool",
+          language: "rust",
+          symbols: [
+            { id: "main", name: "main", qualifiedName: "crate::main", kind: "function", path: "src/main.rs", line: 1 },
+            { id: "start", name: "start_server", qualifiedName: "crate::start_server", kind: "function", path: "src/lib.rs", line: 1, exported: true, confidence: "authoritative" }
+          ],
+          relationships: [
+            { kind: "CALLS", fromSymbol: "main", fromPath: "src/main.rs", toSymbol: "start", toPath: "src/lib.rs", line: 1, confidence: "authoritative", reason: "fixture call graph" }
+          ]
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    const result = await updateStaticAnalysisReports(repo, { symbolReports: [reportPath], index: true });
+    expect(result.reports.some((report) => report.kind === "symbol-report")).toBe(true);
+    expect(result.index?.files.some((file) => file.path === "src/lib.rs" && file.language === "rust" && file.source === "static-analysis")).toBe(true);
+    const symbol = result.index?.symbols.find((candidate) => candidate.qualifiedName === "crate::start_server");
+    expect(symbol?.confidence).toBe("derived");
+
+    const context = await symbolContextQuery(repo, symbol!.id, { autoRefresh: false }, { depth: 2 });
+    const contextData = context.data as { edgeEvidence?: Array<{ source: string; confidence: string; degraded: boolean }>; callers?: unknown[] };
+    expect(contextData.callers?.length).toBeGreaterThan(0);
+    expect(contextData.edgeEvidence?.some((edge) => edge.source === "static-analysis" && edge.confidence === "derived")).toBe(true);
+
+    const impact = await impactQuery(repo, { symbol: symbol!.id }, { autoRefresh: false });
+    const impactData = impact.data as {
+      readFirstFiles?: string[];
+      edgeEvidence?: Array<{ id: string; source: string }>;
+      affectedFiles?: Array<{ file: { path: string }; evidenceIds?: string[] }>;
+    };
+    expect(impactData.readFirstFiles).toContain("src/lib.rs");
+    expect(impactData.readFirstFiles).toContain("src/main.rs");
+    expect(impactData.edgeEvidence?.some((edge) => edge.source === "static-analysis")).toBe(true);
+    const staticAnalysisEvidenceIds = new Set(impactData.edgeEvidence?.filter((edge) => edge.source === "static-analysis").map((edge) => edge.id));
+    const mainImpactEntry = impactData.affectedFiles?.find((entry) => entry.file.path === "src/main.rs");
+    expect(mainImpactEntry?.evidenceIds?.some((id) => staticAnalysisEvidenceIds.has(id))).toBe(true);
+  });
+
+  it("keeps path-level report relationships from becoming direct symbol callers", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-static-analysis-symbol-path-edge-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdir(path.join(repo, "src"), { recursive: true });
+    await writeFile(path.join(repo, "src/lib.rs"), "pub fn used() {}\npub fn unused() {}\n", "utf8");
+    await writeFile(path.join(repo, "src/main.rs"), "fn main() { crate::used(); }\n", "utf8");
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], { cwd: repo, stdio: "ignore" });
+
+    const reportPath = path.join(repo, "reports", "symbols-source.json");
+    await mkdir(path.dirname(reportPath), { recursive: true });
+    await writeFile(
+      reportPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        tool: "fixture-symbol-tool",
+        language: "rust",
+        symbols: [
+          { id: "used", name: "used", qualifiedName: "crate::used", kind: "function", path: "src/lib.rs", line: 1 },
+          { id: "unused", name: "unused", qualifiedName: "crate::unused", kind: "function", path: "src/lib.rs", line: 2 }
+        ],
+        relationships: [{ kind: "CALLS", fromPath: "src/main.rs", toPath: "src/lib.rs", line: 1, confidence: "derived", reason: "path-only call graph" }]
+      }),
+      "utf8"
+    );
+    const result = await updateStaticAnalysisReports(repo, { symbolReports: [reportPath], index: true });
+    const unused = result.index?.symbols.find((candidate) => candidate.qualifiedName === "crate::unused");
+    const context = await symbolContextQuery(repo, unused!.id, { autoRefresh: false }, { depth: 1 });
+    expect((context.data as { callers?: unknown[] }).callers).toEqual([]);
+    const impact = await impactQuery(repo, { symbol: unused!.id }, { autoRefresh: false });
+    expect((impact.data as { readFirstFiles?: string[] }).readFirstFiles).not.toContain("src/main.rs");
+  });
+
+  it("rejects malformed symbol report relationships during strict import", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-static-analysis-symbol-invalid-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdir(path.join(repo, "src"), { recursive: true });
+    await writeFile(path.join(repo, "src/lib.rs"), "pub fn used() {}\n", "utf8");
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], { cwd: repo, stdio: "ignore" });
+    const reportPath = path.join(repo, "bad-symbols.json");
+    await writeFile(
+      reportPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        tool: "fixture-symbol-tool",
+        language: "rust",
+        symbols: [{ id: "used", name: "used", qualifiedName: "crate::used", kind: "function", path: "src/lib.rs", line: 1 }],
+        relationships: [{ kind: "USES_WRONG_KIND", fromPath: "src/lib.rs", toPath: "src/lib.rs" }]
+      }),
+      "utf8"
+    );
+    await expect(updateStaticAnalysisReports(repo, { symbolReports: [reportPath], index: false })).rejects.toThrow(/relationships\[0\]\.kind is unsupported/);
   });
 });

@@ -1,10 +1,12 @@
 import { isTestPath, languageForPath } from "../language.js";
-import type { ChangeType, CodexaIndex, Confidence, EvidenceTier, FileFact, GraphEdgeFact, QueryOptions, QueryResult, SymbolFact } from "../types.js";
+import type { ChangeType, CodexaIndex, Confidence, EdgeEvidenceV1, EvidenceTier, FileFact, GraphEdgeFact, QueryOptions, QueryResult, SymbolFact } from "../types.js";
 import { limitText, uniqueSorted } from "../util.js";
 import { formatDiffGroups, formatGaps, groupDiffImpact, indexGaps } from "./diff.js";
 import { compactChangedSymbol, compactDiffGroup, compactFileFact, compactSymbolFact } from "./compact-data.js";
 import { confidenceTier, tierScore, tierCounts, formatReasons, formatRecipes, clampInt } from "./formatting.js";
 import { graphEdgeSort, isImpactGraphEdge } from "./graph.js";
+import { edgeEvidenceForGraphEdges } from "./edge-evidence.js";
+import { nextTool } from "./next-tools.js";
 import { assessContextQuality, formatContextQuality, formatValueEstimate, type ContextQuality, valueEstimate } from "./quality.js";
 import { freshnessBanner, ambiguityResult } from "./runtime.js";
 import { ensureQuerySession, type QuerySessionInput } from "./session.js";
@@ -82,7 +84,7 @@ export async function impactQuery(
     }
   }
 
-  addTransitiveImpact(index, affectedFiles, maxDepth);
+  addTransitiveImpact(index, affectedFiles, maxDepth, symbol ? { initialPath: symbol.path, symbolIds: new Set([symbol.id]) } : undefined);
   addRecommendedTestsToImpact(index, affectedFiles, [...affectedFiles.keys()], repoRoot, maxDepth + 1);
   const ranked = [...affectedFiles.values()].sort((a, b) => impactSortScore(b) - impactSortScore(a) || b.file.rank - a.file.rank || a.file.path.localeCompare(b.file.path));
   const evidenceTiers = tierImpactEntries(ranked);
@@ -138,6 +140,14 @@ export async function impactQuery(
     .filter((line): line is string => line !== undefined)
     .join("\n");
   const readFirstFiles = fanout.readFirst.map((entry) => entry.file.path);
+  const evidenceEdges = impactEvidenceEdges(index, ranked.map((entry) => entry.file.path), symbol?.id).slice(0, 120);
+  const edgeEvidence = edgeEvidenceForGraphEdges(evidenceEdges, freshness, 120);
+  const evidenceIdsByPath = impactEvidenceIdsByPath(edgeEvidence);
+  const nextTools = [
+    symbol ? nextTool("symbol_context", "inspect symbol neighborhood with relationship evidence", { symbol: symbol.id, depth: maxDepth }) : undefined,
+    readFirstFiles.length > 0 ? nextTool("change_plan", "save an edit-ready plan before changing these impact targets", { files: readFirstFiles.slice(0, 8), changeType, saveSnapshot: true }, true, [".codex/cache/codexa-task-snapshots"]) : undefined,
+    tests.length > 0 ? nextTool("test_plan", "choose targeted verification for the impact set", { files: readFirstFiles.slice(0, 8) }) : undefined
+  ].filter((tool): tool is ReturnType<typeof nextTool> => Boolean(tool));
   return {
     freshness,
     refresh,
@@ -149,22 +159,25 @@ export async function impactQuery(
       depth: maxDepth,
       readFirstFiles,
       selectedFiles: readFirstFiles,
-      affectedFiles: ranked.map(compactImpactEntry),
+      affectedFiles: ranked.map((entry) => compactImpactEntry(entry, evidenceIdsByPath)),
       evidenceTiers: {
-        authoritative: evidenceTiers.authoritative.map(compactImpactEntry),
-        derived: evidenceTiers.derived.map(compactImpactEntry),
-        heuristic: evidenceTiers.heuristic.map(compactImpactEntry)
+        authoritative: evidenceTiers.authoritative.map((entry) => compactImpactEntry(entry, evidenceIdsByPath)),
+        derived: evidenceTiers.derived.map((entry) => compactImpactEntry(entry, evidenceIdsByPath)),
+        heuristic: evidenceTiers.heuristic.map((entry) => compactImpactEntry(entry, evidenceIdsByPath))
       },
       fanout: {
         summary: fanout.summary,
-        readFirst: fanout.readFirst.map(compactImpactEntry),
-        collapsed: fanout.collapsed.slice(0, 40).map(compactImpactEntry)
+        readFirst: fanout.readFirst.map((entry) => compactImpactEntry(entry, evidenceIdsByPath)),
+        collapsed: fanout.collapsed.slice(0, 40).map((entry) => compactImpactEntry(entry, evidenceIdsByPath))
       },
       tests: tests.slice(0, 30),
+      edgeEvidence,
       recipes,
       value,
       quality,
-      gaps
+      gaps,
+      nextTools,
+      systemMessage: nextTools[0]?.reason
     }
   };
 }
@@ -231,13 +244,37 @@ export async function diffImpactQuery(input: QuerySessionInput, options: QueryOp
   };
 }
 
-function compactImpactEntry(entry: ImpactEntry): { file: ReturnType<typeof compactFileFact>; reasons: string[]; depth: number; confidence: Confidence } {
+function compactImpactEntry(
+  entry: ImpactEntry,
+  evidenceIdsByPath?: Map<string, string[]>
+): { file: ReturnType<typeof compactFileFact>; reasons: string[]; depth: number; confidence: Confidence; evidenceIds?: string[] } {
+  const evidenceIds = evidenceIdsByPath?.get(entry.file.path)?.slice(0, 12);
   return {
     file: compactFileFact(entry.file),
     reasons: uniqueSorted(entry.reasons).slice(0, 12),
     depth: entry.depth,
-    confidence: entry.confidence
+    confidence: entry.confidence,
+    ...(evidenceIds && evidenceIds.length > 0 ? { evidenceIds } : {})
   };
+}
+
+function impactEvidenceIdsByPath(edgeEvidence: EdgeEvidenceV1[]): Map<string, string[]> {
+  const byPath = new Map<string, string[]>();
+  const add = (path: string | undefined, id: string) => {
+    if (!path) {
+      return;
+    }
+    const ids = byPath.get(path) ?? [];
+    if (!ids.includes(id)) {
+      ids.push(id);
+      byPath.set(path, ids);
+    }
+  };
+  for (const evidence of edgeEvidence) {
+    add(evidence.fromPath, evidence.id);
+    add(evidence.toPath, evidence.id);
+  }
+  return byPath;
 }
 
 function compactNestedImpactData(data: unknown): unknown {
@@ -298,7 +335,7 @@ export function formatTierEntries(entries: ImpactEntry[]): string[] {
   return entries.map((entry) => `- ${entry.file.path}: ${formatReasons(entry.reasons, 5)}; depth ${entry.depth}; ${entry.confidence}`);
 }
 
-export function addTransitiveImpact(index: CodexaIndex, affected: Map<string, ImpactEntry>, maxDepth: number): void {
+export function addTransitiveImpact(index: CodexaIndex, affected: Map<string, ImpactEntry>, maxDepth: number, symbolScope?: { initialPath: string; symbolIds: Set<string> }): void {
   const queue = [...affected.values()].map((entry) => ({ path: entry.file.path, depth: entry.depth }));
   const visited = new Set(queue.map((entry) => `${entry.path}:${entry.depth}`));
   const symbolsByPath = new Map<string, Set<string>>();
@@ -328,19 +365,20 @@ export function addTransitiveImpact(index: CodexaIndex, affected: Map<string, Im
       continue;
     }
     const nextDepth = current.depth + 1;
-    const currentSymbolIds = symbolsByPath.get(current.path) ?? new Set<string>();
+    const scopedInitial = Boolean(symbolScope && current.depth === 0 && current.path === symbolScope.initialPath);
+    const currentSymbolIds = scopedInitial ? symbolScope!.symbolIds : symbolsByPath.get(current.path) ?? new Set<string>();
     const graphEdges = uniqueGraphEdges([
-      ...(graphEdgesByToPath.get(current.path) ?? []),
+      ...(scopedInitial ? [] : graphEdgesByToPath.get(current.path) ?? []),
       ...[...currentSymbolIds].flatMap((symbolId) => graphEdgesByToSymbolId.get(symbolId) ?? [])
     ]);
     const downstream = [
-      ...(importsByResolvedPath.get(current.path) ?? [])
-        .map((edge) => ({ path: edge.path, reason: `imports ${current.path} via depth ${nextDepth}`, confidence: "authoritative" as Confidence })),
-      ...(testsByTargetPath.get(current.path) ?? [])
-        .map((edge) => ({ path: edge.path, reason: `tests ${current.path} via depth ${nextDepth}`, confidence: edge.confidence })),
-      ...graphEdges
-        .map((edge) => graphEdgeToImpactCandidate(edge, symbolsById, current.path, nextDepth))
-        .filter((edge): edge is { path: string; reason: string; confidence: Confidence } => Boolean(edge))
+      ...(scopedInitial
+        ? []
+        : [
+            ...(importsByResolvedPath.get(current.path) ?? []).map((edge) => ({ path: edge.path, reason: `imports ${current.path} via depth ${nextDepth}`, confidence: "authoritative" as Confidence })),
+            ...(testsByTargetPath.get(current.path) ?? []).map((edge) => ({ path: edge.path, reason: `tests ${current.path} via depth ${nextDepth}`, confidence: edge.confidence }))
+          ]),
+      ...graphEdges.map((edge) => graphEdgeToImpactCandidate(edge, symbolsById, current.path, nextDepth)).filter((edge): edge is { path: string; reason: string; confidence: Confidence } => Boolean(edge))
     ];
     for (const edge of downstream) {
       const file = findFile(index, edge.path);
@@ -540,6 +578,18 @@ function uniqueGraphEdges(edges: GraphEdgeFact[]): GraphEdgeFact[] {
     }
   }
   return result.sort(graphEdgeSort);
+}
+
+function impactEvidenceEdges(index: CodexaIndex, paths: string[], symbolId?: string): GraphEdgeFact[] {
+  const pathSet = new Set(paths);
+  return index.graphEdges
+    .filter(
+      (edge) =>
+        (edge.fromPath && pathSet.has(edge.fromPath)) ||
+        (edge.toPath && pathSet.has(edge.toPath)) ||
+        (symbolId && (edge.fromSymbolId === symbolId || edge.toSymbolId === symbolId || edge.fromId === symbolId || edge.toId === symbolId))
+    )
+    .sort(graphEdgeSort);
 }
 
 function graphEdgeToImpactCandidate(

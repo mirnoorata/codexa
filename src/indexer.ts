@@ -7,13 +7,16 @@ import { parseFile } from "./parser.js";
 import { discoverRepoFiles, discoverRepoFreshness } from "./repo-files.js";
 import { type ImportAliasRule, relinkUsageIds, resolveIndexLinks } from "./resolver.js";
 import { loadExternalRiskSignals } from "./risk-ingest.js";
+import { loadOutcomeRankSignals, type OutcomeRankSignals } from "./outcome-ranking.js";
 import { applyPythonSemanticAssist } from "./semantic/python.js";
 import { applyTypeScriptSemanticAssist } from "./semantic/typescript.js";
+import { loadExternalSymbolReportFacts } from "./symbol-report-ingest.js";
 import type {
   CodexaFact,
   CodexaIndex,
   FileFact,
   FreshnessInfo,
+  GraphEdgeFact,
   IndexOptions,
   ModuleClusterFact,
   ParseResult,
@@ -133,8 +136,11 @@ export async function buildIndex(options: IndexOptions): Promise<CodexaIndex> {
     parserErrors: parsed.flatMap((result) => result.parserErrors)
   };
 
-  const externalRisks = await loadExternalRiskSignals(repoRoot, snapshotId, indexedAt);
-  const withExternalRisks = { ...initial, risks: dedupeRiskSignals([...initial.risks, ...externalRisks]) };
+  const [externalRisks, externalSymbols] = await Promise.all([
+    loadExternalRiskSignals(repoRoot, snapshotId, indexedAt),
+    loadExternalSymbolReportFacts(repoRoot, snapshotId, indexedAt, new Set(discovered.git.dirtyFiles))
+  ]);
+  const withExternalRisks = mergeExternalSymbolFacts({ ...initial, risks: dedupeRiskSignals([...initial.risks, ...externalRisks]) }, externalSymbols);
   const withTypeScriptSemanticAssist = await applyTypeScriptSemanticAssist(withExternalRisks, {
     repoRoot,
     files: discovered.files.map((file) => ({
@@ -151,9 +157,10 @@ export async function buildIndex(options: IndexOptions): Promise<CodexaIndex> {
     }))
   });
   const linked = relinkUsageIds(resolveIndexLinks(withPythonSemanticAssist, aliases));
-  const ranked = applyRanking(linked, discovered.git.churnByPath);
+  const outcomeSignals = await loadOutcomeRankSignals(repoRoot, discovered.git.headCommit, new Set(linked.files.map((file) => file.path)));
+  const ranked = applyRanking(linked, discovered.git.churnByPath, outcomeSignals);
   const withModules = applyModules(ranked);
-  const withGraph = { ...withModules, graphEdges: buildGraphEdges(withModules) };
+  const withGraph = { ...withModules, graphEdges: dedupeGraphEdges([...buildGraphEdges(withModules), ...externalSymbols.graphEdges]) };
   const withWorkflows = { ...withGraph, workflows: extractWorkflowTraces(withGraph) };
   const freshness: FreshnessInfo = {
     ...withWorkflows.freshness,
@@ -253,6 +260,22 @@ function rebaseParseResult(
   };
 }
 
+function mergeExternalSymbolFacts(index: CodexaIndex, external: Awaited<ReturnType<typeof loadExternalSymbolReportFacts>>): CodexaIndex {
+  const existingFiles = new Set(index.files.map((file) => file.path));
+  const existingSymbols = new Set(index.symbols.map((symbol) => `${symbol.path}\0${symbol.qualifiedName}\0${symbol.kind}\0${symbol.range?.startLine ?? 0}`));
+  return {
+    ...index,
+    files: [
+      ...index.files,
+      ...external.files.filter((file) => !existingFiles.has(file.path))
+    ],
+    symbols: [
+      ...index.symbols,
+      ...external.symbols.filter((symbol) => !existingSymbols.has(`${symbol.path}\0${symbol.qualifiedName}\0${symbol.kind}\0${symbol.range?.startLine ?? 0}`))
+    ]
+  };
+}
+
 function dedupeRiskSignals(risks: RiskSignalFact[]): RiskSignalFact[] {
   const seen = new Set<string>();
   const result: RiskSignalFact[] = [];
@@ -265,6 +288,25 @@ function dedupeRiskSignals(risks: RiskSignalFact[]): RiskSignalFact[] {
     result.push(risk);
   }
   return result.sort((a, b) => a.path.localeCompare(b.path) || b.score - a.score || a.signal.localeCompare(b.signal));
+}
+
+function dedupeGraphEdges(edges: GraphEdgeFact[]): GraphEdgeFact[] {
+  const seen = new Set<string>();
+  const result: GraphEdgeFact[] = [];
+  for (const edge of edges) {
+    if (seen.has(edge.id)) {
+      continue;
+    }
+    seen.add(edge.id);
+    result.push(edge);
+  }
+  return result.sort(
+    (a, b) =>
+      a.edgeKind.localeCompare(b.edgeKind) ||
+      (a.fromPath ?? "").localeCompare(b.fromPath ?? "") ||
+      (a.toPath ?? "").localeCompare(b.toPath ?? "") ||
+      a.reason.localeCompare(b.reason)
+  );
 }
 
 async function loadImportAliases(repoRoot: string, files: string[]): Promise<ImportAliasRule[]> {
@@ -624,7 +666,7 @@ function freshnessFromStored(
   };
 }
 
-function applyRanking(index: CodexaIndex, churnByPath: Map<string, number>): CodexaIndex {
+function applyRanking(index: CodexaIndex, churnByPath: Map<string, number>, outcomeSignals?: OutcomeRankSignals): CodexaIndex {
   const incomingImports = countBy(index.imports.flatMap((imp) => (imp.resolvedPath ? [imp.resolvedPath] : [])));
   const usageByPath = countBy(index.usageSites.map((usage) => usage.path));
   const symbolsByPath = countBy(index.symbols.map((symbol) => symbol.path));
@@ -643,6 +685,7 @@ function applyRanking(index: CodexaIndex, churnByPath: Map<string, number>): Cod
     const dirtyRisk = file.dirty ? 3 : 0;
     const riskScore = riskByPath.get(file.path) ?? 0;
     const generatedPenalty = file.generated ? -2 : 0;
+    const outcomeHistory = Math.min(3, outcomeSignals?.boosts.get(file.path) ?? 0);
     const rankReasons = {
       centrality: Math.log2(centrality + 1),
       usage: Math.log2(usage + 1),
@@ -652,6 +695,7 @@ function applyRanking(index: CodexaIndex, churnByPath: Map<string, number>): Cod
       testProximity,
       dirtyRisk,
       riskScore: Math.min(riskScore, 12),
+      outcomeHistory,
       generatedPenalty
     };
     const rank = Object.values(rankReasons).reduce((sum, value) => sum + value, 0);

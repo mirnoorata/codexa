@@ -276,6 +276,7 @@ program
   .option("--codeql-report <path...>", "existing CodeQL SARIF report to copy into .codex/static-analysis")
   .option("--sarif <path...>", "generic SARIF report to copy into .codex/static-analysis")
   .option("--generic-report <path...>", "generic Codexa risk JSON report to copy into .codex/static-analysis")
+  .option("--symbol-report <path...>", "CodexaSymbolReportV1 JSON report to copy into .codex/static-analysis")
   .option("--run-semgrep", "run an installed Semgrep CLI and ingest JSON output", false)
   .option("--semgrep-config <config...>", "Semgrep config value; repeat or pass multiple values", ["p/default"])
   .option("--run-codeql", "run an installed CodeQL CLI for JavaScript/TypeScript and Python and ingest SARIF output", false)
@@ -294,6 +295,7 @@ program
         codeqlReport?: string[];
         sarif?: string[];
         genericReport?: string[];
+        symbolReport?: string[];
         runSemgrep: boolean;
         semgrepConfig: string[];
         runCodeql: boolean;
@@ -309,6 +311,7 @@ program
         codeqlReports: opts.codeqlReport,
         sarifReports: opts.sarif,
         genericReports: opts.genericReport,
+        symbolReports: opts.symbolReport,
         runSemgrep: opts.runSemgrep,
         semgrepConfigs: opts.semgrepConfig,
         runCodeql: opts.runCodeql,
@@ -538,17 +541,20 @@ program
   .argument("<repo>", "repository root")
   .option("--file <path>", "file to explain")
   .option("--symbol <symbol>", "symbol id or name to explain")
+  .option("--depth <n>", "symbol neighborhood depth, 1-3", parseIntOption)
+  .option("--language <language>", "optional symbol language filter")
+  .option("--no-evidence", "omit compact edge evidence from symbol_context output")
   .option("--lsp", "include optional read-only LSP assist for TypeScript, JavaScript, or Python")
   .option("--lsp-timeout-ms <n>", "LSP request timeout in milliseconds", parseIntOption)
   .option("--lsp-max-files <n>", "maximum files to inspect with LSP assist", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Return compact evidence for a file or symbol.")
-  .action(async (repo: string, opts: { file?: string; symbol?: string } & CliQueryOptions) => {
+  .action(async (repo: string, opts: { file?: string; symbol?: string; depth?: number; language?: string; evidence?: boolean } & CliQueryOptions) => {
     const queryOptions = queryOptionsFromCli(opts);
     const repoRoot = await resolveQueryRepoRoot(repo);
     if (opts.symbol) {
-      printQuery(await symbolContextQuery(repoRoot, opts.symbol, queryOptions));
+      printQuery(await symbolContextQuery(repoRoot, opts.symbol, queryOptions, { depth: opts.depth, language: opts.language, includeEvidence: opts.evidence }));
       return;
     }
     if (opts.file) {
@@ -1042,12 +1048,13 @@ program
   .option("--no-auto-refresh", "keep eval queries frozen against the existing index")
   .option("--fail-on-refresh", "fail a scenario if a query auto-refreshes during scoring", true)
   .option("--no-fail-on-refresh", "record refreshes without failing the scenario")
+  .option("--centrality-experiment", "run eval-only transitive centrality/PageRank experiment without changing default rank", false)
   .description("Run a structured Codexa quality benchmark with randomized anti-cheat holdouts.")
-  .action(async (repo: string, opts: { suite: "all" | "project" | "synthetic" | "historical-fixture" | "task-pack"; seed?: string; taskPack?: string; json?: boolean; autoRefresh: boolean; failOnRefresh: boolean }) => {
+  .action(async (repo: string, opts: { suite: "all" | "project" | "synthetic" | "historical-fixture" | "task-pack"; seed?: string; taskPack?: string; json?: boolean; autoRefresh: boolean; failOnRefresh: boolean; centralityExperiment: boolean }) => {
     const result = await runEval(
       await resolveQueryRepoRoot(repo),
       { autoRefresh: opts.autoRefresh },
-      { suite: opts.suite, seed: opts.seed, json: opts.json, failOnRefresh: opts.failOnRefresh, taskPackPath: opts.taskPack ? path.resolve(opts.taskPack) : undefined }
+      { suite: opts.suite, seed: opts.seed, json: opts.json, failOnRefresh: opts.failOnRefresh, taskPackPath: opts.taskPack ? path.resolve(opts.taskPack) : undefined, centralityExperiment: opts.centralityExperiment }
     );
     console.log(result.text);
     if (!result.passed) {

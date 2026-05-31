@@ -706,10 +706,14 @@ describe("Codexa MCP server", () => {
     expect(contextTool?.annotations?.openWorldHint).toBe(false);
     expect(contextTool?.annotations?.readOnlyHint).toBe(false);
     expect(contextTool?.annotations?.idempotentHint).toBe(false);
-    const searchSchema = JSON.stringify(tools.tools.find((tool) => tool.name === "search")?.inputSchema);
-    expect(searchSchema).toContain("patterns");
-    expect(searchSchema).toContain("maxItems");
-    expect(searchSchema).toContain("7");
+	    const searchSchema = JSON.stringify(tools.tools.find((tool) => tool.name === "search")?.inputSchema);
+	    expect(searchSchema).toContain("patterns");
+	    expect(searchSchema).toContain("maxItems");
+	    expect(searchSchema).toContain("7");
+	    const symbolContextSchema = JSON.stringify(tools.tools.find((tool) => tool.name === "symbol_context")?.inputSchema);
+	    expect(symbolContextSchema).toContain("depth");
+	    expect(symbolContextSchema).toContain("includeEvidence");
+	    expect(symbolContextSchema).toContain("language");
     const changePlanSchema = JSON.stringify(tools.tools.find((tool) => tool.name === "change_plan")?.inputSchema);
     expect(changePlanSchema).toContain("followCandidate");
     const testPlanSchema = JSON.stringify(tools.tools.find((tool) => tool.name === "test_plan")?.inputSchema);
@@ -737,18 +741,23 @@ describe("Codexa MCP server", () => {
       ["callers", { file: "src/index.ts", limit: 3 }],
       ["workflow_path", { query: "main", limit: 3 }]
     ];
-    for (const [name, args] of sourcePolicyCases) {
-      const result = await client.callTool({ name, arguments: args });
+	    for (const [name, args] of sourcePolicyCases) {
+	      const result = await client.callTool({ name, arguments: args });
       const toolPolicy = (result.structuredContent as { toolPolicy?: { name?: string; readOnly?: boolean; writeEffects?: string } }).toolPolicy;
       const listed = tools.tools.find((tool) => tool.name === name);
       expect(toolPolicy).toMatchObject({
         name,
         readOnly: listed?.annotations?.readOnlyHint,
         writeEffects: expect.stringContaining("index-cache-if-auto-refresh")
-      });
-    }
+	      });
+	    }
+	    const symbolContext = await client.callTool({ name: "symbol_context", arguments: { symbol: "main", depth: 2 } });
+	    const symbolData = (symbolContext.structuredContent as { data?: { mode?: string; edgeEvidence?: unknown[]; nextTools?: Array<{ tool?: string }> } }).data;
+	    expect(symbolData?.mode).toBe("symbol_context");
+	    expect(Array.isArray(symbolData?.edgeEvidence)).toBe(true);
+	    expect(symbolData?.nextTools?.some((tool) => tool.tool === "impact")).toBe(true);
 
-    const rejectedFollow = await client.callTool({ name: "change_plan", arguments: { taskId: "missing-mcp-follow", followCandidate: "candidate-missing" } });
+	    const rejectedFollow = await client.callTool({ name: "change_plan", arguments: { taskId: "missing-mcp-follow", followCandidate: "candidate-missing" } });
     expect(JSON.stringify(rejectedFollow)).toContain("Follow candidate: rejected");
     expect(((rejectedFollow.structuredContent as { data?: { followCandidate?: { status?: string; requested?: string } } }).data?.followCandidate)).toMatchObject({
       status: "rejected",

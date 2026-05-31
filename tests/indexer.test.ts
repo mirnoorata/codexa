@@ -1747,12 +1747,19 @@ describe("Codexa indexer", () => {
     );
     const snapshotPath = path.join(repo, ".codex/cache/codexa-tasks/planned-helper-edit.json");
     const snapshot = JSON.parse(await readFile(snapshotPath, "utf8"));
-    snapshot.plannedTests.push({
-      path: "tests/manual_regression.py",
-      reason: "manual regression saved in plan snapshot",
-      rank: 99,
-      evidenceTier: "authoritative"
-    });
+	    snapshot.plannedTests.push({
+	      path: "tests/manual_regression.py",
+	      reason: "manual regression saved in plan snapshot",
+	      rank: 99,
+	      evidenceTier: "authoritative",
+	      provenance: {
+	        schemaVersion: 1,
+	        origin: "snapshot",
+	        sources: ["explicit_target"],
+	        targetPaths: ["service/helpers.py"],
+	        evidence: ["manual regression saved in plan snapshot"]
+	      }
+	    });
     await writeFile(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
 
     await writeFile(path.join(repo, "service/helpers.py"), "def normalize(value):\n    return value.strip().upper()\n", "utf8");
@@ -1828,6 +1835,61 @@ describe("Codexa indexer", () => {
     expect(afterTestsData.dependencyChecks.every((check) => check.status === "covered")).toBe(true);
     expect(afterTestsData.outcome.hookSummary.nextAction).toBe("continue with normal diff review");
       expect(afterTestsData.outcome.calibrationLabels).not.toContain("missing-recommended-tests");
+    });
+
+    it("degrades legacy snapshot tests instead of trusting unscoped planned-test evidence", async () => {
+      const repo = await createFixtureRepo();
+      await buildIndex({ repoRoot: repo });
+      await changePlanQuery(
+        repo,
+        {
+          task: "Change helper normalization safely",
+          files: ["service/helpers.py"],
+          diff: false,
+          limit: 6,
+          saveSnapshot: true,
+          taskId: "legacy-planned-test-provenance"
+        },
+        { autoRefresh: false }
+      );
+      const snapshotPath = path.join(repo, ".codex/cache/codexa-tasks/legacy-planned-test-provenance.json");
+      const snapshot = JSON.parse(await readFile(snapshotPath, "utf8"));
+      snapshot.plannedTests.push({
+        path: "tests/manual_legacy.py",
+        reason: "legacy broad snapshot test without provenance",
+        rank: 99,
+        evidenceTier: "authoritative"
+      });
+      snapshot.plannedTests.push({
+        path: "tests/manual_v1_stale.py",
+        reason: "v1 snapshot test for a broader old target",
+        rank: 98,
+        evidenceTier: "authoritative",
+        provenance: {
+          schemaVersion: 1,
+          origin: "snapshot",
+          sources: ["authoritative_test_edge"],
+          targetPaths: ["service/old_target.py"],
+          evidence: ["v1 snapshot test for a broader old target"]
+        }
+      });
+      await writeFile(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
+      await writeFile(path.join(repo, "service/helpers.py"), "def normalize(value):\n    return value.strip().upper()\n", "utf8");
+
+      const review = await postEditReviewQuery(repo, { taskId: "legacy-planned-test-provenance", ranTests: [] }, { autoRefresh: true });
+      const data = review.data as {
+        verdict: string;
+        degradedSnapshotTests: Array<{ path: string; provenance?: { degradedReason?: string } }>;
+        missedLikelyTests: Array<{ path: string }>;
+        driftReasons: string[];
+      };
+      expect(data.verdict).toBe("inspect");
+      expect(data.degradedSnapshotTests.map((test) => test.path)).toContain("tests/manual_legacy.py");
+      expect(data.degradedSnapshotTests.map((test) => test.path)).toContain("tests/manual_v1_stale.py");
+      expect(data.degradedSnapshotTests.find((test) => test.path === "tests/manual_legacy.py")?.provenance?.degradedReason).toContain("legacy snapshot test lacks planned-test provenance");
+      expect(data.missedLikelyTests.map((test) => test.path)).not.toContain("tests/manual_legacy.py");
+      expect(data.missedLikelyTests.map((test) => test.path)).not.toContain("tests/manual_v1_stale.py");
+      expect(data.driftReasons.some((reason) => reason.includes("planned snapshot test"))).toBe(true);
     });
 
     it("requires explicit snapshot binding when multiple task snapshots exist", async () => {
@@ -1932,12 +1994,19 @@ describe("Codexa indexer", () => {
     );
     const snapshotPath = path.join(repo, ".codex/cache/codexa-tasks/planned-high-risk-edit.json");
     const snapshot = JSON.parse(await readFile(snapshotPath, "utf8"));
-    snapshot.plannedTests.push({
-      path: "tests/manual_ops_regression.ts",
-      reason: "manual high-risk ops regression saved in plan snapshot",
-      rank: 99,
-      evidenceTier: "authoritative"
-    });
+	    snapshot.plannedTests.push({
+	      path: "tests/manual_ops_regression.ts",
+	      reason: "manual high-risk ops regression saved in plan snapshot",
+	      rank: 99,
+	      evidenceTier: "authoritative",
+	      provenance: {
+	        schemaVersion: 1,
+	        origin: "snapshot",
+	        sources: ["explicit_target"],
+	        targetPaths: ["src/ops.ts"],
+	        evidence: ["manual high-risk ops regression saved in plan snapshot"]
+	      }
+	    });
     await writeFile(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
 
     await writeFile(

@@ -150,6 +150,7 @@ export interface EvalOptions {
   json?: boolean;
   failOnRefresh?: boolean;
   taskPackPath?: string;
+  centralityExperiment?: boolean;
 }
 
 const DEFAULT_SEED = "codexa-v1-benchmark";
@@ -181,9 +182,15 @@ export interface EvalResult {
       postEditVerdicts: Record<string, number>;
       outcomeRecords: string[];
     };
-    scenarios: ScoredEvalScenario[];
-  };
-}
+	    scenarios: ScoredEvalScenario[];
+	    centralityExperiment?: {
+	      enabled: boolean;
+	      topFiles: Array<{ path: string; score: number; currentRank: number }>;
+	      overlapWithCurrentTop10: number;
+	      note: string;
+	    };
+	  };
+	}
 
 export async function runEval(
   repoRoot: string,
@@ -232,7 +239,8 @@ export async function runEval(
   const passed = scored.every((scenario) => scenario.passed);
   const scoredOnly = scored.filter((scenario) => scenario.scored);
   const score = scoredOnly.length > 0 ? scoredOnly.reduce((sum, scenario) => sum + scenario.score, 0) / scoredOnly.length : 0;
-  const data = { seed, suite, passed, score, antiCheat, calibrationSummary: calibrationSummary(scored), scenarios: scored };
+  const centralityExperiment = evalOptions.centralityExperiment ? await runTransitiveCentralityExperiment(repo) : undefined;
+  const data = { seed, suite, passed, score, antiCheat, calibrationSummary: calibrationSummary(scored), scenarios: scored, centralityExperiment };
   await saveEvalData(repo, seed, data);
   return {
     passed,
@@ -971,6 +979,39 @@ export function scoreStructuredOutputForTest(result: QueryResult, oracle: EvalOr
   );
 }
 
+async function runTransitiveCentralityExperiment(repoRoot: string): Promise<NonNullable<EvalResult["data"]["centralityExperiment"]>> {
+  const index = await buildIndex({ repoRoot, writeArtifacts: false });
+  const scores = new Map(index.files.map((file) => [file.path, 1]));
+  for (let iteration = 0; iteration < 8; iteration += 1) {
+    const next = new Map(index.files.map((file) => [file.path, 0.15]));
+    for (const edge of index.graphEdges) {
+      if (!edge.fromPath || !edge.toPath) {
+        continue;
+      }
+      const contribution = (scores.get(edge.fromPath) ?? 1) * Math.max(0.1, Math.min(edge.weight, 4)) * 0.12;
+      next.set(edge.toPath, (next.get(edge.toPath) ?? 0.15) + contribution);
+      if (edge.edgeKind === "IMPORTS" || edge.edgeKind === "CALLS" || edge.edgeKind === "REFERENCES") {
+        next.set(edge.fromPath, (next.get(edge.fromPath) ?? 0.15) + (scores.get(edge.toPath) ?? 1) * 0.04);
+      }
+    }
+    for (const [filePath, value] of next) {
+      scores.set(filePath, Math.min(50, value));
+    }
+  }
+  const currentTop = new Set(index.files.slice(0, 10).map((file) => file.path));
+  const byFile = new Map(index.files.map((file) => [file.path, file]));
+  const topFiles = [...scores.entries()]
+    .sort(([pathA, scoreA], [pathB, scoreB]) => scoreB - scoreA || pathA.localeCompare(pathB))
+    .slice(0, 20)
+    .map(([filePath, scoreValue]) => ({ path: filePath, score: Number(scoreValue.toFixed(4)), currentRank: Number((byFile.get(filePath)?.rank ?? 0).toFixed(4)) }));
+  return {
+    enabled: true,
+    topFiles,
+    overlapWithCurrentTop10: topFiles.slice(0, 10).filter((entry) => currentTop.has(entry.path)).length,
+    note: "Eval-only transitive centrality experiment; default file.rank is unchanged unless future benchmark metrics justify enabling it."
+  };
+}
+
 function filesFromData(data: unknown): string[] {
   if (!data || typeof data !== "object") {
     return [];
@@ -1336,10 +1377,14 @@ function renderEval(data: EvalResult["data"]): string {
     "Anti-cheat controls:",
     ...data.antiCheat.map((item) => `- ${item}`),
     "",
-    "Codexa quality observations:",
-    ...(qualityObservations.length > 0 ? qualityObservations : ["- none"]),
-    ""
-  ];
+	    "Codexa quality observations:",
+	    ...(qualityObservations.length > 0 ? qualityObservations : ["- none"]),
+	    data.centralityExperiment ? "" : undefined,
+	    data.centralityExperiment ? "Transitive centrality experiment:" : undefined,
+	    data.centralityExperiment ? `- overlap with current top 10: ${data.centralityExperiment.overlapWithCurrentTop10}/10` : undefined,
+	    ...(data.centralityExperiment?.topFiles.slice(0, 8).map((entry) => `- ${entry.path}: centrality ${entry.score.toFixed(4)}, current rank ${entry.currentRank.toFixed(2)}`) ?? []),
+	    ""
+	  ];
   for (const scenario of data.scenarios) {
     lines.push(
       `Scenario: ${scenario.id}`,

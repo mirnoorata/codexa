@@ -1,4 +1,18 @@
-export type LanguageId = "typescript" | "javascript" | "python" | "json" | "markdown" | "unknown";
+export type LanguageId =
+  | "typescript"
+  | "javascript"
+  | "python"
+  | "json"
+  | "markdown"
+  | "rust"
+  | "go"
+  | "java"
+  | "csharp"
+  | "cpp"
+  | "c"
+  | "ruby"
+  | "php"
+  | "unknown";
 
 export type FactSource =
   | "tree-sitter"
@@ -162,6 +176,58 @@ export interface GraphEdgeFact extends BaseFact {
   toSymbolId?: string;
   reason: string;
   weight: number;
+}
+
+export interface EdgeEvidenceV1 {
+  schemaVersion: 1;
+  id: string;
+  edgeKind: GraphEdgeKind;
+  fromId: string;
+  toId: string;
+  fromPath?: string;
+  toPath?: string;
+  fromSymbolId?: string;
+  toSymbolId?: string;
+  source: FactSource;
+  confidence: Confidence;
+  reason: string;
+  range?: Range;
+  degraded: boolean;
+  stale: boolean;
+}
+
+export interface CodexaSymbolReportSymbolV1 {
+  id?: string;
+  name: string;
+  qualifiedName?: string;
+  kind?: SymbolFact["kind"];
+  path: string;
+  line?: number;
+  endLine?: number;
+  exported?: boolean;
+  parentId?: string;
+  confidence?: Confidence;
+  reason?: string;
+}
+
+export interface CodexaSymbolReportRelationshipV1 {
+  kind: Extract<GraphEdgeKind, "DEFINES" | "CALLS" | "REFERENCES" | "IMPORTS" | "IMPLEMENTS" | "EXTENDS" | "EXPORTS" | "TYPE_EXPORTS">;
+  fromSymbol?: string;
+  fromPath?: string;
+  toSymbol?: string;
+  toPath?: string;
+  line?: number;
+  endLine?: number;
+  confidence?: Confidence;
+  reason?: string;
+}
+
+export interface CodexaSymbolReportV1 {
+  schemaVersion: 1;
+  tool: string;
+  language: string;
+  symbols: CodexaSymbolReportSymbolV1[];
+  relationships?: CodexaSymbolReportRelationshipV1[];
 }
 
 export interface WorkflowStep {
@@ -401,6 +467,15 @@ export interface QueryOptions {
   workspaceSessionId?: string;
 }
 
+export interface GuidedNextToolV1 {
+  schemaVersion: 1;
+  tool: string;
+  reason: string;
+  requiredInputs?: Record<string, unknown>;
+  readOnly: boolean;
+  writes: string[];
+}
+
 export type ChangeType = "style" | "api" | "behavior" | "rename" | "delete" | "unknown";
 
 export interface ContextPackInput {
@@ -478,12 +553,36 @@ export interface TestRecommendation {
   reason: string;
   rank: number;
   evidenceTier?: EvidenceTier;
+  provenance?: TestRecommendationProvenance;
   command?: string;
   commandCwd?: string;
   commandExecutable?: string;
   commandArgs?: string[];
   commandSource?: string;
   commandConfidence?: Confidence;
+}
+
+export type TestRecommendationProvenanceSource =
+  | "explicit_target"
+  | "authoritative_test_edge"
+  | "derived_import"
+  | "derived_impact_expansion"
+  | "heuristic_match"
+  | "package_import"
+  | "natural_retrieval"
+  | "snapshot_legacy"
+  | "outcome_history";
+
+export type TestRecommendationProvenanceOrigin = "current" | "context" | "snapshot" | "outcome";
+
+export interface TestRecommendationProvenance {
+  schemaVersion: 1;
+  origin: TestRecommendationProvenanceOrigin;
+  sources: TestRecommendationProvenanceSource[];
+  targetPaths: string[];
+  evidence: string[];
+  degraded?: boolean;
+  degradedReason?: string;
 }
 
 export type VerificationCoverageKind =

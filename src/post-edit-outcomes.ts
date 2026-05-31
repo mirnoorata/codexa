@@ -48,9 +48,10 @@ export interface PostEditOutcomeInput {
   affectedWorkflows: string[];
   workflowChecks: PostEditCheckResult[];
   dependencyChecks: PostEditCheckResult[];
-  driftReasons: string[];
-  tests: TestRecommendation[];
-  testsNotRun: TestRecommendation[];
+	  driftReasons: string[];
+	  tests: TestRecommendation[];
+	  degradedSnapshotTests?: TestRecommendation[];
+	  testsNotRun: TestRecommendation[];
   missedLikelyTests: TestRecommendation[];
   ranTests: string[];
   ranCommands: string[];
@@ -115,10 +116,11 @@ export interface PostEditOutcome {
   affectedWorkflows: string[];
   workflowChecks: PostEditCheckResult[];
   dependencyChecks: PostEditCheckResult[];
-  driftReasons: string[];
-  recommendedTests: Array<Pick<TestRecommendation, "path" | "reason" | "rank" | "evidenceTier" | "command" | "commandSource" | "commandConfidence">>;
-  testsNotRun: Array<Pick<TestRecommendation, "path" | "reason" | "rank" | "evidenceTier" | "command" | "commandSource" | "commandConfidence">>;
-  missedLikelyTests: Array<Pick<TestRecommendation, "path" | "reason" | "rank" | "evidenceTier" | "command" | "commandSource" | "commandConfidence">>;
+	  driftReasons: string[];
+	  recommendedTests: Array<Pick<TestRecommendation, "path" | "reason" | "rank" | "evidenceTier" | "command" | "commandSource" | "commandConfidence" | "provenance">>;
+	  degradedSnapshotTests: Array<Pick<TestRecommendation, "path" | "reason" | "rank" | "evidenceTier" | "command" | "commandSource" | "commandConfidence" | "provenance">>;
+	  testsNotRun: Array<Pick<TestRecommendation, "path" | "reason" | "rank" | "evidenceTier" | "command" | "commandSource" | "commandConfidence" | "provenance">>;
+  missedLikelyTests: Array<Pick<TestRecommendation, "path" | "reason" | "rank" | "evidenceTier" | "command" | "commandSource" | "commandConfidence" | "provenance">>;
   ranTests: string[];
   ranCommands: string[];
   ranCommandReports: VerificationCommandReport[];
@@ -187,9 +189,10 @@ export function buildPostEditOutcome(input: PostEditOutcomeInput, createdAt = ne
     affectedWorkflows: input.affectedWorkflows,
     workflowChecks: input.workflowChecks,
     dependencyChecks: input.dependencyChecks,
-    driftReasons: input.driftReasons,
-    recommendedTests: compactTests(input.tests, repoRoot),
-    testsNotRun: compactTests(input.testsNotRun, repoRoot),
+	    driftReasons: input.driftReasons,
+	    recommendedTests: compactTests(input.tests, repoRoot),
+	    degradedSnapshotTests: compactTests(input.degradedSnapshotTests ?? [], repoRoot),
+	    testsNotRun: compactTests(input.testsNotRun, repoRoot),
     missedLikelyTests: compactTests(input.missedLikelyTests, repoRoot),
     ranTests: input.ranTests.map((test) => sanitizeText(test, repoRoot) ?? ""),
     ranCommands: input.ranCommands.map((command) => sanitizeText(command, repoRoot) ?? ""),
@@ -393,7 +396,8 @@ function compactTests(tests: TestRecommendation[], repoRoot: string): PostEditOu
     evidenceTier: test.evidenceTier,
     command: test.command?.replaceAll(repoRoot, "<repo>"),
     commandSource: test.commandSource,
-    commandConfidence: test.commandConfidence
+    commandConfidence: test.commandConfidence,
+    provenance: test.provenance
   }));
 }
 

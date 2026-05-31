@@ -64,6 +64,11 @@ serves focused MCP context tools over stdio.
   enabled with `--lsp` or `CODEXA_LSP=1`. It queries a stdio language server for
   document symbols, definitions, references, and diagnostics, fails open when no
   server is configured, and never edits source files.
+- `symbol_context` returns a proof-carrying symbol neighborhood: definition,
+  containing symbol/file, direct callers, callees, importers, references,
+  implementations/extends, covering tests, related risks, impact radius, compact
+  edge evidence, and structured next tools. Ambiguous names return stable symbol
+  ids instead of mixing unrelated symbols.
 - Python package/static analysis resolves relative imports, `__init__.py`
   re-exports, pytest fixture dependencies, class base references, and generic
   FastAPI/Celery/Pydantic/SQLAlchemy hints with heuristic labels where runtime
@@ -76,8 +81,9 @@ serves focused MCP context tools over stdio.
   bounded risk signals. Test, docs, and generated contexts are downweighted and
   filtered from the default placeholder report.
 - Static-analysis report bridge for Semgrep JSON, CodeQL SARIF, generic SARIF,
-  and Codexa risk JSON. Codexa can also run user-installed Semgrep/CodeQL CLIs
-  on explicit request, then ingest the produced reports.
+  Codexa risk JSON, and `CodexaSymbolReportV1` symbol reports. Codexa can also
+  run user-installed Semgrep/CodeQL CLIs on explicit request, then ingest the
+  produced reports.
 - A default `task_brief` path for Codex before edits, debugging, or dirty-diff
   review. It wraps the context pack with bounded impact expansion so requested
   files and focused dirty changes bring likely callers, covering tests, risks,
@@ -125,9 +131,15 @@ serves focused MCP context tools over stdio.
   blocked. Hook runs write compact local JSONL diagnostics under ignored
   `.codex/cache/codexa-hooks/` state. Each successful review writes a compact
   outcome record under `.codex/cache/codexa-outcomes/`; eval runs summarize
-  those outcomes under `.codex/cache/codexa-evals/`.
+  those outcomes under `.codex/cache/codexa-evals/`. Recent local outcomes feed
+  bounded, visible ranking/test boosts, but never override freshness, explicit
+  targets, or graph evidence.
 - Strict evidence tiers in query output: `authoritative`, `derived`,
   `heuristic`, and `fallback`, including test recommendations.
+- Query outputs for `search`, `symbol_context`, `impact`, `task_brief`,
+  `change_plan`, and `post_edit_review` include structured `nextTools` entries
+  with the tool name, reason, required inputs, read-only status, and local cache
+  writes.
 - Deterministic context quality checks that can warn when a packet is
   heuristic-heavy, parser-gap affected, fallback-only, or broad-fanout.
 - Token-budgeted repo maps that prefer ranked files and key symbols over
@@ -164,6 +176,7 @@ node dist/cli.js semantic-index <repo> --provider openai
 node dist/cli.js semantic-index <repo> --provider local-command --command ./embed-jsonl
 node dist/cli.js watch <repo>
 node dist/cli.js static-analysis <repo> --semgrep-report /tmp/semgrep.json --codeql-report /tmp/codeql.sarif
+node dist/cli.js static-analysis <repo> --symbol-report /tmp/codexa-symbols.json
 node dist/cli.js doctor <repo>
 node dist/cli.js doctor <repo> --json
 node dist/cli.js status <repo>
@@ -192,6 +205,7 @@ node dist/cli.js post-edit-review <repo> --task-id polling-update --ran-test src
 node dist/cli.js post-edit-review <repo> --task-id polling-update --waiver '{"kind":"test","target":"src/features/use-polling.test.ts","reason":"covered by manual browser regression"}'
 node dist/cli.js post-edit-review <repo> --task-id polling-update --waive-check src/features/use-polling.test.ts
 node dist/cli.js eval <repo> --suite all --seed codexa-v1-benchmark
+node dist/cli.js eval <repo> --suite all --seed codexa-v1-benchmark --centrality-experiment
 node dist/cli.js github-sync-check <codexa-checkout>
 node dist/cli.js serve <repo>
 ```
@@ -205,6 +219,10 @@ codexa init <repo>
 npx -y @mirnoorata/codexa serve <repo> --auto-refresh
 ```
 
+If the npm registry has not been published yet, use a GitHub checkout with
+`npm install`, `npm run build`, and `npm link` until the package owner completes
+the first public publish.
+
 In the commands above, substitute `<repo>` with the absolute path of the
 repository you are indexing.
 
@@ -217,6 +235,29 @@ before answering. Use `--no-auto-refresh` on `repo-map`, `find-context`,
 rewriting it.
 
 After `npm link`, the same commands are available as `codexa ...`.
+
+## Public Proof
+
+Latest reproducible local eval target:
+
+```bash
+node dist/cli.js eval <repo> --suite all --seed codexa-v1-benchmark
+```
+
+Recent `codexa-v1-benchmark` results on this repo recorded a passing score of
+`1.000` across 19 scenarios, with zero raw-ripgrep wins in scored comparisons.
+On scenarios with a baseline, Codexa tied or improved file recall in every case,
+improved precision@K in 9 cases, improved test recall in 4 cases, and averaged a
+smaller selected-file set than raw baseline search. Re-run the command above on a
+clean checkout before publishing numbers for a release.
+
+Compared with Codanna: Codanna is a broader symbol-intelligence product for AI
+assistants with semantic search, relationship tracing, many native languages,
+tool tiers, MCP support, and guided agent workflows. Codexa deliberately stays
+narrower: local-first, Codex-native, verification-first, drift-aware,
+proof-carrying, and zero-charge by default. The intended win is not a bigger
+parser zoo; it is edit readiness, freshness, provenance, post-edit drift review,
+and auditable verification evidence.
 
 Semantic retrieval is a two-step installed capability. First build the cache:
 
@@ -296,8 +337,30 @@ Import existing reports and reindex:
 ```bash
 codexa static-analysis <repo> \
   --semgrep-report /tmp/semgrep.json \
-  --codeql-report /tmp/codeql.sarif
+  --codeql-report /tmp/codeql.sarif \
+  --symbol-report /tmp/codexa-symbols.json
 ```
+
+`--symbol-report` accepts a bounded `CodexaSymbolReportV1` JSON document:
+
+```json
+{
+  "schemaVersion": 1,
+  "tool": "example-indexer",
+  "language": "rust",
+  "symbols": [
+    { "id": "lib:startServer", "name": "startServer", "qualifiedName": "crate::startServer", "kind": "function", "path": "src/lib.rs", "line": 12, "exported": true }
+  ],
+  "relationships": [
+    { "kind": "CALLS", "fromSymbol": "main", "fromPath": "src/main.rs", "toSymbol": "lib:startServer", "toPath": "src/lib.rs", "line": 8, "confidence": "derived" }
+  ]
+}
+```
+
+All referenced paths must realpath under the repository and exist as files. Imported
+symbol facts are labeled `static-analysis` with confidence capped at `derived`, so
+Rust, Go, Java, and other report-backed projects get a degraded but useful symbol
+lane without Codexa owning native parsers for those ecosystems.
 
 Optionally run locally installed scanners:
 
@@ -320,8 +383,10 @@ Supported report locations include:
 .codex/static-analysis/risks.json
 .codex/static-analysis/semgrep.json
 .codex/static-analysis/codeql.sarif
+.codex/static-analysis/symbols.json
 reports/static-analysis/risks.json
 reports/static-analysis/*.sarif
+reports/static-analysis/symbols.json
 reports/semgrep.json
 reports/codeql.sarif
 codeql.sarif

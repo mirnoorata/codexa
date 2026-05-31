@@ -4,6 +4,7 @@ import { isTestPath } from "../language.js";
 import { groupDiffImpact, formatDiffGroups, formatGaps, indexGaps } from "./diff.js";
 import { clampInt, fitLinesToTokenBudget, formatReasons } from "./formatting.js";
 import { affectedWorkflowGraphEdges, testsFromGraphEdges } from "./graph.js";
+import { nextTool } from "./next-tools.js";
 import { contextPackQuery, focusBriefQuery } from "./context.js";
 import { formatContextQuality, type ContextQuality } from "./quality.js";
 import { freshnessBanner } from "./runtime.js";
@@ -35,6 +36,7 @@ import type {
   TaskSnapshotRiskFile,
   TaskSnapshotSymbol,
   TestRecommendation,
+  TestRecommendationProvenance,
   VerificationCommandEnvelope,
   VerificationCoverage,
   VerificationCommandReport,
@@ -159,6 +161,15 @@ export async function changePlanQuery(
         "4. Re-run change_plan with an explicit file or symbol target and saveSnapshot=true before editing.",
         "5. Treat any tests below as deferred until the edit target is explicit."
       ];
+  const structuredNextTools = editReadiness.editable
+    ? [
+        nextTool("post_edit_review", "review drift and verification after completing the planned edit", { taskId: effectiveInput.taskId }, true, [".codex/cache/codexa-outcomes"]),
+        plannedTests.length > 0 ? nextTool("test_plan", "inspect planned targeted tests before editing", { files: plannedEditTargets.slice(0, 8) }) : undefined
+      ].filter((tool): tool is ReturnType<typeof nextTool> => Boolean(tool))
+    : [
+        nextTool(editReadiness.recommendedNextTool ?? focusData.nextCall?.tool ?? "search", "narrow the task to an explicit file or symbol target before editing", { task: effectiveInput.task }),
+        targetCandidates[0] ? nextTool("change_plan", "follow the highest-confidence target candidate", { taskId: blockedSnapshot?.taskId ?? effectiveInput.taskId, followCandidate: targetCandidates[0].candidateId, saveSnapshot: true }, true, [".codex/cache/codexa-task-snapshots"]) : undefined
+      ].filter((tool): tool is ReturnType<typeof nextTool> => Boolean(tool));
   const snapshotIndex = effectiveInput.saveSnapshot && editReadiness.editable ? session.index : undefined;
   const snapshotScope = uniqueSorted([...plannedEditTargets, ...files]);
   const sessionMemoryPointer = effectiveInput.saveSnapshot && editReadiness.editable
@@ -255,8 +266,10 @@ export async function changePlanQuery(
       targetCandidates,
       quality,
       requiredWorkflowChecks: editReadiness.editable ? requiredWorkflowChecks : [],
-      requiredDependencyChecks: editReadiness.editable ? requiredDependencyChecks : [],
-      snapshot: savedSnapshot?.snapshot,
+	      requiredDependencyChecks: editReadiness.editable ? requiredDependencyChecks : [],
+	      nextTools: structuredNextTools,
+	      systemMessage: structuredNextTools[0]?.reason,
+	      snapshot: savedSnapshot?.snapshot,
       snapshotBlock: blockedSnapshot
         ? {
             taskId: blockedSnapshot.taskId,
@@ -967,8 +980,83 @@ function snapshotRiskBaseline(index: CodexaIndex, paths: string[]): Record<strin
 function compactSnapshotTests(tests: TestRecommendation[], repoRoot: string): TestRecommendation[] {
   return tests.map((test) => ({
     ...test,
-    command: test.command?.replaceAll(repoRoot, "<repo>")
+    command: test.command?.replaceAll(repoRoot, "<repo>"),
+    provenance: {
+      ...(test.provenance ?? legacyTestProvenance(test, [])),
+      origin: "snapshot"
+    }
   }));
+}
+
+function reconcileSnapshotTests(
+  tests: TestRecommendation[],
+  reviewScope: string[],
+  snapshotScope: string[]
+): { trusted: TestRecommendation[]; degraded: TestRecommendation[] } {
+  const scope = new Set(reviewScope.length > 0 ? reviewScope : snapshotScope);
+  const trusted: TestRecommendation[] = [];
+  const degraded: TestRecommendation[] = [];
+	  for (const test of tests) {
+	    const provenance = normalizeTestProvenance(test.provenance) ?? legacyTestProvenance(test, snapshotScope);
+	    const targetPaths = provenance.targetPaths.length > 0 ? provenance.targetPaths : snapshotScope;
+	    const directTestTarget = scope.has(test.path) && provenance.sources.includes("explicit_target") && targetPaths.includes(test.path);
+	    const matchesScope = targetPaths.some((targetPath) => scope.has(targetPath)) || directTestTarget;
+    if (!provenance.degraded && matchesScope) {
+      trusted.push({
+        ...test,
+        provenance: {
+          ...provenance,
+          origin: "snapshot",
+          targetPaths
+        }
+      });
+      continue;
+    }
+    degraded.push(degradeSnapshotTest(test, {
+      ...provenance,
+      origin: "snapshot",
+      targetPaths
+    }, matchesScope ? provenance.degradedReason ?? "snapshot planned-test evidence was already degraded" : `snapshot test targets ${targetPaths.slice(0, 5).join(", ") || "unknown"} do not match review scope ${[...scope].slice(0, 5).join(", ") || "unknown"}`));
+  }
+  return { trusted, degraded };
+}
+
+function legacyTestProvenance(test: TestRecommendation, snapshotScope: string[]): TestRecommendationProvenance {
+  return {
+    schemaVersion: 1,
+    origin: "snapshot",
+    sources: ["snapshot_legacy"],
+    targetPaths: snapshotScope,
+    evidence: [test.reason].filter(Boolean).slice(0, 4),
+    degraded: true,
+    degradedReason: "legacy snapshot test lacks planned-test provenance"
+  };
+}
+
+function normalizeTestProvenance(value: TestRecommendationProvenance | undefined): TestRecommendationProvenance | undefined {
+  if (!value || value.schemaVersion !== 1) {
+    return undefined;
+  }
+  return {
+    schemaVersion: 1,
+    origin: value.origin ?? "snapshot",
+    sources: Array.isArray(value.sources) ? value.sources : ["snapshot_legacy"],
+    targetPaths: Array.isArray(value.targetPaths) ? value.targetPaths : [],
+    evidence: Array.isArray(value.evidence) ? value.evidence : [],
+    degraded: value.degraded,
+    degradedReason: value.degradedReason
+  };
+}
+
+function degradeSnapshotTest(test: TestRecommendation, provenance: TestRecommendationProvenance, reason: string): TestRecommendation {
+  return {
+    ...test,
+    provenance: {
+      ...provenance,
+      degraded: true,
+      degradedReason: reason
+    }
+  };
 }
 
 function requiredWorkflowChecksForPlan(
@@ -1168,34 +1256,25 @@ export async function postEditReviewQuery(
     ...testsFromGraphEdges(affectedEdges),
     ...index.testEdges.filter((edge) => edge.targetPath && reviewTargets.includes(edge.targetPath)).map((edge) => edge.path)
   ]);
-  const plannedSnapshotTests = snapshot?.plannedTests ?? [];
-  // The snapshot's plannedTests and the context pack's tests were
-  // collected without the current `changeType` override, so stale
-  // heuristic cross-language recommendations (e.g. a Python pytest
-  // surfaced only via package-scope naming) can leak through to
-  // post-edit output. Re-narrow the merged list against the current
-  // change-type so `--change-type style` gives the same quiet result
-  // whether the snapshot was saved before or after the user decided
-  // the edit was cosmetic.
-  //
-  // Known limitation: stale authoritative/derived entries from a
-  // broader-scope snapshot (e.g. user ran `/codexa-plan` with many
-  // files, then later runs `/codexa-review --change-type style`
-  // against a narrower edit) will still survive the narrowing — the
-  // filter deliberately preserves graph-proven coverage, and without
-  // provenance tracking we can't tell "this authoritative entry was
-  // proven against the OLD plan, not the current dirty tree." The
-  // recommended workflow mitigates this: re-run `/codexa-plan` against
-  // the narrower scope before `/codexa-review` so the snapshot's
-  // plannedTests reflect the same targets as the review.
+  const reviewScope = reviewTargets.length > 0 ? reviewTargets : currentDirtyPaths;
+  const snapshotTestScope = snapshot ? (snapshot.plannedEditTargets.length > 0 ? snapshot.plannedEditTargets : snapshot.plannedFiles) : [];
+  const freshReviewTests = recommendTests(index, reviewScope, repoRoot, changeType);
+  const freshReviewTestPaths = new Set(
+    [...(contextData.tests ?? []), ...freshReviewTests]
+      .filter((test) => test.provenance?.degraded !== true)
+      .map((test) => test.path)
+  );
+  const reconciledSnapshotTests = reconcileSnapshotTests(snapshot?.plannedTests ?? [], reviewScope, snapshotTestScope);
+  const degradedSnapshotTests = reconciledSnapshotTests.degraded.filter((test) => !freshReviewTestPaths.has(test.path));
+  const supersededDegradedSnapshotTests = reconciledSnapshotTests.degraded.filter((test) => freshReviewTestPaths.has(test.path));
   const mergedTests = uniqueTests([
-    ...plannedSnapshotTests,
+    ...reconciledSnapshotTests.trusted,
     ...(contextData.tests ?? []),
-    ...recommendTests(index, reviewTargets.length > 0 ? reviewTargets : currentDirtyPaths, repoRoot, changeType)
+    ...freshReviewTests
   ]);
   const tests = narrowTestRecommendationsByChangeType(
     mergedTests,
-    reviewTargets.length > 0 ? reviewTargets : currentDirtyPaths,
+    reviewScope,
     changeType
   ).slice(0, 12);
   const ranTests = input.ranTests ?? [];
@@ -1286,6 +1365,7 @@ export async function postEditReviewQuery(
     waivedVerification.length === 0;
   const riskEscalationsNeedInspection =
     hasActualEditedFiles && riskEscalations.length > 0 && !riskEscalationsCoveredByVerification;
+  const hasDegradedSnapshotTests = degradedSnapshotTests.length > 0;
   const driftReasons = [
     !snapshot ? `missing task snapshot${loadedSnapshot.missingReason ? `: ${loadedSnapshot.missingReason}` : ""}` : undefined,
     snapshotAmbiguity ? snapshotAmbiguity : undefined,
@@ -1303,6 +1383,7 @@ export async function postEditReviewQuery(
     riskDeltas.some((delta) => delta.delta > 0) ? `${riskDeltas.filter((delta) => delta.delta > 0).length} file(s) increased risk` : undefined,
     missingWorkflowCheckCount > 0 ? `${missingWorkflowCheckCount} required workflow check(s) missing` : undefined,
     missingDependencyCheckCount > 0 ? `${missingDependencyCheckCount} required dependency check(s) missing` : undefined,
+    hasDegradedSnapshotTests ? `${degradedSnapshotTests.length} planned snapshot test(s) degraded by provenance` : undefined,
     contextData.quality?.level === "low" ? "low context quality after edit" : undefined,
     riskEscalationsNeedInspection ? `${riskEscalations.length} high-risk or unplanned target(s)` : undefined,
     waivedVerification.length > 0 ? `${waivedVerification.length} verification item(s) explicitly waived` : undefined,
@@ -1322,6 +1403,7 @@ export async function postEditReviewQuery(
             unplannedChangedSymbols.length > 0 ||
             missingWorkflowCheckCount > 0 ||
             missingDependencyCheckCount > 0 ||
+            hasDegradedSnapshotTests ||
             waivedVerification.length > 0 ||
             noVerificationProofForEditedFiles ||
             riskEscalationsNeedInspection ||
@@ -1338,8 +1420,22 @@ export async function postEditReviewQuery(
     reviewTargets,
     workflows,
     missingChecks: [...workflowChecks, ...dependencyChecks].filter((check) => check.status === "missing"),
-    noVerificationProofForEditedFiles
+    noVerificationProofForEditedFiles,
+    degradedSnapshotTests
   });
+  const structuredNextTools = [
+    verdict === "run_tests" && testsNotRun[0] ? nextTool("test_plan", "recommended tests remain unaccounted for", { files: reviewScope.slice(0, 8), diff: true }) : undefined,
+	    verdict === "replan" || degradedSnapshotTests.length > 0
+	      ? nextTool(
+	          "change_plan",
+	          degradedSnapshotTests.length > 0 ? "planned-test provenance degraded; rebuild the plan for the current edit scope" : "saved plan drifted from the current edit scope",
+          { files: reviewScope.slice(0, 8), saveSnapshot: true, changeType },
+          true,
+          [".codex/cache/codexa-task-snapshots"]
+        )
+      : undefined,
+    riskEscalationsNeedInspection ? nextTool("impact", "high-risk or unplanned target needs relationship inspection", { file: riskEscalations[0]?.path }) : undefined
+  ].filter((tool): tool is ReturnType<typeof nextTool> => Boolean(tool));
   const quality = contextData.quality;
   const sessionMemoryPointer = priorSessionMemory
     ? {
@@ -1366,9 +1462,10 @@ export async function postEditReviewQuery(
     affectedWorkflows: workflows.map((workflow) => workflow.title),
     workflowChecks,
     dependencyChecks,
-    driftReasons,
-    tests,
-    testsNotRun,
+	    driftReasons,
+	    tests,
+	    degradedSnapshotTests,
+	    testsNotRun,
     missedLikelyTests,
     ranTests,
     ranCommands,
@@ -1443,13 +1540,16 @@ export async function postEditReviewQuery(
     "",
     "Required workflow checks:",
     ...formatCheckResults(workflowChecks),
-    "",
-    "Required dependency checks:",
-    ...formatCheckResults(dependencyChecks),
-    "",
-    "Recommended tests:",
-    ...formatTestRecommendations(tests),
-    ranTests.length > 0 ? `Reported ran tests: ${ranTests.join(", ")}` : "Reported ran tests: none",
+	    "",
+	    "Required dependency checks:",
+	    ...formatCheckResults(dependencyChecks),
+	    "",
+	    "Recommended tests:",
+	    ...formatTestRecommendations(tests),
+	    degradedSnapshotTests.length > 0 ? "" : undefined,
+	    degradedSnapshotTests.length > 0 ? "Degraded planned snapshot tests:" : undefined,
+	    ...degradedSnapshotTests.map((test) => `- ${test.path}: ${test.provenance?.degradedReason ?? "provenance does not match current review scope"}`),
+	    ranTests.length > 0 ? `Reported ran tests: ${ranTests.join(", ")}` : "Reported ran tests: none",
     dataRanCommands.length > 0 ? `Reported ran commands: ${dataRanCommands.join(" | ")}` : "Reported ran commands: none",
     dataRanCommandReports.length > 0 ? `Reported command reports: ${dataRanCommandReports.map(formatCommandReport).join(" | ")}` : "Reported command reports: none",
     dataCommandEnvelopes.length > 0 ? `Command envelopes: ${dataCommandEnvelopes.map(formatCommandEnvelope).join(" | ")}` : "Command envelopes: none",
@@ -1515,10 +1615,12 @@ export async function postEditReviewQuery(
       modifiedSymbols: limitArray(modifiedSymbols, 40),
       modifiedPublicSymbols: limitArray(modifiedPublicSymbols, 40),
       riskDeltas: limitArray(riskDeltas, 20),
-      affectedEdges: limitArray(affectedEdges, 30),
-      affectedTests: limitArray(affectedTests, 30),
-      tests: limitArray(tests, 30),
-      testsNotRun: limitArray(testsNotRun, 30),
+	      affectedEdges: limitArray(affectedEdges, 30),
+	      affectedTests: limitArray(affectedTests, 30),
+	      tests: limitArray(tests, 30),
+	      degradedSnapshotTests: limitArray(degradedSnapshotTests, 30),
+	      supersededDegradedSnapshotTests: limitArray(supersededDegradedSnapshotTests, 30),
+	      testsNotRun: limitArray(testsNotRun, 30),
       missedLikelyTests: limitArray(missedLikelyTests, 30),
       ranTests,
       ranCommands: dataRanCommands,
@@ -1548,9 +1650,11 @@ export async function postEditReviewQuery(
       dependencyChecks: limitArray(dependencyChecks, 30),
       context: compactContextData(context.data),
       quality,
-      driftReasons,
-      nextActions,
-      outcome: {
+	      driftReasons,
+	      nextActions,
+	      nextTools: structuredNextTools,
+	      systemMessage: structuredNextTools[0]?.reason,
+	      outcome: {
         ...outcome,
         persisted: Boolean(savedOutcome),
         path: outcomePath
@@ -2078,6 +2182,7 @@ function postEditNextActions(
     snapshot?: TaskSnapshot;
     unplannedEditedFiles: string[];
     testsNotRun: TestRecommendation[];
+    degradedSnapshotTests: TestRecommendation[];
     riskEscalations: FileFact[];
     reviewTargets: string[];
     workflows: WorkflowTraceFact[];
@@ -2092,9 +2197,13 @@ function postEditNextActions(
       input.testsNotRun.length > 0 ? `Run or justify the top targeted tests: ${input.testsNotRun.slice(0, 4).map((test) => test.path).join(", ")}` : "Rebuild a narrow test plan after re-planning."
     ];
   }
-  if (verdict === "inspect") {
-    return [
-      input.snapshot ? "Read the unplanned or high-risk files before treating the edit as complete." : "No saved task snapshot was available; treat this as a dirty-diff review, not a drift proof.",
+	  if (verdict === "inspect") {
+	    return [
+	      input.degradedSnapshotTests.length > 0
+	        ? "Re-run change_plan for the current edit scope before treating planned-test evidence as trusted."
+	        : input.snapshot
+	          ? "Read the unplanned or high-risk files before treating the edit as complete."
+	          : "No saved task snapshot was available; treat this as a dirty-diff review, not a drift proof.",
       input.riskEscalations.length > 0 ? `Check risk targets: ${input.riskEscalations.slice(0, 5).map((file) => file.path).join(", ")}` : `Check review targets: ${input.reviewTargets.slice(0, 6).join(", ") || "none"}`,
       input.missingChecks.length > 0 ? `Resolve required checks: ${input.missingChecks.slice(0, 4).map((check) => check.target).join(", ")}` : "Required snapshot checks are covered.",
       input.testsNotRun.length > 0

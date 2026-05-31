@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { buildIndexLocked } from "./indexer.js";
 import { loadExternalRiskSignals } from "./risk-ingest.js";
+import { validateCodexaSymbolReportFile } from "./symbol-report-ingest.js";
 import type { CodexaIndex } from "./types.js";
 import { isSubpath, normalizePath, stableId } from "./util.js";
 import { runCommand } from "./command.js";
@@ -14,6 +15,7 @@ export interface StaticAnalysisOptions {
   codeqlReports?: string[];
   sarifReports?: string[];
   genericReports?: string[];
+  symbolReports?: string[];
   runSemgrep?: boolean;
   semgrepConfigs?: string[];
   runCodeql?: boolean;
@@ -25,7 +27,7 @@ export interface StaticAnalysisOptions {
 }
 
 export interface StaticAnalysisReport {
-  kind: "semgrep" | "codeql" | "sarif" | "generic" | "shellcheck";
+  kind: "semgrep" | "codeql" | "sarif" | "generic" | "shellcheck" | "symbol-report";
   source: string;
   path: string;
   copied: boolean;
@@ -63,6 +65,9 @@ export async function updateStaticAnalysisReports(repoInput: string, options: St
   }
   for (const source of options.genericReports ?? []) {
     reports.push(await importReport(repoRoot, "generic", source));
+  }
+  for (const source of options.symbolReports ?? []) {
+    reports.push(await importSymbolReport(repoRoot, source));
   }
 
   if (options.runSemgrep) {
@@ -119,6 +124,11 @@ async function importReport(repoRoot: string, kind: StaticAnalysisReport["kind"]
     path: normalizePath(path.relative(repoRoot, destination)),
     copied: true
   };
+}
+
+async function importSymbolReport(repoRoot: string, sourceInput: string): Promise<StaticAnalysisReport> {
+  await validateCodexaSymbolReportFile(repoRoot, sourceInput);
+  return importReport(repoRoot, "symbol-report", sourceInput);
 }
 
 async function runSemgrep(repoRoot: string, configs: string[], timeoutMs: number): Promise<StaticAnalysisRun> {

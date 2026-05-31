@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { narrowTestRecommendationsByChangeType, recommendTests } from "../src/query/tests.js";
+import { narrowTestRecommendationsByChangeType, recommendTests, uniqueTests } from "../src/query/tests.js";
 import type { CodexaIndex } from "../src/types.js";
 
 /**
@@ -49,6 +49,62 @@ describe("recommendTests change-type filter", () => {
     const paths = result.map((r) => r.path).sort();
     expect(paths).toContain("tests/test_app.py");
     expect(paths).toContain("web/src/App.frame.test.ts");
+  });
+
+  it("attaches target-scoped provenance to recommended tests", () => {
+    const [test] = recommendTests(makeIndex(), ["myapi/store.py"], "/fake/repo", "behavior");
+    expect(test.path).toBe("tests/test_app.py");
+    expect(test.provenance?.sources).toContain("authoritative_test_edge");
+    expect(test.provenance?.targetPaths).toContain("myapi/store.py");
+    expect(test.provenance?.degraded).not.toBe(true);
+  });
+
+  it("deduplicates by preferring non-degraded provenance over stale snapshot evidence", () => {
+    const merged = uniqueTests([
+      {
+        path: "tests/test_app.py",
+        reason: "legacy broad snapshot",
+        rank: 99,
+        evidenceTier: "authoritative",
+        provenance: {
+          schemaVersion: 1,
+          origin: "snapshot",
+          sources: ["snapshot_legacy"],
+          targetPaths: ["old/file.py"],
+          evidence: ["legacy broad snapshot"],
+          degraded: true,
+          degradedReason: "legacy snapshot test lacks planned-test provenance"
+        }
+      },
+      {
+        path: "tests/test_app.py",
+        reason: "current graph edge",
+        rank: 5,
+        evidenceTier: "authoritative",
+        provenance: {
+          schemaVersion: 1,
+          origin: "current",
+          sources: ["authoritative_test_edge"],
+          targetPaths: ["myapi/store.py"],
+          evidence: ["current graph edge"]
+        }
+      }
+    ]);
+    expect(merged).toHaveLength(1);
+    expect(merged[0].provenance?.degraded).not.toBe(true);
+    expect(merged[0].provenance?.sources).toContain("authoritative_test_edge");
+    expect(merged[0].provenance?.sources).not.toContain("snapshot_legacy");
+    expect(merged[0].provenance?.targetPaths).not.toContain("old/file.py");
+  });
+
+  it("makes outcome history boosts visible in recommendation reasons and provenance", () => {
+    const index = makeIndex();
+    const testFile = (index.files as Array<{ path: string; rankReasons?: Record<string, number> }>).find((file) => file.path === "tests/test_app.py");
+    testFile!.rankReasons = { outcomeHistory: 2 };
+    const [test] = recommendTests(index, ["myapi/store.py"], "/fake/repo", "behavior");
+    expect(test.reason).toContain("outcome history");
+    expect(test.provenance?.sources).toContain("outcome_history");
+    expect(test.rank).toBeGreaterThan(5);
   });
 
   it("drops Python pytest recommendations on style edits when no Python was touched", () => {

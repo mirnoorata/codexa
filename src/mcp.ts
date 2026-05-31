@@ -29,6 +29,7 @@ import type { FreshnessInfo, QueryOptions, QueryResult, SessionMemoryInput } fro
 import { getFreshness } from "./indexer.js";
 import { requireIndex } from "./query/runtime.js";
 import { createQuerySessionFromIndexState, type QuerySession, type QuerySessionIndexState } from "./query/session.js";
+import { nextToolNames } from "./query/next-tools.js";
 import { RAW_SEARCH_EXPLICIT_PATTERN_LIMIT } from "./query/raw-search.js";
 import { semanticMayUseOpenWorldProvider } from "./semantic-retrieval.js";
 import { resolveMcpRepoRoot, type McpRepoRootResolution } from "./mcp-repo-root.js";
@@ -133,13 +134,21 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
     reason: z.string().optional(),
     indexedAt: z.string().optional()
   });
-  const lifecycleSchema = z.object({
+	  const lifecycleSchema = z.object({
     phase: z.enum(["orientation", "brief", "plan", "review", "verify", "inspect"]),
     taskId: z.string().optional(),
     snapshotStatus: z.enum(["blocked", "saved", "loaded", "missing-or-ambiguous"]).optional(),
     preconditions: z.array(z.string()),
     blockingReasons: z.array(z.string()),
     nextTools: z.array(z.string())
+	  });
+  const guidedNextToolSchema = z.object({
+    schemaVersion: z.literal(1),
+    tool: z.string(),
+    reason: z.string(),
+    requiredInputs: z.record(z.string(), z.unknown()).optional(),
+    readOnly: z.boolean(),
+    writes: z.array(z.string())
   });
   const toolPolicySchema = z.object({
     name: z.string(),
@@ -177,7 +186,7 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
     worktree: worktreeSchema,
     verificationProvenance: verificationProvenanceSchema,
     truncation: mcpTruncationSchema.optional(),
-    nextTools: z.array(z.string()).optional(),
+	    nextTools: z.array(guidedNextToolSchema.or(z.string())).optional(),
     relatedResources: z.array(mcpRelatedResourceSchema).optional()
   };
   const sourceContextAnnotations = {
@@ -459,12 +468,27 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
     "symbol_context",
     {
       title: "Codexa symbol context",
-      description: "Return compact context and usage sites for a symbol id or name, refreshing stale Codexa artifacts first when auto-refresh is enabled.",
-      inputSchema: { symbol: z.string().min(1), ...lspQuerySchema },
+      description: "Return proof-carrying symbol neighborhood context for a symbol id or name, including callers, callees, references, tests, risks, evidence, and guided next tools.",
+      inputSchema: {
+        symbol: z.string().min(1),
+        depth: z.number().int().min(1).max(3).optional(),
+        includeEvidence: z.boolean().optional(),
+        language: z.string().optional(),
+        ...lspQuerySchema
+      },
       outputSchema,
       annotations: sourceContextAnnotations
     },
-    async (input) => runTool((session) => symbolContextQuery(session, input.symbol, toolQueryOptions(input)), "symbol_context")
+    async (input) =>
+      runTool(
+        (session) =>
+          symbolContextQuery(session, input.symbol, toolQueryOptions(input), {
+            depth: input.depth,
+            includeEvidence: input.includeEvidence,
+            language: input.language
+          }),
+        "symbol_context"
+      )
   );
 
   server.registerTool(
@@ -1645,7 +1669,8 @@ function compactTestRecommendation(value: unknown): unknown {
     evidenceTier: record.evidenceTier,
     command: record.command,
     commandSource: record.commandSource,
-    commandConfidence: record.commandConfidence
+    commandConfidence: record.commandConfidence,
+    provenance: record.provenance
   };
 }
 
@@ -2208,7 +2233,7 @@ function buildMcpEnvelope(result: { data: unknown; freshness: unknown; refresh?:
     worktree,
     verificationProvenance: record.verificationProvenance ?? CURRENT_VERIFICATION_PROVENANCE,
     truncation: record.truncation,
-    nextTools: lifecycle.nextTools,
+	    nextTools: Array.isArray(record.nextTools) ? record.nextTools : lifecycle.nextTools,
     relatedResources
   };
 }
@@ -2358,6 +2383,10 @@ function preconditionsForMode(mode: string, snapshotStatus: string | undefined):
 }
 
 function nextToolsForMode(mode: string, data: Record<string, unknown>, snapshotStatus: string | undefined): string[] {
+  const structured = nextToolNames(data.nextTools);
+  if (structured.length > 0) {
+    return structured;
+  }
   if (mode === "focus_brief" || mode === "session_context") return ["task_brief", "search"];
   if (mode === "task_brief" || mode === "context_pack") return ["change_plan"];
   if (mode === "change_plan") return snapshotStatus === "blocked" ? ["search", "task_brief"] : ["post_edit_review"];
