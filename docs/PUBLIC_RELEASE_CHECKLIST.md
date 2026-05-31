@@ -46,11 +46,17 @@ has to come back clean against the *new* single commit before you push.
 - `SECURITY.md`
 - `CONTRIBUTING.md`
 - `CODE_OF_CONDUCT.md`
+- `package.json` with public package metadata, scoped name, executable,
+  files list, and keywords that match the shipped product surface
 - `.github/ISSUE_TEMPLATE/bug_report.md`
 - `.github/ISSUE_TEMPLATE/feature_request.md`
 - `.github/ISSUE_TEMPLATE/config.yml`
 - `.github/pull_request_template.md`
 - `.github/workflows/check.yml` (already exists — CI)
+- User-facing docs that match the current tool surface: proof-carrying
+  `symbol_context`, `EdgeEvidenceV1`, planned-test provenance,
+  `CodexaSymbolReportV1`, local outcome ranking, structured `nextTools`, eval
+  numbers, and npm install/publish status.
 
 ### Identity
 
@@ -206,6 +212,15 @@ Neither of these is failure. Both are normal open-source lifecycles.
 - Re-run `npm run security:check` locally from a clean committed tree.
   Dependabot is the continuous version of this, but a local run confirms
   nothing is stuck and the packed/plugin install path still works.
+- Refresh public proof before cutting a release:
+  `node dist/cli.js eval <repo> --suite all --seed codexa-v1-benchmark`, plus
+  `--centrality-experiment` when ranking changes are under consideration. Update
+  README metrics only from the latest reproducible run.
+- Verify npm and repository discoverability before announcing a package:
+  `npm view @mirnoorata/codexa version --json` after publish, package keywords
+  in `package.json`, and GitHub topics aligned with the actual scope (`codex`,
+  `mcp`, `code-intelligence`, `symbol-search`, `impact-analysis`,
+  `local-first`, `verification`).
 - Glance at open issues. Close anything you would not pick up in the next six
   months, with a short "out of scope / not planned" note. Issues that sit
   open for a year with no reply are worse for everyone than closed issues.

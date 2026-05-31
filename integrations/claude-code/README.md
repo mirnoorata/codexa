@@ -30,6 +30,13 @@ Slash commands available to Claude:
 | `/codexa-review`   | `codexa post-edit-review`            |
 | `/codexa-impact`   | `codexa impact` / `diff-impact`      |
 
+Current Codexa packets are proof-carrying. Impact and symbol lookups can include
+edge evidence, confidence labels, stale/degraded flags, and structured
+`nextTools` entries that name the next read-only or cache-writing Codexa call.
+Post-edit review compares against planned-test provenance from the saved
+snapshot, degrades legacy or scope-mismatched tests, and persists compact local
+outcomes that may visibly influence future ranking/test recommendations.
+
 ## Thin Adapter Contract
 
 Claude Code commands and hooks are adapters over the shared Codexa engine.
@@ -39,6 +46,13 @@ path. The primary Codexa path stays:
 ```text
 session_context -> task_brief -> change_plan(saveSnapshot) -> post_edit_review -> test_plan
 ```
+
+Use `symbol_context`, `impact`, `callers`, and `callees` when Claude needs to
+audit who uses a symbol, what may break, and which tests are relationship-backed.
+For non-TypeScript/JavaScript/Python repositories, the shared engine can consume
+`CodexaSymbolReportV1` reports through
+`codexa static-analysis <repo> --symbol-report <path>` and labels those
+relationships as report-backed derived evidence.
 
 The adapter may write Codexa-owned `.codex/cache/` state through the CLI, but it
 must not introduce source-mutating MCP tools or host-only behavior that bypasses
@@ -82,15 +96,15 @@ marketplace and install the plugin automatically. Until then, the two
 
 ## Requirements
 
-- Node.js >= 18 on `$PATH` (override with `CLAUDIO_NODE_BIN`)
+- Node.js >= 22 on `$PATH` (override with `CLAUDIO_NODE_BIN`)
 - Codexa must be locatable one of three ways (tried in this order):
   1. `CODEXA_CLI` env var set to an absolute path to `dist/cli.js`
   2. `<codexa-checkout>/dist/cli.js` auto-detected from the plugin's own
      location (works when the plugin is loaded via `--plugin-dir
      <codexa-checkout>/integrations/claude-code`)
-  3. `codexa` on `$PATH` (works when the user ran
-     `npm install -g @mirnoorata/codexa`; recommended when the plugin is
-     installed via `/plugin marketplace add`, which copies the plugin out of
+  3. `codexa` on `$PATH` (works after the public package is published and the
+     user ran `npm install -g @mirnoorata/codexa`; recommended when the plugin
+     is installed via `/plugin marketplace add`, which copies the plugin out of
      the source checkout)
 - GNU coreutils `timeout`, `awk`, `python3`, `shasum` (or `md5sum`)
 
@@ -106,7 +120,9 @@ Environment variables the hooks honor:
 
 ## Safety properties
 
-- Every hook has a hard `timeout(1)` budget (SessionStart 5s, PreToolUse 2s, Stop 30s).
+- Every hook has a hard Claude hook timeout (SessionStart 6s, PreToolUse 3s,
+  Stop 35s). The shell scripts also wrap Codexa CLI calls with shorter
+  `timeout(1)` subprocess budgets.
 - Every hook exits 0 on any error — Claude sessions are never blocked by a
   Codexa outage.
 - Hooks never write to the user's repo. Codexa's own `.codex/cache/` state

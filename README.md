@@ -104,7 +104,8 @@ serves focused MCP context tools over stdio.
   call embedding providers unless a semantic cache and provider configuration
   are present, or semantic retrieval is explicitly forced.
 - Explicit graph queries over persisted typed edges: `DEFINES`, `IMPORTS`,
-  `CALLS`, `REFERENCES`, `TESTS`, `ROUTE`, `JOB`, and `RISK`.
+  `CALLS`, `REFERENCES`, `TESTS`, `ROUTE`, `JOB`, `RISK`, route/UI/store
+  workflow edges, `IMPLEMENTS`, `EXTENDS`, `EXPORTS`, and `TYPE_EXPORTS`.
 - Workflow traces for route/job/manifest execution paths plus generated
   architecture playbooks under `.codex/codebase/playbooks/`.
 - Adaptive search that compares raw `rg` with Codexa ranking and explicitly says
@@ -112,20 +113,24 @@ serves focused MCP context tools over stdio.
 - Change-type-aware impact/context output for `style`, `api`, `behavior`,
   `rename`, `delete`, and `unknown`, including fanout collapse and verification
   recipes.
-- Task snapshots for the edit loop: `change_plan --save-snapshot` records the
-  plan-time dirty baseline under `.codex/cache/`, and `post_edit_review`
-  compares the actual post-edit dirty tree against that snapshot for drift,
-  unplanned files, risk/workflow signals, placeholder risk deltas, and tests
-  still unaccounted for.
+- Task snapshots for the edit loop: MCP `change_plan` with `saveSnapshot=true`,
+  or CLI `change-plan --save-snapshot`, records the plan-time dirty baseline
+  under `.codex/cache/`. `post_edit_review` / `post-edit-review` compares the
+  actual post-edit dirty tree against that snapshot for drift, unplanned files,
+  risk/workflow signals, placeholder risk deltas, and tests still unaccounted
+  for. Planned tests carry provenance for explicit targets,
+  test edges, impact expansion, package/import evidence, natural retrieval,
+  outcome history, or legacy snapshots; stale or scope-mismatched snapshot tests
+  are degraded instead of silently trusted.
 - Local diagnostics: `codexa doctor` checks repo wiring, index freshness,
   generated artifacts, hook setup, and the latest structured hook event.
 - `codexa init` also writes lightweight edit hooks when supported by Codex
   hooks: `hook-pre-edit` reminds Codex when a non-trivial edit lacks a saved
   change-plan snapshot, and `hook-post-edit` runs a bounded post-edit review.
-  The post-edit hook also runs narrowly targeted safe test commands inferred
-  from the review packet, captures structured command reports, and feeds those
-  reports into the persisted outcome without user-supplied `--ran-command`
-  input.
+  If `CODEXA_AUTOVERIFY=1` or `CODEXA_AUTOVERIFY=true` is set, the post-edit
+  hook can also run narrowly targeted safe test commands inferred from the
+  review packet, capture structured command reports, and feed those reports into
+  the persisted outcome without user-supplied `--ran-command` input.
   These hooks are advisory and fail open: setup/query errors print a bounded
   unavailable message and exit successfully so editor tool calls are not
   blocked. Hook runs write compact local JSONL diagnostics under ignored
@@ -154,6 +159,42 @@ serves focused MCP context tools over stdio.
   the same local context workflow.
 - No graph DB, vector DB, web UI, formal solver, always-on LSP daemon, or
   source-mutating MCP tools.
+
+## Proof-Carrying Edit Loop
+
+Codexa's current workflow is a local, auditable loop rather than a general
+semantic memory layer:
+
+1. Use `search`, `focus_brief`, or `task_brief` to find the likely target and
+   see freshness, search value, quality, known gaps, and the recommended next
+   call. Surfaces that support structured guidance return `nextTools`; broad
+   focus/session packets may return a simpler `nextCall`.
+2. Use `symbol_context`, `impact`, `callers`, or `callees` for proof-carrying
+   relationship context. Returned edges include compact `EdgeEvidenceV1`
+   records with edge kind, source, confidence, reason, range when available,
+   and stale/degraded flags.
+3. Use MCP `change_plan` with `saveSnapshot=true`, or CLI
+   `change-plan --save-snapshot`, before editing. The snapshot stores edit
+   targets, read-first files, planned tests with provenance, recipes, freshness,
+   and dirty-file hashes.
+4. Use MCP `post_edit_review` or CLI `post-edit-review` after editing. It
+   reconciles the dirty tree against the saved snapshot, degrades stale
+   planned-test evidence, and reports drift and unaccounted verification. The
+   CLI/hook path persists compact local outcomes; MCP review calls stay
+   non-persistent.
+5. Future ranking and test planning can read recent
+   `.codex/cache/codexa-outcomes/` records for bounded, visible boosts. Outcome
+   boosts never override explicit targets, freshness, or authoritative graph
+   evidence.
+
+For languages outside Codexa's native TypeScript/JavaScript/Python lane, import
+a `CodexaSymbolReportV1` through
+`static-analysis <repo> --symbol-report <path>`. Those facts are report-backed,
+labeled `source: "static-analysis"`, and confidence-capped at `derived`, so they
+can power `symbol_context` and `impact` without pretending to be native parser
+evidence. Transitive centrality/PageRank remains an eval-only experiment until
+it improves retrieval metrics without reducing precision or making ranking
+explanations opaque.
 
 ## Commands
 
@@ -357,10 +398,11 @@ codexa static-analysis <repo> \
 }
 ```
 
-All referenced paths must realpath under the repository and exist as files. Imported
-symbol facts are labeled `static-analysis` with confidence capped at `derived`, so
-Rust, Go, Java, and other report-backed projects get a degraded but useful symbol
-lane without Codexa owning native parsers for those ecosystems.
+All referenced paths must realpath under the repository and exist as files.
+Imported symbol facts are labeled `static-analysis` with confidence capped at
+`derived`, so Rust, Go, Java, and other report-backed projects get a useful
+lower-trust symbol lane without Codexa owning native parsers for those
+ecosystems.
 
 Optionally run locally installed scanners:
 

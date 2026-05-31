@@ -19,7 +19,7 @@ The first milestone used a private application repository as the acceptance proj
 - Python support is included for simple structure, imports, decorators, tests, and direct usage sites, but dynamic/framework behavior is marked heuristic.
 - Generic project support includes TypeScript path alias/project-reference metadata, package manifest symbols, Python package and `__init__.py` resolution, changed-symbol summaries for dirty diffs, framework route/job/test surfaces, and heuristic candidate test commands.
 - Research-driven V1.1 additions keep the same small architecture while adding a default `task_brief` path, task-shaped `context_pack` output, bounded impact expansion inside task packets, grouped dirty-diff impact, MCP output schemas/annotations/resources/prompts, content-hash parse caching, generic framework detectors, repo-local SessionStart/edit-loop helpers, provenance-aware test command suggestions, known-gap reporting, and a structured anti-cheat eval harness.
-- The current implementation also adds natural-language `focus_brief`/`session_context`, a small BM25/inverted-index retrieval layer, first-class typed graph edges, route/job/manifest workflow traces, generated architecture playbooks, change-plan packets, and cross-process refresh locking. These are still local, deterministic, and dependency-light.
+- The current implementation also adds natural-language `focus_brief`/`session_context`, a small BM25/inverted-index retrieval layer, first-class typed graph edges, route/job/manifest workflow traces, generated architecture playbooks, proof-carrying symbol neighborhoods, change-plan packets with planned-test provenance, outcome-informed local ranking, external symbol report ingestion, and cross-process refresh locking. These are still local, deterministic, and dependency-light.
 - `session_memory` follows `docs/architecture/session-memory.md`: cache-only structured working memory, bounded auto-recorded `viewed` entries, one MCP tool with actions, no embeddings or learned similarity, and no promotion of agent assertions into the codebase fact graph.
 - The first competitive Codex-native differentiator is the generated
   `.codex/codebase/codex-contract.md` plus SessionStart packet. It tells Codex
@@ -32,19 +32,23 @@ The first milestone used a private application repository as the acceptance proj
   default, fail open, and never mutate source files.
 - Every relationship carries an explicit source and confidence label.
 - Freshness is a gate. Stale or dirty state must be visible in artifacts and MCP responses.
+- Relationship claims returned to agents should carry compact evidence, not just prose. `symbol_context`, `impact`, `callers`, `callees`, and task-shaped packets expose `EdgeEvidenceV1` or evidence ids where they make nontrivial graph claims.
+- Transitive centrality/PageRank is allowed as an eval-only experiment. It must not change default ranking until the eval harness shows material wins without precision loss or opaque explanations.
 
 ## Implementation
 
 ### CLI
 
-Codexa is packaged for public npm distribution as `@mirnoorata/codexa`; the installed
-binary remains `codexa` so existing Codex workflows do not need to change.
+Codexa's intended public npm package name is `@mirnoorata/codexa`; when
+published, the installed binary remains `codexa` so existing Codex workflows do
+not need to change.
 The package also includes `plugins/codexa/`, a Codex plugin bundle with a
 manifest, skill, and MCP wrapper that launches the same npm `codexa serve`
 entrypoint for the focused git repository or a workspace root that carries a
 `.codex/WORKING.md` focused-project marker.
 
 ```bash
+# Once the package is published:
 npm install -g @mirnoorata/codexa
 npx -y @mirnoorata/codexa serve <repo> --auto-refresh
 ```
@@ -56,17 +60,25 @@ The `codexa` CLI exposes:
 
 ```bash
 codexa init [repo]
+codexa session-start <repo>
+codexa hook-pre-edit <repo>
+codexa hook-post-edit <repo>
 codexa index <repo>
 codexa semantic-index <repo> --provider openai
 codexa semantic-index <repo> --provider local-command --command <embed-jsonl-command>
 codexa watch <repo>
-codexa static-analysis <repo>
+codexa static-analysis <repo> --symbol-report <path>
+codexa doctor <repo>
 codexa status <repo>
+codexa repo-map <repo>
+codexa find-context <repo> --query <query>
 codexa explain <repo> --file <path>
 codexa explain <repo> --symbol <symbol_id>
 codexa search <repo> --query <query>
+codexa placeholder-report <repo>
 codexa impact <repo> --file <path>
 codexa impact <repo> --symbol <symbol_id>
+codexa diff-impact <repo>
 codexa test-plan <repo> --diff
 codexa brief <repo> --task <task>
 codexa context-pack <repo> --task <task>
@@ -79,6 +91,7 @@ codexa workflow-path <repo> --query <task>
 codexa change-plan <repo> --task <task> --file <path>
 codexa post-edit-review <repo> --task-id <snapshot_id>
 codexa eval <repo>
+codexa github-sync-check <codexa-checkout>
 codexa serve <repo>
 ```
 
@@ -105,9 +118,10 @@ stdout protocol-clean; logs go to stderr.
 
 Artifact writes are staged in a temporary directory and then swapped into place so a failed write does not leave a partially updated live index.
 
-Context commands (`repo-map`, `find-context`, `explain`, `impact`,
-`diff-impact`, `test-plan`, `brief`, `context-pack`, `focus-brief`,
-`session-context`, `workflow-path`, `change-plan`, and `serve`) auto-refresh
+Context commands (`repo-map`, `find-context`, `search`, `placeholder-report`,
+`explain`, `impact`, `diff-impact`, `test-plan`, `brief`, `context-pack`,
+`focus-brief`, `session-context`, `callers`, `callees`, `dependency-path`,
+`workflow-path`, `change-plan`, `post-edit-review`, and `serve`) auto-refresh
 stale or missing artifacts by default. `status` remains a cheap freshness check
 and does not refresh. `--no-auto-refresh` disables automatic refresh for
 inspection or debugging.
@@ -120,11 +134,16 @@ The watcher has bounded operational knobs: `--debounce-ms`, `--poll-ms`,
 `--no-initial`, and `--max-runs` for one-shot hook/smoke usage.
 
 `static-analysis` is also CLI-only. It imports existing Semgrep JSON, CodeQL
-SARIF, generic SARIF, or Codexa risk JSON reports into `.codex/static-analysis/`
-and reindexes by default so the findings become `RiskSignal` facts. It can
-optionally run user-installed `semgrep` or `codeql` binaries, but this is never
-implicit and is not exposed through MCP. The command writes reports/cache files
-under `.codex/` only; it does not edit source code.
+SARIF, generic SARIF, Codexa risk JSON reports, and bounded
+`CodexaSymbolReportV1` symbol reports into `.codex/static-analysis/` and
+reindexes by default so the findings become `RiskSignal`, `Symbol`, usage, and
+typed graph facts. Symbol report paths must realpath under the repo and exist as
+files. Imported symbol relationships are labeled `source: "static-analysis"`
+with confidence capped at `derived`, giving Rust/Go/Java/etc. repositories a
+lower-trust symbol lane without Codexa owning native parsers for those
+languages. It can optionally run user-installed `semgrep` or `codeql` binaries,
+but this is never implicit and is not exposed through MCP. The command writes
+reports/cache files under `.codex/` only; it does not edit source code.
 
 `search` is deliberately honest about value. It runs a bounded raw `rg` lookup,
 then overlays Codexa ranking, likely tests, freshness, and known gaps. If raw
@@ -190,11 +209,20 @@ subsystems, explain matched terms, list read-first files, include likely tests,
 and recommend the next MCP call. Decoy/mock/fixture-looking files are filtered
 unless the query asks for them.
 
+`symbol_context` is the primary symbol inspection surface. It returns the
+definition, containing symbol/file, direct callers, direct callees, importers,
+references, implementations/extends where indexed, covering tests, related
+risks, impact radius, edge evidence, optional LSP assist, and structured next
+tools. Ambiguous names return stable candidates and ask the caller to rerun with
+an exact symbol id or qualified name.
+
 `callers`, `callees`, `dependency-path`, and `workflow-path` expose the graph
-directly for Codex follow-up queries. `change-plan` combines focus, context,
-graph/workflow signals, risk, tests, and verification recipes into a short edit
-packet. Explicit files or symbols stay target-led; broad task retrieval is not
-allowed to crowd out a requested target.
+directly for Codex follow-up queries. `impact` groups relationship-backed and
+heuristic fanout and attaches evidence ids to affected files where graph edges
+support the claim. `change-plan` combines focus, context, graph/workflow
+signals, risk, tests, and verification recipes into a short edit packet.
+Explicit files or symbols stay target-led; broad task retrieval is not allowed
+to crowd out a requested target.
 
 `change-plan --save-snapshot` records a small task snapshot under
 `.codex/cache/codexa-tasks/`. The snapshot stores the planned edit
@@ -206,8 +234,24 @@ targets, related workflows, recommended tests not accounted for, and whether the
 next step should be `continue`, `run_tests`, `inspect`, or `replan`. This is a
 cache-only loop: it never edits source files and it does not regenerate indexes
 except through the same optional auto-refresh used by other context queries.
+Planned tests in the snapshot carry provenance (`explicit_target`,
+`authoritative_test_edge`, import/package-derived evidence, impact expansion,
+natural retrieval, outcome history, or `snapshot_legacy`). During
+`post-edit-review` / `post_edit_review`, stale legacy tests or tests whose
+provenance no longer matches a narrowed review scope are marked degraded instead
+of silently counted as trusted coverage. CLI and hook outcome records under
+`.codex/cache/codexa-outcomes/` can later add bounded, visible boosts to ranking
+and test recommendations; they never override freshness, explicit targets, or
+authoritative graph evidence.
 
-`eval` runs a structured benchmark using raw `rg`/`git status` as baseline-noise measurements and Codexa impact/context/test planning as the system under test. It scores structured `QueryResult.data`, not prose. The default benchmark disables auto-refresh and can fail any scenario that refreshes during scoring. Synthetic holdouts use seed-generated names plus decoy files so the benchmark cannot be satisfied by hardcoded private-project strings.
+`eval` runs a structured benchmark using raw `rg`/`git status` as baseline-noise
+measurements and Codexa impact/context/test planning as the system under test.
+It scores structured `QueryResult.data`, not prose. The default benchmark
+disables auto-refresh and can fail any scenario that refreshes during scoring.
+Synthetic holdouts use seed-generated names plus decoy files so the benchmark
+cannot be satisfied by hardcoded private-project strings. `--centrality-experiment`
+runs transitive centrality/PageRank scoring beside the default rank and reports
+metric deltas without changing production ranking.
 
 ### Indexer
 
@@ -250,13 +294,15 @@ filesystem writes/removes, MCP tool registration, raw HTML sinks, and SQL
 execution boundaries.
 
 Third-party static-analysis integration is report-based, not code-based. Codexa
-can ingest Semgrep JSON, CodeQL SARIF, generic SARIF, or a small generic risk
-JSON shape from `.codex/static-analysis/` and `reports/`, but it does not vendor
-Semgrep or CodeQL engine code, bundled rules, query packs, or CLI binaries. That
-keeps V1 small and avoids mixing Codexa's MIT package with third-party
-runtime/license obligations. Users can still run Semgrep or CodeQL themselves,
-or explicitly ask `codexa static-analysis` to invoke installed scanners, and let
-Codexa fold the produced findings into ranked risk context.
+can ingest Semgrep JSON, CodeQL SARIF, generic SARIF, a small generic risk JSON
+shape, or a `CodexaSymbolReportV1` JSON symbol report from
+`.codex/static-analysis/` and `reports/`, but it does not vendor Semgrep or
+CodeQL engine code, bundled rules, query packs, CLI binaries, or external
+language analyzers. That keeps V1 small and avoids mixing Codexa's MIT package
+with third-party runtime/license obligations. Users can still run Semgrep,
+CodeQL, Rust/Go/Java/etc. analyzers, or explicitly ask `codexa static-analysis`
+to invoke installed Semgrep/CodeQL scanners, and let Codexa fold the produced
+findings into ranked risk and symbol context.
 
 The static-analysis bridge deliberately stores only scanner output. Semgrep
 configs such as `p/default` and CodeQL query suites such as
@@ -267,6 +313,11 @@ paths are opt-in because they can be slow and may contact external registries
 depending on local scanner configuration.
 
 Ranking uses a simple inspectable score that combines dependency centrality, usage count, public-surface hints, git churn, test proximity, and dirty-file risk. Pure PageRank is not treated as authority.
+Recent local outcomes can add bounded boosts for files, symbols, workflows, and
+tests that were previously missed, risky, unplanned, or repeatedly needed after
+edits. Every such boost must be visible in rank reasons or recommendation
+reasons. Opaque learning, provider calls, and hidden ranking changes are outside
+scope.
 
 ### Graph And Workflow Model
 
@@ -281,10 +332,25 @@ Codexa persists first-class graph facts rather than exposing only file tables.
 - `ROUTE`
 - `JOB`
 - `RISK`
+- `ROUTE_HANDLES`
+- `ROUTE_CALLS_STORE`
+- `STORE_DISPATCHES_ADAPTER`
+- `ADAPTER_REFERENCED_BY_MANIFEST`
+- `UI_CALLS_ENDPOINT`
+- `TEST_COVERS_WORKFLOW`
+- `IMPLEMENTS`
+- `EXTENDS`
+- `EXPORTS`
+- `TYPE_EXPORTS`
 
 Graph tools return bounded edge lists and file sets with freshness and evidence
 quality labels. They are intended for follow-up precision after a task brief, not
 for dumping the entire graph into context.
+
+`EdgeEvidenceV1` is the compact public DTO for graph claims. It carries schema
+version, edge id/kind, endpoints, paths or symbol ids when available, source,
+confidence, reason, optional range, and stale/degraded flags derived from the
+current freshness state and graph confidence.
 
 `WorkflowTrace` facts model route, job, and manifest flows. A trace has an
 entry, ordered steps, related files, tests, summary, rank, source, and confidence.
@@ -338,6 +404,7 @@ Minimum fact types:
 - `ParserError`
 - `GraphEdge`
 - `WorkflowTrace`
+- `SessionMemoryEntry`
 
 Every fact includes a stable id, path, line/byte range when available, source, confidence, and snapshot metadata.
 
@@ -395,13 +462,19 @@ freshness
 ```
 
 Tool responses are bounded and include freshness, provenance, confidence labels,
-and a value estimate where the query can be compared with raw search. MCP tools
-expose `outputSchema` for their structured result wrapper. Tool annotations are
-non-destructive and closed-world unless the server is configured for OpenAI
-semantic embeddings. When auto-refresh is disabled, context tools are strict
-filesystem reads and advertise `readOnlyHint: true` unless they auto-record
-session memory. Auto-recording tools advertise non-destructive cache-write
-semantics because they can update `.codex/cache/codexa-session-memory/`.
+relationship evidence where relevant, next-call guidance, and a value estimate
+where the query can be compared with raw search. MCP tools expose `outputSchema`
+for their structured result wrapper. When a response includes structured
+`nextTools`, that array is authoritative for agent guidance: each entry names
+the tool, reason, required inputs, whether it is read-only, and any local
+cache/snapshot writes. Broad focus/session packets may return a simpler
+`nextCall`. The prose `systemMessage` is only a compact convenience. Tool
+annotations are non-destructive and closed-world unless the server is configured
+for OpenAI semantic embeddings. When auto-refresh is disabled, context tools are
+strict filesystem reads and advertise `readOnlyHint: true` unless they
+auto-record session memory. Auto-recording tools advertise non-destructive
+cache-write semantics because they can update
+`.codex/cache/codexa-session-memory/`.
 With auto-refresh enabled, context tools may also update generated Codexa cache
 artifacts under `.codex/codebase/` before answering. `change_plan` advertises
 cache-write semantics because `saveSnapshot=true` writes
@@ -427,14 +500,18 @@ The server also exposes MCP resources for the generated artifact set:
 
 ```text
 codexa://repo/codebase/README.md
+codexa://repo/codebase/codex-contract.md
 codexa://repo/codebase/repo-map.md
 codexa://repo/codebase/risk-map.md
+codexa://repo/codebase/placeholder-map.md
 codexa://repo/codebase/test-map.md
 codexa://repo/codebase/conventions.md
 codexa://repo/codebase/workflows.md
 codexa://repo/codebase/freshness.json
 codexa://repo/codebase/modules
+codexa://repo/codebase/modules/{name}
 codexa://repo/codebase/playbooks/README.md
+codexa://repo/codebase/playbooks/{name}
 ```
 
 MCP prompts are intentionally workflow-shaped and small: `impact_before_edit`,
@@ -467,14 +544,17 @@ than a cache-backed full resolver pass.
 flag in `.codex/config.toml`. The hook runs `codexa session-start <repo>` on
 startup/resume. The helper prints cheap status by default; setting
 `CODEXA_SESSIONSTART_CONTEXT=1` also prints a bounded no-refresh `context-pack`
-preview. It does not mutate source files.
+preview. It does not mutate source files, but context commands can refresh
+generated Codexa cache artifacts when auto-refresh is enabled.
 
 When Codex edit hooks are available, init also writes `hook-pre-edit` and
 `hook-post-edit` entries for edit tools. The pre-edit helper is intentionally a
-cheap guardrail: it reminds Codex to call `change_plan --save-snapshot` before a
-non-trivial edit if no task snapshot exists. The post-edit helper runs a bounded
-`post_edit_review`, returns the clear `continue` / `run_tests` / `inspect` /
-`replan` verdict, and records compact outcome data in
+cheap guardrail: it reminds Codex to call MCP `change_plan` with
+`saveSnapshot=true`, or CLI `change-plan --save-snapshot`, before a non-trivial
+edit if no task snapshot exists. The post-edit helper runs a bounded
+`post-edit-review`, returns the clear `continue` / `run_tests` / `inspect` /
+`replan` verdict, respects planned-test provenance and degraded snapshot
+evidence, and records compact outcome data in
 `.codex/cache/codexa-outcomes/`. Eval runs persist aggregate calibration data
 under `.codex/cache/codexa-evals/` so noisy cases, missing tests, heuristic-heavy
 packets, and raw-search-better cases become regression material.
@@ -495,6 +575,8 @@ The eval benchmark avoids false confidence by design:
 - refresh events are measured and can fail the run
 - metrics include recall, precision at K, selected tests, text size, baseline line count, selected/baseline compression, and failures
 - comparison metrics parse baseline `rg`/`git status` output into file/test sets so with-vs-without Codexa is scored against the same oracle
+- transitive centrality/PageRank experiments run behind `--centrality-experiment`
+  and report deltas before any production ranking change
 - new scenarios include exact-search raw-sufficient cases, shared-module fanout,
   post-edit snapshot review, and change-type-sensitive impact so Codexa is
   penalized for adding noise where raw search is enough
@@ -518,8 +600,24 @@ If implementation drift is found, either fix the code or update this document wi
 
 ## Test Plan
 
-Unit tests cover TS/TSX/Python parsing, Python imports/decorators/pytest fixtures/direct calls, usage-site source/confidence labeling, dirty working-tree overlays, deterministic ranking, artifact validity, bounded Markdown output, static-analysis report ingestion, and MCP freshness metadata.
+Unit tests cover TS/TSX/Python parsing, Python imports/decorators/pytest
+fixtures/direct calls, usage-site source/confidence labeling, dirty working-tree
+overlays, deterministic ranking, planned-test provenance, stale snapshot
+degradation, symbol ambiguity, callers/callees, implements/extends evidence,
+outcome boost caps, artifact validity, bounded Markdown output, static-analysis
+symbol-report validation, and MCP freshness metadata.
 
-Integration tests index a mixed TS/Python fixture repo, run status before and after edits, run impact for TS and Python symbols/files, run `test-plan --diff`, exercise live watch debouncing, start `serve`, call each MCP tool through a test client, and verify stdout stays JSON-RPC protocol-only.
+Integration tests index a mixed TS/Python fixture repo, run status before and
+after edits, run MCP `symbol_context` at depth 2 or CLI
+`explain --symbol <id> --depth 2`, impact for TS and Python symbols/files,
+imported symbol-report relationships, `test-plan --diff`, live watch debouncing,
+`serve`, selected MCP tools plus catalog parity through a test client,
+structured `nextTools`, edge evidence rendering, and stdout JSON-RPC protocol
+cleanliness.
 
-Acceptance runs `codexa index <repo>`, inspects `<repo>/.codex/codebase/`, confirms Python backend and TypeScript frontend hotspots are represented, confirms route/helper/test relationships carry correct confidence labels, and checks impact/test-plan output on a real dirty or historical diff.
+Acceptance runs `codexa index <repo>`, inspects `<repo>/.codex/codebase/`,
+confirms Python backend and TypeScript frontend hotspots are represented,
+confirms route/helper/test relationships carry correct confidence labels, checks
+impact/test-plan output on a real dirty or historical diff, and reruns the
+structured eval suite with the current MCP catalog. Ranking experiments such as
+centrality are accepted only through eval evidence, not by documentation intent.

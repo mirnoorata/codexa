@@ -31,11 +31,19 @@ node <codexa-checkout>/dist/cli.js hook-pre-edit <repo>
 node <codexa-checkout>/dist/cli.js hook-post-edit <repo>
 ```
 
-`hook-pre-edit` is a cheap reminder when no `change_plan --save-snapshot`
-baseline exists. `hook-post-edit` runs a bounded `post_edit_review` after edit
-tools, auto-runs only targeted safe test commands inferred from that review,
-feeds the captured command reports into the final review, and stores the compact
-verdict under `.codex/cache/codexa-outcomes/`.
+`hook-pre-edit` is a cheap reminder when no CLI
+`change-plan --save-snapshot` baseline exists, equivalent to the MCP
+`change_plan` tool with `saveSnapshot=true`. `hook-post-edit` runs a bounded CLI
+`post-edit-review`, equivalent to the MCP `post_edit_review` tool, after edit
+tools. It evaluates the saved planned-test provenance, degrades stale or
+scope-mismatched snapshot tests, and stores the compact verdict under
+`.codex/cache/codexa-outcomes/`. If `CODEXA_AUTOVERIFY=1` or
+`CODEXA_AUTOVERIFY=true` is set, it can also auto-run targeted safe test
+commands inferred from that review and feed captured command reports into the
+final review.
+Those local outcomes can later produce bounded, visible ranking/test boosts, but
+they do not override freshness, explicit targets, or authoritative graph
+evidence.
 
 These helpers do not mutate source files. Codexa context tools may still refresh
 generated `.codex/codebase/` cache artifacts when auto-refresh is enabled.
