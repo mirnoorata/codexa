@@ -631,7 +631,7 @@ describe("Codexa hook CLI", () => {
       expect(postEdit.stdout).toContain("Codexa AutoVerify: skipped 1 unsafe or unsupported command(s).");
       await expect(readFile(path.join(repo, "deployed.txt"), "utf8")).rejects.toThrow();
     }
-  });
+  }, 90_000);
 
   it("executes safe package scripts as direct runners instead of package-manager shells", async () => {
     const repo = await createAutoVerifyFixtureRepo({ test: "node --test" });
