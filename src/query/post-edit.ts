@@ -1000,6 +1000,7 @@ function requiredDependencyChecksForPlan(index: CodexaIndex, paths: string[], ch
   const edgeChecks = index.graphEdges
     .filter((edge) => pathSet.has(edge.fromPath ?? "") || pathSet.has(edge.toPath ?? ""))
     .filter((edge) => ["IMPORTS", "CALLS", "REFERENCES", "TESTS", "EXTENDS", "IMPLEMENTS", "EXPORTS", "TYPE_EXPORTS"].includes(edge.edgeKind))
+    .filter((edge) => !(pathSet.has(edge.fromPath ?? "") && pathSet.has(edge.toPath ?? "")))
     .sort((a, b) => b.weight - a.weight || a.edgeKind.localeCompare(b.edgeKind) || (a.fromPath ?? "").localeCompare(b.fromPath ?? "") || (a.toPath ?? "").localeCompare(b.toPath ?? ""))
     .slice(0, 10)
     .map((edge) => ({
@@ -1260,8 +1261,31 @@ export async function postEditReviewQuery(
   const dataVerificationLedger = verificationLedger.map((entry) => sanitizeLedgerForDisplay(entry, repoRoot));
   const dataWaivedVerification = dataVerificationLedger.filter((entry) => entry.status === "waived");
   const missedLikelyTests = testsNotRun;
-  const hasTestVerificationAccounting =
-    verificationLedger.some((entry) => entry.kind === "test" && (entry.status === "covered" || entry.status === "waived"));
+  const hasTestVerificationAccounting = verificationLedger.some((entry) => entry.kind === "test" && (entry.status === "covered" || entry.status === "waived"));
+  const hasCredibleVerificationEvidence = hasRelevantVerificationEvidence({
+    verificationLedger,
+    verificationCoverage,
+    ranTests,
+    tests,
+    workflowChecks,
+    dependencyChecks,
+    reviewTargets,
+    editPaths
+  });
+  const noVerificationProofForEditedFiles =
+    hasActualEditedFiles && !hasCredibleVerificationEvidence && tests.length === 0 && workflowChecks.length === 0 && dependencyChecks.length === 0;
+  const missingWorkflowCheckCount = workflowChecks.filter((check) => check.status === "missing").length;
+  const missingDependencyCheckCount = dependencyChecks.filter((check) => check.status === "missing").length;
+  const riskEscalationsCoveredByVerification =
+    riskEscalations.length > 0 &&
+    unplannedEditedFiles.length === 0 &&
+    testsNotRun.length === 0 &&
+    hasTestVerificationAccounting &&
+    missingWorkflowCheckCount === 0 &&
+    missingDependencyCheckCount === 0 &&
+    waivedVerification.length === 0;
+  const riskEscalationsNeedInspection =
+    hasActualEditedFiles && riskEscalations.length > 0 && !riskEscalationsCoveredByVerification;
   const driftReasons = [
     !snapshot ? `missing task snapshot${loadedSnapshot.missingReason ? `: ${loadedSnapshot.missingReason}` : ""}` : undefined,
     snapshotAmbiguity ? snapshotAmbiguity : undefined,
@@ -1277,30 +1301,31 @@ export async function postEditReviewQuery(
       ? `${symbolDeltas.reduce((sum, delta) => sum + delta.newSymbols.length + delta.removedSymbols.length, 0)} symbol delta(s) detected`
       : undefined,
     riskDeltas.some((delta) => delta.delta > 0) ? `${riskDeltas.filter((delta) => delta.delta > 0).length} file(s) increased risk` : undefined,
-    workflowChecks.some((check) => check.status === "missing") ? `${workflowChecks.filter((check) => check.status === "missing").length} required workflow check(s) missing` : undefined,
-    dependencyChecks.some((check) => check.status === "missing") ? `${dependencyChecks.filter((check) => check.status === "missing").length} required dependency check(s) missing` : undefined,
+    missingWorkflowCheckCount > 0 ? `${missingWorkflowCheckCount} required workflow check(s) missing` : undefined,
+    missingDependencyCheckCount > 0 ? `${missingDependencyCheckCount} required dependency check(s) missing` : undefined,
     contextData.quality?.level === "low" ? "low context quality after edit" : undefined,
-    hasActualEditedFiles && riskEscalations.length > 0 ? `${riskEscalations.length} high-risk or unplanned target(s)` : undefined,
+    riskEscalationsNeedInspection ? `${riskEscalations.length} high-risk or unplanned target(s)` : undefined,
     waivedVerification.length > 0 ? `${waivedVerification.length} verification item(s) explicitly waived` : undefined,
     hasActualEditedFiles && testsNotRun.length > 0 && !hasTestVerificationAccounting
       ? "recommended tests have not been accounted for"
       : undefined,
-    hasActualEditedFiles && testsNotRun.length > 0 && hasTestVerificationAccounting
-      ? `${testsNotRun.length} recommended test(s) remain unaccounted for`
-      : undefined
+    hasActualEditedFiles && testsNotRun.length > 0 && hasTestVerificationAccounting ? `${testsNotRun.length} recommended test(s) remain unaccounted for` : undefined,
+    noVerificationProofForEditedFiles ? "edited files have no credible verification evidence" : undefined
   ].filter((reason): reason is string => Boolean(reason));
   const verdict: "continue" | "run_tests" | "inspect" | "replan" =
     headChanged || unplannedEditedFiles.length >= 3 || contextData.quality?.level === "low"
       ? "replan"
       : !snapshot ||
           session.worktreeDegradationReasons.length > 0 ||
-          unplannedEditedFiles.length > 0 ||
-          unplannedChangedSymbols.length > 0 ||
-          workflowChecks.some((check) => check.status === "missing") ||
-          dependencyChecks.some((check) => check.status === "missing") ||
-          waivedVerification.length > 0 ||
-          (hasActualEditedFiles && riskEscalations.length > 0) ||
-          contextData.quality?.level === "medium"
+            unplannedEditedFiles.length > 0 ||
+            Boolean(snapshotAmbiguity) ||
+            unplannedChangedSymbols.length > 0 ||
+            missingWorkflowCheckCount > 0 ||
+            missingDependencyCheckCount > 0 ||
+            waivedVerification.length > 0 ||
+            noVerificationProofForEditedFiles ||
+            riskEscalationsNeedInspection ||
+            contextData.quality?.level === "medium"
         ? "inspect"
         : hasActualEditedFiles && testsNotRun.length > 0
           ? "run_tests"
@@ -1312,7 +1337,8 @@ export async function postEditReviewQuery(
     riskEscalations,
     reviewTargets,
     workflows,
-    missingChecks: [...workflowChecks, ...dependencyChecks].filter((check) => check.status === "missing")
+    missingChecks: [...workflowChecks, ...dependencyChecks].filter((check) => check.status === "missing"),
+    noVerificationProofForEditedFiles
   });
   const quality = contextData.quality;
   const sessionMemoryPointer = priorSessionMemory
@@ -1515,6 +1541,8 @@ export async function postEditReviewQuery(
       waivedVerification: limitArray(dataWaivedVerification, 30),
       unindexedEditedFiles,
       riskEscalations: limitArray(riskEscalations, 20),
+      riskEscalationsCoveredByVerification,
+      riskEscalationsNeedInspection,
       workflows: limitArray(workflows, 12),
       workflowChecks: limitArray(workflowChecks, 20),
       dependencyChecks: limitArray(dependencyChecks, 30),
@@ -1717,16 +1745,24 @@ function dependencyCheckCoveredByVerification(
   ) {
     return true;
   }
-  const sourcePaths = check.paths.filter((filePath) => !isTestPath(filePath));
-  return input.verificationCoverage.some((coverage) => {
-    if (!["build", "typescript-syntax", "javascript-tests", "python-tests"].includes(coverage.kind)) {
-      return false;
-    }
-    if (coverage.targetPath) {
-      return checkPaths.includes(normalizePathLike(coverage.targetPath));
-    }
-    return sourcePaths.some((filePath) => coverageCoversPath(coverage, filePath));
-  });
+    const sourcePaths = check.paths.filter((filePath) => !isTestPath(filePath));
+    return input.verificationCoverage.some((coverage) => {
+      if (coverage.targetPath) {
+        return checkPaths.includes(normalizePathLike(coverage.targetPath)) && coverageKindCompatibleWithSourcePath(coverage.kind, coverage.targetPath);
+      }
+      return sourcePaths.some((filePath) => coverageKindCompatibleWithSourcePath(coverage.kind, filePath) && coverageCoversPath(coverage, filePath));
+    });
+  }
+
+function coverageKindCompatibleWithSourcePath(kind: VerificationCoverage["kind"], filePath: string): boolean {
+  const normalized = normalizePathLike(filePath).toLowerCase();
+  if (normalized.endsWith(".py")) {
+    return kind === "python-tests";
+  }
+  if (/\.(?:cjs|cts|js|jsx|mjs|mts|ts|tsx)$/u.test(normalized)) {
+    return kind === "build" || kind === "typescript-syntax" || kind === "javascript-tests";
+  }
+  return kind === "build";
 }
 
 function coverageCoversPath(coverage: VerificationCoverage, filePath: string): boolean {
@@ -1961,6 +1997,81 @@ function compactContextData(data: unknown): unknown {
   };
 }
 
+function hasRelevantVerificationEvidence(input: {
+  verificationLedger: VerificationLedgerEntry[];
+  verificationCoverage: VerificationCoverage[];
+  ranTests: string[];
+  tests: TestRecommendation[];
+  workflowChecks: PostEditCheckResult[];
+  dependencyChecks: PostEditCheckResult[];
+  reviewTargets: string[];
+  editPaths: string[];
+}): boolean {
+  const checkedTargets = new Set([
+    ...input.tests.map((test) => normalizeReviewPath(test.path)),
+    ...input.workflowChecks.map((check) => normalizeReviewPath(check.target)),
+    ...input.dependencyChecks.map((check) => normalizeReviewPath(check.target))
+  ]);
+  if (
+    input.verificationLedger.some(
+      (entry) => (entry.status === "covered" || entry.status === "waived") && (checkedTargets.size === 0 || checkedTargets.has(normalizeReviewPath(entry.target)))
+    )
+  ) {
+    return true;
+  }
+
+  const recommendedTests = new Set(input.tests.map((test) => normalizeReviewPath(test.path)));
+  if (input.ranTests.some((test) => recommendedTests.has(normalizeReviewPath(test)))) {
+    return true;
+  }
+
+  const changedTargets = uniqueSorted([...input.editPaths, ...input.reviewTargets].map(normalizeReviewPath).filter(Boolean));
+  return input.verificationCoverage.some((coverage) => coverageIsRelevantProof(coverage, changedTargets, recommendedTests));
+}
+
+function coverageIsRelevantProof(coverage: VerificationCoverage, changedTargets: string[], recommendedTests: Set<string>): boolean {
+  if (coverage.kind === "unknown" || coverage.kind === "audit" || coverage.kind === "privacy" || coverage.kind === "lint") {
+    return false;
+  }
+  const target = coverage.targetPath ? normalizeReviewPath(coverage.targetPath) : undefined;
+  if (target) {
+    return changedTargets.includes(target) || recommendedTests.has(target) || changedTargets.some((changed) => pathIntersects(target, changed));
+  }
+  if (coverage.kind === "javascript-tests" || coverage.kind === "python-tests" || coverage.kind === "targeted-test") {
+    return recommendedTests.size === 0 && changedTargets.some((changed) => scopeCoversReviewPath(coverage.scope ?? ".", changed));
+  }
+  if (coverage.kind === "build" || coverage.kind === "typescript-syntax") {
+    return changedTargets.some((changed) => sourcePathFitsCoverageKind(changed, coverage.kind) && scopeCoversReviewPath(coverage.scope ?? ".", changed));
+  }
+  return false;
+}
+
+function sourcePathFitsCoverageKind(filePath: string, kind: VerificationCoverage["kind"]): boolean {
+  if (kind === "typescript-syntax") {
+    return /\.(?:[cm]?[jt]sx?)$/iu.test(filePath);
+  }
+  if (kind === "build") {
+    return !isTestPath(filePath);
+  }
+  return false;
+}
+
+function scopeCoversReviewPath(scope: string, filePath: string): boolean {
+  const normalizedScope = normalizeReviewPath(scope);
+  const normalizedPath = normalizeReviewPath(filePath);
+  return normalizedScope === "." || normalizedScope === "" || normalizedPath === normalizedScope || normalizedPath.startsWith(`${normalizedScope}/`);
+}
+
+function pathIntersects(left: string, right: string): boolean {
+  return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
+}
+
+function normalizeReviewPath(value: string): string {
+  const normalized = value.replace(/\\/gu, "/").replace(/^\.\/+/u, "");
+  const collapsed = path.posix.normalize(normalized);
+  return collapsed === "." ? "." : collapsed.replace(/^\/+/u, "");
+}
+
 function postEditNextActions(
   verdict: "continue" | "run_tests" | "inspect" | "replan",
   input: {
@@ -1971,6 +2082,7 @@ function postEditNextActions(
     reviewTargets: string[];
     workflows: WorkflowTraceFact[];
     missingChecks: PostEditCheckResult[];
+    noVerificationProofForEditedFiles: boolean;
   }
 ): string[] {
   if (verdict === "replan") {
@@ -1985,7 +2097,11 @@ function postEditNextActions(
       input.snapshot ? "Read the unplanned or high-risk files before treating the edit as complete." : "No saved task snapshot was available; treat this as a dirty-diff review, not a drift proof.",
       input.riskEscalations.length > 0 ? `Check risk targets: ${input.riskEscalations.slice(0, 5).map((file) => file.path).join(", ")}` : `Check review targets: ${input.reviewTargets.slice(0, 6).join(", ") || "none"}`,
       input.missingChecks.length > 0 ? `Resolve required checks: ${input.missingChecks.slice(0, 4).map((check) => check.target).join(", ")}` : "Required snapshot checks are covered.",
-      input.testsNotRun.length > 0 ? `Run or explicitly account for: ${input.testsNotRun.slice(0, 6).map((test) => test.path).join(", ")}` : "Targeted tests are accounted for.",
+      input.testsNotRun.length > 0
+        ? `Run or explicitly account for: ${input.testsNotRun.slice(0, 6).map((test) => test.path).join(", ")}`
+        : input.noVerificationProofForEditedFiles
+          ? "Report a relevant test, build, or typecheck command before treating edited files as verified."
+          : "Targeted tests are accounted for.",
       input.workflows.length > 0 ? `Call workflow_path for ${input.workflows[0].title} if behavior changed.` : "Call callers or dependency_path if the touched file changes a public contract."
     ];
   }

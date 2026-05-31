@@ -220,6 +220,11 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       })
     : undefined;
   const packetDiagnostics = packetIntent ? packetIntentDiagnostics(packetIntent, naturalRetrieval?.diagnostics ?? []) : [];
+  const actionability = packetIntent
+    ? actionabilityFromPacketVerdict(packetIntent.verdict)
+    : explicitTargetProvided
+      ? "inspect_first"
+      : qualityLikeFallbackActionability(focusEntries);
   const baseline = explicitQuery ? await baselineSearchSummary(repoRoot, queryText) : undefined;
   const gaps = [...indexGaps(index, freshness, unindexedChanged), ...(worktree ? worktreeStateGaps(worktree) : [])];
   const quality = assessContextQuality({
@@ -273,6 +278,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     "Codexa context pack",
     contextInput.task ? `Task: ${contextInput.task}` : undefined,
     packetIntent ? `Packet verdict: ${packetIntent.verdict}; edit-ready ${packetIntent.editReady ? "yes" : "no"}; confidence ${Math.round(packetIntent.confidence * 100)}%` : undefined,
+    `Actionability: ${actionability}`,
     packetIntent ? `Intent mode: ${packetIntent.mode}; primary ${packetIntent.intent}; anchors ${packetIntent.anchors.slice(0, 4).join(", ") || "none"}` : undefined,
     packetIntent ? `Recommended next MCP call: ${packetIntent.recommendedNextTool}` : undefined,
     packetDiagnostics.length ? `Retrieval diagnostics: ${packetDiagnostics.join("; ")}` : undefined,
@@ -347,6 +353,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       sessionMemory: sessionMemory.data,
       intentConfidence: packetIntent,
       packetVerdict: packetIntent?.verdict,
+      actionability,
       diagnostics: packetDiagnostics,
       actionGuidanceSuppressed: suppressActionGuidance,
       recipes,
@@ -452,6 +459,7 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
   const tiersByPath = new Map(selected.map((entry) => [entry.file.path, entry.tier]));
   const tests = recommendTests(index, focusFiles.map((file) => file.path), repoRoot).slice(0, 10);
   const nextCall = recommendNextCodexaCall(retrieval.intents, retrieval.workflows, changed.length, task);
+  const actionability = actionabilityFromPacketVerdict(retrieval.intentConfidence.verdict);
   const recommendedNextCall =
     retrieval.intentConfidence.recommendedNextTool === nextCall.tool
       ? `${nextCall.tool} - ${nextCall.reason}`
@@ -489,6 +497,7 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
     `Task: ${task}`,
     `Intent: ${retrieval.intents.join(", ")}`,
     `Packet verdict: ${retrieval.intentConfidence.verdict}; edit-ready ${retrieval.intentConfidence.editReady ? "yes" : "no"}; confidence ${Math.round(retrieval.intentConfidence.confidence * 100)}%`,
+    `Actionability: ${actionability}`,
     `Intent mode: ${retrieval.intentConfidence.mode}; primary ${retrieval.intentConfidence.intent}; anchors ${retrieval.intentConfidence.anchors.slice(0, 4).join(", ") || "none"}`,
     retrieval.diagnostics.length > 0 ? `Retrieval diagnostics: ${retrieval.diagnostics.join("; ")}` : undefined,
     `Recommended next MCP call: ${recommendedNextCall}`,
@@ -534,6 +543,7 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
       retrieval: compactRetrievalResult(retrieval),
       intentConfidence: retrieval.intentConfidence,
       packetVerdict: retrieval.intentConfidence.verdict,
+      actionability,
       diagnostics: retrieval.diagnostics,
       focusFiles: focusFiles.map(compactFileFact),
       workflows: retrieval.workflows.slice(0, 12).map(compactWorkflowTrace),
@@ -786,6 +796,29 @@ function packetIntentDiagnostics(intent: IntentConfidence, baseDiagnostics: stri
     diagnostics.push(`missing ${anchor}`);
   }
   return uniqueSorted(diagnostics);
+}
+
+function actionabilityFromPacketVerdict(verdict: string): string {
+  if (verdict === "edit-ready") {
+    return "edit_ready";
+  }
+  if (verdict === "orientation-only") {
+    return "orientation";
+  }
+  if (verdict === "raw-search-better") {
+    return "raw_search_better";
+  }
+  if (verdict === "needs-target") {
+    return "needs_target";
+  }
+  return "inspect_first";
+}
+
+function qualityLikeFallbackActionability(entries: Array<{ tier: EvidenceTier }>): string {
+  if (entries.length === 0 || entries.every((entry) => entry.tier === "fallback")) {
+    return "needs_target";
+  }
+  return "inspect_first";
 }
 
 function uniqueFocusEntries<T extends { file: FileFact; score: number; tier: EvidenceTier }>(entries: T[]): T[] {

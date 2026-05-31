@@ -18,7 +18,8 @@ describe("Codexa project init", () => {
 
     const config = await readFile(path.join(repo, ".codex/config.toml"), "utf8");
     expect(config).toContain("[features]");
-    expect(config).toContain("codex_hooks = true");
+    expect(config).toContain("hooks = true");
+    expect(config).not.toContain("codex_hooks");
     expect(config).toContain(`[mcp_servers.${result.serverName}]`);
     expect(config).toContain(`args = ["/opt/codexa/dist/cli.js", "serve", "${repo}", "--auto-refresh"]`);
 
@@ -31,7 +32,7 @@ describe("Codexa project init", () => {
     };
     expect(hooks.hooks.SessionStart).toHaveLength(1);
     expect(hooks.hooks.SessionStart[0].hooks[0].command).toBe(`node '/opt/codexa/dist/cli.js' session-start '${repo}'`);
-    expect(hooks.hooks.PreToolUse[0].matcher).toBe("Edit|MultiEdit|Write|apply_patch");
+    expect(hooks.hooks.PreToolUse[0].matcher).toBe("Edit|MultiEdit|Write|NotebookEdit|apply_patch");
     expect(hooks.hooks.PreToolUse[0].hooks[0].command).toBe(`node '/opt/codexa/dist/cli.js' hook-pre-edit '${repo}'`);
     expect(hooks.hooks.PostToolUse[0].hooks[0].command).toBe(`node '/opt/codexa/dist/cli.js' hook-post-edit '${repo}'`);
 
@@ -41,6 +42,8 @@ describe("Codexa project init", () => {
     const summary = await sessionStartSummary(repo, false);
     expect(summary).toContain(`Codexa context for ${repo}`);
     expect(summary).toContain("Codexa MCP is ready");
+    expect(summary).toContain("primary loop session_context -> task_brief -> change_plan(saveSnapshot) -> post_edit_review -> test_plan");
+    expect(summary).not.toContain("broad task -> focus_brief/session_context");
   });
 
   it("updates existing config and hooks idempotently without clobbering unrelated entries", async () => {
@@ -103,7 +106,8 @@ describe("Codexa project init", () => {
 
     const config = await readFile(path.join(codexDir, "config.toml"), "utf8");
     expect(config).toContain("other_flag = true");
-    expect(config).toContain("codex_hooks = true");
+    expect(config).toContain("hooks = true");
+    expect(config).not.toContain("codex_hooks");
     expect(config).toContain("[other]");
     expect(config.match(new RegExp(`\\[mcp_servers\\.${first.serverName}\\]`, "g"))).toHaveLength(1);
     expect(config).not.toContain('command = "old"');
@@ -145,7 +149,7 @@ describe("Codexa project init", () => {
       path.join(codexDir, "config.toml"),
       [
         "[features]",
-        "codex_hooks = true",
+        "hooks = true",
         "",
         "[mcp_servers.codexa-old]",
         'command = "node"',
@@ -189,8 +193,36 @@ describe("Codexa project init", () => {
     await expect(readFile(path.join(repo, ".codex/config.toml"), "utf8")).rejects.toThrow();
   });
 
-  it("honors no-hooks without enabling Codex hooks", async () => {
+  it("honors no-hooks without leaving stale Codexa-managed hooks enabled", async () => {
     const repo = await createInitRepo();
+    const codexDir = path.join(repo, ".codex");
+    await mkdir(codexDir, { recursive: true });
+    await writeFile(path.join(codexDir, "config.toml"), ["[features]", "hooks = true", "codex_hooks = true", ""].join("\n"), "utf8");
+    await writeFile(
+      path.join(codexDir, "hooks.json"),
+      JSON.stringify(
+        {
+          hooks: {
+            SessionStart: [
+              {
+                codexaManaged: true,
+                matcher: "startup|resume",
+                hooks: [{ codexaManaged: true, type: "command", command: "node /opt/context/dist/cli.js session-start /tmp/repo", timeout: 5 }]
+              }
+            ],
+            PreToolUse: [
+              {
+                matcher: "Edit|Write",
+                hooks: [{ type: "command", command: "node /opt/context/dist/cli.js hook-pre-edit /tmp/repo", timeout: 5 }]
+              }
+            ]
+          }
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
 
     const result = await initializeProject(repo, {
       cliPath: "/opt/context/dist/cli.js",
@@ -200,8 +232,66 @@ describe("Codexa project init", () => {
 
     expect(result.hooksPath).toBeNull();
     const config = await readFile(path.join(repo, ".codex/config.toml"), "utf8");
-    expect(config).not.toContain("codex_hooks = true");
+    expect(config).not.toContain("hooks = true");
+    expect(config).not.toContain("codex_hooks");
     await expect(readFile(path.join(repo, ".codex/hooks.json"), "utf8")).rejects.toThrow();
+  });
+
+  it("preserves unmanaged hooks and their feature flag when no-hooks removes only Codexa hooks", async () => {
+    const repo = await createInitRepo();
+    const codexDir = path.join(repo, ".codex");
+    await mkdir(codexDir, { recursive: true });
+    await writeFile(path.join(codexDir, "config.toml"), ["[features]", "hooks = true", ""].join("\n"), "utf8");
+    await writeFile(
+      path.join(codexDir, "hooks.json"),
+      JSON.stringify(
+        {
+          hooks: {
+            SessionStart: [
+              {
+                matcher: "startup",
+                hooks: [{ type: "command", command: "echo keep", timeout: 1 }]
+              },
+              {
+                codexaManaged: true,
+                matcher: "startup|resume",
+                hooks: [{ codexaManaged: true, type: "command", command: "node /opt/context/dist/cli.js session-start /tmp/repo", timeout: 5 }]
+              }
+            ],
+            PostToolUse: [
+              {
+                matcher: "Edit",
+                hooks: [{ type: "command", command: "bash ./scripts/hook-post-edit-audit.sh /tmp/repo", timeout: 5 }]
+              }
+            ]
+          }
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    const result = await initializeProject(repo, {
+      cliPath: "/opt/context/dist/cli.js",
+      hooks: false,
+      index: false
+    });
+
+    expect(result.hooksPath).toBeNull();
+    const config = await readFile(path.join(repo, ".codex/config.toml"), "utf8");
+    expect(config).toContain("hooks = true");
+    expect(config).not.toContain("codex_hooks");
+    const hooks = JSON.parse(await readFile(path.join(repo, ".codex/hooks.json"), "utf8")) as {
+      hooks: {
+        SessionStart: Array<{ hooks: Array<{ command: string }> }>;
+        PostToolUse: Array<{ hooks: Array<{ command: string }> }>;
+      };
+    };
+    const sessionCommands = hooks.hooks.SessionStart.flatMap((entry) => entry.hooks.map((hook) => hook.command));
+    const postToolCommands = hooks.hooks.PostToolUse.flatMap((entry) => entry.hooks.map((hook) => hook.command));
+    expect(sessionCommands).toEqual(["echo keep"]);
+    expect(postToolCommands).toEqual(["bash ./scripts/hook-post-edit-audit.sh /tmp/repo"]);
   });
 
   it("anchors init to the git root when invoked from a nested directory", async () => {

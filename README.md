@@ -38,8 +38,8 @@ serves focused MCP context tools over stdio.
 - MCP context tools: `repo_map`, `find_context`, `search`, `symbol_context`, `impact`,
   `diff_impact`, `placeholder_report`, `test_plan`, `task_brief`,
   `context_pack`, `focus_brief`, `session_context`, `callers`, `callees`,
-  `dependency_path`, `workflow_path`, `change_plan`, `post_edit_review`, and
-  `freshness`.
+  `dependency_path`, `workflow_path`, `change_plan`, `post_edit_review`,
+  `session_memory`, and `freshness`.
 - MCP resources for generated `.codex/codebase/` artifacts and MCP prompts
   (`impact_before_edit`, `dirty_diff_review`, `snapshot_edit_loop`, and
   `targeted_test_plan`) for common Codex workflows before edits,
@@ -382,10 +382,11 @@ npm run benchmark:ci
 
 `smoke:package` runs `npm pack --json`, installs the generated tarball into a
 temporary consumer project, then exercises the installed `codexa` binary,
-repo initialization, advisory hooks, and MCP startup. `benchmark:ci` rebuilds
-`dist/`, indexes the checkout, measures CLI and MCP hot paths with generous
-CI thresholds, writes `.codex/cache/codexa-benchmarks/latest.json`, and appends
-a Markdown summary when `GITHUB_STEP_SUMMARY` is available.
+repo initialization, advisory hooks, direct MCP startup, workspace-focus MCP
+startup, and the shipped plugin MCP wrapper. `benchmark:ci` rebuilds `dist/`,
+indexes the checkout, measures CLI and MCP hot paths with generous CI
+thresholds, writes `.codex/cache/codexa-benchmarks/latest.json`, and appends a
+Markdown summary when `GITHUB_STEP_SUMMARY` is available.
 
 Release-oriented security checks remain available locally and should be run
 before publication or visibility changes:
@@ -393,6 +394,12 @@ before publication or visibility changes:
 ```bash
 npm run security:check
 ```
+
+`security:check` runs the development gate, dependency audit, clean-tree public
+snapshot verification, package hygiene, and installed-package smoke test. The
+public snapshot check intentionally refuses a dirty working tree; run it after
+the release candidate is committed so the verified archive exactly matches
+`HEAD`.
 
 ## GitHub Release Timeline
 
@@ -528,18 +535,19 @@ entry looks like:
 
 ```toml
 [mcp_servers.codexa-project]
-command = "npx"
-args = ["-y", "@mirnoorata/codexa", "serve", "<repo>", "--auto-refresh"]
+command = "node"
+args = ["<installed-or-checkout>/dist/cli.js", "serve", "<repo>", "--auto-refresh"]
 startup_timeout_sec = 10
 tool_timeout_sec = 60
 ```
 
-Local source checkouts can still use the direct Node form:
+For a hand-written registry-backed config, use the package binary through
+`npx`:
 
 ```toml
 [mcp_servers.codexa-project]
-command = "node"
-args = ["<codexa-checkout>/dist/cli.js", "serve", "<repo>", "--auto-refresh"]
+command = "npx"
+args = ["-y", "@mirnoorata/codexa", "serve", "<repo>", "--auto-refresh"]
 startup_timeout_sec = 10
 tool_timeout_sec = 60
 ```
@@ -601,8 +609,12 @@ instead of inventing one.
 Post-edit review accepts both `--ran-test` for direct test/accounting entries
 and `--ran-command` for aggregate verification commands. The generated
 `hook-post-edit` path attempts AutoVerify first: it runs only targeted test
-commands whose package script and runner shape are allowlisted, then passes the
-captured command report into the final review. Use
+commands whose package script and runner shape are allowlisted, and only when
+the user environment sets `CODEXA_AUTOVERIFY=1` or `CODEXA_AUTOVERIFY=true`.
+Repo-local config is not execution consent; without that external opt-in the
+hook records the recommended commands as skipped and does not spawn repo code.
+When AutoVerify does run, it passes the captured command report into the final
+review. Use
 `--ran-command-report` when you have structured execution evidence such as
 `cwd`, package manager, package/workspace scope, script name, args, `exitCode`,
 `durationMs`, and short stdout/stderr summaries. Codexa records these command
@@ -633,6 +645,9 @@ reindexing. Use an explicit `--seed` for reproducible trend lines and `--json`
 for machine-readable metrics. Each scenario reports both raw-baseline discovery
 and Codexa results against the same oracle: file recall, test recall,
 precision@K, selected-file compression, and refresh behavior.
+The latest eval summary records the repo root, current `HEAD`, and MCP catalog
+tool names; `codexa doctor --mcp-readiness` warns when a passing eval is stale
+or lacks that metadata.
 Suites are `all`, `project`, `synthetic`, `historical-fixture`, and `task-pack`;
 external historical fixtures can be passed with `--task-pack <path>`. By
 default, `--fail-on-refresh` marks a scenario failed if a query refreshes while

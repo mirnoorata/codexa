@@ -1,4 +1,5 @@
 import type { FreshnessInfo } from "./types.js";
+import { NO_SOURCE_MUTATION_CONTRACT, PRIMARY_CODEX_LOOP, PRIMARY_MCP_TOOL_NAMES } from "./mcp-tool-catalog.js";
 
 export function renderCodexUseContract(freshness: FreshnessInfo): string {
   const stale = freshness.stale ? `stale (${freshness.reason})` : `fresh (${freshness.reason})`;
@@ -31,7 +32,7 @@ after source changes. Do not treat it as an unbounded graph dump.
 
 ## Automatic Use Rules
 
-1. Broad or ambiguous request: call \`session_context\` or \`focus_brief\`.
+1. Broad or ambiguous request: call \`session_context\`; if actionability says \`needs_target\`, \`raw_search_better\`, or \`raw_search_sufficient\`, use \`search\` or an explicit target before planning edits.
 2. Any code edit, debug, or review task: call \`task_brief\` first with the user's exact task.
 3. Before editing concrete files: call \`change_plan\` with \`saveSnapshot: true\` and keep the returned task id.
 4. After editing: call \`post_edit_review\` with the saved task id and tests run.
@@ -39,7 +40,8 @@ after source changes. Do not treat it as an unbounded graph dump.
 6. Route, job, queue, adapter, manifest, or runtime behavior: call \`workflow_path\`.
 7. API, rename, delete, or exported contract change: call \`callers\`, \`callees\`, or \`dependency_path\`.
 
-Primary Codex loop: \`session_context -> task_brief -> change_plan(saveSnapshot) -> post_edit_review -> test_plan\`.
+Primary Codex loop: \`${PRIMARY_CODEX_LOOP}\`.
+Primary MCP tools: ${PRIMARY_MCP_TOOL_NAMES.map((tool) => `\`${tool}\``).join(", ")}.
 
 ## Session Memory Protocol
 
@@ -66,6 +68,7 @@ Primary Codex loop: \`session_context -> task_brief -> change_plan(saveSnapshot)
 - If a packet is heuristic-heavy, verify with source reads before editing.
 - If the dirty tree is broad, keep the task's read-first set target-led.
 - If Codexa says raw search is better, use \`rg\` and then return to a focused Codexa tool.
+- ${NO_SOURCE_MUTATION_CONTRACT}
 - Session memory recall is deterministic filtering by session, task, refs,
   files, symbols, kind, topic, and recency. It is not semantic search.
 

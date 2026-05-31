@@ -20,11 +20,15 @@ Run from the repo root, with a clean working tree:
 npm run check                  # build + lint + tests
 npm run privacy                # tracked files and .codex/ hints
 npm run privacy:history        # full git log scan
-npm run security:check         # dependency audit
+npm run security:check         # check + audit + snapshot + package smoke
 npm run public:snapshot-check  # refuses to run if the tree is dirty
 ```
 
-All five must exit zero. `privacy:history` is the one that catches local
+All five must exit zero. `security:check` includes `npm run check`, dependency
+audit, clean-tree public snapshot verification, package hygiene, and installed
+package smoke. Because the snapshot check verifies the archive for exactly
+`HEAD`, commit the release candidate before running it. `privacy:history` is
+the one that catches local
 home-directory paths, workspace-root paths, hardcoded emails, tokens, and
 private-key blocks that slipped into any historical commit, even commits
 you plan to squash away. Run
@@ -199,8 +203,9 @@ Neither of these is failure. Both are normal open-source lifecycles.
 
 ## Quarterly (or whenever you remember)
 
-- Re-run `npm run security:check` locally. Dependabot is the continuous
-  version of this, but a local run confirms nothing is stuck.
+- Re-run `npm run security:check` locally from a clean committed tree.
+  Dependabot is the continuous version of this, but a local run confirms
+  nothing is stuck and the packed/plugin install path still works.
 - Glance at open issues. Close anything you would not pick up in the next six
   months, with a short "out of scope / not planned" note. Issues that sit
   open for a year with no reply are worse for everyone than closed issues.

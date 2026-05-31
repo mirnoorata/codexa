@@ -609,7 +609,10 @@ describe("Codexa indexer", () => {
     const result = await searchQuery(repo, { query: "codexa_unique_fixture_literal", limit: 5 }, { autoRefresh: false });
     expect(result.text).toContain("raw-sufficient");
     expect(result.text).toContain("src/unique-marker.ts");
-    expect((result.data as { files: Array<{ path: string }> }).files[0].path).toBe("src/unique-marker.ts");
+    const resultData = result.data as { files: Array<{ path: string }>; actionability: string };
+    expect(resultData.files[0].path).toBe("src/unique-marker.ts");
+    expect(resultData.actionability).toBe("raw_search_sufficient");
+    expect(result.text).toContain("Actionability: raw_search_sufficient");
 
     const dash = await searchQuery(repo, { query: "-codexa-dash-literal", limit: 5 }, { autoRefresh: false });
     expect(dash.text).toContain("src/dash-marker.ts");
@@ -1084,6 +1087,7 @@ describe("Codexa indexer", () => {
     );
     const data = pack.data as {
       packetVerdict?: string;
+      actionability?: string;
       actionGuidanceSuppressed?: boolean;
       focusFiles: Array<{ file: { path: string }; tier: string }>;
       intentConfidence?: { editReady: boolean; anchors: string[]; missingAnchors: string[] };
@@ -1096,6 +1100,8 @@ describe("Codexa indexer", () => {
     expect(data.intentConfidence?.anchors).toContain("service/app.py");
     expect(data.intentConfidence?.missingAnchors).not.toContain("only test anchors for edit prompt");
     expect(data.packetVerdict).toBe("edit-ready");
+    expect(data.actionability).toBe("edit_ready");
+    expect(pack.text).toContain("Actionability: edit_ready");
     expect(data.intentConfidence?.editReady).toBe(true);
     expect(data.quality?.level).not.toBe("low");
     expect(data.actionGuidanceSuppressed).toBe(false);
@@ -1120,6 +1126,7 @@ describe("Codexa indexer", () => {
     );
     const data = pack.data as {
       packetVerdict?: string;
+      actionability?: string;
       focusFiles: Array<{ file: { path: string }; tier: string }>;
       intentConfidence?: { editReady: boolean; anchors: string[]; missingAnchors: string[] };
     };
@@ -1128,6 +1135,7 @@ describe("Codexa indexer", () => {
     expect(data.intentConfidence?.anchors).not.toContain("service/helpers.py");
     expect(data.intentConfidence?.editReady).toBe(false);
     expect(data.packetVerdict).not.toBe("edit-ready");
+    expect(data.actionability).not.toBe("edit_ready");
     expect(data.intentConfidence?.missingAnchors).toContain("no selected packet anchors");
     expect(pack.text).toContain("Recommended next MCP call: search");
   });
@@ -1149,10 +1157,12 @@ describe("Codexa indexer", () => {
     const ambiguousEdit = await taskBriefQuery(repo, { task: "Change behavior safely", diff: false, limit: 6, tokenBudget: 1200 }, { autoRefresh: false });
     const ambiguousData = ambiguousEdit.data as {
       packetVerdict?: string;
+      actionability?: string;
       intentConfidence?: { editReady: boolean; anchors: string[]; missingAnchors: string[] };
       quality?: { level: string; reasons: string[] };
     };
     expect(["raw-search-better", "needs-target"]).toContain(ambiguousData.packetVerdict);
+    expect(["raw_search_better", "needs_target"]).toContain(ambiguousData.actionability);
     expect(ambiguousData.intentConfidence?.editReady).toBe(false);
     expect(ambiguousData.intentConfidence?.anchors.every((anchor) => !anchor.includes("test"))).toBe(true);
     expect(ambiguousData.packetVerdict).not.toBe("edit-ready");
@@ -1719,7 +1729,7 @@ describe("Codexa indexer", () => {
     expect((recoveredMissingTarget.data as { snapshotLoad: { recoveredLatest?: boolean; missingReason?: string } }).snapshotLoad.missingReason).toBeUndefined();
   });
 
-  it("keeps planned post-edit reviews accountable without forcing replan when tests are reported", async () => {
+    it("keeps planned post-edit reviews accountable without forcing replan when tests are reported", async () => {
     const repo = await createFixtureRepo();
     await buildIndex({ repoRoot: repo });
 
@@ -1817,7 +1827,167 @@ describe("Codexa indexer", () => {
     expect(afterTestsData.workflowChecks.every((check) => check.status === "covered")).toBe(true);
     expect(afterTestsData.dependencyChecks.every((check) => check.status === "covered")).toBe(true);
     expect(afterTestsData.outcome.hookSummary.nextAction).toBe("continue with normal diff review");
-    expect(afterTestsData.outcome.calibrationLabels).not.toContain("missing-recommended-tests");
+      expect(afterTestsData.outcome.calibrationLabels).not.toContain("missing-recommended-tests");
+    });
+
+    it("requires explicit snapshot binding when multiple task snapshots exist", async () => {
+      const repo = await createFixtureRepo();
+      await buildIndex({ repoRoot: repo });
+
+      await changePlanQuery(
+        repo,
+        {
+          task: "First helper edit",
+          files: ["service/helpers.py"],
+          diff: false,
+          saveSnapshot: true,
+          taskId: "first-helper-edit"
+        },
+        { autoRefresh: false }
+      );
+      await changePlanQuery(
+        repo,
+        {
+          task: "Second helper edit",
+          files: ["service/helpers.py"],
+          diff: false,
+          saveSnapshot: true,
+          taskId: "second-helper-edit"
+        },
+        { autoRefresh: false }
+      );
+      await writeFile(path.join(repo, "service/helpers.py"), "def normalize(value):\n    return value.strip().upper()\n", "utf8");
+
+      const review = await postEditReviewQuery(repo, { ranTests: ["tests/test_app.py"], persistOutcome: false }, { autoRefresh: true });
+      const data = review.data as { verdict: string; driftReasons: string[] };
+      expect(data.verdict).toBe("inspect");
+      expect(data.driftReasons.some((reason) => reason.includes("used latest snapshot second-helper-edit without an explicit taskId"))).toBe(true);
+    });
+
+    it("does not continue edited files when no verification was recommended or reported", async () => {
+      const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-no-test-proof-"));
+      execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+      await mkdirp(path.join(repo, "src"));
+      await writeFile(path.join(repo, "src/main.ts"), "export function main() { return 1 }\n", "utf8");
+      execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+      execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+        cwd: repo,
+        stdio: "ignore"
+      });
+      await buildIndex({ repoRoot: repo });
+      await changePlanQuery(
+        repo,
+        {
+          task: "Change main without tests",
+          files: ["src/main.ts"],
+          diff: false,
+          saveSnapshot: true,
+          taskId: "no-test-proof"
+        },
+        { autoRefresh: false }
+      );
+      const snapshotPath = path.join(repo, ".codex/cache/codexa-tasks/no-test-proof.json");
+      const snapshot = JSON.parse(await readFile(snapshotPath, "utf8"));
+      snapshot.plannedTests = [];
+      snapshot.requiredWorkflowChecks = [];
+      snapshot.requiredDependencyChecks = [];
+      await writeFile(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
+      await writeFile(path.join(repo, "src/main.ts"), "export function main() { return 2 }\n", "utf8");
+
+    const review = await postEditReviewQuery(repo, { taskId: "no-test-proof", persistOutcome: false }, { autoRefresh: true });
+    const data = review.data as { verdict: string; tests: unknown[]; driftReasons: string[]; nextActions: string[] };
+    expect(data.tests).toEqual([]);
+    expect(data.verdict).toBe("inspect");
+    expect(data.driftReasons).toContain("edited files have no credible verification evidence");
+    expect(data.nextActions).toContain("Report a relevant test, build, or typecheck command before treating edited files as verified.");
+
+    const auditOnly = await postEditReviewQuery(repo, { taskId: "no-test-proof", ranCommands: ["npm audit"], persistOutcome: false }, { autoRefresh: false });
+    const auditOnlyData = auditOnly.data as { verdict: string; tests: unknown[]; driftReasons: string[]; nextActions: string[] };
+    expect(auditOnlyData.tests).toEqual([]);
+    expect(auditOnlyData.verdict).toBe("inspect");
+    expect(auditOnlyData.driftReasons).toContain("edited files have no credible verification evidence");
+    expect(auditOnlyData.nextActions).toContain("Report a relevant test, build, or typecheck command before treating edited files as verified.");
+    });
+
+    it("clears planned high-risk post-edit targets after required verification is accounted for", async () => {
+    const repo = await createFixtureRepo();
+    await writeFile(
+      path.join(repo, "tests/ops.test.ts"),
+      "import { rewriteFile } from '../src/ops'\ntest('operator rewrite surface', () => { expect(typeof rewriteFile).toBe('function') })\n",
+      "utf8"
+    );
+    await buildIndex({ repoRoot: repo });
+
+    await changePlanQuery(
+      repo,
+      {
+        task: "Change operator file rewrite safely",
+        files: ["src/ops.ts"],
+        diff: false,
+        limit: 6,
+        saveSnapshot: true,
+        taskId: "planned-high-risk-edit"
+      },
+      { autoRefresh: false }
+    );
+    const snapshotPath = path.join(repo, ".codex/cache/codexa-tasks/planned-high-risk-edit.json");
+    const snapshot = JSON.parse(await readFile(snapshotPath, "utf8"));
+    snapshot.plannedTests.push({
+      path: "tests/manual_ops_regression.ts",
+      reason: "manual high-risk ops regression saved in plan snapshot",
+      rank: 99,
+      evidenceTier: "authoritative"
+    });
+    await writeFile(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
+
+    await writeFile(
+      path.join(repo, "src/ops.ts"),
+      "import { execFileSync } from 'node:child_process'\nimport { writeFile } from 'node:fs/promises'\nexport async function rewriteFile(path: string) { execFileSync('echo', ['changed']); await writeFile(path, 'changed') }\n",
+      "utf8"
+    );
+
+    const needsProof = await postEditReviewQuery(repo, { taskId: "planned-high-risk-edit", ranTests: [] }, { autoRefresh: true });
+    const needsProofData = needsProof.data as {
+      verdict: string;
+      unplannedEditedFiles: string[];
+      riskEscalations: Array<{ path: string }>;
+      riskEscalationsNeedInspection: boolean;
+      missedLikelyTests: Array<{ path: string }>;
+    };
+    expect(needsProofData.unplannedEditedFiles).toEqual([]);
+    expect(needsProofData.riskEscalations.map((file) => file.path)).toContain("src/ops.ts");
+    expect(needsProofData.riskEscalationsNeedInspection).toBe(true);
+    expect(needsProofData.verdict).toBe("inspect");
+    expect(needsProofData.missedLikelyTests.map((test) => test.path)).toContain("tests/manual_ops_regression.ts");
+
+    const afterProof = await postEditReviewQuery(
+      repo,
+      {
+        taskId: "planned-high-risk-edit",
+        ranTests: needsProofData.missedLikelyTests.map((test) => test.path)
+      },
+      { autoRefresh: false }
+    );
+    const afterProofData = afterProof.data as {
+      verdict: string;
+      testsNotRun: unknown[];
+      missedLikelyTests: unknown[];
+      riskEscalations: Array<{ path: string }>;
+      riskEscalationsCoveredByVerification: boolean;
+      riskEscalationsNeedInspection: boolean;
+      workflowChecks: Array<{ status: string }>;
+      dependencyChecks: Array<{ status: string }>;
+      driftReasons: string[];
+    };
+    expect(afterProofData.riskEscalations.map((file) => file.path)).toContain("src/ops.ts");
+    expect(afterProofData.riskEscalationsCoveredByVerification).toBe(true);
+    expect(afterProofData.riskEscalationsNeedInspection).toBe(false);
+    expect(afterProofData.verdict).toBe("continue");
+    expect(afterProofData.testsNotRun).toEqual([]);
+    expect(afterProofData.missedLikelyTests).toEqual([]);
+    expect(afterProofData.workflowChecks.every((check) => check.status === "covered")).toBe(true);
+    expect(afterProofData.dependencyChecks.every((check) => check.status === "covered")).toBe(true);
+    expect(afterProofData.driftReasons.some((reason) => reason.includes("high-risk"))).toBe(false);
   });
 
   it("accounts for ranCommands through package-script coverage without over-covering tests", async () => {
@@ -2262,20 +2432,17 @@ describe("Codexa indexer", () => {
       },
       { autoRefresh: false }
     );
-    const missingExitReportWithDuplicateRawData = missingExitReportWithDuplicateRaw.data as {
-      testsNotRun: Array<{ path: string }>;
-      verificationCoverage: Array<{ kind: string; source: string }>;
-      commandEnvelopes: Array<{ command: string; scopeStatus?: string }>;
-    };
-    expect(missingExitReportWithDuplicateRawData.testsNotRun).toEqual([]);
-    expect(missingExitReportWithDuplicateRawData.commandEnvelopes).toEqual(
-      expect.arrayContaining([
-        expect.objectContaining({ command: "npm --silent test", scopeStatus: "repo" }),
-        expect.objectContaining({ command: "npm test", scopeStatus: "repo" })
-      ])
-    );
-    expect(missingExitReportWithDuplicateRawData.verificationCoverage).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "unknown", source: "command report missing exit code" })]));
-    expect(missingExitReportWithDuplicateRawData.verificationCoverage.some((entry) => entry.kind === "javascript-tests")).toBe(true);
+      const missingExitReportWithDuplicateRawData = missingExitReportWithDuplicateRaw.data as {
+        testsNotRun: Array<{ path: string }>;
+        verificationCoverage: Array<{ kind: string; source: string }>;
+        commandEnvelopes: Array<{ command: string; scopeStatus?: string }>;
+      };
+      expect(missingExitReportWithDuplicateRawData.testsNotRun.map((test) => test.path)).toContain("tests/shared.test.ts");
+      expect(missingExitReportWithDuplicateRawData.commandEnvelopes).toEqual(
+        expect.arrayContaining([expect.objectContaining({ command: "npm --silent test", scopeStatus: "repo" })])
+      );
+      expect(missingExitReportWithDuplicateRawData.verificationCoverage).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "unknown", source: "command report missing exit code" })]));
+      expect(missingExitReportWithDuplicateRawData.verificationCoverage.some((entry) => entry.kind === "javascript-tests")).toBe(false);
 
     const duplicateCommandReports = await postEditReviewQuery(
       repo,
@@ -2350,16 +2517,14 @@ describe("Codexa indexer", () => {
       },
       { autoRefresh: false }
     );
-    const malformedSemanticDuplicateData = malformedSemanticDuplicate.data as {
-      testsNotRun: unknown[];
-      commandEnvelopes: Array<{ command: string; scopeStatus?: string }>;
-      verificationCoverage: Array<{ kind: string; source: string }>;
-    };
-    expect(malformedSemanticDuplicateData.testsNotRun).toEqual([]);
-    expect(malformedSemanticDuplicateData.commandEnvelopes).toEqual(
-      expect.arrayContaining([expect.objectContaining({ command: "npm --silent test", scopeStatus: "missing-cwd" }), expect.objectContaining({ command: "npm test", scopeStatus: "repo" })])
-    );
-    expect(malformedSemanticDuplicateData.verificationCoverage).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "unknown", source: "command report missing cwd" })]));
+      const malformedSemanticDuplicateData = malformedSemanticDuplicate.data as {
+        testsNotRun: unknown[];
+        commandEnvelopes: Array<{ command: string; scopeStatus?: string }>;
+        verificationCoverage: Array<{ kind: string; source: string }>;
+      };
+      expect(malformedSemanticDuplicateData.testsNotRun).not.toEqual([]);
+      expect(malformedSemanticDuplicateData.commandEnvelopes).toEqual(expect.arrayContaining([expect.objectContaining({ command: "npm --silent test", scopeStatus: "missing-cwd" })]));
+      expect(malformedSemanticDuplicateData.verificationCoverage).toEqual(expect.arrayContaining([expect.objectContaining({ kind: "unknown", source: "command report missing cwd" })]));
 
     const shortSilentNpmTest = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["npm -s test"] }, { autoRefresh: false });
     expect((shortSilentNpmTest.data as { testsNotRun: unknown[] }).testsNotRun).toEqual([]);
@@ -2594,17 +2759,23 @@ describe("Codexa indexer", () => {
     const data = plan.data as {
       verificationCommands: string[];
       verificationCoverage: Array<{ kind: string; source: string; targetPath?: string; scope?: string }>;
-      verificationCommandPlan: Array<{ command: string; covers: string[] }>;
-      verificationLedgerPreview: Array<{ target: string; status: string; evidence: string[] }>;
+        commandEnvelopes: Array<{ classifierVersion: string; scopeStatus: string }>;
+        verificationCommandPlan: Array<{ command: string; covers: string[] }>;
+        verificationLedgerPreview: Array<{ target: string; status: string; evidence: string[] }>;
+        verificationProvenance: typeof CURRENT_VERIFICATION_PROVENANCE;
+        testsNotRun: unknown[];
     };
     expect(plan.text).toContain("If run, these commands would cover:");
     expect(plan.text).toContain("Verification ledger preview if recommended commands are run:");
     expect(data.verificationCommands).toContain("npm run check");
-    expect(data.verificationCoverage.map((entry) => entry.kind)).toEqual(expect.arrayContaining(["typescript-syntax", "javascript-tests"]));
+      expect(data.verificationCoverage.map((entry) => entry.kind)).toEqual(expect.arrayContaining(["typescript-syntax", "javascript-tests"]));
+      expect(data.commandEnvelopes.some((entry) => entry.classifierVersion === CURRENT_VERIFICATION_PROVENANCE.commandCoverageClassifierVersion && entry.scopeStatus === "repo")).toBe(true);
+      expect(data.verificationProvenance).toEqual(CURRENT_VERIFICATION_PROVENANCE);
+    expect((data.testsNotRun as Array<{ path: string }>).map((test) => test.path)).toContain("tests/shared.test.ts");
     const checkCovers = data.verificationCommandPlan.filter((entry) => entry.command.startsWith("npm run check")).flatMap((entry) => entry.covers);
     expect(checkCovers).toEqual(expect.arrayContaining(["typescript-syntax", "javascript-tests"]));
-    expect(data.verificationLedgerPreview.find((entry) => entry.target === "tests/shared.test.ts")?.status).toBe("covered");
-    expect(data.verificationLedgerPreview.find((entry) => entry.target === "tests/shared.test.ts")?.evidence.some((item) => item.includes("npm run check"))).toBe(true);
+    expect(data.verificationLedgerPreview.find((entry) => entry.target === "tests/shared.test.ts")?.status).toBe("would_cover");
+    expect(data.verificationLedgerPreview.find((entry) => entry.target === "tests/shared.test.ts")?.evidence.some((item) => item.includes("would cover if run") && item.includes("npm run check"))).toBe(true);
     const sharedTargetedIndex = data.verificationCommands.findIndex((command) => command.includes("tests/shared.test.ts"));
     const sharedAggregateIndex = data.verificationCommands.findIndex((command) => command === "npm run check");
     expect(sharedTargetedIndex).toBeGreaterThanOrEqual(0);
@@ -2735,11 +2906,21 @@ describe("Codexa indexer", () => {
     expect(reviewData.dependencyChecks).toEqual(
       expect.arrayContaining([expect.objectContaining({ target: "public-surface: service/helpers.py", status: "missing" })])
     );
-    expect(reviewData.driftReasons).toContain("1 required dependency check(s) missing");
-    expect(reviewData.outcome.calibrationLabels).toContain("dependency-checks-missing");
-    expect(reviewData.outcome.hookSummary.requiredChecksMissing).toBe(1);
+      expect(reviewData.driftReasons).toContain("1 required dependency check(s) missing");
+      expect(reviewData.outcome.calibrationLabels).toContain("dependency-checks-missing");
+      expect(reviewData.outcome.hookSummary.requiredChecksMissing).toBe(1);
 
-    const legacyWaivedDependency = await postEditReviewQuery(
+      const wrongLanguageAggregate = await postEditReviewQuery(repo, { taskId: "missing-required-check", ranCommands: ["npm test"] }, { autoRefresh: false });
+      const wrongLanguageAggregateData = wrongLanguageAggregate.data as {
+        dependencyChecks: Array<{ target: string; status: string }>;
+        verificationCoverage: Array<{ kind: string }>;
+      };
+      expect(wrongLanguageAggregateData.verificationCoverage.some((entry) => entry.kind === "javascript-tests")).toBe(true);
+      expect(wrongLanguageAggregateData.dependencyChecks).toEqual(
+        expect.arrayContaining([expect.objectContaining({ target: "public-surface: service/helpers.py", status: "missing" })])
+      );
+
+      const legacyWaivedDependency = await postEditReviewQuery(
       repo,
       {
         taskId: "missing-required-check",

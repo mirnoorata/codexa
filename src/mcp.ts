@@ -33,6 +33,8 @@ import { RAW_SEARCH_EXPLICIT_PATTERN_LIMIT } from "./query/raw-search.js";
 import { semanticMayUseOpenWorldProvider } from "./semantic-retrieval.js";
 import { resolveMcpRepoRoot, type McpRepoRootResolution } from "./mcp-repo-root.js";
 import { recordViewedMemoryForTool } from "./session-memory.js";
+import { MCP_TOOL_CATALOG } from "./mcp-tool-catalog.js";
+export { MCP_TOOL_CATALOG, PRIMARY_CODEX_LOOP, PRIMARY_MCP_TOOL_NAMES } from "./mcp-tool-catalog.js";
 
 type McpOptionalQueryInput = Record<string, unknown> & {
   semantic?: boolean;
@@ -46,35 +48,20 @@ type McpOptionalQueryInput = Record<string, unknown> & {
   lspMaxFiles?: number;
 };
 
-export const MCP_TOOL_CATALOG = [
-  { name: "session_context", tier: "primary", phase: "orientation", writeEffects: "session-memory-auto", readOnly: false, nextToolUse: ["task_brief", "search"] },
-  { name: "task_brief", tier: "primary", phase: "brief", writeEffects: "session-memory-auto", readOnly: false, nextToolUse: ["change_plan"] },
-  { name: "change_plan", tier: "primary", phase: "plan", writeEffects: "task-snapshot-cache", readOnly: false, nextToolUse: ["post_edit_review"] },
-  { name: "post_edit_review", tier: "primary", phase: "review", writeEffects: "session-memory-auto", readOnly: false, nextToolUse: ["test_plan"] },
-  { name: "test_plan", tier: "primary", phase: "verify", writeEffects: "session-memory-auto", readOnly: false, nextToolUse: [] },
-  { name: "search", tier: "primary", phase: "inspect", writeEffects: "none", readOnly: true, nextToolUse: ["task_brief"] },
-  { name: "workflow_path", tier: "primary", phase: "inspect", writeEffects: "none", readOnly: true, nextToolUse: ["task_brief", "change_plan"] },
-  { name: "freshness", tier: "advanced", phase: "diagnose", writeEffects: "none", readOnly: true, nextToolUse: ["task_brief"] },
-  { name: "repo_map", tier: "advanced", phase: "orientation", writeEffects: "index-cache-if-auto-refresh", readOnly: false, nextToolUse: ["task_brief"] },
-  { name: "find_context", tier: "advanced", phase: "inspect", writeEffects: "session-memory-auto", readOnly: false, nextToolUse: ["task_brief"] },
-  { name: "context_pack", tier: "advanced", phase: "brief", writeEffects: "session-memory-auto", readOnly: false, nextToolUse: ["change_plan"] },
-  { name: "focus_brief", tier: "advanced", phase: "orientation", writeEffects: "session-memory-auto", readOnly: false, nextToolUse: ["task_brief", "search"] },
-  { name: "impact", tier: "advanced", phase: "inspect", writeEffects: "session-memory-auto", readOnly: false, nextToolUse: ["change_plan"] },
-  { name: "diff_impact", tier: "advanced", phase: "inspect", writeEffects: "none", readOnly: true, nextToolUse: ["post_edit_review", "test_plan"] },
-  { name: "symbol_context", tier: "advanced", phase: "inspect", writeEffects: "none", readOnly: true, nextToolUse: ["impact"] },
-  { name: "callers", tier: "advanced", phase: "inspect", writeEffects: "none", readOnly: true, nextToolUse: ["impact"] },
-  { name: "callees", tier: "advanced", phase: "inspect", writeEffects: "none", readOnly: true, nextToolUse: ["impact"] },
-  { name: "dependency_path", tier: "advanced", phase: "inspect", writeEffects: "none", readOnly: true, nextToolUse: ["change_plan"] },
-  { name: "placeholder_report", tier: "advanced", phase: "risk", writeEffects: "none", readOnly: true, nextToolUse: ["task_brief"] },
-  { name: "session_memory", tier: "advanced", phase: "memory", writeEffects: "explicit-memory-cache", readOnly: false, nextToolUse: ["task_brief"] }
-] as const;
+const MCP_ACTIONABILITY_VALUES = ["orientation", "edit_ready", "blocked", "review", "verify", "done", "needs_target", "raw_search_better", "raw_search_sufficient", "inspect_first"] as const;
+type McpActionability = (typeof MCP_ACTIONABILITY_VALUES)[number];
 
 export async function serveMcp(repoRoot: string, options: QueryOptions = { autoRefresh: true }): Promise<void> {
   const configuredRepoRoot = path.resolve(repoRoot);
   const queryOptions: QueryOptions = { ...options, autoRefresh: options.autoRefresh ?? true };
   const sessionMemoryMode = queryOptions.sessionMemory ?? "auto";
   const autoRecordSessionMemory = sessionMemoryMode !== "off";
-  const annotationRepoRoot = await resolveMcpRepoRoot(configuredRepoRoot, { workspaceFocusFile: queryOptions.workspaceFocusFile })
+  const preferConfiguredRoot = await shouldPreferConfiguredRoot(configuredRepoRoot, queryOptions);
+  const annotationRepoRoot = await resolveMcpRepoRoot(configuredRepoRoot, {
+    workspaceFocusFile: queryOptions.workspaceFocusFile,
+    workspaceSessionId: queryOptions.workspaceSessionId,
+    preferConfiguredRoot
+  })
     .then((resolution) => resolution.repoRoot)
     .catch(() => configuredRepoRoot);
   let cachedIndexState: QuerySessionIndexState | undefined;
@@ -92,33 +79,64 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
     mimeType: z.string().optional(),
     description: z.string().optional()
   });
+  const mcpDataSchema = z
+    .object({
+      mode: z.string()
+    })
+    .catchall(z.unknown());
+  const freshnessSchema = z.object({
+    schemaVersion: z.literal(1),
+    snapshotId: z.string(),
+    repoRoot: z.string(),
+    gitRoot: z.string().nullable(),
+    headCommit: z.string().nullable(),
+    indexedAt: z.string(),
+    dirtyFiles: z.array(z.string()),
+    dirtyFileHashes: z.record(z.string(), z.string()),
+    indexedDirtyFileHashes: z.record(z.string(), z.string()),
+    indexedDirtyFiles: z.array(z.string()),
+    missing: z.boolean(),
+    stale: z.boolean(),
+    reason: z.string(),
+    parserErrorCount: z.number()
+  });
+  const refreshSchema = z.object({
+    refreshed: z.boolean(),
+    reason: z.string().optional(),
+    indexedAt: z.string().optional()
+  });
+  const lifecycleSchema = z.object({
+    phase: z.enum(["orientation", "brief", "plan", "review", "verify", "inspect"]),
+    taskId: z.string().optional(),
+    snapshotStatus: z.enum(["blocked", "saved", "loaded", "missing-or-ambiguous"]).optional(),
+    preconditions: z.array(z.string()),
+    blockingReasons: z.array(z.string()),
+    nextTools: z.array(z.string())
+  });
+  const worktreeSchema = z.object({
+    knownClean: z.boolean(),
+    degraded: z.boolean(),
+    dirtyFileCount: z.number(),
+    degradedReasons: z.array(z.string())
+  });
+  const verificationProvenanceSchema = z.object({
+    schemaVersion: z.literal(1),
+    commandCoverageClassifier: z.literal("codexa-command-coverage"),
+    commandCoverageClassifierVersion: z.string(),
+    commandEnvelopeRulesetVersion: z.string(),
+    verificationLedgerVersion: z.string()
+  });
   const outputSchema = {
     schemaVersion: z.literal(1),
     mode: z.string(),
-    actionability: z.enum(["orientation", "edit_ready", "blocked", "review", "verify", "done"]),
-    data: z.unknown(),
-    freshness: z.unknown(),
-    refresh: z.unknown(),
+    actionability: z.enum(MCP_ACTIONABILITY_VALUES),
+    data: mcpDataSchema,
+    freshness: freshnessSchema,
+    refresh: refreshSchema,
     quality: z.unknown().optional(),
-    lifecycle: z
-      .object({
-        phase: z.string(),
-        taskId: z.string().optional(),
-        snapshotStatus: z.string().optional(),
-        preconditions: z.array(z.string()).optional(),
-        blockingReasons: z.array(z.string()).optional(),
-        nextTools: z.array(z.string()).optional()
-      })
-      .optional(),
-    worktree: z
-      .object({
-        knownClean: z.boolean(),
-        degraded: z.boolean(),
-        dirtyFileCount: z.number(),
-        degradedReasons: z.array(z.string())
-      })
-      .optional(),
-    verificationProvenance: z.unknown().optional(),
+    lifecycle: lifecycleSchema,
+    worktree: worktreeSchema,
+    verificationProvenance: verificationProvenanceSchema,
     truncation: mcpTruncationSchema.optional(),
     nextTools: z.array(z.string()).optional(),
     relatedResources: z.array(mcpRelatedResourceSchema).optional()
@@ -261,7 +279,11 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
   };
 
   const resolveActiveRepoRoot = async (): Promise<string> => {
-    const resolution = await resolveMcpRepoRoot(configuredRepoRoot, { workspaceFocusFile: queryOptions.workspaceFocusFile });
+    const resolution = await resolveMcpRepoRoot(configuredRepoRoot, {
+      workspaceFocusFile: queryOptions.workspaceFocusFile,
+      workspaceSessionId: queryOptions.workspaceSessionId,
+      preferConfiguredRoot
+    });
     if (activeResolution?.repoRoot !== resolution.repoRoot) {
       cachedIndexState = undefined;
       cachedIndexStateRepoRoot = undefined;
@@ -528,7 +550,7 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
       outputSchema,
       annotations: memoryWriteAnnotations
     },
-    async (input) => runTool((session) => focusBriefQuery(session, input, toolQueryOptions(input)), { toolName: "session_context", input })
+    async (input) => runTool(async (session) => asSessionContextResult(await focusBriefQuery(session, input, toolQueryOptions(input))), { toolName: "session_context", input })
   );
 
   server.registerTool(
@@ -747,7 +769,14 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
 }
 
 function sameResolution(previous: McpRepoRootResolution | undefined, next: McpRepoRootResolution): boolean {
-  return previous !== undefined && previous.repoRoot === next.repoRoot && previous.source === next.source && previous.focusFile === next.focusFile;
+  return (
+    previous !== undefined &&
+    previous.repoRoot === next.repoRoot &&
+    previous.source === next.source &&
+    previous.focusFile === next.focusFile &&
+    previous.focusReason === next.focusReason &&
+    previous.workspaceSessionId === next.workspaceSessionId
+  );
 }
 
 function semanticEnabledForServer(options: QueryOptions): boolean {
@@ -778,6 +807,20 @@ async function withAutoRecordedSessionMemory(session: QuerySession, result: Quer
       data: addSessionMemoryWarning(result.data, warning)
     };
   }
+}
+
+function asSessionContextResult(result: QueryResult): QueryResult {
+  if (!result.data || typeof result.data !== "object" || Array.isArray(result.data)) {
+    return result;
+  }
+  return {
+    ...result,
+    text: result.text.replace("Codexa focus brief", "Codexa session context"),
+    data: {
+      ...(result.data as Record<string, unknown>),
+      mode: "session_context"
+    }
+  };
 }
 
 function addSessionMemoryWrite(data: unknown, writes: unknown): unknown {
@@ -859,6 +902,18 @@ export function compactNonPostEditMcpResult(result: QueryResult): QueryResult {
   return compactMcpResult(result);
 }
 
+async function shouldPreferConfiguredRoot(configuredRepoRoot: string, options: QueryOptions): Promise<boolean> {
+  if (options.workspaceFocusFile || options.workspaceSessionId) {
+    return false;
+  }
+  try {
+    await fs.access(path.join(configuredRepoRoot, ".codex", "config.toml"));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function inferMcpDataMode(data: Record<string, unknown>): string | undefined {
   if (Array.isArray(data.verificationCommands) && Array.isArray(data.verificationCoverage) && Array.isArray(data.tests)) {
     return Array.isArray(data.focusFiles) || Array.isArray(data.nextReads) ? "context_pack" : "test_plan";
@@ -874,7 +929,7 @@ function compactMcpDataByMode(data: Record<string, unknown>, mode: string | unde
   if (mode === "context_pack" || mode === "task_brief") {
     return compactContextPacketData(data, mode);
   }
-  if (mode === "focus_brief") {
+  if (mode === "focus_brief" || mode === "session_context") {
     return compactFocusBriefData(data);
   }
   if (mode === "change_plan") {
@@ -1221,10 +1276,11 @@ function compactPostEditTruncation(
 function compactContextPacketData(data: Record<string, unknown>, mode: string): McpCompactionResult {
   const limit = createArrayLimiter();
   const compacted = {
-    mode,
-    task: data.task,
-    changeType: data.changeType,
-    tokenBudget: data.tokenBudget,
+	    mode,
+	    task: data.task,
+	    changeType: data.changeType,
+	    actionability: data.actionability,
+	    tokenBudget: data.tokenBudget,
     packetVerdict: data.packetVerdict,
     focusFiles: limit("focusFiles", data.focusFiles, 20, compactFocusEntry),
     changedFiles: limit("changedFiles", data.changedFiles, 40),
@@ -1259,9 +1315,10 @@ function compactContextPacketData(data: Record<string, unknown>, mode: string): 
 function compactFocusBriefData(data: Record<string, unknown>): McpCompactionResult {
   const limit = createArrayLimiter();
   const compacted = {
-    mode: data.mode,
-    task: data.task,
-    retrieval: compactRetrieval(data.retrieval),
+	    mode: data.mode,
+	    task: data.task,
+	    actionability: data.actionability,
+	    retrieval: compactRetrieval(data.retrieval),
     packetVerdict: data.packetVerdict,
     diagnostics: limit("diagnostics", data.diagnostics, 20),
     focusFiles: limit("focusFiles", data.focusFiles, 20, compactFileFact),
@@ -1432,11 +1489,15 @@ function compactTestPlanData(data: Record<string, unknown>): McpCompactionResult
     unindexedChanged: limit("unindexedChanged", data.unindexedChanged, 40),
     groups: limit("groups", data.groups, 20, compactGroup),
     tests: limit("tests", data.tests, 30, compactTestRecommendation),
-    verificationCommands: limit("verificationCommands", data.verificationCommands, 20),
-    verificationCoverage: limit("verificationCoverage", data.verificationCoverage, 40, compactVerificationCoverage),
-    verificationCommandPlan: limit("verificationCommandPlan", data.verificationCommandPlan, 30, compactVerificationPlan),
-    verificationLedgerPreview: limit("verificationLedgerPreview", data.verificationLedgerPreview, 60, compactVerificationLedgerEntry),
-    sessionMemory: data.sessionMemory,
+	    verificationCommands: limit("verificationCommands", data.verificationCommands, 20),
+	    verificationCoverage: limit("verificationCoverage", data.verificationCoverage, 40, compactVerificationCoverage),
+	    commandEnvelopes: limit("commandEnvelopes", data.commandEnvelopes, 60),
+	    verificationCommandPlan: limit("verificationCommandPlan", data.verificationCommandPlan, 30, compactVerificationPlan),
+	    verificationLedger: limit("verificationLedger", data.verificationLedger, 60, compactVerificationLedgerEntry),
+	    verificationLedgerPreview: limit("verificationLedgerPreview", data.verificationLedgerPreview, 60, compactVerificationLedgerEntry),
+	    verificationProvenance: data.verificationProvenance,
+	    testsNotRun: limit("testsNotRun", data.testsNotRun, 30, compactTestRecommendation),
+	    sessionMemory: data.sessionMemory,
     worktree: data.worktree,
     worktreeDegradationReasons: data.worktreeDegradationReasons,
     gaps: limit("gaps", data.gaps, 30),
@@ -2070,7 +2131,7 @@ function toToolResult(result: { text: string; data: unknown; freshness: unknown;
 function buildMcpEnvelope(result: { data: unknown; freshness: unknown; refresh?: unknown }): Record<string, unknown> & {
   schemaVersion: 1;
   mode: string;
-  actionability: "orientation" | "edit_ready" | "blocked" | "review" | "verify" | "done";
+  actionability: McpActionability;
   data: unknown;
   freshness: unknown;
   refresh: unknown;
@@ -2169,9 +2230,13 @@ function actionabilityForMcpData(
   mode: string,
   data: Record<string, unknown>,
   lifecycle: { blockingReasons: string[]; snapshotStatus?: string }
-): "orientation" | "edit_ready" | "blocked" | "review" | "verify" | "done" {
+): McpActionability {
   if (lifecycle.blockingReasons.length > 0 || lifecycle.snapshotStatus === "blocked") {
     return "blocked";
+  }
+  const queryActionability = mcpActionabilityValue(data.actionability);
+  if (queryActionability) {
+    return queryActionability;
   }
   if (mode === "post_edit_review") return "review";
   if (mode === "test_plan") return "verify";
@@ -2183,6 +2248,10 @@ function actionabilityForMcpData(
     return "edit_ready";
   }
   return "orientation";
+}
+
+function mcpActionabilityValue(value: unknown): McpActionability | undefined {
+  return typeof value === "string" && (MCP_ACTIONABILITY_VALUES as readonly string[]).includes(value) ? (value as McpActionability) : undefined;
 }
 
 function worktreeForMcpData(data: Record<string, unknown>): { knownClean: boolean; degraded: boolean; dirtyFileCount: number; degradedReasons: string[] } {

@@ -434,49 +434,85 @@ function derivedEntriesForTool(
   }
   if (toolName === "post_edit_review") {
     const verdict = typeof record.verdict === "string" ? record.verdict : "unknown";
-    const driftCount = Array.isArray(record.driftReasons) ? record.driftReasons.length : 0;
-    const testsNotRun = Array.isArray(record.testsNotRun) ? record.testsNotRun.length : 0;
+    const outcome = isRecord(record.outcome) ? record.outcome : undefined;
+    const driftReasons = stringList(record.driftReasons, 8);
+    const nextActions = stringList(record.nextActions, 8);
+    const driftCount = arrayLength(record.driftReasons);
+    const testsNotRun = arrayLength(record.testsNotRun);
+    const outcomeTestsNotRun = arrayLength(outcome?.testsNotRun);
+    const unaccountedTests = Math.max(testsNotRun, outcomeTestsNotRun);
+      const ledgerCounts = ledgerStatusCounts(outcome?.verificationLedger ?? record.verificationLedger);
+    const commandCount = arrayLength(record.ranCommands ?? outcome?.ranCommands);
+    const commandReportCount = arrayLength(record.ranCommandReports ?? outcome?.ranCommandReports);
+    const provenanceVersion = verificationProvenanceVersion(record.verificationProvenance ?? outcome?.verificationProvenance);
+    const postEditScope = scopeWithOutcomeRefs(scope, record);
     return [
       {
         kind: "verification",
-        key: `verification:post_edit_review:${stableId("post-edit-review", String(record.task ?? ""), verdict, scope.files.join("\n")).slice(0, 16)}`,
-        summary: `post_edit_review verdict ${verdict}; ${driftCount} drift reason(s); ${testsNotRun} test(s) still unaccounted for.`,
+        key: `verification:post_edit_review:${stableId("post-edit-review", String(record.task ?? ""), verdict, postEditScope.files.join("\n")).slice(0, 16)}`,
+        summary: `post_edit_review verdict ${verdict}; ${driftCount} drift reason(s); ${unaccountedTests} test(s) still unaccounted for; ledger ${ledgerCounts.covered}/${ledgerCounts.total} covered.`,
+        details: clampText(
+          [
+            `ledger missing=${ledgerCounts.missing}, waived=${ledgerCounts.waived}, not_applicable=${ledgerCounts.notApplicable}, would_cover=${ledgerCounts.wouldCover}`,
+            `commands=${commandCount}, commandReports=${commandReportCount}`,
+            provenanceVersion ? `verificationLedgerVersion=${provenanceVersion}` : undefined
+          ]
+            .filter((entry): entry is string => Boolean(entry))
+            .join("; "),
+          MAX_DETAILS_CHARS
+        ),
         provenance: "codexa-derived",
         confidence: "derived",
         evidenceTier: "derived",
-        scope
+        scope: postEditScope
       },
       {
         kind: "decision",
-        key: `decision:post_edit_review:${stableId("post-edit-decision", String(record.task ?? ""), verdict, scope.files.join("\n")).slice(0, 16)}`,
+        key: `decision:post_edit_review:${stableId("post-edit-decision", String(record.task ?? ""), verdict, postEditScope.files.join("\n")).slice(0, 16)}`,
         summary: `post_edit_review recommended ${verdict}.`,
+        details: nextActions.length > 0 ? `Next actions: ${nextActions.join(" | ")}` : undefined,
         provenance: "codexa-derived",
         confidence: "derived",
         evidenceTier: "derived",
-        scope
+        scope: postEditScope
       },
-      ...(driftCount > 0 || testsNotRun > 0
+      ...(driftCount > 0 || unaccountedTests > 0
         ? [
             {
               kind: "risk" as const,
-              key: `risk:post_edit_review:${stableId("post-edit-risk", String(record.task ?? ""), verdict, String(driftCount), String(testsNotRun), scope.files.join("\n")).slice(0, 16)}`,
-              summary: `post_edit_review found ${driftCount} drift reason(s) and ${testsNotRun} unaccounted test target(s).`,
+              key: `risk:post_edit_review:${stableId("post-edit-risk", String(record.task ?? ""), verdict, String(driftCount), String(unaccountedTests), postEditScope.files.join("\n")).slice(0, 16)}`,
+              summary: `post_edit_review found ${driftCount} drift reason(s) and ${unaccountedTests} unaccounted test target(s).`,
+              details: driftReasons.length > 0 ? `Drift reasons: ${driftReasons.join(" | ")}` : undefined,
               provenance: "codexa-derived" as const,
               confidence: "derived" as const,
               evidenceTier: "derived" as const,
-              scope
+              scope: postEditScope
             }
           ]
         : [])
     ];
   }
-  if (toolName === "test_plan") {
-    const testCount = Array.isArray(record.tests) ? record.tests.length : 0;
+    if (toolName === "test_plan") {
+      const testCount = Array.isArray(record.tests) ? record.tests.length : 0;
+      const ledgerCounts = ledgerStatusCounts(record.verificationLedgerPreview);
+      const commandCount = arrayLength(record.verificationCommands);
+      const testsNotRun = arrayLength(record.testsNotRun);
+      const provenanceVersion = verificationProvenanceVersion(record.verificationProvenance);
     return [
       {
         kind: "verification",
         key: `verification:test_plan:${stableId("test-plan", scope.tests.join("\n"), scope.files.join("\n")).slice(0, 16)}`,
-        summary: `test_plan recommended ${testCount} test target(s).`,
+        summary: `test_plan recommended ${testCount} test target(s), ${commandCount} verification command(s); preview would cover ${ledgerCounts.wouldCover}/${ledgerCounts.total} ledger item(s) if run.`,
+        details: clampText(
+          [
+            `testsNotRun=${testsNotRun}`,
+            `ledger missing=${ledgerCounts.missing}, waived=${ledgerCounts.waived}, not_applicable=${ledgerCounts.notApplicable}, would_cover=${ledgerCounts.wouldCover}`,
+            provenanceVersion ? `verificationLedgerVersion=${provenanceVersion}` : undefined
+          ]
+            .filter((entry): entry is string => Boolean(entry))
+            .join("; "),
+          MAX_DETAILS_CHARS
+        ),
         provenance: "codexa-derived",
         confidence: "derived",
         evidenceTier: "derived",
@@ -485,6 +521,89 @@ function derivedEntriesForTool(
     ];
   }
   return [];
+}
+
+function ledgerStatusCounts(value: unknown): { total: number; covered: number; missing: number; waived: number; notApplicable: number; wouldCover: number } {
+  const entries = Array.isArray(value) ? value : [];
+  let covered = 0;
+  let missing = 0;
+  let waived = 0;
+  let notApplicable = 0;
+  let wouldCover = 0;
+  for (const entry of entries) {
+    if (!isRecord(entry) || typeof entry.status !== "string") {
+      continue;
+    }
+    if (entry.status === "covered") {
+      covered += 1;
+    } else if (entry.status === "missing") {
+      missing += 1;
+    } else if (entry.status === "waived") {
+      waived += 1;
+    } else if (entry.status === "not_applicable") {
+      notApplicable += 1;
+    } else if (entry.status === "would_cover") {
+      wouldCover += 1;
+    }
+  }
+  return { total: covered + missing + waived + notApplicable + wouldCover, covered, missing, waived, notApplicable, wouldCover };
+}
+
+function scopeWithOutcomeRefs(
+  scope: Pick<SessionMemoryScope, "files" | "symbols" | "tests" | "refs">,
+  record: Record<string, unknown>
+): Pick<SessionMemoryScope, "files" | "symbols" | "tests" | "refs"> {
+  const outcome = isRecord(record.outcome) ? record.outcome : undefined;
+  const snapshot = isRecord(record.snapshot) ? record.snapshot : undefined;
+  const snapshotLoad = isRecord(record.snapshotLoad) ? record.snapshotLoad : undefined;
+  const outcomeId = typeof outcome?.outcomeId === "string" ? outcome.outcomeId : undefined;
+  const outcomePath = typeof outcome?.path === "string" ? outcome.path : undefined;
+  const snapshotId = typeof snapshot?.taskId === "string" ? snapshot.taskId : typeof snapshotLoad?.taskId === "string" ? snapshotLoad.taskId : undefined;
+  const snapshotPath = typeof snapshotLoad?.path === "string" ? snapshotLoad.path : undefined;
+  const refs: SessionMemoryRef[] = [
+    ...scope.refs,
+    ...(outcomeId
+      ? [
+          {
+            kind: "outcome" as const,
+            id: outcomeId,
+            path: outcomePath ? normalizePath(outcomePath) : undefined,
+            evidenceTier: "derived" as const,
+            confidence: "derived" as const
+          }
+        ]
+      : []),
+    ...(snapshotId
+      ? [
+          {
+            kind: "snapshot" as const,
+            id: snapshotId,
+            path: snapshotPath ? normalizePath(snapshotPath) : undefined,
+            evidenceTier: "derived" as const,
+            confidence: "derived" as const
+          }
+        ]
+      : [])
+  ];
+  return {
+    ...scope,
+    refs: uniqueRefs(refs).slice(0, MAX_REFS_PER_ENTRY)
+  };
+}
+
+function verificationProvenanceVersion(value: unknown): string | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  return typeof value.verificationLedgerVersion === "string" ? clampText(value.verificationLedgerVersion, 80) : undefined;
+}
+
+function arrayLength(value: unknown): number {
+  return Array.isArray(value) ? value.length : 0;
+}
+
+function stringList(value: unknown, limit: number): string[] {
+  return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string").map((entry) => clampText(entry, MAX_SUMMARY_CHARS)).slice(0, limit) : [];
 }
 
 function normalizeEntryInput(input: {

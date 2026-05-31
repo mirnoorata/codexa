@@ -5,14 +5,14 @@ import { formatTestRecommendations, recommendTests } from "./tests.js";
 import { compactChangedSymbol, compactDiffGroup } from "./compact-data.js";
 import { compactWorktreeState, getWorktreeState, worktreeStateGaps, worktreeStateText } from "./worktree-state.js";
 import {
-  coverageForDisplay,
   formatVerificationCoverage,
   formatVerificationLedger,
   verificationCommandPlan,
   verificationCommandsForContext,
   verificationLedgerForPostEdit
 } from "./verification.js";
-import type { ChangeType, QueryOptions, QueryResult } from "../types.js";
+import { CURRENT_VERIFICATION_PROVENANCE } from "../types.js";
+import type { ChangeType, QueryOptions, QueryResult, VerificationLedgerEntry } from "../types.js";
 import { limitText } from "../util.js";
 
 export interface TestPlanOptions extends QueryOptions {
@@ -38,15 +38,23 @@ export async function testPlanQuery(input: QuerySessionInput, diff = true, optio
     changeType
   );
   const verificationCommands = verificationCommandsForContext(index, repoRoot, changed.length > 0 ? changed : index.files.slice(0, 10).map((file) => file.path), tests, 16);
-  const verificationCoverage = coverageForDisplay(index, verificationCommands, repoRoot);
-  const commandPlan = verificationCommandPlan(verificationCoverage);
-  const verificationLedgerPreview = verificationLedgerForPostEdit({
+  const verificationPreview = verificationLedgerForPostEdit({
     index,
     tests,
     ranTests: [],
     ranCommands: verificationCommands,
     repoRoot
-  }).ledger;
+  });
+  const missingVerification = verificationLedgerForPostEdit({
+    index,
+    tests,
+    ranTests: [],
+    ranCommands: [],
+    repoRoot
+  });
+  const verificationCoverage = verificationPreview.coverage;
+  const commandPlan = verificationCommandPlan(verificationCoverage);
+  const verificationLedgerPreview = markLedgerAsPreview(verificationPreview.ledger);
   const text = [
     freshnessBanner(freshness, refresh),
     `Test plan for ${changed.length > 0 ? `${changed.length} changed files` : "top-ranked files"}:`,
@@ -89,9 +97,24 @@ export async function testPlanQuery(input: QuerySessionInput, diff = true, optio
       tests: tests.slice(0, 30),
       verificationCommands: verificationCommands.slice(0, 30),
       verificationCoverage: verificationCoverage.slice(0, 60),
-      verificationCommandPlan: commandPlan.slice(0, 40),
-      verificationLedgerPreview: verificationLedgerPreview.slice(0, 60),
+        commandEnvelopes: verificationPreview.commandEnvelopes.slice(0, 60),
+          verificationCommandPlan: commandPlan.slice(0, 40),
+          verificationLedgerPreview: verificationLedgerPreview.slice(0, 60),
+          verificationProvenance: CURRENT_VERIFICATION_PROVENANCE,
+          testsNotRun: missingVerification.testsNotRun.slice(0, 30),
       gaps
     }
   };
+}
+
+function markLedgerAsPreview(ledger: VerificationLedgerEntry[]): VerificationLedgerEntry[] {
+  return ledger.map((entry) =>
+    entry.status === "covered"
+      ? {
+          ...entry,
+          status: "would_cover",
+          evidence: entry.evidence.map((item) => `would cover if run: ${item}`)
+        }
+      : entry
+  );
 }

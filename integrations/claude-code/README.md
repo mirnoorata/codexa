@@ -16,7 +16,7 @@ When Claude Code is running in a Codexa-wired repo (one that contains
   file inside the wired repo, reminds Claude to save a change-plan snapshot
   via `/codexa-plan` if one does not exist yet. Advisory only; never blocks.
 - **Stop** — at the end of every assistant turn, if a snapshot exists and
-  has not been reviewed on this session yet, runs `codexa post-edit` and
+  has not been reviewed on this session yet, runs `codexa post-edit-review` and
   prints the drift summary to stderr. Debounced per session+repo so it
   never thrashes the engine.
 
@@ -27,8 +27,22 @@ Slash commands available to Claude:
 | `/codexa-status`   | `codexa status <repo>`               |
 | `/codexa-brief`    | `codexa brief <repo> --diff`         |
 | `/codexa-plan`     | `codexa change-plan --save-snapshot` |
-| `/codexa-review`   | `codexa post-edit`                   |
+| `/codexa-review`   | `codexa post-edit-review`            |
 | `/codexa-impact`   | `codexa impact` / `diff-impact`      |
+
+## Thin Adapter Contract
+
+Claude Code commands and hooks are adapters over the shared Codexa engine.
+They do not maintain a separate index, ranking layer, planner, or source-editing
+path. The primary Codexa path stays:
+
+```text
+session_context -> task_brief -> change_plan(saveSnapshot) -> post_edit_review -> test_plan
+```
+
+The adapter may write Codexa-owned `.codex/cache/` state through the CLI, but it
+must not introduce source-mutating MCP tools or host-only behavior that bypasses
+the shared Codexa MCP/CLI contract.
 
 ## Install
 

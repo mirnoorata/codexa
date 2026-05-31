@@ -6,7 +6,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { describe, expect, it } from "vitest";
 import { buildIndex } from "../src/indexer.js";
-import { compactNonPostEditMcpResult, compactPostEditMcpResult } from "../src/mcp.js";
+import { MCP_TOOL_CATALOG, compactNonPostEditMcpResult, compactPostEditMcpResult } from "../src/mcp.js";
 import { CURRENT_VERIFICATION_PROVENANCE } from "../src/types.js";
 
 function freshnessFixture() {
@@ -54,9 +54,10 @@ async function createIndexedMcpRepo(parent: string, name: string, fileStem: stri
 function buildContextPacket(mode?: "focus_brief" | "task_brief") {
   return {
     ...(mode ? { mode } : {}),
-    task: "refactor packet",
-    changeType: "behavior",
-    tokenBudget: 1000,
+	    task: "refactor packet",
+	    changeType: "behavior",
+	    actionability: "needs_target",
+	    tokenBudget: 1000,
     focusFiles: seq(25, (index) => ({
       path: `src/focus-${index}.ts`,
       tier: "derived",
@@ -182,8 +183,8 @@ function buildTestPlanPacket() {
       files: seq(35, (fileIndex) => `src/group-${index}-${fileIndex}.ts`),
       symbols: seq(25, (symbolIndex) => `symbol-${index}-${symbolIndex}`)
     })),
-    tests: seq(35, (index) => ({ path: `tests/test-${index}.ts` })),
-    verificationCommands: seq(25, (index) => `cmd-${index}`),
+	    tests: seq(35, (index) => ({ path: `tests/test-${index}.ts` })),
+	    verificationCommands: seq(25, (index) => `cmd-${index}`),
     verificationCoverage: seq(50, (index) => ({
       kind: "unknown",
       command: `cmd-${index}`,
@@ -197,8 +198,15 @@ function buildTestPlanPacket() {
       targetPaths: seq(25, (targetIndex) => `src/target-${index}-${targetIndex}.ts`),
       scopes: seq(15, (scopeIndex) => `scope-${index}-${scopeIndex}`),
       sources: seq(15, (sourceIndex) => `source-${index}-${sourceIndex}`)
-    })),
-    verificationLedgerPreview: seq(75, (index) => ({
+	    })),
+	    commandEnvelopes: seq(75, (index) => ({
+	      command: `cmd-${index}`,
+	      args: [],
+	      source: "derived-from-raw-command",
+	      scopeStatus: "repo",
+	      classifierVersion: CURRENT_VERIFICATION_PROVENANCE.commandCoverageClassifierVersion
+	    })),
+	    verificationLedgerPreview: seq(75, (index) => ({
       kind: "test",
       recommended: `run test-${index}`,
       target: `tests/test-${index}.ts`,
@@ -207,10 +215,12 @@ function buildTestPlanPacket() {
       coverageKinds: seq(15, (coverageIndex) => `coverage-${index}-${coverageIndex}`),
       command: `cmd-${index}`,
       source: `source-${index}`
-    })),
-    gaps: seq(35, (index) => `gap-${index}`)
-  };
-}
+	    })),
+	    verificationProvenance: CURRENT_VERIFICATION_PROVENANCE,
+	    testsNotRun: seq(35, (index) => ({ path: `tests/not-run-${index}.ts` })),
+	    gaps: seq(35, (index) => `gap-${index}`)
+	  };
+	}
 
 function buildChangePlanPacket() {
   return {
@@ -290,6 +300,13 @@ function buildChangePlanPacket() {
 }
 
 describe("Codexa MCP server", () => {
+  it("keeps the primary MCP happy path small and demotes graph/workflow tools", () => {
+    const primaryTools = MCP_TOOL_CATALOG.filter((tool) => tool.tier === "primary").map((tool) => tool.name);
+
+    expect(primaryTools).toEqual(["session_context", "task_brief", "change_plan", "post_edit_review", "test_plan", "search"]);
+    expect(MCP_TOOL_CATALOG.find((tool) => tool.name === "workflow_path")).toMatchObject({ tier: "advanced" });
+  });
+
   it("routes workspace-root MCP calls and resources to the focused repository", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-workspace-"));
     execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
@@ -378,7 +395,7 @@ describe("Codexa MCP server", () => {
     }
   });
 
-  it("falls back to WORKING.md default when active-session rows are ambiguous", async () => {
+  it("fails closed when active-session rows are ambiguous without a workspace session selector", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-working-ambiguous-active-"));
     execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
     const defaultRepo = await createIndexedMcpRepo(workspace, "default-repo", "alpha", "alphaSymbol");
@@ -412,12 +429,66 @@ describe("Codexa MCP server", () => {
 
     try {
       const taskBrief = await client.callTool({ name: "task_brief", arguments: { task: "change alphaSymbol", tokenBudget: 900, limit: 5 } });
-      const serialized = JSON.stringify(taskBrief);
-      expect(serialized).toContain(defaultRepo);
-      expect(serialized).toContain("alphaSymbol");
-      expect(serialized).not.toContain(otherRepo);
-      expect(serialized).not.toContain("Codexa MCP workspace focus is ambiguous");
-      expect(serialized).not.toContain("Failed to read git status");
+      expect(taskBrief.isError).toBe(true);
+      expect(JSON.stringify(taskBrief)).toContain("Codexa MCP workspace focus is ambiguous");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("routes ambiguous workspace active rows through an explicit workspace session", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-working-session-"));
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const defaultRepo = await createIndexedMcpRepo(workspace, "default-repo", "alpha", "alphaSymbol");
+    const selectedRepo = await createIndexedMcpRepo(workspace, "selected-repo", "beta", "betaSymbol");
+    const nextSelectedRepo = await createIndexedMcpRepo(workspace, "next-selected-repo", "gamma", "gammaSymbol");
+    const otherRepo = await createIndexedMcpRepo(workspace, "other-repo", "delta", "deltaSymbol");
+    const focusFile = path.join(workspace, ".codex", "WORKING.md");
+    await mkdir(path.dirname(focusFile), { recursive: true });
+    const writeFocusFile = async (selected: string) =>
+      writeFile(
+        focusFile,
+        [
+          "## Workspace Default",
+          "",
+          `- Default repo: \`${defaultRepo}\`.`,
+          "",
+          "## Active Sessions",
+          "",
+          "| session | agent | repo | task | status | claims | last_seen | next |",
+          "| --- | --- | --- | --- | --- | --- | --- | --- |",
+          `| codex-target | codex | ${selected} | target task | active | none | now | inspect |`,
+          `| codex-other | codex | ${otherRepo} | concurrent repo task | active | none | now | inspect |`
+        ].join("\n"),
+        "utf8"
+      );
+    await writeFocusFile(selectedRepo);
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace, "--workspace-session", "codex-target"],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-working-selected-session-test", version: "0.1.0" });
+    await client.connect(transport);
+
+    try {
+      const firstBrief = await client.callTool({ name: "task_brief", arguments: { task: "change betaSymbol", tokenBudget: 900, limit: 5 } });
+      const firstSerialized = JSON.stringify(firstBrief);
+      expect(firstSerialized).toContain(selectedRepo);
+      expect(firstSerialized).toContain("betaSymbol");
+      expect(firstSerialized).not.toContain(defaultRepo);
+      expect(firstSerialized).not.toContain(otherRepo);
+
+      await writeFocusFile(nextSelectedRepo);
+
+      const secondBrief = await client.callTool({ name: "task_brief", arguments: { task: "change gammaSymbol", tokenBudget: 900, limit: 5 } });
+      const secondSerialized = JSON.stringify(secondBrief);
+      expect(secondSerialized).toContain(nextSelectedRepo);
+      expect(secondSerialized).toContain("gammaSymbol");
+      expect(secondSerialized).not.toContain(selectedRepo);
+      expect(secondSerialized).not.toContain(defaultRepo);
+      expect(secondSerialized).not.toContain("Failed to read git status");
     } finally {
       await client.close();
     }
@@ -445,6 +516,45 @@ describe("Codexa MCP server", () => {
       const repoMap = await client.callTool({ name: "repo_map", arguments: { limit: 5 } });
       expect(JSON.stringify(repoMap)).toContain("src/explicit.ts");
       expect(JSON.stringify(repoMap)).not.toContain("src/stale.ts");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("does not let stale workspace focus env override an explicit wired MCP repo", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-explicit-focus-env-"));
+    const explicitRepo = await createIndexedMcpRepo(workspace, "explicit-repo", "explicit", "explicitSymbol");
+    const staleRepo = await createIndexedMcpRepo(workspace, "stale-repo", "stale", "staleSymbol");
+    await mkdir(path.join(explicitRepo, ".codex"), { recursive: true });
+    await writeFile(path.join(explicitRepo, ".codex", "config.toml"), "[features]\nhooks = true\n", "utf8");
+    const focusFile = path.join(workspace, "WORKING.md");
+    await writeFile(
+      focusFile,
+      [
+        "## Active Sessions",
+        "",
+        "| session | agent | repo | task | status | claims | last_seen | next |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        `| other-session | codex | ${staleRepo} | other task | active | none | now | inspect |`
+      ].join("\n"),
+      "utf8"
+    );
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", explicitRepo],
+      env: { CODEXA_WORKSPACE_FOCUS_FILE: focusFile, SESSION_ID: "stale-session" },
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-explicit-focus-env-routing-test", version: "0.1.0" });
+    await client.connect(transport);
+
+    try {
+      const repoMap = await client.callTool({ name: "repo_map", arguments: { limit: 5 } });
+      const serialized = JSON.stringify(repoMap);
+      expect(serialized).toContain("src/explicit.ts");
+      expect(serialized).not.toContain("src/stale.ts");
+      expect(serialized).not.toContain("stale-session");
     } finally {
       await client.close();
     }
@@ -532,6 +642,10 @@ describe("Codexa MCP server", () => {
     expect(contextTool?.outputSchema).toBeTruthy();
     expect(JSON.stringify(contextTool?.outputSchema)).toContain("schemaVersion");
     expect(JSON.stringify(contextTool?.outputSchema)).toContain("actionability");
+    expect(JSON.stringify(contextTool?.outputSchema)).toContain("repoRoot");
+    expect(JSON.stringify(contextTool?.outputSchema)).toContain("snapshotStatus");
+    expect(JSON.stringify(contextTool?.outputSchema)).toContain("knownClean");
+    expect(JSON.stringify(contextTool?.outputSchema)).toContain("commandCoverageClassifierVersion");
     expect(contextTool?.annotations?.destructiveHint).toBe(false);
     expect(contextTool?.annotations?.openWorldHint).toBe(false);
     expect(contextTool?.annotations?.readOnlyHint).toBe(false);
@@ -1019,8 +1133,9 @@ describe("Codexa MCP server", () => {
     });
     expect(compactedContext.text).toBe("context text");
     const contextData = compactedContext.data as {
-      mode?: string;
-      focusFiles?: unknown[];
+	      mode?: string;
+	      actionability?: string;
+	      focusFiles?: unknown[];
       changedFiles?: unknown[];
       tests?: unknown[];
       verificationCommands?: unknown[];
@@ -1029,7 +1144,8 @@ describe("Codexa MCP server", () => {
       truncation?: Record<string, { total: number; returned: number }>;
       mcp: { mode: string; returnedBytes: number; targetBytes: number; hardBudgetEnforced?: boolean };
     };
-    expect(contextData.mode).toBe("context_pack");
+	    expect(contextData.mode).toBe("context_pack");
+	    expect(contextData.actionability).toBe("needs_target");
     expect(contextData.mcp.mode).toBe("context_pack");
     expect(contextData.mcp.returnedBytes).toBe(serializedBytes(contextData));
     expect(contextData.mcp.returnedBytes).toBeLessThanOrEqual(contextData.mcp.targetBytes);
@@ -1049,12 +1165,14 @@ describe("Codexa MCP server", () => {
     });
     expect(compactedTask.text).toBe("task text");
     const taskData = compactedTask.data as {
-      mode: string;
-      focusFiles?: unknown[];
+	      mode: string;
+	      actionability?: string;
+	      focusFiles?: unknown[];
       truncation?: Record<string, { total: number; returned: number }>;
       mcp: { mode: string; returnedBytes: number; targetBytes: number };
     };
-    expect(taskData.mode).toBe("task_brief");
+	    expect(taskData.mode).toBe("task_brief");
+	    expect(taskData.actionability).toBe("needs_target");
     expect(taskData.mcp.mode).toBe("task_brief");
     expect(taskData.mcp.returnedBytes).toBe(serializedBytes(taskData));
     expect(taskData.mcp.returnedBytes).toBeLessThanOrEqual(taskData.mcp.targetBytes);
@@ -1075,11 +1193,14 @@ describe("Codexa MCP server", () => {
       unindexedChanged: unknown[];
       groups: unknown[];
       tests: unknown[];
-      verificationCommands: unknown[];
-      verificationCoverage: unknown[];
-      verificationCommandPlan: unknown[];
-      verificationLedgerPreview: unknown[];
-      gaps: unknown[];
+	      verificationCommands: unknown[];
+	      verificationCoverage: unknown[];
+	      commandEnvelopes: unknown[];
+	      verificationCommandPlan: unknown[];
+	      verificationLedgerPreview: unknown[];
+	      verificationProvenance?: typeof CURRENT_VERIFICATION_PROVENANCE;
+	      testsNotRun: unknown[];
+	      gaps: unknown[];
       truncation?: Record<string, { total: number; returned: number }>;
       mcp: { mode: string; returnedBytes: number; targetBytes: number };
     };
@@ -1088,10 +1209,13 @@ describe("Codexa MCP server", () => {
     expect(testPlanData.mcp.returnedBytes).toBeLessThanOrEqual(testPlanData.mcp.targetBytes);
     expect(testPlanData.changedFiles.length).toBeGreaterThan(0);
     expect(testPlanData.tests.length).toBeGreaterThan(0);
-    expect(testPlanData.verificationCommands.length).toBeGreaterThan(0);
-    expect(testPlanData.verificationCoverage.length).toBeGreaterThan(0);
-    expect(testPlanData.verificationCommandPlan.length).toBeGreaterThan(0);
-    expect(testPlanData.verificationLedgerPreview.length).toBeGreaterThan(0);
+	    expect(testPlanData.verificationCommands.length).toBeGreaterThan(0);
+	    expect(testPlanData.verificationCoverage.length).toBeGreaterThan(0);
+	    expect(testPlanData.commandEnvelopes.length).toBeGreaterThan(0);
+	    expect(testPlanData.verificationCommandPlan.length).toBeGreaterThan(0);
+	    expect(testPlanData.verificationLedgerPreview.length).toBeGreaterThan(0);
+	    expect(testPlanData.verificationProvenance).toEqual(CURRENT_VERIFICATION_PROVENANCE);
+	    expect(testPlanData.testsNotRun.length).toBeGreaterThan(0);
     expect(Object.keys(testPlanData.truncation ?? {}).length).toBeGreaterThan(0);
   });
 

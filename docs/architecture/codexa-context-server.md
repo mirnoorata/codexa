@@ -375,6 +375,7 @@ The MCP context server exposes:
 repo_map
 find_context
 search
+placeholder_report
 symbol_context
 impact
 diff_impact
@@ -389,6 +390,7 @@ dependency_path
 workflow_path
 change_plan
 post_edit_review
+session_memory
 freshness
 ```
 
@@ -406,6 +408,10 @@ cache-write semantics because `saveSnapshot=true` writes
 `.codex/cache/codexa-tasks/` and reads the legacy
 `.codex/cache/codexa-task-snapshots/` path only as a migration fallback. They
 never mutate source files.
+`doctor --mcp-readiness` compares the declared MCP tool catalog with the server
+registrations and reports drift before release. It also checks that the latest
+passing eval was recorded against the current repo `HEAD` and MCP catalog tool
+set rather than accepting an unversioned or stale pass marker.
 
 When the MCP server starts with semantic retrieval forced, inputs for
 `find_context`, `search`, `task_brief`, `context_pack`, `focus_brief`,
@@ -472,6 +478,11 @@ non-trivial edit if no task snapshot exists. The post-edit helper runs a bounded
 `.codex/cache/codexa-outcomes/`. Eval runs persist aggregate calibration data
 under `.codex/cache/codexa-evals/` so noisy cases, missing tests, heuristic-heavy
 packets, and raw-search-better cases become regression material.
+AutoVerify execution from hooks is disabled unless the user environment sets
+`CODEXA_AUTOVERIFY=1` or `CODEXA_AUTOVERIFY=true`; repo-local config cannot opt
+the hook into spawning test commands. When enabled, AutoVerify still runs only
+allowlisted targeted test commands and feeds structured command reports back
+into `post_edit_review`.
 
 ### Benchmark Integrity
 

@@ -398,6 +398,7 @@ export interface QueryOptions {
   semanticBatchSize?: number;
   semanticMaxFiles?: number;
   workspaceFocusFile?: string;
+  workspaceSessionId?: string;
 }
 
 export type ChangeType = "style" | "api" | "behavior" | "rename" | "delete" | "unknown";
@@ -496,7 +497,7 @@ export type VerificationCoverageKind =
   | "targeted-test"
   | "unknown";
 
-export type VerificationLedgerStatus = "covered" | "missing" | "waived" | "not_applicable";
+export type VerificationLedgerStatus = "covered" | "missing" | "waived" | "not_applicable" | "would_cover";
 
 export const VERIFICATION_PROVENANCE_SCHEMA_VERSION = 1 as const;
 export const VERIFICATION_COMMAND_COVERAGE_CLASSIFIER_VERSION = "command-coverage-v3";

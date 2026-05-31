@@ -137,6 +137,7 @@ export async function searchQuery(
     quality
   });
   const searchDiscipline = searchDisciplineLine(raw);
+  const actionability = raw.sufficient ? "raw_search_sufficient" : actionabilityFromSearchVerdict(retrieval.intentConfidence.verdict);
   const text = [
     freshnessBanner(freshness, refresh),
     formatContextQuality(quality),
@@ -144,6 +145,7 @@ export async function searchQuery(
     `Search: ${queryInput.query}`,
     raw.patterns.length > 1 ? `Search patterns: ${formatSearchPatterns(raw.patterns)}` : undefined,
     `Packet verdict: ${retrieval.intentConfidence.verdict}; edit-ready ${retrieval.intentConfidence.editReady ? "yes" : "no"}; confidence ${Math.round(retrieval.intentConfidence.confidence * 100)}%`,
+    `Actionability: ${actionability}`,
     retrieval.diagnostics.length > 0 ? `Retrieval diagnostics: ${retrieval.diagnostics.join("; ")}` : undefined,
     searchDiscipline,
     "",
@@ -176,6 +178,7 @@ export async function searchQuery(
       retrieval,
       intentConfidence: retrieval.intentConfidence,
       packetVerdict: retrieval.intentConfidence.verdict,
+      actionability,
       diagnostics: retrieval.diagnostics,
       tests,
       value,
@@ -184,6 +187,22 @@ export async function searchQuery(
       session: { warnings: session.warnings, provenance: session.provenance }
     }
   };
+}
+
+function actionabilityFromSearchVerdict(verdict: string): string {
+  if (verdict === "edit-ready") {
+    return "edit_ready";
+  }
+  if (verdict === "orientation-only") {
+    return "orientation";
+  }
+  if (verdict === "raw-search-better") {
+    return "raw_search_better";
+  }
+  if (verdict === "needs-target") {
+    return "needs_target";
+  }
+  return "inspect_first";
 }
 
 function rawSearchPatternsForQuery(query: string, explicitPatterns?: string[]): string[] {

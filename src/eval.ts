@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { buildIndex } from "./indexer.js";
 import { isTestPath } from "./language.js";
+import { MCP_TOOL_CATALOG } from "./mcp-tool-catalog.js";
 import { changePlanQuery, contextPackQuery, diffImpactQuery, focusBriefQuery, impactQuery, postEditReviewQuery, searchQuery, taskBriefQuery, testPlanQuery, workflowPathQuery } from "./queries.js";
 import type { QueryOptions, QueryResult, TestRecommendation } from "./types.js";
 import { externalHistoricalTaskPackScenarios, historicalFixtureScenarios } from "./eval/historical.js";
@@ -887,8 +888,22 @@ async function saveEvalData(repoRoot: string, seed: string, data: EvalResult["da
     passed: data.passed,
     score: data.score,
     path: path.basename(filePath),
+    repoRoot,
+    headCommit: gitHeadCommit(repoRoot),
+    mcpCatalogTools: MCP_TOOL_CATALOG.map((tool) => tool.name),
     createdAt: new Date().toISOString()
   });
+}
+
+function gitHeadCommit(repoRoot: string): string | null {
+  try {
+    return execFileSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"]
+    }).trim();
+  } catch {
+    return null;
+  }
 }
 
 async function atomicJsonWrite(filePath: string, value: unknown): Promise<void> {

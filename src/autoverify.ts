@@ -58,16 +58,8 @@ async function autoVerifyTrusted(repoRoot: string): Promise<{ enabled: true } | 
   if (process.env.CODEXA_AUTOVERIFY === "1" || process.env.CODEXA_AUTOVERIFY?.toLowerCase() === "true") {
     return { enabled: true };
   }
-  const configPath = path.join(repoRoot, ".codex/config.toml");
-  try {
-    const config = await fs.readFile(configPath, "utf8");
-    if (/^\s*(auto_verify|autoverify)\s*=\s*true\s*$/imu.test(config)) {
-      return { enabled: true };
-    }
-  } catch {
-    // Missing config means the repo has not opted in to executing its own tests from hooks.
-  }
-  return { enabled: false, reason: "AutoVerify execution requires CODEXA_AUTOVERIFY=1 or auto_verify=true in .codex/config.toml" };
+  void repoRoot;
+  return { enabled: false, reason: "AutoVerify execution requires CODEXA_AUTOVERIFY=1 from the user environment" };
 }
 
 function autoVerifyCandidates(repoRoot: string, data: unknown): AutoVerifyCandidate[] {

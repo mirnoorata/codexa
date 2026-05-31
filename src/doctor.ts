@@ -3,11 +3,15 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { getFreshness } from "./indexer.js";
+import { MCP_TOOL_CATALOG } from "./mcp-tool-catalog.js";
+import { resolveMcpRepoRoot, type McpRepoRootResolution, type McpRepoRootResolutionOptions } from "./mcp-repo-root.js";
 import { codexaHookEventsRelativePath, loadLatestCodexaHookEvent } from "./post-edit-outcomes.js";
 
 export interface DoctorOptions {
   json?: boolean;
   mcpReadiness?: boolean;
+  workspaceFocusFile?: string;
+  workspaceSessionId?: string;
 }
 
 export interface DoctorCheck {
@@ -66,7 +70,15 @@ export interface DoctorResult {
 }
 
 export async function runDoctor(repoInput: string, options: DoctorOptions = {}): Promise<DoctorResult> {
-  const repoRoot = path.resolve(repoInput);
+  const configuredRoot = path.resolve(repoInput);
+  const workspaceRoutingRequested = Boolean(options.workspaceFocusFile || options.workspaceSessionId);
+  const routingOptions: McpRepoRootResolutionOptions = {
+    workspaceFocusFile: options.workspaceFocusFile,
+    workspaceSessionId: options.workspaceSessionId,
+    preferConfiguredRoot: !workspaceRoutingRequested && (await codexaConfigExists(configuredRoot))
+  };
+  const mcpRouting = options.mcpReadiness ? await inspectMcpRouting(configuredRoot, routingOptions) : undefined;
+  const repoRoot = mcpRouting?.resolution?.repoRoot ?? configuredRoot;
   const checks: DoctorCheck[] = [];
   const nextActions: string[] = [];
   const node = checkNode(checks);
@@ -79,7 +91,7 @@ export async function runDoctor(repoInput: string, options: DoctorOptions = {}):
   checkLatestHookEvent(latestHookEvent, checks);
   const latestOutcome = await readJsonIfExists(path.join(repoRoot, ".codex/cache/codexa-outcomes/latest.json"));
   const hookEventsPath = codexaHookEventsRelativePath();
-  const mcpReadiness = options.mcpReadiness ? await checkMcpReadiness(repoRoot, checks, nextActions) : undefined;
+  const mcpReadiness = options.mcpReadiness ? await checkMcpReadiness(repoRoot, checks, nextActions, configuredRoot, mcpRouting) : undefined;
 
   const ok = checks.every((check) => check.status !== "fail");
   const data = {
@@ -104,7 +116,35 @@ export async function runDoctor(repoInput: string, options: DoctorOptions = {}):
   };
 }
 
-async function checkMcpReadiness(repoRoot: string, checks: DoctorCheck[], nextActions: string[]): Promise<{
+type McpRoutingInspection =
+  | { resolution: McpRepoRootResolution; error?: undefined }
+  | { resolution?: undefined; error: string };
+
+async function inspectMcpRouting(configuredRoot: string, options: McpRepoRootResolutionOptions): Promise<McpRoutingInspection> {
+  try {
+    return { resolution: await resolveMcpRepoRoot(configuredRoot, options) };
+  } catch (error) {
+    return { error: errorMessage(error) };
+  }
+}
+
+async function checkMcpReadiness(
+  repoRoot: string,
+  checks: DoctorCheck[],
+  nextActions: string[],
+  configuredRoot: string,
+  routing: McpRoutingInspection | undefined
+): Promise<{
+  routing: {
+    configuredRoot: string;
+    activeRepoRoot: string | null;
+    source: McpRepoRootResolution["source"] | "unresolved";
+    focusReason?: McpRepoRootResolution["focusReason"];
+    focusFile?: string;
+    workspaceSessionId?: string;
+    warnings: string[];
+    error?: string;
+  };
   configPresent: boolean;
   serveConfigured: boolean;
   typedEnvelope: boolean;
@@ -112,18 +152,70 @@ async function checkMcpReadiness(repoRoot: string, checks: DoctorCheck[], nextAc
   autoVerifyOptIn: boolean;
   semanticCache: boolean;
   lspConfigured: boolean;
+  toolSurface: {
+    primaryTools: string[];
+    advancedToolCount: number;
+    readOnlyPrimaryTools: string[];
+    cacheWritingPrimaryTools: Array<{ name: string; writeEffects: string }>;
+    sourceMutationTools: string[];
+    registeredTools: string[];
+    registrationSource: string | null;
+    registrationError?: string;
+    unregisteredCatalogTools: string[];
+    uncatalogedRegisteredTools: string[];
+  };
   packageMetadata: { name?: string; version?: string; mcpServer: string };
-  latestBenchmark?: unknown;
+  latestEval?: unknown;
 }> {
+  const routingWarnings = routing?.resolution?.warnings ?? [];
+  const routingData = routing?.resolution
+    ? {
+        configuredRoot,
+        activeRepoRoot: routing.resolution.repoRoot,
+        source: routing.resolution.source,
+        focusReason: routing.resolution.focusReason,
+        focusFile: routing.resolution.focusFile,
+        workspaceSessionId: routing.resolution.workspaceSessionId,
+        warnings: routingWarnings
+      }
+    : {
+        configuredRoot,
+        activeRepoRoot: null,
+        source: "unresolved" as const,
+        warnings: [],
+        error: routing?.error ?? "MCP routing was not inspected."
+      };
   const configText = await readTextIfExists(path.join(repoRoot, ".codex/config.toml"));
   const packageJson = await readJsonIfExists(path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../package.json"));
   const packageRecord = packageJson && typeof packageJson === "object" ? (packageJson as Record<string, unknown>) : {};
   const sessionMemoryMode = /^\s*session_memory\s*=\s*"off"\s*$/imu.test(configText ?? "") ? "off" : "auto";
-  const autoVerifyOptIn = process.env.CODEXA_AUTOVERIFY === "1" || /^\s*(auto_verify|autoverify)\s*=\s*true\s*$/imu.test(configText ?? "");
+  const autoVerifyOptIn = process.env.CODEXA_AUTOVERIFY === "1" || process.env.CODEXA_AUTOVERIFY?.toLowerCase() === "true";
   const semanticCache = await exists(path.join(repoRoot, ".codex/cache/codexa-semantic-v1/manifest.json"));
   const lspConfigured = Boolean(process.env.CODEXA_LSP === "1" || process.env.CODEXA_LSP_TYPESCRIPT_COMMAND || process.env.CODEXA_LSP_JAVASCRIPT_COMMAND || process.env.CODEXA_LSP_PYTHON_COMMAND);
-  const latestBenchmark = await readJsonIfExists(path.join(repoRoot, ".codex/cache/codexa-benchmarks/latest.json"));
+  const latestEval = await readJsonIfExists(path.join(repoRoot, ".codex/cache/codexa-evals/latest.json"));
   const serveConfigured = Boolean(configText && /\[mcp_servers\.[^\]]+\]/iu.test(configText) && /\bserve\b/u.test(configText));
+  const toolSurface = await mcpToolSurface();
+  if (routingData.error) {
+    checks.push({
+      name: "mcp-routing",
+      status: "fail",
+      message: `Codexa MCP could not resolve an active repo from ${configuredRoot}: ${routingData.error}`
+    });
+    nextActions.push("Set CODEXA_WORKSPACE_SESSION or pass --workspace-session when serving a shared workspace root.");
+  } else if (routingWarnings.length > 0) {
+    checks.push({
+      name: "mcp-routing",
+      status: "warn",
+      message: `Codexa MCP resolved ${configuredRoot} to ${routingData.activeRepoRoot} with routing warning(s).`
+    });
+    nextActions.push("Pass --workspace-session <session> or set CODEXA_WORKSPACE_SESSION for shared workspace-root MCP launches.");
+  } else {
+    checks.push({
+      name: "mcp-routing",
+      status: "ok",
+      message: `Codexa MCP resolves ${configuredRoot} to ${routingData.activeRepoRoot}.`
+    });
+  }
   checks.push({
     name: "mcp-readiness",
     status: serveConfigured ? "ok" : "warn",
@@ -134,6 +226,36 @@ async function checkMcpReadiness(repoRoot: string, checks: DoctorCheck[], nextAc
     status: "ok",
     message: "Codexa MCP tools use the schemaVersion=1 structured envelope."
   });
+  checks.push({
+    name: "mcp-primary-tools",
+    status: toolSurface.sourceMutationTools.length === 0 ? "ok" : "fail",
+    message:
+      toolSurface.sourceMutationTools.length === 0
+        ? `Primary MCP path exposes ${toolSurface.primaryTools.length} tools and no source-mutating tools.`
+        : `Source-mutating MCP tools are exposed: ${toolSurface.sourceMutationTools.join(", ")}`
+  });
+  if (!toolSurface.registrationSource) {
+    checks.push({
+      name: "mcp-tool-parity",
+      status: "warn",
+      message: `Codexa could not inspect MCP server tool registration: ${toolSurface.registrationError ?? "unknown error"}.`
+    });
+    nextActions.push("Run `npm run build`, then rerun `codexa doctor <repo> --mcp-readiness` so tool registration parity can be inspected.");
+  } else if (toolSurface.unregisteredCatalogTools.length > 0 || toolSurface.uncatalogedRegisteredTools.length > 0) {
+    checks.push({
+      name: "mcp-tool-parity",
+      status: "fail",
+      message: `MCP catalog/server drift detected; unregistered catalog tools: ${formatNameList(toolSurface.unregisteredCatalogTools)}; uncataloged registered tools: ${formatNameList(toolSurface.uncatalogedRegisteredTools)}.`
+    });
+    nextActions.push("Update MCP_TOOL_CATALOG and server.registerTool registrations together before publishing MCP readiness changes.");
+  } else {
+    checks.push({
+      name: "mcp-tool-parity",
+      status: "ok",
+      message: `MCP catalog matches ${toolSurface.registeredTools.length} registered server tools.`
+    });
+  }
+  checkLatestEval(latestEval, checks, nextActions, repoRoot, toolSurface);
   if (!autoVerifyOptIn) {
     checks.push({
       name: "autoverify-trust",
@@ -145,6 +267,7 @@ async function checkMcpReadiness(repoRoot: string, checks: DoctorCheck[], nextAc
     nextActions.push("Run `codexa init <repo>` so Codex can discover the Codexa MCP server.");
   }
   return {
+    routing: routingData,
     configPresent: configText !== null,
     serveConfigured,
     typedEnvelope: true,
@@ -152,13 +275,136 @@ async function checkMcpReadiness(repoRoot: string, checks: DoctorCheck[], nextAc
     autoVerifyOptIn,
     semanticCache,
     lspConfigured,
+    toolSurface,
     packageMetadata: {
       name: typeof packageRecord.name === "string" ? packageRecord.name : undefined,
       version: typeof packageRecord.version === "string" ? packageRecord.version : undefined,
       mcpServer: "codexa"
     },
-    latestBenchmark
+    latestEval
   };
+}
+
+async function mcpToolSurface(): Promise<{
+  primaryTools: string[];
+  advancedToolCount: number;
+  readOnlyPrimaryTools: string[];
+  cacheWritingPrimaryTools: Array<{ name: string; writeEffects: string }>;
+  sourceMutationTools: string[];
+  registeredTools: string[];
+  registrationSource: string | null;
+  registrationError?: string;
+  unregisteredCatalogTools: string[];
+  uncatalogedRegisteredTools: string[];
+}> {
+  const primary = MCP_TOOL_CATALOG.filter((tool) => tool.tier === "primary");
+  const sourceMutationTools = MCP_TOOL_CATALOG.filter((tool) => /\bsource\b/iu.test(tool.writeEffects)).map((tool) => tool.name);
+  const registered = await registeredMcpToolNamesFromServerSource();
+  const catalogNames: string[] = MCP_TOOL_CATALOG.map((tool) => tool.name);
+  return {
+    primaryTools: primary.map((tool) => tool.name),
+    advancedToolCount: MCP_TOOL_CATALOG.filter((tool) => tool.tier === "advanced").length,
+    readOnlyPrimaryTools: primary.filter((tool) => tool.readOnly).map((tool) => tool.name),
+    cacheWritingPrimaryTools: primary.filter((tool) => !tool.readOnly).map((tool) => ({ name: tool.name, writeEffects: tool.writeEffects })),
+    sourceMutationTools,
+    registeredTools: registered.names,
+    registrationSource: registered.sourcePath ?? null,
+    registrationError: registered.error,
+    unregisteredCatalogTools: catalogNames.filter((name) => !registered.names.includes(name)),
+    uncatalogedRegisteredTools: registered.names.filter((name) => !catalogNames.includes(name))
+  };
+}
+
+async function registeredMcpToolNamesFromServerSource(): Promise<{ names: string[]; sourcePath?: string; error?: string }> {
+  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+  const candidates = [path.join(moduleDir, "mcp.js"), path.join(moduleDir, "mcp.ts")];
+  const errors: string[] = [];
+  for (const candidate of candidates) {
+    const text = await readTextIfExists(candidate);
+    if (text === null) {
+      errors.push(`${candidate}: not found`);
+      continue;
+    }
+    const names = [...text.matchAll(/server\.registerTool\(\s*["']([a-z0-9_:-]+)["']/giu)].map((match) => match[1]);
+    if (names.length === 0) {
+      errors.push(`${candidate}: no registerTool calls found`);
+      continue;
+    }
+    return { names: [...new Set(names)], sourcePath: candidate };
+  }
+  return { names: [], error: errors.join("; ") };
+}
+
+async function codexaConfigExists(repoRoot: string): Promise<boolean> {
+  try {
+    await fs.access(path.join(repoRoot, ".codex", "config.toml"));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function checkLatestEval(
+  latestEval: unknown,
+  checks: DoctorCheck[],
+  nextActions: string[],
+  repoRoot: string,
+  toolSurface: Awaited<ReturnType<typeof mcpToolSurface>>
+): void {
+  if (!latestEval || typeof latestEval !== "object") {
+    checks.push({
+      name: "latest-eval",
+      status: "warn",
+      message: "No latest Codexa eval summary is recorded."
+    });
+    nextActions.push("Run `codexa eval <repo> --suite synthetic` before treating MCP readiness as release-grade.");
+    return;
+  }
+  const record = latestEval as Record<string, unknown>;
+  const passed = record.passed === true;
+  const score = typeof record.score === "number" ? record.score : undefined;
+  const metadataWarnings = latestEvalFreshnessWarnings(record, repoRoot, toolSurface);
+  const status: DoctorCheck["status"] = !passed ? "fail" : metadataWarnings.length > 0 ? "warn" : "ok";
+  checks.push({
+    name: "latest-eval",
+    status,
+    message: passed
+      ? `Latest Codexa eval passed${score !== undefined ? ` with score ${score.toFixed(3)}` : ""}${metadataWarnings.length > 0 ? `; metadata warning(s): ${metadataWarnings.join("; ")}` : ""}.`
+      : `Latest Codexa eval did not pass${score !== undefined ? `; score ${score.toFixed(3)}` : ""}.`
+  });
+  if (!passed) {
+    nextActions.push("Inspect `.codex/cache/codexa-evals/latest.json`, then fix failing eval dimensions before publishing MCP changes.");
+  } else if (metadataWarnings.length > 0) {
+    nextActions.push("Refresh `.codex/cache/codexa-evals/latest.json` with `codexa eval <repo> --suite synthetic` so readiness evidence matches the current commit and MCP catalog.");
+  }
+}
+
+function latestEvalFreshnessWarnings(record: Record<string, unknown>, repoRoot: string, toolSurface: Awaited<ReturnType<typeof mcpToolSurface>>): string[] {
+  const warnings: string[] = [];
+  const currentHead = runGit(repoRoot, ["rev-parse", "HEAD"]);
+  const evalHead = typeof record.headCommit === "string" ? record.headCommit : undefined;
+  if (!evalHead) {
+    warnings.push("missing headCommit");
+  } else if (currentHead && evalHead !== currentHead) {
+    warnings.push("headCommit differs from current HEAD");
+  }
+  const expectedCatalogTools = MCP_TOOL_CATALOG.map((tool) => tool.name);
+  const evalCatalogTools = Array.isArray(record.mcpCatalogTools) ? record.mcpCatalogTools.filter((tool): tool is string => typeof tool === "string") : [];
+  if (evalCatalogTools.length === 0) {
+    warnings.push("missing MCP catalog tool metadata");
+  } else if (!sameStringSet(evalCatalogTools, expectedCatalogTools)) {
+    warnings.push("MCP catalog tools differ from current catalog");
+  }
+  if (toolSurface.registeredTools.length > 0 && evalCatalogTools.length > 0 && !sameStringSet(evalCatalogTools, toolSurface.registeredTools)) {
+    warnings.push("MCP catalog metadata differs from registered server tools");
+  }
+  return warnings;
+}
+
+function sameStringSet(left: string[], right: string[]): boolean {
+  const leftSet = new Set(left);
+  const rightSet = new Set(right);
+  return leftSet.size === rightSet.size && [...leftSet].every((value) => rightSet.has(value));
 }
 
 function checkNode(checks: DoctorCheck[]): DoctorResult["data"]["node"] {
@@ -188,7 +434,7 @@ async function checkConfig(repoRoot: string, checks: DoctorCheck[], nextActions:
   const text = await readTextIfExists(configPath);
   const exists = text !== null;
   const mcpServerConfigured = Boolean(text && /\[mcp_servers\.[^\]]+\]/iu.test(text) && /\bserve\b/u.test(text));
-  const codexHooksEnabled = Boolean(text && /^\s*codex_hooks\s*=\s*true\s*$/imu.test(text));
+  const codexHooksEnabled = Boolean(text && /^\s*hooks\s*=\s*true\s*$/imu.test(text));
   if (!exists || !mcpServerConfigured) {
     checks.push({ name: "config", status: "warn", message: "Codexa MCP config is missing or incomplete." });
     nextActions.push("Run `codexa init <repo>` to refresh repo-local MCP config.");
@@ -329,8 +575,30 @@ function renderDoctor(data: DoctorResult["data"]): string {
   }
   if (data.mcpReadiness) {
     lines.push("", "MCP readiness:");
+    lines.push(`- configured root: ${data.mcpReadiness.routing.configuredRoot}`);
+    lines.push(`- active repo: ${data.mcpReadiness.routing.activeRepoRoot ?? "unresolved"}`);
+    lines.push(
+      `- routing: ${data.mcpReadiness.routing.source}${data.mcpReadiness.routing.focusReason ? ` (${data.mcpReadiness.routing.focusReason})` : ""}${
+        data.mcpReadiness.routing.workspaceSessionId ? ` session=${data.mcpReadiness.routing.workspaceSessionId}` : ""
+      }`
+    );
+    if (data.mcpReadiness.routing.focusFile) {
+      lines.push(`- focus file: ${data.mcpReadiness.routing.focusFile}`);
+    }
+    for (const warning of data.mcpReadiness.routing.warnings) {
+      lines.push(`- routing warning: ${warning}`);
+    }
+    if (data.mcpReadiness.routing.error) {
+      lines.push(`- routing error: ${data.mcpReadiness.routing.error}`);
+    }
     lines.push(`- serve configured: ${data.mcpReadiness.serveConfigured ? "yes" : "no"}`);
     lines.push(`- typed envelope: ${data.mcpReadiness.typedEnvelope ? "yes" : "no"}`);
+    lines.push(`- primary tools: ${data.mcpReadiness.toolSurface.primaryTools.join(", ")}`);
+    lines.push(`- advanced tool count: ${data.mcpReadiness.toolSurface.advancedToolCount}`);
+    lines.push(`- registered tools: ${data.mcpReadiness.toolSurface.registeredTools.length}`);
+    lines.push(`- catalog/server parity: ${data.mcpReadiness.toolSurface.unregisteredCatalogTools.length === 0 && data.mcpReadiness.toolSurface.uncatalogedRegisteredTools.length === 0 ? "ok" : "drift"}`);
+    lines.push(`- source mutation tools: ${data.mcpReadiness.toolSurface.sourceMutationTools.length > 0 ? data.mcpReadiness.toolSurface.sourceMutationTools.join(", ") : "none"}`);
+    lines.push(`- latest eval: ${formatLatestEval(data.mcpReadiness.latestEval)}`);
     lines.push(`- session memory: ${data.mcpReadiness.sessionMemoryMode}`);
     lines.push(`- AutoVerify opted in: ${data.mcpReadiness.autoVerifyOptIn ? "yes" : "no"}`);
     lines.push(`- semantic cache: ${data.mcpReadiness.semanticCache ? "present" : "missing"}`);
@@ -344,6 +612,22 @@ function renderDoctor(data: DoctorResult["data"]): string {
     }
   }
   return `${lines.join("\n")}\n`;
+}
+
+function formatLatestEval(latestEval: unknown): string {
+  if (!latestEval || typeof latestEval !== "object") {
+    return "missing";
+  }
+  const record = latestEval as Record<string, unknown>;
+  const status = record.passed === true ? "pass" : record.passed === false ? "fail" : "unknown";
+  const score = typeof record.score === "number" ? ` score=${record.score.toFixed(3)}` : "";
+  const suite = typeof record.suite === "string" ? ` suite=${record.suite}` : "";
+  const seed = typeof record.seed === "string" ? ` seed=${record.seed}` : "";
+  return `${status}${score}${suite}${seed}`;
+}
+
+function formatNameList(names: string[]): string {
+  return names.length > 0 ? names.join(", ") : "none";
 }
 
 function runGit(repoRoot: string, args: string[]): string | null {

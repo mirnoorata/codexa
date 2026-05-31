@@ -178,6 +178,116 @@ describe("Codexa hook CLI", () => {
     expect(latest).toMatchObject({ hook: "post-edit", status: "ok" });
   });
 
+  it("keeps explicit wired hook repos authoritative when ambient workspace env is stale", async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), "codexa-hook-explicit-env-"));
+    const repo = path.join(parent, "repo");
+    await mkdir(path.join(repo, ".codex"), { recursive: true });
+    await writeFile(path.join(repo, ".codex", "config.toml"), "[features]\nhooks = true\n", "utf8");
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await writeFile(path.join(repo, "README.md"), "# fixture\n", "utf8");
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    const focusFile = path.join(parent, "WORKING.md");
+    await writeFile(
+      focusFile,
+      [
+        "## Active Sessions",
+        "",
+        "| session | agent | repo | task | status | claims | last_seen | next |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        `| other-session | codex | ${path.join(parent, "other")} | other task | active | none | now | inspect |`
+      ].join("\n"),
+      "utf8"
+    );
+
+    const cli = path.resolve(process.cwd(), "dist/cli.js");
+    const preEdit = spawnSync(process.execPath, [cli, "hook-pre-edit", repo], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: { ...process.env, CODEXA_WORKSPACE_FOCUS_FILE: focusFile, SESSION_ID: "stale-session" }
+    });
+
+    expect(preEdit.status).toBe(0);
+    expect(preEdit.stdout).toContain("Codexa: no change-plan snapshot is available");
+    expect(preEdit.stdout).not.toContain("workspace session stale-session is not active");
+  });
+
+  it("keeps explicit wired doctor repos authoritative when ambient workspace env is stale", async () => {
+    const parent = await mkdtemp(path.join(os.tmpdir(), "codexa-doctor-explicit-env-"));
+    const repo = path.join(parent, "repo");
+    await mkdir(path.join(repo, ".codex"), { recursive: true });
+    await writeFile(path.join(repo, ".codex", "config.toml"), "[features]\nhooks = true\n", "utf8");
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await writeFile(path.join(repo, "README.md"), "# fixture\n", "utf8");
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    const focusFile = path.join(parent, "WORKING.md");
+    await writeFile(
+      focusFile,
+      [
+        "## Active Sessions",
+        "",
+        "| session | agent | repo | task | status | claims | last_seen | next |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        `| other-session | codex | ${path.join(parent, "other")} | other task | active | none | now | inspect |`
+      ].join("\n"),
+      "utf8"
+    );
+
+    const cli = path.resolve(process.cwd(), "dist/cli.js");
+    const doctor = spawnSync(process.execPath, [cli, "doctor", repo, "--mcp-readiness", "--json"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: { ...process.env, CODEXA_WORKSPACE_FOCUS_FILE: focusFile, SESSION_ID: "stale-session" }
+    });
+
+    expect(doctor.status).toBe(0);
+    const data = JSON.parse(doctor.stdout) as { repoRoot: string; mcpReadiness: { routing: { activeRepoRoot: string; source: string } } };
+    expect(data.repoRoot).toBe(repo);
+    expect(data.mcpReadiness.routing).toMatchObject({ activeRepoRoot: repo, source: "configured-root" });
+  });
+
+  it("does not fall back to the workspace root when hook focus routing is ambiguous", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-hook-ambiguous-"));
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const repoA = path.join(workspace, "repo-a");
+    const repoB = path.join(workspace, "repo-b");
+    await mkdir(repoA, { recursive: true });
+    await mkdir(repoB, { recursive: true });
+    execFileSync("git", ["init"], { cwd: repoA, stdio: "ignore" });
+    execFileSync("git", ["init"], { cwd: repoB, stdio: "ignore" });
+    await mkdir(path.join(workspace, ".codex"), { recursive: true });
+    await writeFile(
+      path.join(workspace, ".codex", "WORKING.md"),
+      [
+        "## Active Sessions",
+        "",
+        "| session | agent | repo | task | status | claims | last_seen | next |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        `| session-a | codex | ${repoA} | task a | active | none | now | inspect |`,
+        `| session-b | codex | ${repoB} | task b | active | none | now | inspect |`
+      ].join("\n"),
+      "utf8"
+    );
+
+    const cli = path.resolve(process.cwd(), "dist/cli.js");
+    const preEdit = spawnSync(process.execPath, [cli, "hook-pre-edit", workspace], {
+      cwd: process.cwd(),
+      encoding: "utf8"
+    });
+
+    expect(preEdit.status).toBe(0);
+    expect(preEdit.stdout).toContain("Codexa: change-plan snapshot check unavailable:");
+    expect(preEdit.stdout).toContain("Codexa MCP workspace focus is ambiguous");
+    expect(preEdit.stdout).not.toContain("Codexa: no change-plan snapshot is available");
+  });
+
   it("skips AutoVerify execution by default and records recommended commands as skipped", async () => {
     const repo = await createAutoVerifyFixtureRepo({ test: "node --test" });
     const cli = path.resolve(process.cwd(), "dist/cli.js");
@@ -192,6 +302,33 @@ describe("Codexa hook CLI", () => {
     );
     expect(plan.status).toBe(0);
     await writeFile(path.join(repo, "src/main.js"), "export function main() {\n  return 1;\n}\n", "utf8");
+
+    const postEdit = spawnSync(process.execPath, [cli, "hook-post-edit", repo], {
+      cwd: process.cwd(),
+      encoding: "utf8"
+    });
+    expect(postEdit.status).toBe(0);
+    expect(postEdit.stdout).toContain("Codexa AutoVerify: skipped 1 unsafe or unsupported command(s).");
+    expect(postEdit.stdout).toContain("AutoVerify execution requires CODEXA_AUTOVERIFY=1");
+    expect(postEdit.stdout).not.toContain("Codexa AutoVerify: ran");
+  });
+
+  it("does not trust repo-local config to enable AutoVerify execution", async () => {
+    const repo = await createAutoVerifyFixtureRepo({ test: "node --test" });
+    await mkdir(path.join(repo, ".codex"), { recursive: true });
+    await writeFile(path.join(repo, ".codex", "config.toml"), ["[features]", "auto_verify = true", ""].join("\n"), "utf8");
+    const cli = path.resolve(process.cwd(), "dist/cli.js");
+
+    const plan = spawnSync(
+      process.execPath,
+      [cli, "change-plan", repo, "--task", "Tighten main formatting", "--file", "src/main.js", "--save-snapshot", "--task-id", "hook-autoverify-config-skip"],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8"
+      }
+    );
+    expect(plan.status).toBe(0);
+    await writeFile(path.join(repo, "src/main.js"), "export function main() {\n  return 2;\n}\n", "utf8");
 
     const postEdit = spawnSync(process.execPath, [cli, "hook-post-edit", repo], {
       cwd: process.cwd(),
@@ -345,6 +482,12 @@ describe("Codexa hook CLI", () => {
       encoding: "utf8"
     });
     expect(sessionStart.status).toBe(0);
+    await mkdir(path.join(repo, ".codex/cache/codexa-evals"), { recursive: true });
+    await writeFile(
+      path.join(repo, ".codex/cache/codexa-evals/latest.json"),
+      `${JSON.stringify({ schemaVersion: 1, seed: "unit-doctor", suite: "synthetic", passed: true, score: 1, path: "unit-doctor.json", createdAt: "2026-05-30T00:00:00.000Z" }, null, 2)}\n`,
+      "utf8"
+    );
 
     const doctorJson = spawnSync(process.execPath, [cli, "doctor", repo, "--json"], {
       cwd: process.cwd(),
@@ -373,6 +516,93 @@ describe("Codexa hook CLI", () => {
     expect(doctorText.stdout).toContain("Latest hook: session-start ok");
     expect(doctorText.stdout).toContain("MCP readiness:");
     expect(doctorText.stdout).toContain("typed envelope: yes");
+    expect(doctorText.stdout).toContain("primary tools: session_context, task_brief, change_plan, post_edit_review, test_plan, search");
+    expect(doctorText.stdout).toContain("registered tools: 20");
+    expect(doctorText.stdout).toContain("catalog/server parity: ok");
+    expect(doctorText.stdout).toContain("source mutation tools: none");
+    expect(doctorText.stdout).toContain("latest eval: pass score=1.000 suite=synthetic seed=unit-doctor");
+  });
+
+  it("reports MCP readiness routing for workspace sessions and ambiguous fallbacks", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-doctor-workspace-"));
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const defaultRepo = await createWorkspaceGitRepo(workspace, "default-repo", "alpha");
+    const selectedRepo = await createWorkspaceGitRepo(workspace, "selected-repo", "beta");
+    const otherRepo = await createWorkspaceGitRepo(workspace, "other-repo", "gamma");
+    await mkdir(path.join(workspace, ".codex"), { recursive: true });
+    await writeFile(
+      path.join(workspace, ".codex", "WORKING.md"),
+      [
+        "## Workspace Default",
+        "",
+        `- Default repo: \`${defaultRepo}\`.`,
+        "",
+        "## Active Sessions",
+        "",
+        "| session | agent | repo | task | status | claims | last_seen | next |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        `| codex-target | codex | ${selectedRepo} | target task | active | none | now | inspect |`,
+        `| codex-other | codex | ${otherRepo} | other task | active | none | now | inspect |`
+      ].join("\n"),
+      "utf8"
+    );
+    const cli = path.resolve(process.cwd(), "dist/cli.js");
+
+    const selected = spawnSync(process.execPath, [cli, "doctor", workspace, "--mcp-readiness", "--json", "--workspace-session", "codex-target"], {
+      cwd: process.cwd(),
+      encoding: "utf8"
+    });
+    expect(selected.status).toBe(0);
+    const selectedData = JSON.parse(selected.stdout) as {
+      repoRoot: string;
+      mcpReadiness: {
+        routing: { configuredRoot: string; activeRepoRoot: string; focusReason: string; workspaceSessionId: string; warnings: string[] };
+        toolSurface: {
+          primaryTools: string[];
+          sourceMutationTools: string[];
+          registeredTools: string[];
+          registrationSource: string | null;
+          unregisteredCatalogTools: string[];
+          uncatalogedRegisteredTools: string[];
+        };
+        latestEval: unknown;
+      };
+    };
+    expect(selectedData.repoRoot).toBe(selectedRepo);
+    expect(selectedData.mcpReadiness.routing).toMatchObject({
+      configuredRoot: workspace,
+      activeRepoRoot: selectedRepo,
+      focusReason: "selected-session",
+      workspaceSessionId: "codex-target"
+    });
+    expect(selectedData.mcpReadiness.routing.warnings).toEqual([]);
+    expect(selectedData.mcpReadiness.toolSurface.primaryTools).toEqual(["session_context", "task_brief", "change_plan", "post_edit_review", "test_plan", "search"]);
+    expect(selectedData.mcpReadiness.toolSurface.sourceMutationTools).toEqual([]);
+    expect(selectedData.mcpReadiness.toolSurface.registeredTools).toEqual(
+      expect.arrayContaining(["session_context", "task_brief", "change_plan", "post_edit_review", "test_plan", "search", "workflow_path"])
+    );
+    expect(selectedData.mcpReadiness.toolSurface.registrationSource).toMatch(/mcp\.(?:j|t)s$/u);
+    expect(selectedData.mcpReadiness.toolSurface.unregisteredCatalogTools).toEqual([]);
+    expect(selectedData.mcpReadiness.toolSurface.uncatalogedRegisteredTools).toEqual([]);
+    expect(selectedData.mcpReadiness.latestEval).toBeNull();
+
+    const ambiguous = spawnSync(process.execPath, [cli, "doctor", workspace, "--mcp-readiness", "--json"], {
+      cwd: process.cwd(),
+      encoding: "utf8"
+    });
+    expect(ambiguous.status).toBe(1);
+    const ambiguousData = JSON.parse(ambiguous.stdout) as {
+      repoRoot: string;
+      checks: Array<{ name: string; status: string }>;
+      mcpReadiness: { routing: { activeRepoRoot: string | null; source: string; error: string } };
+    };
+    expect(ambiguousData.repoRoot).toBe(workspace);
+    expect(ambiguousData.mcpReadiness.routing).toMatchObject({
+      activeRepoRoot: null,
+      source: "unresolved"
+    });
+    expect(ambiguousData.mcpReadiness.routing.error).toContain("Codexa MCP workspace focus is ambiguous");
+    expect(ambiguousData.checks).toContainEqual(expect.objectContaining({ name: "mcp-routing", status: "fail" }));
   });
 });
 
@@ -382,6 +612,19 @@ async function createHookFixtureRepo(): Promise<string> {
   await mkdir(path.join(repo, "src"), { recursive: true });
   await writeFile(path.join(repo, "package.json"), JSON.stringify({ scripts: { test: "vitest run" } }, null, 2), "utf8");
   await writeFile(path.join(repo, "src/main.ts"), "export function main() { return 1 }\n", "utf8");
+  execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+  execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+    cwd: repo,
+    stdio: "ignore"
+  });
+  return repo;
+}
+
+async function createWorkspaceGitRepo(workspace: string, name: string, stem: string): Promise<string> {
+  const repo = path.join(workspace, name);
+  await mkdir(path.join(repo, "src"), { recursive: true });
+  await writeFile(path.join(repo, "src", `${stem}.ts`), `export const ${stem} = "${stem}";\n`, "utf8");
+  execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
   execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
   execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
     cwd: repo,

@@ -102,12 +102,11 @@ export function verificationEvidenceForCommandReports(
     const commandEnvelope = commandEnvelopeForReport(report, initialCwd, envelopeContext);
     return { report, initialCwd, outputSummary, commandEnvelope } satisfies PreparedCommandReport;
   });
-  const structuredSemanticKeys = new Set(
-    preparedReports
-      .filter(({ report, commandEnvelope }) => report.fromReport && structuredEnvelopeSuppressesRaw(report, commandEnvelope, envelopeContext))
-      .map(({ commandEnvelope }) => commandEnvelopeSemanticKey(commandEnvelope))
-      .filter((key): key is string => Boolean(key))
-  );
+	  const structuredSemanticKeys = new Set(
+	    preparedReports
+	      .map(({ report, commandEnvelope }) => structuredRawSuppressionKey(report, commandEnvelope, envelopeContext))
+	      .filter((key): key is string => Boolean(key))
+	  );
   for (const { report, initialCwd, outputSummary, commandEnvelope } of preparedReports) {
     const rawSemanticKey = report.fromReport ? undefined : commandEnvelopeSemanticKey(commandEnvelope);
     if (rawSemanticKey && structuredSemanticKeys.has(rawSemanticKey)) {
@@ -190,25 +189,25 @@ export function verificationEvidenceForCommandReports(
   return { coverage: dedupeCoverage(coverage), commandEnvelopes: dedupeCommandEnvelopes(commandEnvelopes) };
 }
 
-function structuredEnvelopeSuppressesRaw(
+function structuredRawSuppressionKey(
   report: NormalizedCommandReport,
   envelope: VerificationCommandEnvelope,
   ctx: CommandEnvelopeContext
-): boolean {
-  if (report.exitCode !== 0) {
-    return false;
-  }
-  if (envelope.scopeStatus !== "repo") {
-    return false;
+): string | undefined {
+  if (!report.fromReport) {
+    return undefined;
   }
   if (envelope.source === "reported" && !reportedEnvelopeMatchesCommand(envelope, report.command, ctx)) {
-    return false;
+    return undefined;
   }
-  return true;
+  return commandEnvelopeSemanticKey(envelope, { requireRepoScope: false });
 }
 
-function commandEnvelopeSemanticKey(envelope: VerificationCommandEnvelope): string | undefined {
-  if (!envelope.packageManager || !envelope.scriptName || envelope.scopeStatus !== "repo") {
+function commandEnvelopeSemanticKey(envelope: VerificationCommandEnvelope, options: { requireRepoScope?: boolean } = { requireRepoScope: true }): string | undefined {
+  if (!envelope.packageManager || !envelope.scriptName) {
+    return undefined;
+  }
+  if (options.requireRepoScope !== false && envelope.scopeStatus !== "repo") {
     return undefined;
   }
   return [envelope.packageManager, envelope.packageRoot ?? "", envelope.workspace ?? "", envelope.scriptName, envelope.args.join("\u0001")].join("\0");

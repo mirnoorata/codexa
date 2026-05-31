@@ -4,6 +4,8 @@ import { runCommand } from "./command.js";
 
 export interface McpRepoRootResolutionOptions {
   workspaceFocusFile?: string;
+  workspaceSessionId?: string;
+  preferConfiguredRoot?: boolean;
 }
 
 export interface McpRepoRootResolution {
@@ -11,12 +13,27 @@ export interface McpRepoRootResolution {
   repoRoot: string;
   source: "configured-root" | "environment" | "workspace-focus-file";
   focusFile?: string;
+  focusReason?: "selected-session" | "explicit-focus" | "active-session" | "workspace-default" | "environment";
+  workspaceSessionId?: string;
+  warnings?: string[];
 }
 
 interface CandidateRepoRoot {
   path: string;
   source: McpRepoRootResolution["source"];
   focusFile?: string;
+  focusReason?: McpRepoRootResolution["focusReason"];
+  workspaceSessionId?: string;
+  strict?: boolean;
+  warnings?: string[];
+}
+
+interface FocusFileRepoSelection {
+  paths: string[];
+  focusReason?: McpRepoRootResolution["focusReason"];
+  workspaceSessionId?: string;
+  strict: boolean;
+  warnings: string[];
 }
 
 const FOCUSED_REPO_LINE_PATTERN = /\bfocused\s+(?:project|repo|repository)\s*:\s*(?:`([^`]+)`|([^\r\n#]+))/iu;
@@ -27,16 +44,30 @@ const HEADING_PATTERN = /^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/u;
 export async function resolveMcpRepoRoot(configuredRootInput: string, options: McpRepoRootResolutionOptions = {}): Promise<McpRepoRootResolution> {
   const configuredRoot = path.resolve(configuredRootInput);
   const configuredRootIsGitRepo = (await gitRootFor(configuredRoot)) !== null;
+  const workspaceRoutingRequested = Boolean(options.workspaceFocusFile || options.workspaceSessionId);
+
+  if (configuredRootIsGitRepo && options.preferConfiguredRoot && !workspaceRoutingRequested) {
+    return { configuredRoot, repoRoot: configuredRoot, source: "configured-root" };
+  }
 
   for await (const candidate of focusFileRepoCandidates(configuredRoot, options)) {
     const repoRoot = await validatedRepoRoot(candidate);
-    if (repoRoot && (await isInsideOrSamePath(repoRoot, configuredRoot))) {
+    const insideConfiguredRoot = repoRoot ? await isInsideOrSamePath(repoRoot, configuredRoot) : false;
+    if (repoRoot && insideConfiguredRoot) {
       return {
         configuredRoot,
         repoRoot,
         source: candidate.source,
-        focusFile: candidate.focusFile
+        focusFile: candidate.focusFile,
+        focusReason: candidate.focusReason,
+        workspaceSessionId: candidate.workspaceSessionId,
+        warnings: candidate.warnings
       };
+    }
+    if (candidate.strict) {
+      throw new Error(
+        `Codexa MCP workspace session${candidate.workspaceSessionId ? ` ${candidate.workspaceSessionId}` : ""} resolved to an invalid or out-of-workspace repo in ${candidate.focusFile ?? "workspace focus"}: ${candidate.path}`
+      );
     }
   }
 
@@ -47,7 +78,7 @@ export async function resolveMcpRepoRoot(configuredRootInput: string, options: M
   for (const candidate of environmentRepoCandidates()) {
     const repoRoot = await validatedRepoRoot(candidate);
     if (repoRoot) {
-      return { configuredRoot, repoRoot, source: candidate.source };
+      return { configuredRoot, repoRoot, source: candidate.source, focusReason: "environment" };
     }
   }
 
@@ -69,8 +100,18 @@ function environmentRepoCandidates(): CandidateRepoRoot[] {
 
 async function* focusFileRepoCandidates(configuredRoot: string, options: McpRepoRootResolutionOptions): AsyncGenerator<CandidateRepoRoot> {
   for (const focusFile of focusFileCandidates(configuredRoot, options)) {
-    for (const repoPath of await readFocusedRepoPaths(focusFile)) {
-      yield { path: repoPath, source: "workspace-focus-file", focusFile: path.resolve(focusFile) };
+    const focusFilePath = path.resolve(focusFile);
+    const selection = await readFocusedRepoPaths(focusFilePath, options);
+    for (const repoPath of selection.paths) {
+      yield {
+        path: repoPath,
+        source: "workspace-focus-file",
+        focusFile: focusFilePath,
+        focusReason: selection.focusReason,
+        workspaceSessionId: selection.workspaceSessionId,
+        strict: selection.strict,
+        warnings: selection.warnings
+      };
     }
   }
 }
@@ -84,19 +125,23 @@ function focusFileCandidates(configuredRoot: string, options: McpRepoRootResolut
   return [...new Set(candidates.map((candidate) => path.resolve(candidate)))];
 }
 
-async function readFocusedRepoPaths(focusFile: string): Promise<string[]> {
+async function readFocusedRepoPaths(focusFile: string, options: McpRepoRootResolutionOptions): Promise<FocusFileRepoSelection> {
   let text: string;
   try {
     text = await fs.readFile(focusFile, "utf8");
   } catch {
-    return [];
+    return emptyFocusFileSelection();
   }
 
+  const workspaceSessionId = normalizeWorkspaceSessionId(options.workspaceSessionId ?? process.env.CODEXA_WORKSPACE_SESSION ?? process.env.SESSION_ID);
+  const selectedSessionPaths: string[] = [];
   const explicitPaths: string[] = [];
   const activeSessionPaths: string[] = [];
   const defaultPaths: string[] = [];
+  let activeSessionRowsSeen = 0;
   let inActiveFocusSection = false;
   let inActiveSessionsSection = false;
+  let activeSessionSessionColumn = -1;
   let activeSessionRepoColumn = -1;
   let activeSessionStatusColumn = -1;
   for (const line of text.split(/\r?\n/u)) {
@@ -105,6 +150,7 @@ async function readFocusedRepoPaths(focusFile: string): Promise<string[]> {
       const headingText = heading[1].trim().toLowerCase();
       inActiveFocusSection = headingText === "active focus";
       inActiveSessionsSection = headingText === "active sessions";
+      activeSessionSessionColumn = -1;
       activeSessionRepoColumn = -1;
       activeSessionStatusColumn = -1;
       continue;
@@ -139,6 +185,7 @@ async function readFocusedRepoPaths(focusFile: string): Promise<string[]> {
       const lowerCells = cells.map((cell) => cell.trim().toLowerCase());
       const repoColumn = lowerCells.indexOf("repo");
       if (repoColumn >= 0) {
+        activeSessionSessionColumn = lowerCells.indexOf("session");
         activeSessionRepoColumn = repoColumn;
         activeSessionStatusColumn = lowerCells.indexOf("status");
         continue;
@@ -146,19 +193,31 @@ async function readFocusedRepoPaths(focusFile: string): Promise<string[]> {
       if (activeSessionRepoColumn >= 0 && activeSessionRepoColumn < cells.length) {
         const status = activeSessionStatusColumn >= 0 ? cells[activeSessionStatusColumn]?.trim().toLowerCase() : "";
         if (isActiveSessionStatus(status)) {
+          activeSessionRowsSeen += 1;
           pushFocusedRepoPath(activeSessionPaths, cells[activeSessionRepoColumn] ?? "");
+          if (workspaceSessionId && activeSessionSessionColumn >= 0 && normalizeWorkspaceSessionId(cells[activeSessionSessionColumn] ?? "") === workspaceSessionId) {
+            pushFocusedRepoPath(selectedSessionPaths, cells[activeSessionRepoColumn] ?? "");
+          }
         }
       }
     }
   }
+  if (workspaceSessionId && activeSessionRowsSeen > 0 && selectedSessionPaths.length === 0) {
+    throw new Error(`Codexa MCP workspace session ${workspaceSessionId} is not active in ${path.resolve(focusFile)}`);
+  }
   return firstUnambiguousPriority(
     [
-      { paths: explicitPaths, allowFallbackWhenAmbiguous: false },
-      { paths: activeSessionPaths, allowFallbackWhenAmbiguous: true },
-      { paths: defaultPaths, allowFallbackWhenAmbiguous: false }
+      { paths: selectedSessionPaths, focusReason: "selected-session", allowFallbackWhenAmbiguous: false, strict: true, workspaceSessionId },
+      { paths: explicitPaths, focusReason: "explicit-focus", allowFallbackWhenAmbiguous: false, strict: false },
+      { paths: activeSessionPaths, focusReason: "active-session", allowFallbackWhenAmbiguous: false, strict: false },
+      { paths: defaultPaths, focusReason: "workspace-default", allowFallbackWhenAmbiguous: false, strict: false }
     ],
     focusFile
   );
+}
+
+function emptyFocusFileSelection(): FocusFileRepoSelection {
+  return { paths: [], strict: false, warnings: [] };
 }
 
 function pushFocusedRepoPath(paths: string[], raw: string): void {
@@ -172,8 +231,18 @@ function uniquePaths(paths: string[]): string[] {
   return [...new Set(paths)];
 }
 
-function firstUnambiguousPriority(groups: Array<{ paths: string[]; allowFallbackWhenAmbiguous: boolean }>, focusFile: string): string[] {
-  let deferredAmbiguity: string[] | null = null;
+function firstUnambiguousPriority(
+  groups: Array<{
+    paths: string[];
+    focusReason: McpRepoRootResolution["focusReason"];
+    allowFallbackWhenAmbiguous: boolean;
+    strict: boolean;
+    workspaceSessionId?: string;
+  }>,
+  focusFile: string
+): FocusFileRepoSelection {
+  let deferredAmbiguity: { focusReason: McpRepoRootResolution["focusReason"]; paths: string[] } | null = null;
+  const warnings: string[] = [];
   for (const group of groups) {
     const paths = uniquePaths(group.paths);
     if (paths.length === 0) {
@@ -182,17 +251,24 @@ function firstUnambiguousPriority(groups: Array<{ paths: string[]; allowFallback
     const normalized = uniquePaths(paths.map((entry) => normalizeCandidatePath(entry)).filter((entry): entry is string => Boolean(entry)));
     if (normalized.length > 1) {
       if (group.allowFallbackWhenAmbiguous) {
-        deferredAmbiguity = deferredAmbiguity ?? normalized;
+        deferredAmbiguity = deferredAmbiguity ?? { focusReason: group.focusReason, paths: normalized };
+        warnings.push(`Codexa MCP ${group.focusReason ?? "workspace"} focus is ambiguous in ${path.resolve(focusFile)}: ${normalized.join(", ")}. Falling back to lower-priority focus.`);
         continue;
       }
       throw new Error(`Codexa MCP workspace focus is ambiguous in ${path.resolve(focusFile)}: ${normalized.join(", ")}`);
     }
-    return paths;
+    return {
+      paths,
+      focusReason: group.focusReason,
+      workspaceSessionId: group.workspaceSessionId,
+      strict: group.strict,
+      warnings
+    };
   }
   if (deferredAmbiguity) {
-    throw new Error(`Codexa MCP workspace focus is ambiguous in ${path.resolve(focusFile)}: ${deferredAmbiguity.join(", ")}`);
+    throw new Error(`Codexa MCP workspace focus is ambiguous in ${path.resolve(focusFile)}: ${deferredAmbiguity.paths.join(", ")}`);
   }
-  return [];
+  return { paths: [], strict: false, warnings };
 }
 
 function markdownTableCells(line: string): string[] | null {
@@ -220,6 +296,11 @@ function normalizeCandidatePath(candidate: string): string | null {
     return null;
   }
   return path.resolve(trimmed);
+}
+
+function normalizeWorkspaceSessionId(candidate: string | undefined): string | undefined {
+  const trimmed = candidate?.trim().replace(/^`|`$/gu, "");
+  return trimmed ? trimmed : undefined;
 }
 
 async function validatedRepoRoot(candidate: CandidateRepoRoot): Promise<string | null> {

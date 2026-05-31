@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { Command } from "commander";
+import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { buildIndexLocked, getFreshness } from "./indexer.js";
@@ -110,8 +111,9 @@ program
   .argument("<repo>", "repository root")
   .description("Cheap hook helper that reminds Codex when no change-plan snapshot exists before an edit.")
   .action(async (repo: string) => {
-    const { configuredRoot, activeRepoRoot } = await resolveHookRepoRoots(repo);
+    const configuredRoot = path.resolve(repo);
     await runAdvisoryHook(configuredRoot, "pre-edit", "change-plan snapshot check", async () => {
+      const { activeRepoRoot } = await resolveHookRepoRoots(repo);
       const snapshot = await loadTaskSnapshot(activeRepoRoot);
       if (!snapshot.snapshot) {
         console.log("Codexa: no change-plan snapshot is available. For code edits, call change_plan with saveSnapshot=true before editing when the task is non-trivial.");
@@ -127,8 +129,9 @@ program
   .argument("<repo>", "repository root")
   .description("Bounded hook helper that runs the post-edit review packet after edit tools.")
   .action(async (repo: string) => {
-    const { configuredRoot, activeRepoRoot } = await resolveHookRepoRoots(repo);
+    const configuredRoot = path.resolve(repo);
     await runAdvisoryHook(configuredRoot, "post-edit", "post-edit review", async () => {
+      const { activeRepoRoot } = await resolveHookRepoRoots(repo);
       const snapshot = await loadTaskSnapshot(activeRepoRoot);
       const freshness = await getFreshness(activeRepoRoot, undefined, { recover: false });
       const signature = postEditHookReviewSignature({ freshness, taskId: snapshot.snapshot?.taskId ?? snapshot.latestTaskId });
@@ -418,9 +421,16 @@ program
   .argument("[repo]", "repository root; defaults to the current directory", process.cwd())
   .option("--json", "emit structured JSON")
   .option("--mcp-readiness", "include Codex MCP readiness checks")
+  .option("--workspace-focus-file <path>", "workspace focus file to consult when diagnosing a workspace launch root")
+  .option("--workspace-session <id>", "active WORKING.md session row to prefer when diagnosing a workspace launch root")
   .description("Diagnose local Codexa wiring, index freshness, hooks, and generated state.")
-  .action(async (repo: string, opts: { json?: boolean; mcpReadiness?: boolean }) => {
-    const result = await runDoctor(path.resolve(repo), { json: opts.json, mcpReadiness: opts.mcpReadiness });
+  .action(async (repo: string, opts: { json?: boolean; mcpReadiness?: boolean; workspaceFocusFile?: string; workspaceSession?: string }) => {
+    const result = await runDoctor(path.resolve(repo), {
+      json: opts.json,
+      mcpReadiness: opts.mcpReadiness,
+      workspaceFocusFile: opts.workspaceFocusFile ? path.resolve(opts.workspaceFocusFile) : undefined,
+      workspaceSessionId: opts.workspaceSession
+    });
     console.log(result.text);
     if (!result.ok) {
       process.exitCode = 1;
@@ -1086,6 +1096,7 @@ program
   .option("--no-auto-refresh", "do not refresh a stale or missing index before answering MCP context tools")
   .option("--session-memory <mode>", "auto-record MCP session memory: auto or off", parseSessionMemoryMode, "auto")
   .option("--workspace-focus-file <path>", "workspace focus file to consult when <repo> is a workspace launch root")
+  .option("--workspace-session <id>", "active WORKING.md session row to prefer when <repo> is a workspace launch root")
   .description("Start the stdio MCP server.")
   .action(async (repo: string, opts: CliQueryOptions) => {
     await serveMcp(path.resolve(repo), queryOptionsFromCli(opts));
@@ -1124,6 +1135,7 @@ type CliQueryOptions = {
   lspMaxFiles?: number;
   sessionMemory?: "auto" | "off";
   workspaceFocusFile?: string;
+  workspaceSession?: string;
 };
 
 function queryOptionsFromCli(opts: CliQueryOptions): QueryOptions {
@@ -1141,7 +1153,8 @@ function queryOptionsFromCli(opts: CliQueryOptions): QueryOptions {
     lspTimeoutMs: opts.lspTimeoutMs,
     lspMaxFiles: opts.lspMaxFiles,
     sessionMemory: opts.sessionMemory,
-    workspaceFocusFile: opts.workspaceFocusFile ? path.resolve(opts.workspaceFocusFile) : undefined
+    workspaceFocusFile: opts.workspaceFocusFile ? path.resolve(opts.workspaceFocusFile) : undefined,
+    workspaceSessionId: opts.workspaceSession
   };
 }
 
@@ -1194,11 +1207,18 @@ type HookActionResult = Omit<CodexaHookEventInput, "hook" | "durationMs"> | void
 
 async function resolveHookRepoRoots(repo: string): Promise<{ configuredRoot: string; activeRepoRoot: string }> {
   const configuredRoot = path.resolve(repo);
+  const resolution = await resolveMcpRepoRoot(configuredRoot, {
+    preferConfiguredRoot: await codexaConfigExists(configuredRoot)
+  });
+  return { configuredRoot, activeRepoRoot: resolution.repoRoot };
+}
+
+async function codexaConfigExists(repoRoot: string): Promise<boolean> {
   try {
-    const resolution = await resolveMcpRepoRoot(configuredRoot);
-    return { configuredRoot, activeRepoRoot: resolution.repoRoot };
+    await fs.access(path.join(repoRoot, ".codex", "config.toml"));
+    return true;
   } catch {
-    return { configuredRoot, activeRepoRoot: configuredRoot };
+    return false;
   }
 }
 

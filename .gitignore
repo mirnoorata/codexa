@@ -10,6 +10,7 @@ docs/plans/*
 docs/architecture/*-plan.md
 .codex/codebase/
 .codex/cache/
+.codex/tmp/
 .codex/static-analysis/
 .codex/.codebase.*
 .codex/config.toml
