@@ -1,55 +1,37 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { acquireCacheLock } from "./cache-lock.js";
-import { buildGraphEdges, extractWorkflowTraces } from "./graph.js";
-import { isGeneratedPath, isTestPath, languageForPath, moduleNameForPath } from "./language.js";
-import { parseFile } from "./parser.js";
-import { discoverRepoFiles, discoverRepoFreshness, MAX_INDEXED_SOURCE_BYTES, type RepoSkippedFile, type RepoSourceFile } from "./repo-files.js";
+import { discoverRepoFreshness } from "./repo-files.js";
 import { type ImportAliasRule, relinkUsageIds, resolveIndexLinks } from "./resolver.js";
 import { externalRiskReportSnapshot, loadExternalRiskSignalReport, type ExternalRiskReportDiagnostic } from "./risk-ingest.js";
-import { loadOutcomeRankSignals, type OutcomeRankSignals } from "./outcome-ranking.js";
+import { loadOutcomeRankSignals } from "./outcome-ranking.js";
+import { writeIndexBundle as writeIndexBundleStage } from "./indexer/artifact-writing.js";
+import { discoverIndexInputs } from "./indexer/discovery.js";
+import { freshnessFromStored } from "./indexer/freshness.js";
+import { applyGraphStages } from "./indexer/graph-stage.js";
+import { formatBytes, loadPythonSemanticSourceFiles, parseRepoSources, writeParseCache } from "./indexer/parsing.js";
+import { applyModules, applyRanking } from "./indexer/ranking.js";
 import { applyPythonSemanticAssist } from "./semantic/python.js";
 import { applyTypeScriptSemanticAssist } from "./semantic/typescript.js";
 import { loadExternalSymbolReportFacts } from "./symbol-report-ingest.js";
 import type {
-  CodexaFact,
   CodexaIndex,
-  FileFact,
   FreshnessInfo,
-  GraphEdgeFact,
   IndexOptions,
-  ModuleClusterFact,
   ParserErrorFact,
-  ParseResult,
   RepoSnapshotFact,
   RiskSignalFact
 } from "./types.js";
-import { mapLimit, normalizePath, stableId, uniqueSorted } from "./util.js";
-import { writeArtifacts } from "./artifacts.js";
+import { normalizePath, stableId } from "./util.js";
 
 export const CODEBASE_DIR = ".codex/codebase";
-const PARSE_CACHE_VERSION = "parse-cache-v1-placeholder-signals-20260515a";
-const PARSE_CACHE_PATH = ".codex/cache/codexa-parse-cache.json";
+export { persistIndex, writeIndexBundle } from "./indexer/artifact-writing.js";
 const INDEX_LOCK_DIR = ".codex/cache/codexa-index.lock";
 const INDEX_LOCK_STALE_MS = 120_000;
-const PYTHON_SEMANTIC_SOURCE_TOTAL_BYTES = 16 * 1024 * 1024;
-const FACTS_NDJSON_WRITE_BUFFER_BYTES = 1024 * 1024;
-
-interface ParseCache {
-  version: string;
-  entries: Record<
-    string,
-    {
-      contentHash: string;
-      sizeBytes: number;
-      result: ParseResult;
-    }
-  >;
-}
 
 export async function buildIndex(options: IndexOptions): Promise<CodexaIndex> {
   const repoRoot = path.resolve(options.repoRoot);
-  const discovered = await discoverRepoFiles(repoRoot);
+  const discovered = await discoverIndexInputs(repoRoot);
   const indexedAt = new Date().toISOString();
   const snapshotId = stableId("snapshot", repoRoot, discovered.git.headCommit, discovered.git.dirtyFiles.join("\n"), indexedAt);
   const snapshot: RepoSnapshotFact = {
@@ -64,39 +46,14 @@ export async function buildIndex(options: IndexOptions): Promise<CodexaIndex> {
     headCommit: discovered.git.headCommit,
     dirtyFiles: discovered.git.dirtyFiles
   };
-  const parseCache = await loadParseCache(repoRoot);
-  const nextCache: ParseCache = { version: PARSE_CACHE_VERSION, entries: {} };
-  let parseCacheHits = 0;
-  const parsedSourceFiles = await mapLimit(discovered.files, 12, async (file) => {
-    const parseInput = {
-      repoRoot,
-      relativePath: file.path,
-      absolutePath: file.absolutePath,
-      dirty: file.dirty,
-      sizeBytes: file.sizeBytes,
-      snapshotId,
-      indexedAt
-    };
-    const cached = parseCache.entries[file.path];
-    if (cached?.contentHash === file.contentHash && cached.sizeBytes === file.sizeBytes && isParseResult(cached.result)) {
-      parseCacheHits += 1;
-      const rebased = rebaseParseResult(cached.result, parseInput);
-      nextCache.entries[file.path] = {
-        contentHash: file.contentHash,
-        sizeBytes: file.sizeBytes,
-        result: rebased
-      };
-      return rebased;
-    }
-    const result = await parseFile(parseInput);
-    nextCache.entries[file.path] = {
-      contentHash: file.contentHash,
-      sizeBytes: file.sizeBytes,
-      result
-    };
-    return result;
+  const parsedSources = await parseRepoSources({
+    repoRoot,
+    files: discovered.files,
+    skippedFiles: discovered.skippedFiles,
+    snapshotId,
+    indexedAt
   });
-  const parsed = [...parsedSourceFiles, ...discovered.skippedFiles.map((file) => skippedFileParseResult(file, snapshotId, indexedAt))].sort((a, b) => a.file.path.localeCompare(b.file.path));
+  const parsed = parsedSources.parsed;
   const aliases = await loadImportAliases(repoRoot, discovered.files.map((file) => file.path));
 
   const initial: CodexaIndex = {
@@ -174,8 +131,7 @@ export async function buildIndex(options: IndexOptions): Promise<CodexaIndex> {
   const outcomeSignals = await loadOutcomeRankSignals(repoRoot, discovered.git.headCommit, new Set(linked.files.map((file) => file.path)));
   const ranked = applyRanking(linked, discovered.git.churnByPath, outcomeSignals);
   const withModules = applyModules(ranked);
-  const withGraph = { ...withModules, graphEdges: dedupeGraphEdges([...buildGraphEdges(withModules), ...externalSymbols.graphEdges]) };
-  const withWorkflows = { ...withGraph, workflows: extractWorkflowTraces(withGraph) };
+  const withWorkflows = applyGraphStages(withModules, externalSymbols.graphEdges);
   const freshness: FreshnessInfo = {
     ...withWorkflows.freshness,
     parserErrorCount: withWorkflows.parserErrors.length
@@ -183,8 +139,8 @@ export async function buildIndex(options: IndexOptions): Promise<CodexaIndex> {
   const finalIndex = { ...withWorkflows, freshness };
 
   if (options.writeArtifacts ?? true) {
-    await writeIndexBundle(finalIndex, options.outputDir ?? path.join(repoRoot, CODEBASE_DIR));
-    await writeParseCache(repoRoot, nextCache);
+    await writeIndexBundleStage(finalIndex, options.outputDir ?? path.join(repoRoot, CODEBASE_DIR));
+    await writeParseCache(repoRoot, parsedSources.nextCache);
   }
 
   return finalIndex;
@@ -203,158 +159,6 @@ function riskReportParserError(diagnostic: ExternalRiskReportDiagnostic, snapsho
       diagnostic.reason === "report-too-large"
         ? `Skipped external risk report ${diagnostic.path}: ${formatBytes(diagnostic.sizeBytes ?? 0)} exceeds Codexa's ${formatBytes(diagnostic.limitBytes ?? 0)} report cap`
         : `Skipped external risk report ${diagnostic.path}: invalid JSON`
-  };
-}
-
-function skippedFileParseResult(file: RepoSkippedFile, snapshotId: string, indexedAt: string): ParseResult {
-  const language = languageForPath(file.path);
-  return {
-    file: {
-      id: stableId("file", file.path),
-      type: "File",
-      path: file.path,
-      source: "git",
-      confidence: "authoritative",
-      snapshotId,
-      indexedAt,
-      language,
-      sizeBytes: file.sizeBytes,
-      dirty: file.dirty,
-      generated: isGeneratedPath(file.path),
-      test: isTestPath(file.path)
-    },
-    symbols: [],
-    usageSites: [],
-    imports: [],
-    testEdges: [],
-    risks: [],
-    parserErrors: [
-      {
-        id: stableId("parser-error", file.path, file.reason, file.sizeBytes),
-        type: "ParserError",
-        path: file.path,
-        source: "git",
-        confidence: "heuristic",
-        snapshotId,
-        indexedAt,
-        message: `Skipped source parsing for ${file.path}: ${formatBytes(file.sizeBytes)} exceeds Codexa's ${formatBytes(MAX_INDEXED_SOURCE_BYTES)} per-file index cap`
-      }
-    ]
-  };
-}
-
-async function loadPythonSemanticSourceFiles(files: RepoSourceFile[]): Promise<Array<{ path: string; sourceText: string; contentHash: string }>> {
-  const selected: Array<{ path: string; sourceText: string; contentHash: string }> = [];
-  let totalBytes = 0;
-  for (const file of files.filter((entry) => entry.path.endsWith(".py"))) {
-    if (totalBytes + file.sizeBytes > PYTHON_SEMANTIC_SOURCE_TOTAL_BYTES) {
-      continue;
-    }
-    try {
-      selected.push({
-        path: file.path,
-        sourceText: await fs.readFile(file.absolutePath, "utf8"),
-        contentHash: file.contentHash
-      });
-      totalBytes += file.sizeBytes;
-    } catch {
-      // The file may have been removed between git discovery and semantic assist.
-    }
-  }
-  return selected;
-}
-
-function formatBytes(bytes: number): string {
-  if (bytes >= 1024 * 1024) {
-    return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
-  }
-  if (bytes >= 1024) {
-    return `${(bytes / 1024).toFixed(1)} KiB`;
-  }
-  return `${bytes} bytes`;
-}
-
-async function loadParseCache(repoRoot: string): Promise<ParseCache> {
-  try {
-    const parsed = JSON.parse(await fs.readFile(path.join(repoRoot, PARSE_CACHE_PATH), "utf8")) as ParseCache;
-    if (parsed.version === PARSE_CACHE_VERSION && parsed.entries && typeof parsed.entries === "object") {
-      return {
-        version: parsed.version,
-        entries: Object.fromEntries(
-          Object.entries(parsed.entries).filter(([filePath, entry]) => Boolean(entry?.contentHash && typeof entry.sizeBytes === "number" && isParseResult(entry.result) && parseResultMatchesPath(entry.result, filePath)))
-        )
-      };
-    }
-  } catch {
-    // Missing or corrupt caches are safe to ignore; Codexa can always rebuild from source.
-  }
-  return { version: PARSE_CACHE_VERSION, entries: {} };
-}
-
-function isParseResult(value: unknown): value is ParseResult {
-  if (!value || typeof value !== "object") {
-    return false;
-  }
-  const record = value as Partial<ParseResult>;
-  return (
-    Boolean(record.file && typeof record.file === "object" && typeof record.file.path === "string") &&
-    Array.isArray(record.symbols) &&
-    Array.isArray(record.usageSites) &&
-    Array.isArray(record.imports) &&
-    Array.isArray(record.testEdges) &&
-    Array.isArray(record.risks) &&
-    Array.isArray(record.parserErrors)
-  );
-}
-
-function parseResultMatchesPath(result: ParseResult, filePath: string): boolean {
-  return (
-    result.file.path === filePath &&
-    result.symbols.every((fact) => fact.path === filePath) &&
-    result.usageSites.every((fact) => fact.path === filePath) &&
-    result.imports.every((fact) => fact.path === filePath) &&
-    result.testEdges.every((fact) => fact.path === filePath) &&
-    result.risks.every((fact) => fact.path === filePath) &&
-    result.parserErrors.every((fact) => fact.path === filePath)
-  );
-}
-
-async function writeParseCache(repoRoot: string, cache: ParseCache): Promise<void> {
-  const target = path.join(repoRoot, PARSE_CACHE_PATH);
-  const temp = `${target}.tmp-${process.pid}-${Date.now()}`;
-  await fs.mkdir(path.dirname(target), { recursive: true });
-  await fs.writeFile(temp, `${JSON.stringify(cache)}\n`, "utf8");
-  await fs.rename(temp, target);
-}
-
-function rebaseParseResult(
-  result: ParseResult,
-  input: {
-    relativePath: string;
-    dirty: boolean;
-    sizeBytes: number;
-    snapshotId: string;
-    indexedAt: string;
-  }
-): ParseResult {
-  const rebase = <T extends { snapshotId: string; indexedAt: string }>(fact: T): T => ({
-    ...fact,
-    snapshotId: input.snapshotId,
-    indexedAt: input.indexedAt
-  });
-  return {
-    file: {
-      ...rebase(result.file),
-      path: input.relativePath,
-      dirty: input.dirty,
-      sizeBytes: input.sizeBytes
-    },
-    symbols: result.symbols.map(rebase),
-    usageSites: result.usageSites.map(rebase),
-    imports: result.imports.map(rebase),
-    testEdges: result.testEdges.map(rebase),
-    risks: result.risks.map(rebase),
-    parserErrors: result.parserErrors.map(rebase)
   };
 }
 
@@ -386,25 +190,6 @@ function dedupeRiskSignals(risks: RiskSignalFact[]): RiskSignalFact[] {
     result.push(risk);
   }
   return result.sort((a, b) => a.path.localeCompare(b.path) || b.score - a.score || a.signal.localeCompare(b.signal));
-}
-
-function dedupeGraphEdges(edges: GraphEdgeFact[]): GraphEdgeFact[] {
-  const seen = new Set<string>();
-  const result: GraphEdgeFact[] = [];
-  for (const edge of edges) {
-    if (seen.has(edge.id)) {
-      continue;
-    }
-    seen.add(edge.id);
-    result.push(edge);
-  }
-  return result.sort(
-    (a, b) =>
-      a.edgeKind.localeCompare(b.edgeKind) ||
-      (a.fromPath ?? "").localeCompare(b.fromPath ?? "") ||
-      (a.toPath ?? "").localeCompare(b.toPath ?? "") ||
-      a.reason.localeCompare(b.reason)
-  );
 }
 
 async function loadImportAliases(repoRoot: string, files: string[]): Promise<ImportAliasRule[]> {
@@ -543,13 +328,6 @@ function normalizeAliasTarget(configDir: string, baseUrl: string, targetPattern:
   return normalizePath(path.posix.normalize(path.posix.join(configDir === "." ? "" : configDir, baseUrl, targetPattern)));
 }
 
-export async function persistIndex(index: CodexaIndex, outputDir: string): Promise<void> {
-  await fs.mkdir(path.join(outputDir, "modules"), { recursive: true });
-  await fs.writeFile(path.join(outputDir, "index.json"), `${JSON.stringify(index)}\n`, "utf8");
-  await fs.writeFile(path.join(outputDir, "freshness.json"), `${JSON.stringify(index.freshness, null, 2)}\n`, "utf8");
-  await writeFactsNdjson(path.join(outputDir, "facts.ndjson"), allFacts(index));
-}
-
 export async function buildIndexLocked(options: IndexOptions): Promise<CodexaIndex> {
   const repoRoot = path.resolve(options.repoRoot);
   const release = await acquireIndexLock(repoRoot);
@@ -557,30 +335,6 @@ export async function buildIndexLocked(options: IndexOptions): Promise<CodexaInd
     return await buildIndex(options);
   } finally {
     await release();
-  }
-}
-
-export async function writeIndexBundle(index: CodexaIndex, outputDir: string): Promise<void> {
-  const parentDir = path.dirname(outputDir);
-  const tempDir = path.join(parentDir, `.codebase.tmp-${process.pid}-${Date.now()}`);
-  const backupDir = path.join(parentDir, `.codebase.backup-${process.pid}-${Date.now()}`);
-  await fs.mkdir(parentDir, { recursive: true });
-  await fs.rm(tempDir, { recursive: true, force: true });
-  await persistIndex(index, tempDir);
-  await writeArtifacts(index, tempDir);
-  try {
-    await fs.rm(backupDir, { recursive: true, force: true });
-    if (await pathExists(outputDir)) {
-      await fs.rename(outputDir, backupDir);
-    }
-    await fs.rename(tempDir, outputDir);
-    await fs.rm(backupDir, { recursive: true, force: true });
-  } catch (error) {
-    await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
-    if (!(await pathExists(outputDir)) && (await pathExists(backupDir))) {
-      await fs.rename(backupDir, outputDir).catch(() => undefined);
-    }
-    throw error;
   }
 }
 
@@ -716,180 +470,6 @@ export async function getFreshness(repoRoot: string, index?: CodexaIndex | null,
   return freshnessFromStored(repo, current, riskReports, loaded?.freshness ?? null);
 }
 
-function freshnessFromStored(
-  repo: string,
-  current: Awaited<ReturnType<typeof discoverRepoFreshness>>,
-  riskReports: Awaited<ReturnType<typeof externalRiskReportSnapshot>>,
-  loaded: FreshnessInfo | null
-): FreshnessInfo {
-  if (!loaded) {
-    return {
-      schemaVersion: 1,
-      snapshotId: "missing",
-      repoRoot: repo,
-      gitRoot: current.git.gitRoot,
-      headCommit: current.git.headCommit,
-      indexedAt: "",
-      dirtyFiles: current.git.dirtyFiles,
-      indexedDirtyFiles: [],
-      dirtyFileHashes: current.dirtyFileHashes,
-      indexedDirtyFileHashes: {},
-      externalRiskReportHashes: riskReports.reportHashes,
-      indexedExternalRiskReportHashes: {},
-      externalRiskReportDiagnostics: riskReports.diagnostics,
-      missing: true,
-      stale: true,
-      reason: "missing-index",
-      parserErrorCount: 0
-    };
-  }
-
-  const dirtyChanged =
-    current.git.dirtyFiles.join("\n") !== loaded.indexedDirtyFiles.join("\n") ||
-    stableJson(current.dirtyFileHashes) !== stableJson(loaded.indexedDirtyFileHashes ?? {});
-  const indexedExternalRiskReportHashes = loaded.indexedExternalRiskReportHashes ?? loaded.externalRiskReportHashes ?? {};
-  const externalRiskReportsChanged = stableJson(riskReports.reportHashes) !== stableJson(indexedExternalRiskReportHashes);
-  const commitChanged = current.git.headCommit !== loaded.headCommit;
-  const repoRootChanged = path.resolve(loaded.repoRoot) !== repo || loaded.gitRoot !== current.git.gitRoot;
-  const stale = dirtyChanged || externalRiskReportsChanged || commitChanged || repoRootChanged;
-  return {
-    ...loaded,
-    repoRoot: repo,
-    gitRoot: current.git.gitRoot,
-    dirtyFiles: current.git.dirtyFiles,
-    dirtyFileHashes: current.dirtyFileHashes,
-    externalRiskReportHashes: riskReports.reportHashes,
-    indexedExternalRiskReportHashes,
-    externalRiskReportDiagnostics: riskReports.diagnostics,
-    missing: false,
-    stale,
-    reason: stale
-      ? commitChanged
-        ? "head-commit-changed"
-        : repoRootChanged
-          ? "repo-root-changed"
-          : externalRiskReportsChanged
-            ? "external-risk-reports-changed"
-            : "dirty-files-changed"
-      : loaded.reason
-  };
-}
-
-function applyRanking(index: CodexaIndex, churnByPath: Map<string, number>, outcomeSignals?: OutcomeRankSignals): CodexaIndex {
-  const incomingImports = countBy(index.imports.flatMap((imp) => (imp.resolvedPath ? [imp.resolvedPath] : [])));
-  const importsByPath = countBy(index.imports.map((imp) => imp.path));
-  const usageByPath = countBy(index.usageSites.map((usage) => usage.path));
-  const symbolsByPath = countBy(index.symbols.map((symbol) => symbol.path));
-  const filesWithTestEdges = new Set(index.testEdges.flatMap((edge) => (edge.targetPath ? [edge.targetPath] : [])));
-  const riskByPath = new Map<string, number>();
-  for (const risk of index.risks) {
-    riskByPath.set(risk.path, (riskByPath.get(risk.path) ?? 0) + risk.score);
-  }
-
-  const files = index.files.map((file) => {
-    const centrality = incomingImports.get(file.path) ?? 0;
-    const usage = usageByPath.get(file.path) ?? 0;
-    const symbols = symbolsByPath.get(file.path) ?? 0;
-    const publicSurface = file.path.includes("/api/") || file.path.includes("app.") || file.path.includes("index.") ? 2 : 0;
-    const churn = churnByPath.get(file.path) ?? 0;
-    const testProximity = file.test ? 0.5 : filesWithTestEdges.has(file.path) ? 1.5 : 0;
-    const dirtyRisk = file.dirty ? 3 : 0;
-    const riskScore = riskByPath.get(file.path) ?? 0;
-    const generatedPenalty = file.generated ? -2 : 0;
-    const outcomeHistory = Math.min(3, outcomeSignals?.boosts.get(file.path) ?? 0);
-    const rankReasons = {
-      centrality: Math.log2(centrality + 1),
-      usage: Math.log2(usage + 1),
-      symbols: Math.min(symbols, 20) / 4,
-      publicSurface,
-      churn: Math.min(churn, 20) / 4,
-      testProximity,
-      dirtyRisk,
-      riskScore: Math.min(riskScore, 12),
-      outcomeHistory,
-      generatedPenalty
-    };
-    const rank = Object.values(rankReasons).reduce((sum, value) => sum + value, 0);
-    return {
-      ...file,
-      symbolCount: symbols,
-      usageCount: usage,
-      importCount: importsByPath.get(file.path) ?? 0,
-      riskScore,
-      rank,
-      rankReasons
-    };
-  });
-
-  return { ...index, files: files.sort((a, b) => b.rank - a.rank || a.path.localeCompare(b.path)) };
-}
-
-function applyModules(index: CodexaIndex): CodexaIndex {
-  const byModule = new Map<string, FileFact[]>();
-  for (const file of index.files) {
-    const name = moduleNameForPath(file.path);
-    const files = byModule.get(name) ?? [];
-    files.push(file);
-    byModule.set(name, files);
-  }
-
-  const modules: ModuleClusterFact[] = [...byModule.entries()]
-    .map(([name, files]) => {
-      const rank = files.reduce((sum, file) => sum + file.rank, 0);
-      const topFiles = files.slice(0, 5).map((file) => file.path).join(", ");
-      return {
-        id: stableId("module", name),
-        type: "ModuleCluster" as const,
-        source: "heuristic" as const,
-        confidence: "heuristic" as const,
-        snapshotId: index.snapshot.snapshotId,
-        indexedAt: index.snapshot.indexedAt,
-        name,
-        files: uniqueSorted(files.map((file) => file.path)),
-        summary: `${name} contains ${files.length} indexed files. Top files: ${topFiles || "none"}.`,
-        rank
-      };
-    })
-    .sort((a, b) => b.rank - a.rank || a.name.localeCompare(b.name));
-
-  return { ...index, modules };
-}
-
-function allFacts(index: CodexaIndex): CodexaFact[] {
-  return [
-    index.snapshot,
-    ...index.files,
-    ...index.symbols,
-    ...index.usageSites,
-    ...index.imports,
-    ...index.testEdges,
-    ...index.graphEdges,
-    ...index.workflows,
-    ...index.modules,
-    ...index.risks,
-    ...index.parserErrors
-  ];
-}
-
-async function writeFactsNdjson(filePath: string, facts: CodexaFact[]): Promise<void> {
-  const handle = await fs.open(filePath, "w");
-  try {
-    let buffer = "";
-    for (const fact of facts) {
-      const line = `${JSON.stringify(fact)}\n`;
-      if (buffer.length + line.length > FACTS_NDJSON_WRITE_BUFFER_BYTES && buffer.length > 0) {
-        await handle.write(buffer);
-        buffer = "";
-      }
-      buffer += line;
-    }
-    if (buffer.length > 0) {
-      await handle.write(buffer);
-    }
-  } finally {
-    await handle.close();
-  }
-}
 
 async function acquireIndexLock(repoRoot: string): Promise<() => Promise<void>> {
   return acquireCacheLock({
@@ -901,13 +481,6 @@ async function acquireIndexLock(repoRoot: string): Promise<() => Promise<void>> 
   });
 }
 
-function countBy(values: string[]): Map<string, number> {
-  const counts = new Map<string, number>();
-  for (const value of values) {
-    counts.set(value, (counts.get(value) ?? 0) + 1);
-  }
-  return counts;
-}
 
 async function pathExists(candidate: string): Promise<boolean> {
   try {
@@ -929,8 +502,4 @@ async function indexBundleNewerThanFreshness(repoRoot: string): Promise<boolean>
   } catch {
     return false;
   }
-}
-
-function stableJson(value: Record<string, string>): string {
-  return JSON.stringify(Object.fromEntries(Object.entries(value).sort(([a], [b]) => a.localeCompare(b))));
 }

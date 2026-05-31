@@ -8,4 +8,5 @@ export { contextPackQuery, taskBriefQuery, focusBriefQuery } from "./query/conte
 export { sessionMemoryQuery } from "./query/session-memory.js";
 export { callersQuery, calleesQuery, dependencyPathQuery } from "./query/graph-traversal.js";
 export { workflowPathQuery } from "./query/workflow.js";
-export { changePlanQuery, postEditReviewQuery } from "./query/post-edit.js";
+export { changePlanQuery } from "./query/change-plan.js";
+export { postEditReviewQuery } from "./query/post-edit.js";

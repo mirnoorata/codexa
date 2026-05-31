@@ -7,6 +7,8 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { describe, expect, it } from "vitest";
 import { buildIndex } from "../src/indexer.js";
 import { MCP_TOOL_CATALOG, compactNonPostEditMcpResult, compactPostEditMcpResult } from "../src/mcp.js";
+import { MCP_TOOL_NAMES, MCP_TOOL_REGISTRY } from "../src/mcp/tool-registry.js";
+import { MCP_REGISTERED_TOOL_NAMES } from "../src/mcp/tools.js";
 import { CURRENT_VERIFICATION_PROVENANCE } from "../src/types.js";
 
 function freshnessFixture() {
@@ -346,6 +348,14 @@ describe("Codexa MCP server", () => {
       writeEffects: expect.stringContaining("index-cache-if-auto-refresh"),
       useWhen: expect.stringContaining("Narrow ambiguous tasks")
     });
+    expect(MCP_TOOL_CATALOG.map((tool) => tool.name)).toEqual(MCP_TOOL_NAMES);
+    expect(MCP_REGISTERED_TOOL_NAMES).toEqual(MCP_TOOL_NAMES);
+    expect(MCP_TOOL_REGISTRY.map((tool) => ({ name: tool.name, title: tool.title, description: tool.description }))).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ name: "change_plan", title: "Codexa change plan", description: expect.stringContaining("saveSnapshot=true") }),
+        expect.objectContaining({ name: "post_edit_review", title: "Codexa post-edit review", description: expect.stringContaining("change_plan snapshot") })
+      ])
+    );
   });
 
   it("routes workspace-root MCP calls and resources to the focused repository", async () => {

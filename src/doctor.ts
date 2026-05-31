@@ -4,7 +4,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { effectiveAutonomyMode, type CodexaAutonomyStatus } from "./autonomy.js";
 import { getFreshness } from "./indexer.js";
-import { MCP_TOOL_CATALOG } from "./mcp-tool-catalog.js";
+import { MCP_TOOL_CATALOG, MCP_TOOL_NAMES } from "./mcp-tool-catalog.js";
 import { resolveMcpRepoRoot, shouldPreferConfiguredRepoRoot, type McpRepoRootResolution, type McpRepoRootResolutionOptions } from "./mcp-repo-root.js";
 import { codexaHookEventsRelativePath, loadLatestCodexaHookEvent } from "./post-edit-outcomes.js";
 
@@ -250,7 +250,7 @@ async function checkMcpReadiness(
       status: "fail",
       message: `MCP catalog/server drift detected; unregistered catalog tools: ${formatNameList(toolSurface.unregisteredCatalogTools)}; uncataloged registered tools: ${formatNameList(toolSurface.uncatalogedRegisteredTools)}.`
     });
-    nextActions.push("Update MCP_TOOL_CATALOG and server.registerTool registrations together before publishing MCP readiness changes.");
+    nextActions.push("Update MCP_TOOL_REGISTRY and executable MCP tool registrations together before publishing MCP readiness changes.");
   } else {
     checks.push({
       name: "mcp-tool-parity",
@@ -303,7 +303,7 @@ async function mcpToolSurface(): Promise<{
 }> {
   const primary = MCP_TOOL_CATALOG.filter((tool) => tool.tier === "primary");
   const sourceMutationTools = MCP_TOOL_CATALOG.filter((tool) => /\bsource\b/iu.test(tool.writeEffects)).map((tool) => tool.name);
-  const registered = await registeredMcpToolNamesFromServerSource();
+  const registeredTools: string[] = [...MCP_TOOL_NAMES];
   const catalogNames: string[] = MCP_TOOL_CATALOG.map((tool) => tool.name);
   return {
     primaryTools: primary.map((tool) => tool.name),
@@ -311,35 +311,11 @@ async function mcpToolSurface(): Promise<{
     readOnlyPrimaryTools: primary.filter((tool) => tool.readOnly).map((tool) => tool.name),
     cacheWritingPrimaryTools: primary.filter((tool) => !tool.readOnly).map((tool) => ({ name: tool.name, writeEffects: tool.writeEffects })),
     sourceMutationTools,
-    registeredTools: registered.names,
-    registrationSource: registered.sourcePath ?? null,
-    registrationError: registered.error,
-    unregisteredCatalogTools: catalogNames.filter((name) => !registered.names.includes(name)),
-    uncatalogedRegisteredTools: registered.names.filter((name) => !catalogNames.includes(name))
+    registeredTools,
+    registrationSource: "src/mcp/tool-registry.ts",
+    unregisteredCatalogTools: catalogNames.filter((name) => !registeredTools.includes(name)),
+    uncatalogedRegisteredTools: registeredTools.filter((name) => !catalogNames.includes(name))
   };
-}
-
-async function registeredMcpToolNamesFromServerSource(): Promise<{ names: string[]; sourcePath?: string; error?: string }> {
-  const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-  const candidates = [path.join(moduleDir, "mcp/tools.js"), path.join(moduleDir, "mcp.js"), path.join(moduleDir, "mcp/tools.ts"), path.join(moduleDir, "mcp.ts")];
-  const errors: string[] = [];
-  for (const candidate of candidates) {
-    const text = await readTextIfExists(candidate);
-    if (text === null) {
-      errors.push(`${candidate}: not found`);
-      continue;
-    }
-    const names = [
-      ...text.matchAll(/server\.registerTool\(\s*["']([a-z0-9_:-]+)["']/giu),
-      ...text.matchAll(/\bname:\s*["']([a-z0-9_:-]+)["']/giu)
-    ].map((match) => match[1]);
-    if (names.length === 0) {
-      errors.push(`${candidate}: no registerTool calls found`);
-      continue;
-    }
-    return { names: [...new Set(names)], sourcePath: candidate };
-  }
-  return { names: [], error: errors.join("; ") };
 }
 
 function checkLatestEval(

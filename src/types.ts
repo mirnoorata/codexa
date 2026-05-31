@@ -479,6 +479,164 @@ export interface GuidedNextToolV1 {
   writes: string[];
 }
 
+export type QueryResultMode =
+  | "context_pack"
+  | "task_brief"
+  | "focus_brief"
+  | "session_context"
+  | "change_plan"
+  | "post_edit_review"
+  | "test_plan"
+  | "repo_map"
+  | "search"
+  | "find_context"
+  | "symbol_context"
+  | "impact"
+  | "diff_impact"
+  | "callers"
+  | "callees"
+  | "dependency_path"
+  | "workflow_path"
+  | "placeholder_report"
+  | "session_memory"
+  | "freshness";
+
+export interface BaseQueryData {
+  mode: QueryResultMode | string;
+  task?: string;
+  quality?: unknown;
+  worktree?: unknown;
+  worktreeDegradationReasons?: string[];
+  gaps?: string[];
+  warnings?: string[];
+  diagnostics?: string[];
+  nextTools?: Array<GuidedNextToolV1 | string>;
+  systemMessage?: string;
+  sessionMemory?: unknown;
+  priorSessionMemory?: unknown;
+  runtime?: unknown;
+  session?: unknown;
+  truncation?: Record<string, { total: number; returned: number }>;
+  verificationProvenance?: VerificationProvenance;
+}
+
+export interface ContextPacketData extends BaseQueryData {
+  mode: "context_pack" | "task_brief";
+  changeType?: ChangeType;
+  actionability?: string;
+  tokenBudget?: number;
+  packetVerdict?: string;
+  focusFiles?: unknown[];
+  changedFiles?: string[];
+  changedEntries?: ChangedFileEntry[];
+  changedSymbols?: unknown[];
+  unindexedChanged?: string[];
+  groups?: unknown[];
+  tests?: TestRecommendation[];
+  snippets?: unknown[];
+  contextSources?: unknown[];
+  nextReads?: string[];
+  baseline?: unknown;
+  retrieval?: unknown;
+  recipes?: string[];
+  verificationCommands?: string[];
+  verificationCoverage?: VerificationCoverage[];
+  verificationCommandPlan?: VerificationCommandPlanEntry[];
+  value?: unknown;
+}
+
+export interface FocusBriefData extends BaseQueryData {
+  mode: "focus_brief" | "session_context";
+  actionability?: string;
+  retrieval?: unknown;
+  packetVerdict?: string;
+  focusFiles?: unknown[];
+  workflows?: unknown[];
+  modules?: unknown[];
+  groups?: unknown[];
+  tests?: TestRecommendation[];
+  nextCall?: unknown;
+}
+
+export interface ChangePlanData extends BaseQueryData {
+  mode: "change_plan";
+  editReadiness?: unknown;
+  followCandidate?: unknown;
+  snapshotBlock?: unknown;
+  targetCandidates?: unknown[];
+  steps?: string[];
+  focus?: FocusBriefData | Record<string, unknown>;
+  context?: ContextPacketData | Record<string, unknown>;
+  files?: string[];
+  plannedEditTargets?: string[];
+  tests?: TestRecommendation[];
+  recipes?: string[];
+  requiredWorkflowChecks?: unknown[];
+  requiredDependencyChecks?: unknown[];
+  snapshot?: TaskSnapshot | Record<string, unknown>;
+}
+
+export interface PostEditReviewData extends BaseQueryData {
+  mode: "post_edit_review";
+  verdict?: string;
+  files?: string[];
+  reviewTargets?: unknown;
+  changedSinceSnapshot?: string[];
+  changedGroups?: unknown[];
+  resolvedBaselineFiles?: string[];
+  unplannedEditedFiles?: string[];
+  plannedRenames?: unknown[];
+  unplannedChangedSymbols?: unknown[];
+  plannedButUntouchedFiles?: string[];
+  headChanged?: boolean;
+  symbolDeltas?: unknown[];
+  modifiedSymbols?: unknown[];
+  modifiedPublicSymbols?: unknown[];
+  riskDeltas?: unknown[];
+  affectedTests?: TestRecommendation[];
+  tests?: TestRecommendation[];
+  testsNotRun?: TestRecommendation[];
+  missedLikelyTests?: TestRecommendation[];
+  ranTests?: string[];
+  ranCommands?: string[];
+  ranCommandReports?: VerificationCommandReport[];
+  commandEnvelopes?: VerificationCommandEnvelope[];
+  waivedChecks?: string[];
+  waivers?: VerificationWaiver[];
+  verificationCoverage?: VerificationCoverage[];
+  verificationLedger?: VerificationLedgerEntry[];
+  waivedVerification?: VerificationLedgerEntry[];
+  unindexedEditedFiles?: string[];
+  riskEscalations?: unknown[];
+  workflows?: WorkflowTraceFact[];
+  workflowChecks?: TaskSnapshotRequiredCheck[];
+  dependencyChecks?: TaskSnapshotRequiredCheck[];
+  driftReasons?: string[];
+  nextActions?: string[];
+  snapshotLoad?: unknown;
+  snapshot?: TaskSnapshot | Record<string, unknown>;
+  outcome?: Record<string, unknown>;
+}
+
+export interface TestPlanData extends BaseQueryData {
+  mode: "test_plan";
+  changedFiles?: string[];
+  changedEntries?: ChangedFileEntry[];
+  changedSymbols?: unknown[];
+  unindexedChanged?: string[];
+  groups?: unknown[];
+  tests?: TestRecommendation[];
+  verificationCommands?: string[];
+  verificationCoverage?: VerificationCoverage[];
+  verificationCommandPlan?: VerificationCommandPlanEntry[];
+  commandEnvelopes?: VerificationCommandEnvelope[];
+  verificationLedgerPreview?: VerificationLedgerEntry[];
+  verificationLedger?: VerificationLedgerEntry[];
+  testsNotRun?: TestRecommendation[];
+}
+
+export type CodexaQueryData = ContextPacketData | FocusBriefData | ChangePlanData | PostEditReviewData | TestPlanData;
+
 export type ChangeType = "style" | "api" | "behavior" | "rename" | "delete" | "unknown";
 
 export interface ContextPackInput {

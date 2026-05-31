@@ -1046,7 +1046,7 @@ describe("Codexa hook CLI", () => {
     expect(selectedData.mcpReadiness.toolSurface.registeredTools).toEqual(
       expect.arrayContaining(["session_context", "task_brief", "change_plan", "post_edit_review", "test_plan", "search", "workflow_path"])
     );
-    expect(selectedData.mcpReadiness.toolSurface.registrationSource).toMatch(/(?:mcp[\\/]tools|mcp)\.(?:j|t)s$/u);
+    expect(selectedData.mcpReadiness.toolSurface.registrationSource).toBe("src/mcp/tool-registry.ts");
     expect(selectedData.mcpReadiness.toolSurface.unregisteredCatalogTools).toEqual([]);
     expect(selectedData.mcpReadiness.toolSurface.uncatalogedRegisteredTools).toEqual([]);
     expect(selectedData.mcpReadiness.latestEval).toBeNull();

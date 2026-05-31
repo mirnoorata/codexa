@@ -1,7 +1,6 @@
 import { ResourceTemplate, type McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import type { QuerySession } from "../query/session.js";
 import { statusQuery } from "../queries.js";
 
 export async function registerArtifactResources(server: McpServer, resolveRepoRoot: () => Promise<string>): Promise<void> {
@@ -126,13 +125,6 @@ export async function registerArtifactResources(server: McpServer, resolveRepoRo
       };
     }
   );
-}
-
-export async function notifyResourceListChangedAfterRefresh(server: McpServer, session: QuerySession): Promise<void> {
-  if (!session.refresh?.refreshed) {
-    return;
-  }
-  await Promise.resolve(server.sendResourceListChanged());
 }
 
 async function readArtifact(repoRoot: string, relativePath: string): Promise<string> {

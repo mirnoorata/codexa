@@ -68,12 +68,11 @@ async function forbidHeavyRuntimeDependencies() {
 }
 
 async function enforceSourceBoundaries() {
-  const coreFiles = [
-    ...(await listFiles("src/query", ".ts")),
-    ...(await listFiles("src/eval", ".ts")),
-    "src/indexer.ts",
-    "src/repo-files.ts"
-  ];
+  const queryFiles = ["src/queries.ts", ...(await listFiles("src/query", ".ts"))];
+  const indexerFiles = ["src/indexer.ts", ...(await listFiles("src/indexer", ".ts")), "src/repo-files.ts"];
+  const evalFiles = ["src/eval.ts", ...(await listFiles("src/eval", ".ts"))];
+  const mcpFiles = ["src/mcp.ts", ...(await listFiles("src/mcp", ".ts"))];
+  const coreFiles = [...queryFiles, ...indexerFiles, ...evalFiles];
   await forbidImports(
     coreFiles,
     [
@@ -85,6 +84,58 @@ async function enforceSourceBoundaries() {
     ],
     "core query/index/eval code"
   );
+  await forbidImports(
+    queryFiles,
+    [{ target: "src/eval", label: "eval harness" }],
+    "query code"
+  );
+  await forbidImports(
+    indexerFiles,
+    [
+      { target: "src/query", label: "query layer" },
+      { target: "src/queries", label: "query barrel" },
+      { target: "src/eval", label: "eval harness" }
+    ],
+    "indexer pipeline code"
+  );
+  await forbidImports(
+    evalFiles,
+    [
+      { target: "src/mcp", label: "MCP adapter" },
+      { target: "src/cli", label: "CLI adapter" },
+      { target: "src/doctor", label: "doctor command adapter" },
+      { target: "src/github-release", label: "GitHub release adapter" },
+      { target: "src/init", label: "init command adapter" }
+    ],
+    "eval code"
+  );
+  await forbidImports(
+    mcpFiles,
+    [
+      { target: "src/cli", label: "CLI adapter" },
+      { target: "src/doctor", label: "doctor command adapter" },
+      { target: "src/eval", label: "eval harness" },
+      { target: "src/github-release", label: "GitHub release adapter" },
+      { target: "src/init", label: "init command adapter" }
+    ],
+    "MCP adapter code"
+  );
+  await forbidImports(
+    ["src/cli.ts", "src/doctor.ts", "src/github-release.ts"].filter(Boolean),
+    [{ target: "src/mcp/tools", label: "executable MCP tool registration adapter" }],
+    "CLI, doctor, and release tooling"
+  );
+  await forbidRegexMcpToolScanning();
+}
+
+async function forbidRegexMcpToolScanning() {
+  const files = ["src/doctor.ts", "src/eval.ts", "src/cli.ts", "src/github-release.ts"];
+  for (const file of files) {
+    const text = await readText(file);
+    if (/\bregisterTool\s*\(/u.test(text) || /server\.registerTool/u.test(text)) {
+      failures.push(`${file} must use the typed MCP tool registry instead of scanning registerTool calls`);
+    }
+  }
 }
 
 async function forbidImports(files, forbiddenTargets, ownerLabel) {

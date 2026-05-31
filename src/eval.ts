@@ -8,7 +8,7 @@ import { buildIndex } from "./indexer.js";
 import { isTestPath } from "./language.js";
 import { MCP_TOOL_CATALOG } from "./mcp-tool-catalog.js";
 import { changePlanQuery, contextPackQuery, diffImpactQuery, focusBriefQuery, impactQuery, postEditReviewQuery, searchQuery, taskBriefQuery, testPlanQuery, workflowPathQuery } from "./queries.js";
-import type { QueryOptions, QueryResult, TestRecommendation } from "./types.js";
+import type { BaseQueryData, PostEditReviewData, QueryOptions, QueryResult, TestRecommendation } from "./types.js";
 import { externalHistoricalTaskPackScenarios, historicalFixtureScenarios } from "./eval/historical.js";
 import type { EvalOracle, EvalScenario, EvalSuite } from "./eval/types.js";
 export type { EvalOracle, EvalScenario, EvalScenarioSuite, EvalSuite } from "./eval/types.js";
@@ -976,11 +976,52 @@ async function runTransitiveCentralityExperiment(repoRoot: string): Promise<NonN
   };
 }
 
+type EvalNestedDataKey = "diff" | "plan" | "focus" | "context" | "review" | "postEdit" | "post_edit" | "data";
+
+type EvalScoringData = BaseQueryData & {
+  actionability?: string;
+  selectedFiles?: unknown[];
+  readFirstFiles?: unknown[];
+  files?: unknown[];
+  fanout?: { readFirst?: unknown };
+  affectedFiles?: unknown[];
+  focusFiles?: unknown[];
+  nextReads?: unknown[];
+  changedFiles?: unknown[];
+  plannedEditTargets?: unknown[];
+  reviewTargets?: unknown[];
+  snapshot?: { plannedEditTargets?: unknown[] };
+  callTrace?: unknown[];
+  tests?: unknown[];
+  workflows?: unknown[];
+  quality?: { level?: unknown; counts?: { authoritative?: unknown; derived?: unknown; heuristic?: unknown; fallback?: unknown } };
+  outcome?: PostEditReviewData["outcome"];
+  testsNotRun?: unknown;
+  missedLikelyTests?: unknown;
+  modifiedPublicSymbols?: unknown;
+  workflowChecks?: unknown;
+  dependencyChecks?: unknown;
+  ranCommands?: unknown;
+  commandEnvelopes?: unknown;
+  verificationLedger?: unknown;
+  verdict?: unknown;
+  outcomeId?: unknown;
+  path?: unknown;
+  driftReasons?: unknown;
+  calibrationLabels?: unknown;
+  packetVerdict?: unknown;
+  editReadiness?: { editable?: unknown };
+} & Partial<Record<EvalNestedDataKey, unknown>>;
+
+function evalScoringData(data: unknown): EvalScoringData | undefined {
+  return data && typeof data === "object" && !Array.isArray(data) ? (data as EvalScoringData) : undefined;
+}
+
 function filesFromData(data: unknown): string[] {
-  if (!data || typeof data !== "object") {
+  const record = evalScoringData(data);
+  if (!record) {
     return [];
   }
-  const record = data as Record<string, unknown>;
   if (Array.isArray(record.selectedFiles)) {
     return uniqueInOrder(record.selectedFiles.flatMap(filePathFromUnknown));
   }
@@ -991,7 +1032,7 @@ function filesFromData(data: unknown): string[] {
     return uniqueInOrder(record.files.flatMap(filePathFromUnknown));
   }
   if (record.fanout && typeof record.fanout === "object") {
-    const readFirst = (record.fanout as Record<string, unknown>).readFirst;
+    const readFirst = record.fanout.readFirst;
     if (Array.isArray(readFirst)) {
       return uniqueInOrder(readFirst.flatMap((entry: unknown) => filePathFromUnknown((entry as Record<string, unknown>).file ?? entry)));
     }
@@ -1008,36 +1049,35 @@ function filesFromData(data: unknown): string[] {
   if (Array.isArray(record.changedFiles)) {
     return uniqueInOrder(record.changedFiles.flatMap(filePathFromUnknown));
   }
-  const nested = ["diff", "plan"].flatMap((key) => filesFromData(record[key]));
+  const nested = (["diff", "plan"] as const).flatMap((key) => filesFromData(record[key]));
   return uniqueInOrder(nested);
 }
 
 function plannedFilesFromData(data: unknown): string[] {
-  if (!data || typeof data !== "object") {
+  const record = evalScoringData(data);
+  if (!record) {
     return [];
   }
-  const record = data as Record<string, unknown>;
   if (Array.isArray(record.plannedEditTargets)) {
     return uniqueInOrder(record.plannedEditTargets.flatMap(filePathFromUnknown));
   }
   if (record.snapshot && typeof record.snapshot === "object") {
-    const snapshot = record.snapshot as Record<string, unknown>;
-    if (Array.isArray(snapshot.plannedEditTargets)) {
-      return uniqueInOrder(snapshot.plannedEditTargets.flatMap(filePathFromUnknown));
+    if (Array.isArray(record.snapshot.plannedEditTargets)) {
+      return uniqueInOrder(record.snapshot.plannedEditTargets.flatMap(filePathFromUnknown));
     }
   }
   if (Array.isArray(record.reviewTargets)) {
     return uniqueInOrder(record.reviewTargets.flatMap(filePathFromUnknown));
   }
-  const nested = ["focus", "context", "diff", "plan"].flatMap((key) => plannedFilesFromData(record[key]));
+  const nested = (["focus", "context", "diff", "plan"] as const).flatMap((key) => plannedFilesFromData(record[key]));
   return uniqueInOrder(nested);
 }
 
 function callTraceFromData(data: unknown): string[] {
-  if (!data || typeof data !== "object") {
+  const record = evalScoringData(data);
+  if (!record) {
     return [];
   }
-  const record = data as Record<string, unknown>;
   if (Array.isArray(record.callTrace)) {
     return record.callTrace.filter((entry): entry is string => typeof entry === "string");
   }
@@ -1045,10 +1085,10 @@ function callTraceFromData(data: unknown): string[] {
 }
 
 function testsFromData(data: unknown): string[] {
-  if (!data || typeof data !== "object") {
+  const record = evalScoringData(data);
+  if (!record) {
     return [];
   }
-  const record = data as Record<string, unknown>;
   const direct = Array.isArray(record.tests)
     ? record.tests.flatMap((entry) => {
         if (typeof entry === "string") {
@@ -1069,21 +1109,20 @@ function testsFromData(data: unknown): string[] {
         return Array.isArray(tests) ? tests.filter((entry): entry is string => typeof entry === "string") : [];
       })
     : [];
-  const nested = ["diff", "plan"].flatMap((key) => testsFromData(record[key]));
+  const nested = (["diff", "plan"] as const).flatMap((key) => testsFromData(record[key]));
   return uniqueInOrder([...direct, ...workflowTests, ...nested]);
 }
 
 function qualityFromData(data: unknown): { level: string; counts: { authoritative: number; derived: number; heuristic: number; fallback: number } } | null {
-  if (!data || typeof data !== "object") {
+  const record = evalScoringData(data);
+  if (!record) {
     return null;
   }
-  const record = data as Record<string, unknown>;
   const quality = record.quality;
-  if (quality && typeof quality === "object") {
-    const q = quality as Record<string, unknown>;
-    const counts = q.counts && typeof q.counts === "object" ? (q.counts as Record<string, unknown>) : {};
+  if (quality) {
+    const counts = quality.counts ?? {};
     return {
-      level: typeof q.level === "string" ? q.level : "unknown",
+      level: typeof quality.level === "string" ? quality.level : "unknown",
       counts: {
         authoritative: numericCount(counts.authoritative),
         derived: numericCount(counts.derived),
@@ -1092,7 +1131,7 @@ function qualityFromData(data: unknown): { level: string; counts: { authoritativ
       }
     };
   }
-  for (const key of ["focus", "context", "diff", "plan"]) {
+  for (const key of ["focus", "context", "diff", "plan"] as const) {
     const nested = qualityFromData(record[key]);
     if (nested) {
       return nested;
@@ -1102,11 +1141,11 @@ function qualityFromData(data: unknown): { level: string; counts: { authoritativ
 }
 
 function postEditOutcomeFromData(data: unknown): ScoredEvalScenario["calibration"]["postEditOutcome"] {
-  if (!data || typeof data !== "object") {
+  const record = evalScoringData(data);
+  if (!record) {
     return undefined;
   }
-  const record = data as Record<string, unknown>;
-  const candidate = record.outcome && typeof record.outcome === "object" ? (record.outcome as Record<string, unknown>) : record;
+  const candidate = evalScoringData(record.outcome) ?? record;
   const testsNotRun = extractPaths(candidate.testsNotRun ?? record.testsNotRun);
   const missedLikelyTests = extractPaths(candidate.missedLikelyTests ?? record.missedLikelyTests);
   const modifiedPublicSymbols = extractStringArray(candidate.modifiedPublicSymbols ?? record.modifiedPublicSymbols);
@@ -1155,7 +1194,7 @@ function postEditOutcomeFromData(data: unknown): ScoredEvalScenario["calibration
       verificationNotApplicable: verificationStatusCount("not_applicable")
     };
   }
-  for (const key of ["review", "postEdit", "post_edit", "plan"]) {
+  for (const key of ["review", "postEdit", "post_edit", "plan"] as const) {
     const nested = postEditOutcomeFromData(record[key]);
     if (nested) {
       return nested;
@@ -1165,10 +1204,10 @@ function postEditOutcomeFromData(data: unknown): ScoredEvalScenario["calibration
 }
 
 function toolHopsToEditReadyFromData(data: unknown): number | null {
-  if (!data || typeof data !== "object" || Array.isArray(data)) {
+  const record = evalScoringData(data);
+  if (!record) {
     return null;
   }
-  const record = data as Record<string, unknown>;
   const mode = typeof record.mode === "string" ? record.mode : undefined;
   const actionability = typeof record.actionability === "string" ? record.actionability : undefined;
   const editReady = actionability === "edit_ready" || record.packetVerdict === "edit-ready" || (record.editReadiness && typeof record.editReadiness === "object" && (record.editReadiness as { editable?: unknown }).editable === true);
@@ -1177,7 +1216,7 @@ function toolHopsToEditReadyFromData(data: unknown): number | null {
     if (mode === "task_brief" || mode === "context_pack") return 1;
     return 0;
   }
-  for (const key of ["focus", "context", "diff", "plan", "data"]) {
+  for (const key of ["focus", "context", "diff", "plan", "data"] as const) {
     const nested = toolHopsToEditReadyFromData(record[key]);
     if (nested !== null) {
       return nested;
@@ -1187,10 +1226,10 @@ function toolHopsToEditReadyFromData(data: unknown): number | null {
 }
 
 function verificationProvenanceFromData(data: unknown): EvalVerificationProvenance | undefined {
-  if (!data || typeof data !== "object" || Array.isArray(data)) {
+  const record = evalScoringData(data);
+  if (!record) {
     return undefined;
   }
-  const record = data as Record<string, unknown>;
   return extractVerificationProvenance(record.verificationProvenance) ?? verificationProvenanceFromData(record.data);
 }
 
