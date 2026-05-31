@@ -3,10 +3,11 @@ import { createHash } from "node:crypto";
 import path from "node:path";
 import { getGitStateAsync, type GitState } from "./git.js";
 import { isSourcePath, shouldSkipPath } from "./language.js";
-import { normalizePath } from "./util.js";
+import { mapLimit, normalizePath } from "./util.js";
 
 const MAX_DIRTY_CONTENT_HASH_BYTES = 2 * 1024 * 1024;
 export const MAX_INDEXED_SOURCE_BYTES = 2 * 1024 * 1024;
+const SOURCE_DISCOVERY_CONCURRENCY = 16;
 
 export interface RepoSourceFile {
   path: string;
@@ -39,34 +40,46 @@ export async function discoverRepoFiles(repoRoot: string): Promise<RepoFiles> {
   const selected = new Map<string, RepoSourceFile>();
   const skipped = new Map<string, RepoSkippedFile>();
 
-  for (const file of git.files) {
+  const discovered = await mapLimit(git.files, SOURCE_DISCOVERY_CONCURRENCY, async (file) => {
     const normalized = normalizePath(file);
     if (!isSourcePath(normalized) || shouldSkipPath(normalized)) {
-      continue;
+      return null;
     }
     const absolutePath = path.join(git.repoRoot, normalized);
     const stat = await safeLstat(absolutePath);
     if (!stat?.isFile()) {
-      continue;
+      return null;
     }
     if (stat.size > MAX_INDEXED_SOURCE_BYTES) {
-      skipped.set(normalized, {
+      return {
+        skipped: {
+          path: normalized,
+          absolutePath,
+          dirty: dirtySet.has(normalized),
+          sizeBytes: stat.size,
+          contentHash: metadataHash(stat),
+          reason: "source-file-too-large" as const
+        }
+      };
+    }
+    return {
+      selected: {
         path: normalized,
         absolutePath,
         dirty: dirtySet.has(normalized),
         sizeBytes: stat.size,
-        contentHash: metadataHash(stat),
-        reason: "source-file-too-large"
-      });
-      continue;
+        contentHash: await hashFileContent(absolutePath)
+      }
+    };
+  });
+
+  for (const result of discovered) {
+    if (result?.selected) {
+      selected.set(result.selected.path, result.selected);
     }
-    selected.set(normalized, {
-      path: normalized,
-      absolutePath,
-      dirty: dirtySet.has(normalized),
-      sizeBytes: stat.size,
-      contentHash: await hashFileContent(absolutePath)
-    });
+    if (result?.skipped) {
+      skipped.set(result.skipped.path, result.skipped);
+    }
   }
 
   return {
@@ -94,28 +107,23 @@ function metadataHash(stat: { size: number; mtimeMs: number }): string {
 }
 
 async function hashDirtyFiles(repoRoot: string, dirtyFiles: string[]): Promise<Record<string, string>> {
-  const hashes: Record<string, string> = {};
-  await Promise.all(
-    dirtyFiles.map(async (file) => {
-      const absolutePath = path.join(repoRoot, file);
-      try {
-        const stat = await fs.lstat(absolutePath);
-        if (!stat.isFile()) {
-          hashes[file] = "non-file";
-          return;
-        }
-        if (!isSourcePath(file) || stat.size > MAX_DIRTY_CONTENT_HASH_BYTES) {
-          hashes[file] = `metadata:${stat.size}:${Math.trunc(stat.mtimeMs)}`;
-          return;
-        }
-        const content = await fs.readFile(absolutePath);
-        hashes[file] = createHash("sha1").update(content).digest("hex");
-      } catch {
-        hashes[file] = "missing";
+  const entries = await mapLimit(dirtyFiles, SOURCE_DISCOVERY_CONCURRENCY, async (file): Promise<[string, string]> => {
+    const absolutePath = path.join(repoRoot, file);
+    try {
+      const stat = await fs.lstat(absolutePath);
+      if (!stat.isFile()) {
+        return [file, "non-file"];
       }
-    })
-  );
-  return Object.fromEntries(Object.entries(hashes).sort(([a], [b]) => a.localeCompare(b)));
+      if (!isSourcePath(file) || stat.size > MAX_DIRTY_CONTENT_HASH_BYTES) {
+        return [file, `metadata:${stat.size}:${Math.trunc(stat.mtimeMs)}`];
+      }
+      const content = await fs.readFile(absolutePath);
+      return [file, createHash("sha1").update(content).digest("hex")];
+    } catch {
+      return [file, "missing"];
+    }
+  });
+  return Object.fromEntries(entries.sort(([a], [b]) => a.localeCompare(b)));
 }
 
 async function safeLstat(filePath: string) {

@@ -12,7 +12,7 @@ import { runDoctor } from "./doctor.js";
 import { initializeProject, sessionStartSummary } from "./init.js";
 import { runLiveIndexer, type LiveIndexEvent } from "./live-index.js";
 import { serveMcp } from "./mcp.js";
-import { resolveMcpRepoRoot } from "./mcp-repo-root.js";
+import { resolveMcpRepoRoot, shouldPreferConfiguredRepoRoot } from "./mcp-repo-root.js";
 import { buildSemanticIndex, semanticProviderFromValue, type SemanticProviderKind } from "./semantic-retrieval.js";
 import { updateStaticAnalysisReports } from "./static-analysis.js";
 import { loadTaskSnapshot } from "./task-snapshots.js";
@@ -1260,18 +1260,9 @@ type HookActionResult = Omit<CodexaHookEventInput, "hook" | "durationMs"> | void
 async function resolveHookRepoRoots(repo: string): Promise<{ configuredRoot: string; activeRepoRoot: string }> {
   const configuredRoot = path.resolve(repo);
   const resolution = await resolveMcpRepoRoot(configuredRoot, {
-    preferConfiguredRoot: await codexaConfigExists(configuredRoot)
+    preferConfiguredRoot: await shouldPreferConfiguredRepoRoot(configuredRoot)
   });
   return { configuredRoot, activeRepoRoot: resolution.repoRoot };
-}
-
-async function codexaConfigExists(repoRoot: string): Promise<boolean> {
-  try {
-    await fs.access(path.join(repoRoot, ".codex", "config.toml"));
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 async function tryAcquirePostEditHookLock(repoRoot: string): Promise<(() => Promise<void>) | null> {

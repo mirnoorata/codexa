@@ -14,6 +14,8 @@ import { formatTestRecommendations, narrowTestRecommendationsByChangeType, recom
 import { findFile, normalizeInputPaths, resolveFileTarget, resolveSymbolTarget } from "./targets.js";
 import { formatVerificationCoverage, formatVerificationLedger, verificationEvidenceForCommandReports, verificationLedgerForPostEdit } from "./verification.js";
 import { isCodexaControlPath, formatChangedEntry } from "./worktree.js";
+import { postEditDecision } from "./post-edit/decision.js";
+import { postEditDirtyScope } from "./post-edit/dirty-scope.js";
 import { buildPostEditOutcome, savePostEditOutcome, type PostEditCheckResult, type PostEditOutcomeInput } from "../post-edit-outcomes.js";
 import { pointerForSessionMemory, readSessionMemory } from "../session-memory.js";
 import { loadTaskSnapshot, saveBlockedTaskSnapshot, saveTaskSnapshot, type TaskSnapshotLoadResult } from "../task-snapshots.js";
@@ -1185,17 +1187,8 @@ async function postEditReviewQueryInternal(
   const snapshot = loadedSnapshot.snapshot;
   const snapshotAmbiguity = !input.taskId && snapshot ? await latestSnapshotAmbiguity(repoRoot, snapshot.taskId) : undefined;
   const currentEntries = await session.getChangedFileEntries();
-  const currentDirtyPaths = currentEntries.map((entry) => entry.path);
-  const baselinePaths = new Set(snapshot?.dirtyBaseline.dirtyFiles ?? snapshot?.dirtyBaseline.changedEntries.map((entry) => entry.path) ?? []);
-  const baselineHashes = snapshot?.dirtyBaseline.dirtyFileHashes ?? {};
-  const currentHashes = freshness.dirtyFileHashes;
-  const changedSinceSnapshot = snapshot
-    ? currentEntries.filter((entry) => !baselinePaths.has(entry.path) || baselineHashes[entry.path] !== currentHashes[entry.path])
-    : currentEntries;
-  const resolvedBaselineFiles = snapshot ? uniqueSorted([...baselinePaths].filter((filePath) => !currentDirtyPaths.includes(filePath))) : [];
-  const editPaths = uniqueSorted(changedSinceSnapshot.map((entry) => entry.path).filter((filePath) => !isCodexaControlPath(filePath)));
-  const indexedPaths = new Set(index.files.map((file) => file.path));
-  const unindexedEditedFiles = editPaths.filter((filePath) => !indexedPaths.has(filePath));
+  const dirtyScope = postEditDirtyScope({ snapshot, currentEntries, freshness, index });
+  const { currentDirtyPaths, changedSinceSnapshot, resolvedBaselineFiles, editPaths, unindexedEditedFiles } = dirtyScope;
   const changedSymbols = (await session.getChangedSymbols()).filter((entry) => editPaths.includes(entry.symbol.path));
   const requestedSymbolNames = new Set([...(snapshot?.input.symbols ?? []), ...(input.symbols ?? [])].map(normalizeSearchText));
   const plannedSymbolIds = requestedSymbolIds(snapshot, requestedSymbolNames);
@@ -1393,65 +1386,36 @@ async function postEditReviewQueryInternal(
   });
   const noVerificationProofForEditedFiles =
     hasActualEditedFiles && !hasCredibleVerificationEvidence && tests.length === 0 && workflowChecks.length === 0 && dependencyChecks.length === 0;
-  const missingWorkflowCheckCount = workflowChecks.filter((check) => check.status === "missing").length;
-  const missingDependencyCheckCount = dependencyChecks.filter((check) => check.status === "missing").length;
-  const riskEscalationsCoveredByVerification =
-    riskEscalations.length > 0 &&
-    unplannedEditedFiles.length === 0 &&
-    testsNotRun.length === 0 &&
-    hasTestVerificationAccounting &&
-    missingWorkflowCheckCount === 0 &&
-    missingDependencyCheckCount === 0 &&
-    waivedVerification.length === 0;
-  const riskEscalationsNeedInspection =
-    hasActualEditedFiles && riskEscalations.length > 0 && !riskEscalationsCoveredByVerification;
-  const hasDegradedSnapshotTests = degradedSnapshotTests.length > 0;
-  const driftReasons = [
-    !snapshot ? `missing task snapshot${loadedSnapshot.missingReason ? `: ${loadedSnapshot.missingReason}` : ""}` : undefined,
-    snapshotAmbiguity ? snapshotAmbiguity : undefined,
-    loadedSnapshot.missingReason === "invalid-json" ? loadedSnapshot.error : undefined,
-    session.worktreeDegradationReasons.length > 0
-      ? `worktree state unavailable (${session.worktreeDegradationReasons.join("; ")}); treat empty change set as unknown, not clean`
-      : undefined,
-    headChanged ? "git head changed since snapshot" : undefined,
-    unplannedEditedFiles.length > 0 ? `${unplannedEditedFiles.length} edited file(s) outside planned scope` : undefined,
-    unplannedChangedSymbols.length > 0 ? `${unplannedChangedSymbols.length} changed symbol(s) outside requested symbol target` : undefined,
-    unindexedEditedFiles.length > 0 ? `${unindexedEditedFiles.length} changed-since-snapshot file(s) are not indexed` : undefined,
-    symbolDeltas.some((delta) => delta.newSymbols.length > 0 || delta.removedSymbols.length > 0)
-      ? `${symbolDeltas.reduce((sum, delta) => sum + delta.newSymbols.length + delta.removedSymbols.length, 0)} symbol delta(s) detected`
-      : undefined,
-    riskDeltas.some((delta) => delta.delta > 0) ? `${riskDeltas.filter((delta) => delta.delta > 0).length} file(s) increased risk` : undefined,
-    missingWorkflowCheckCount > 0 ? `${missingWorkflowCheckCount} required workflow check(s) missing` : undefined,
-    missingDependencyCheckCount > 0 ? `${missingDependencyCheckCount} required dependency check(s) missing` : undefined,
-    hasDegradedSnapshotTests ? `${degradedSnapshotTests.length} planned snapshot test(s) degraded by provenance` : undefined,
-    contextData.quality?.level === "low" ? "low context quality after edit" : undefined,
-    riskEscalationsNeedInspection ? `${riskEscalations.length} high-risk or unplanned target(s)` : undefined,
-    waivedVerification.length > 0 ? `${waivedVerification.length} verification item(s) explicitly waived` : undefined,
-    hasActualEditedFiles && testsNotRun.length > 0 && !hasTestVerificationAccounting
-      ? "recommended tests have not been accounted for"
-      : undefined,
-    hasActualEditedFiles && testsNotRun.length > 0 && hasTestVerificationAccounting ? `${testsNotRun.length} recommended test(s) remain unaccounted for` : undefined,
-    noVerificationProofForEditedFiles ? "edited files have no credible verification evidence" : undefined
-  ].filter((reason): reason is string => Boolean(reason));
-  const verdict: "continue" | "run_tests" | "inspect" | "replan" =
-    headChanged || unplannedEditedFiles.length >= 3 || contextData.quality?.level === "low"
-      ? "replan"
-      : !snapshot ||
-          session.worktreeDegradationReasons.length > 0 ||
-            unplannedEditedFiles.length > 0 ||
-            Boolean(snapshotAmbiguity) ||
-            unplannedChangedSymbols.length > 0 ||
-            missingWorkflowCheckCount > 0 ||
-            missingDependencyCheckCount > 0 ||
-            hasDegradedSnapshotTests ||
-            waivedVerification.length > 0 ||
-            noVerificationProofForEditedFiles ||
-            riskEscalationsNeedInspection ||
-            contextData.quality?.level === "medium"
-        ? "inspect"
-        : hasActualEditedFiles && testsNotRun.length > 0
-          ? "run_tests"
-          : "continue";
+  const decision = postEditDecision({
+    snapshot,
+    loadedSnapshot,
+    snapshotAmbiguity,
+    worktreeDegradationReasons: session.worktreeDegradationReasons,
+    headChanged,
+    unplannedEditedFiles,
+    unplannedChangedSymbols,
+    unindexedEditedFiles,
+    symbolDeltas,
+    riskDeltas,
+    workflowChecks,
+    dependencyChecks,
+    degradedSnapshotTests,
+    quality: contextData.quality,
+    riskEscalations,
+    waivedVerification,
+    hasActualEditedFiles,
+    testsNotRun,
+    hasTestVerificationAccounting,
+    noVerificationProofForEditedFiles
+  });
+  const {
+    driftReasons,
+    verdict,
+    missingWorkflowCheckCount,
+    missingDependencyCheckCount,
+    riskEscalationsCoveredByVerification,
+    riskEscalationsNeedInspection
+  } = decision;
   const nextActions = postEditNextActions(verdict, {
     snapshot,
     unplannedEditedFiles,

@@ -582,6 +582,54 @@ describe("Codexa MCP server", () => {
     }
   });
 
+  it("routes configured workspace roots through the active project focus line", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-configured-workspace-focus-"));
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const currentRepo = await createIndexedMcpRepo(workspace, "current-repo", "current", "currentSymbol");
+    const otherRepo = await createIndexedMcpRepo(workspace, "other-repo", "other", "otherSymbol");
+    const focusFile = path.join(workspace, ".codex", "WORKING.md");
+    await mkdir(path.dirname(focusFile), { recursive: true });
+    await writeFile(path.join(workspace, ".codex", "config.toml"), "[features]\nhooks = true\n", "utf8");
+    await writeFile(
+      focusFile,
+      [
+        "# WORKING.md - Current Workspace State",
+        "",
+        "## Workspace Default",
+        "",
+        `- Default repo: \`${workspace}\`.`,
+        `- Active project focus: Codexa project via repo \`${currentRepo}\`.`,
+        "",
+        "## Active Sessions",
+        "",
+        "| session | agent | repo | task | status | claims | last_seen | next |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        `| codex-current-session | codex | ${currentRepo} | current task | active | none | now | implement |`,
+        `| codex-other-session | codex | ${otherRepo} | other task | active | none | now | inspect |`
+      ].join("\n"),
+      "utf8"
+    );
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-configured-workspace-focus-routing-test", version: "0.1.0" });
+    await client.connect(transport);
+
+    try {
+      const taskBrief = await client.callTool({ name: "task_brief", arguments: { task: "change currentSymbol", tokenBudget: 900, limit: 5 } });
+      const serialized = JSON.stringify(taskBrief);
+      expect(serialized).toContain(currentRepo);
+      expect(serialized).toContain("currentSymbol");
+      expect(serialized).not.toContain(otherRepo);
+      expect(serialized).not.toContain("Failed to read git status");
+    } finally {
+      await client.close();
+    }
+  });
+
   it("does not let stale CODEXA_REPO override an explicit git repo argument", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-explicit-"));
     const explicitRepo = await createIndexedMcpRepo(workspace, "explicit-repo", "explicit", "explicitSymbol");

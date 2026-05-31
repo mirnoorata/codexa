@@ -1046,7 +1046,7 @@ describe("Codexa hook CLI", () => {
     expect(selectedData.mcpReadiness.toolSurface.registeredTools).toEqual(
       expect.arrayContaining(["session_context", "task_brief", "change_plan", "post_edit_review", "test_plan", "search", "workflow_path"])
     );
-    expect(selectedData.mcpReadiness.toolSurface.registrationSource).toMatch(/mcp\.(?:j|t)s$/u);
+    expect(selectedData.mcpReadiness.toolSurface.registrationSource).toMatch(/(?:mcp[\\/]tools|mcp)\.(?:j|t)s$/u);
     expect(selectedData.mcpReadiness.toolSurface.unregisteredCatalogTools).toEqual([]);
     expect(selectedData.mcpReadiness.toolSurface.uncatalogedRegisteredTools).toEqual([]);
     expect(selectedData.mcpReadiness.latestEval).toBeNull();
@@ -1068,6 +1068,51 @@ describe("Codexa hook CLI", () => {
     });
     expect(ambiguousData.mcpReadiness.routing.error).toContain("Codexa MCP workspace focus is ambiguous");
     expect(ambiguousData.checks).toContainEqual(expect.objectContaining({ name: "mcp-routing", status: "fail" }));
+  });
+
+  it("reports MCP readiness for configured workspace roots through the active project focus line", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-doctor-configured-workspace-"));
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const focusedRepo = await createWorkspaceGitRepo(workspace, "focused-repo", "focused");
+    const otherRepo = await createWorkspaceGitRepo(workspace, "other-repo", "other");
+    await mkdir(path.join(workspace, ".codex"), { recursive: true });
+    await writeFile(path.join(workspace, ".codex", "config.toml"), "[features]\nhooks = true\n", "utf8");
+    await writeFile(
+      path.join(workspace, ".codex", "WORKING.md"),
+      [
+        "## Workspace Default",
+        "",
+        `- Default repo: \`${workspace}\`.`,
+        `- Active project focus: Codexa project via repo \`${focusedRepo}\`.`,
+        "",
+        "## Active Sessions",
+        "",
+        "| session | agent | repo | task | status | claims | last_seen | next |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        `| codex-focused | codex | ${focusedRepo} | focused task | active | none | now | inspect |`,
+        `| codex-other | codex | ${otherRepo} | other task | active | none | now | inspect |`
+      ].join("\n"),
+      "utf8"
+    );
+
+    const cli = path.resolve(process.cwd(), "dist/cli.js");
+    const doctor = spawnSync(process.execPath, [cli, "doctor", workspace, "--mcp-readiness", "--json"], {
+      cwd: process.cwd(),
+      encoding: "utf8"
+    });
+
+    expect(doctor.status).toBe(0);
+    const data = JSON.parse(doctor.stdout) as {
+      repoRoot: string;
+      mcpReadiness: { routing: { configuredRoot: string; activeRepoRoot: string; focusReason: string; source: string } };
+    };
+    expect(data.repoRoot).toBe(focusedRepo);
+    expect(data.mcpReadiness.routing).toMatchObject({
+      configuredRoot: workspace,
+      activeRepoRoot: focusedRepo,
+      source: "workspace-focus-file",
+      focusReason: "explicit-focus"
+    });
   });
 });
 

@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { isTestPath, moduleNameForPath } from "../language.js";
-import type { ChangedSymbol, CodexaIndex, ContextPackInput, EvidenceTier, FileFact, FocusBriefInput, QueryOptions, QueryResult } from "../types.js";
+import type { ChangedSymbol, CodexaIndex, ContextPackInput, DiffImpactGroup, EvidenceTier, FileFact, FocusBriefInput, QueryOptions, QueryResult } from "../types.js";
 import { limitText, uniqueSorted } from "../util.js";
 import { formatDiffGroups, formatGaps, groupDiffImpact, indexGaps } from "./diff.js";
 import { addContextPackImpactExpansion, verificationRecipes } from "./impact.js";
@@ -26,7 +26,12 @@ import { summarizeSessionMemory } from "../session-memory.js";
 type FocusSelectionEntry = { file: FileFact; score: number; reasons: string[]; matchedTerms: string[]; tier: EvidenceTier };
 type ContextSourceKind = "explicit_target" | "natural_retrieval" | "lexical_query" | "dirty_worktree" | "graph_impact" | "workflow_trace" | "test_evidence" | "rank_fallback";
 type ContextSourceProvenance = { source: ContextSourceKind; reason: string; tier: EvidenceTier };
-type PacketFocusEntry = { file: FileFact; reasons: Set<string>; tier: EvidenceTier; provenance: ContextSourceProvenance[] };
+type PacketFocusEntry = { file: FileFact; reasons: Set<string>; rank: number; tier: EvidenceTier; provenance: ContextSourceProvenance[] };
+type ContextFocusState = {
+  focus: Map<string, PacketFocusEntry>;
+  impactSeeds: Map<string, string>;
+  addFocus: (filePath: string, reason: string, rank?: number, tier?: EvidenceTier, source?: ContextSourceKind) => void;
+};
 type ContextSourceSummary = {
   source: ContextSourceKind;
   fileCount: number;
@@ -43,62 +48,19 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
   const includeSnippets = contextInput.includeSnippets ?? true;
   const changeType = contextInput.changeType ?? "unknown";
   const warnings = [...session.warnings];
-  const focus = new Map<string, { file: FileFact; reasons: Set<string>; rank: number; tier: EvidenceTier; provenance: ContextSourceProvenance[] }>();
-  const impactSeeds = new Map<string, string>();
-  const addFocus = (filePath: string, reason: string, rank = 1, tier: EvidenceTier = "derived", source?: ContextSourceKind) => {
-    const file = findFile(index, filePath);
-    if (!file) {
-      warnings.push(`unindexed file ${filePath}`);
-      return;
-    }
-    const existing = focus.get(file.path) ?? { file, reasons: new Set<string>(), rank: file.rank, tier, provenance: [] };
-    existing.reasons.add(reason);
-    const sources = source ? [source] : contextSourcesForReason(reason);
-    for (const provenanceSource of sources.length > 0 ? sources : ["rank_fallback" as const]) {
-      const provenanceTier = provenanceSource === "lexical_query" && tier === "authoritative" ? "derived" : tier;
-      if (!existing.provenance.some((entry) => entry.source === provenanceSource && entry.reason === reason && entry.tier === provenanceTier)) {
-        existing.provenance.push({ source: provenanceSource, reason, tier: provenanceTier });
-      }
-    }
-    existing.rank += rank;
-    existing.tier = betterTier(existing.tier, tier);
-    focus.set(file.path, existing);
-  };
+  const focusState = createContextFocusState(index, warnings);
+  const { focus, impactSeeds, addFocus } = focusState;
 
   const requestedFiles = contextInput.files ?? [];
-  const requestedResolvedPaths: string[] = [];
-  for (const requested of requestedFiles) {
-    const resolved = resolveFileTarget(index, requested, repoRoot);
-    if (resolved.ambiguous.length > 0) {
-      warnings.push(`ambiguous file ${requested}`);
-      continue;
-    }
-    if (resolved.file) {
-      requestedResolvedPaths.push(resolved.file.path);
-      addFocus(resolved.file.path, "requested file", 100, "authoritative", "explicit_target");
-      impactSeeds.set(resolved.file.path, "requested file");
-    } else {
-      warnings.push(`missing file ${requested}`);
-    }
-  }
-
   const requestedSymbols = contextInput.symbols ?? [];
-  for (const requested of requestedSymbols) {
-    const resolved = resolveSymbolTarget(index, requested);
-    if (resolved.ambiguous.length > 0) {
-      warnings.push(`ambiguous symbol ${requested}`);
-      continue;
-    }
-    if (resolved.symbol) {
-      addFocus(resolved.symbol.path, `requested symbol ${resolved.symbol.qualifiedName}`, 100, "authoritative", "explicit_target");
-      impactSeeds.set(resolved.symbol.path, `requested symbol ${resolved.symbol.qualifiedName}`);
-      for (const usage of index.usageSites.filter((site) => site.targetSymbolId === resolved.symbol!.id).slice(0, 12)) {
-        addFocus(usage.path, `uses ${resolved.symbol.qualifiedName}`, 4, confidenceTier(usage.confidence), "graph_impact");
-      }
-    } else {
-      warnings.push(`missing symbol ${requested}`);
-    }
-  }
+  const requestedResolvedPaths = addExplicitTargetsToContextFocus({
+    index,
+    repoRoot,
+    requestedFiles,
+    requestedSymbols,
+    focus: focusState,
+    warnings
+  });
 
   const explicitQuery = contextInput.query?.trim() ?? "";
   const explicitTargetProvided = requestedFiles.length > 0 || requestedSymbols.length > 0;
@@ -130,104 +92,34 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
   const naturalRetrievalFocused = Boolean(naturalRetrieval && naturalRetrieval.matches.length > 0 && naturalExpansionAllowed);
   const explicitFocusProvided = explicitTargetProvided || Boolean(queryText) || naturalRetrievalFocused;
   if (queryText.trim()) {
-    for (const file of index.files) {
-      const score = matchScore(queryText, file.path);
-      if (score > 0) {
-        addFocus(file.path, `path ${matchReason(score)} ${queryText}`, score, score >= 9 ? "derived" : "heuristic", "lexical_query");
-      }
-    }
-    for (const symbol of index.symbols) {
-      const score = Math.max(matchScore(queryText, symbol.name), matchScore(queryText, symbol.qualifiedName), matchScore(queryText, symbol.path));
-      if (score > 0) {
-        addFocus(symbol.path, `symbol ${matchReason(score)} ${symbol.qualifiedName}`, score + 1, score >= 9 ? confidenceTier(symbol.confidence) : "heuristic", "lexical_query");
-      }
-    }
-    for (const usage of index.usageSites) {
-      const score = Math.max(matchScore(queryText, usage.name), matchScore(queryText, usage.text), matchScore(queryText, usage.path));
-      if (score > 0) {
-        addFocus(usage.path, `usage ${matchReason(score)} ${usage.name}`, score, confidenceTier(usage.confidence), "lexical_query");
-      }
-    }
+    addLexicalQueryFocus(index, queryText, addFocus);
   }
 
   if (naturalExpansionAllowed && naturalRetrieval) {
-    const scoreScale = explicitTargetProvided ? 0.6 : 1;
-    for (const match of naturalRetrieval.matches.slice(0, limit * 2)) {
-      if (explicitTargetProvided && !shouldAddExplicitNaturalMatch(match, explicitConfigTarget)) {
-        continue;
-      }
-      const testLaneBacked = Boolean((match.lanes.test ?? 0) > 0 && naturalRetrieval.intents.includes("testing") && !naturalRetrieval.intents.includes("implementation"));
-      const laneBacked = Boolean((match.lanes.exact ?? 0) > 0 || (match.lanes.symbol ?? 0) > 0 || (match.lanes.workflow ?? 0) > 0 || testLaneBacked);
-      addFocus(
-        match.file.path,
-        `natural task retrieval ${match.matchedTerms.slice(0, 6).join(", ") || "intent"}: ${formatReasons(match.reasons, 3)}`,
-        Math.max(2, match.score * scoreScale),
-        laneBacked ? "derived" : "heuristic",
-        "natural_retrieval"
-      );
-      if (laneBacked || match.score >= 4) {
-        impactSeeds.set(match.file.path, "natural task retrieval");
-      }
-    }
-    if (!explicitTargetProvided) {
-      for (const workflow of naturalRetrieval.workflows.slice(0, 4)) {
-        for (const filePath of workflow.relatedFiles.slice(0, 6)) {
-          addFocus(filePath, `workflow ${workflow.title}`, Math.max(2, workflow.rank / 4), confidenceTier(workflow.confidence), "workflow_trace");
-        }
-      }
-    }
+    addNaturalRetrievalFocus({
+      naturalRetrieval,
+      explicitTargetProvided,
+      explicitConfigTarget,
+      limit,
+      focus: focusState
+    });
   }
 
   const indexedPaths = new Set(index.files.map((file) => file.path));
   const unindexedChanged = changed.filter((file) => !indexedPaths.has(file));
   const groups = groupDiffImpact(index, changedEntries, changedSymbols, unindexedChanged).slice(0, 12);
-  const broadDirty = changed.length > Math.max(8, limit);
-  const dirtyDrivesFocus = changed.length > 0 && (!explicitFocusProvided || !broadDirty);
-  if (changed.length > 0 && explicitFocusProvided && broadDirty) {
-    warnings.push(`broad dirty tree (${changed.length} files) kept as diff context, not read-first focus`);
-  }
-  if (dirtyDrivesFocus) {
-    const dirtyRepresentativeLimit = dirtyContextTask ? Math.max(1, Math.min(2, Math.ceil(limit / 5))) : limit * 2;
-    const dirtyRepresentativePaths = new Set<string>();
-    if (dirtyContextTask) {
-      for (const group of groups.slice(0, dirtyRepresentativeLimit)) {
-        const representative = representativeFileForDiffGroup(index, group.files);
-        if (representative) {
-          dirtyRepresentativePaths.add(representative.path);
-          addFocus(representative.path, `change-group representative ${group.module}`, 12, group.kind === "unknown" ? "fallback" : "authoritative", "dirty_worktree");
-          impactSeeds.set(representative.path, `change-group representative ${group.module}`);
-        }
-      }
-      if (dirtyRepresentativePaths.size === 0) {
-        for (const file of changed.filter((candidate) => indexedPaths.has(candidate)).slice(0, dirtyRepresentativeLimit)) {
-          dirtyRepresentativePaths.add(file);
-          addFocus(file, "dirty diff", 6, "authoritative", "dirty_worktree");
-          impactSeeds.set(file, "dirty diff");
-        }
-      }
-    } else {
-      for (const file of changed.filter((candidate) => indexedPaths.has(candidate)).slice(0, limit * 2)) {
-        addFocus(file, "dirty diff", 6, "authoritative", "dirty_worktree");
-        impactSeeds.set(file, "dirty diff");
-      }
-      for (const entry of changedSymbols.slice(0, limit * 2)) {
-        addFocus(entry.symbol.path, `changed symbol ${entry.symbol.qualifiedName}`, 6, "derived", "dirty_worktree");
-        impactSeeds.set(entry.symbol.path, `changed symbol ${entry.symbol.qualifiedName}`);
-      }
-    }
-    for (const group of groups) {
-      if (dirtyContextTask && dirtyRepresentativePaths.size >= dirtyRepresentativeLimit) {
-        break;
-      }
-      const representative = representativeFileForDiffGroup(index, group.files);
-      if (representative) {
-        if (dirtyContextTask) {
-          dirtyRepresentativePaths.add(representative.path);
-        }
-        addFocus(representative.path, `change-group representative ${group.module}`, 5, group.kind === "unknown" ? "fallback" : "derived", "dirty_worktree");
-      }
-    }
-  }
+  const { broadDirty, dirtyDrivesFocus } = addDirtyWorktreeFocus({
+    index,
+    changed,
+    changedSymbols,
+    groups,
+    indexedPaths,
+    explicitFocusProvided,
+    dirtyContextTask,
+    limit,
+    focus: focusState,
+    warnings
+  });
 
   if (!dirtyContextTask) {
     addContextPackImpactExpansion(index, impactSeeds, changeType, limit, addFocus);
@@ -427,6 +319,193 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
 	      session: { commandBudgetMs: session.commandBudgetMs, maxResultBytes: session.maxResultBytes, maxResults: session.maxResults, provenance: session.provenance }
     }
   };
+}
+
+function createContextFocusState(index: CodexaIndex, warnings: string[]): ContextFocusState {
+  const focus = new Map<string, PacketFocusEntry>();
+  const impactSeeds = new Map<string, string>();
+  const addFocus = (filePath: string, reason: string, rank = 1, tier: EvidenceTier = "derived", source?: ContextSourceKind) => {
+    const file = findFile(index, filePath);
+    if (!file) {
+      warnings.push(`unindexed file ${filePath}`);
+      return;
+    }
+    const existing = focus.get(file.path) ?? { file, reasons: new Set<string>(), rank: file.rank, tier, provenance: [] };
+    existing.reasons.add(reason);
+    const sources = source ? [source] : contextSourcesForReason(reason);
+    for (const provenanceSource of sources.length > 0 ? sources : ["rank_fallback" as const]) {
+      const provenanceTier = provenanceSource === "lexical_query" && tier === "authoritative" ? "derived" : tier;
+      if (!existing.provenance.some((entry) => entry.source === provenanceSource && entry.reason === reason && entry.tier === provenanceTier)) {
+        existing.provenance.push({ source: provenanceSource, reason, tier: provenanceTier });
+      }
+    }
+    existing.rank += rank;
+    existing.tier = betterTier(existing.tier, tier);
+    focus.set(file.path, existing);
+  };
+  return { focus, impactSeeds, addFocus };
+}
+
+function addExplicitTargetsToContextFocus(input: {
+  index: CodexaIndex;
+  repoRoot: string;
+  requestedFiles: string[];
+  requestedSymbols: string[];
+  focus: ContextFocusState;
+  warnings: string[];
+}): string[] {
+  const requestedResolvedPaths: string[] = [];
+  for (const requested of input.requestedFiles) {
+    const resolved = resolveFileTarget(input.index, requested, input.repoRoot);
+    if (resolved.ambiguous.length > 0) {
+      input.warnings.push(`ambiguous file ${requested}`);
+      continue;
+    }
+    if (resolved.file) {
+      requestedResolvedPaths.push(resolved.file.path);
+      input.focus.addFocus(resolved.file.path, "requested file", 100, "authoritative", "explicit_target");
+      input.focus.impactSeeds.set(resolved.file.path, "requested file");
+    } else {
+      input.warnings.push(`missing file ${requested}`);
+    }
+  }
+
+  for (const requested of input.requestedSymbols) {
+    const resolved = resolveSymbolTarget(input.index, requested);
+    if (resolved.ambiguous.length > 0) {
+      input.warnings.push(`ambiguous symbol ${requested}`);
+      continue;
+    }
+    if (resolved.symbol) {
+      input.focus.addFocus(resolved.symbol.path, `requested symbol ${resolved.symbol.qualifiedName}`, 100, "authoritative", "explicit_target");
+      input.focus.impactSeeds.set(resolved.symbol.path, `requested symbol ${resolved.symbol.qualifiedName}`);
+      for (const usage of input.index.usageSites.filter((site) => site.targetSymbolId === resolved.symbol!.id).slice(0, 12)) {
+        input.focus.addFocus(usage.path, `uses ${resolved.symbol.qualifiedName}`, 4, confidenceTier(usage.confidence), "graph_impact");
+      }
+    } else {
+      input.warnings.push(`missing symbol ${requested}`);
+    }
+  }
+  return requestedResolvedPaths;
+}
+
+function addLexicalQueryFocus(index: CodexaIndex, queryText: string, addFocus: ContextFocusState["addFocus"]): void {
+  for (const file of index.files) {
+    const score = matchScore(queryText, file.path);
+    if (score > 0) {
+      addFocus(file.path, `path ${matchReason(score)} ${queryText}`, score, score >= 9 ? "derived" : "heuristic", "lexical_query");
+    }
+  }
+  for (const symbol of index.symbols) {
+    const score = Math.max(matchScore(queryText, symbol.name), matchScore(queryText, symbol.qualifiedName), matchScore(queryText, symbol.path));
+    if (score > 0) {
+      addFocus(symbol.path, `symbol ${matchReason(score)} ${symbol.qualifiedName}`, score + 1, score >= 9 ? confidenceTier(symbol.confidence) : "heuristic", "lexical_query");
+    }
+  }
+  for (const usage of index.usageSites) {
+    const score = Math.max(matchScore(queryText, usage.name), matchScore(queryText, usage.text), matchScore(queryText, usage.path));
+    if (score > 0) {
+      addFocus(usage.path, `usage ${matchReason(score)} ${usage.name}`, score, confidenceTier(usage.confidence), "lexical_query");
+    }
+  }
+}
+
+function addNaturalRetrievalFocus(input: {
+  naturalRetrieval: RetrievalResult;
+  explicitTargetProvided: boolean;
+  explicitConfigTarget: boolean;
+  limit: number;
+  focus: ContextFocusState;
+}): void {
+  const scoreScale = input.explicitTargetProvided ? 0.6 : 1;
+  for (const match of input.naturalRetrieval.matches.slice(0, input.limit * 2)) {
+    if (input.explicitTargetProvided && !shouldAddExplicitNaturalMatch(match, input.explicitConfigTarget)) {
+      continue;
+    }
+    const testLaneBacked = Boolean((match.lanes.test ?? 0) > 0 && input.naturalRetrieval.intents.includes("testing") && !input.naturalRetrieval.intents.includes("implementation"));
+    const laneBacked = Boolean((match.lanes.exact ?? 0) > 0 || (match.lanes.symbol ?? 0) > 0 || (match.lanes.workflow ?? 0) > 0 || testLaneBacked);
+    input.focus.addFocus(
+      match.file.path,
+      `natural task retrieval ${match.matchedTerms.slice(0, 6).join(", ") || "intent"}: ${formatReasons(match.reasons, 3)}`,
+      Math.max(2, match.score * scoreScale),
+      laneBacked ? "derived" : "heuristic",
+      "natural_retrieval"
+    );
+    if (laneBacked || match.score >= 4) {
+      input.focus.impactSeeds.set(match.file.path, "natural task retrieval");
+    }
+  }
+  if (!input.explicitTargetProvided) {
+    for (const workflow of input.naturalRetrieval.workflows.slice(0, 4)) {
+      for (const filePath of workflow.relatedFiles.slice(0, 6)) {
+        input.focus.addFocus(filePath, `workflow ${workflow.title}`, Math.max(2, workflow.rank / 4), confidenceTier(workflow.confidence), "workflow_trace");
+      }
+    }
+  }
+}
+
+function addDirtyWorktreeFocus(input: {
+  index: CodexaIndex;
+  changed: string[];
+  changedSymbols: ChangedSymbol[];
+  groups: DiffImpactGroup[];
+  indexedPaths: Set<string>;
+  explicitFocusProvided: boolean;
+  dirtyContextTask: boolean;
+  limit: number;
+  focus: ContextFocusState;
+  warnings: string[];
+}): { broadDirty: boolean; dirtyDrivesFocus: boolean } {
+  const broadDirty = input.changed.length > Math.max(8, input.limit);
+  const dirtyDrivesFocus = input.changed.length > 0 && (!input.explicitFocusProvided || !broadDirty);
+  if (input.changed.length > 0 && input.explicitFocusProvided && broadDirty) {
+    input.warnings.push(`broad dirty tree (${input.changed.length} files) kept as diff context, not read-first focus`);
+  }
+  if (!dirtyDrivesFocus) {
+    return { broadDirty, dirtyDrivesFocus };
+  }
+
+  const dirtyRepresentativeLimit = input.dirtyContextTask ? Math.max(1, Math.min(2, Math.ceil(input.limit / 5))) : input.limit * 2;
+  const dirtyRepresentativePaths = new Set<string>();
+  if (input.dirtyContextTask) {
+    for (const group of input.groups.slice(0, dirtyRepresentativeLimit)) {
+      const representative = representativeFileForDiffGroup(input.index, group.files);
+      if (representative) {
+        dirtyRepresentativePaths.add(representative.path);
+        input.focus.addFocus(representative.path, `change-group representative ${group.module}`, 12, group.kind === "unknown" ? "fallback" : "authoritative", "dirty_worktree");
+        input.focus.impactSeeds.set(representative.path, `change-group representative ${group.module}`);
+      }
+    }
+    if (dirtyRepresentativePaths.size === 0) {
+      for (const file of input.changed.filter((candidate) => input.indexedPaths.has(candidate)).slice(0, dirtyRepresentativeLimit)) {
+        dirtyRepresentativePaths.add(file);
+        input.focus.addFocus(file, "dirty diff", 6, "authoritative", "dirty_worktree");
+        input.focus.impactSeeds.set(file, "dirty diff");
+      }
+    }
+  } else {
+    for (const file of input.changed.filter((candidate) => input.indexedPaths.has(candidate)).slice(0, input.limit * 2)) {
+      input.focus.addFocus(file, "dirty diff", 6, "authoritative", "dirty_worktree");
+      input.focus.impactSeeds.set(file, "dirty diff");
+    }
+    for (const entry of input.changedSymbols.slice(0, input.limit * 2)) {
+      input.focus.addFocus(entry.symbol.path, `changed symbol ${entry.symbol.qualifiedName}`, 6, "derived", "dirty_worktree");
+      input.focus.impactSeeds.set(entry.symbol.path, `changed symbol ${entry.symbol.qualifiedName}`);
+    }
+  }
+  for (const group of input.groups) {
+    if (input.dirtyContextTask && dirtyRepresentativePaths.size >= dirtyRepresentativeLimit) {
+      break;
+    }
+    const representative = representativeFileForDiffGroup(input.index, group.files);
+    if (representative) {
+      if (input.dirtyContextTask) {
+        dirtyRepresentativePaths.add(representative.path);
+      }
+      input.focus.addFocus(representative.path, `change-group representative ${group.module}`, 5, group.kind === "unknown" ? "fallback" : "derived", "dirty_worktree");
+    }
+  }
+  return { broadDirty, dirtyDrivesFocus };
 }
 
 function summarizeContextSources(focusEntries: Array<{ file: FileFact; provenance: ContextSourceProvenance[] }>): ContextSourceSummary[] {

@@ -9,6 +9,7 @@ await requireIgnoredPaths(["node_modules/", "dist/", ".codex/codebase/", ".codex
 await requireThinQueriesBarrel();
 await forbidSyncShellInQueryPath();
 await forbidHeavyRuntimeDependencies();
+await enforceSourceBoundaries();
 
 if (failures.length > 0) {
   for (const failure of failures) {
@@ -64,6 +65,55 @@ async function forbidHeavyRuntimeDependencies() {
       failures.push(`runtime dependency ${name} violates Codexa's simple local architecture boundary`);
     }
   }
+}
+
+async function enforceSourceBoundaries() {
+  const coreFiles = [
+    ...(await listFiles("src/query", ".ts")),
+    ...(await listFiles("src/eval", ".ts")),
+    "src/indexer.ts",
+    "src/repo-files.ts"
+  ];
+  await forbidImports(
+    coreFiles,
+    [
+      { target: "src/mcp", label: "MCP adapter" },
+      { target: "src/cli", label: "CLI adapter" },
+      { target: "src/doctor", label: "doctor command adapter" },
+      { target: "src/github-release", label: "GitHub release adapter" },
+      { target: "src/init", label: "init command adapter" }
+    ],
+    "core query/index/eval code"
+  );
+}
+
+async function forbidImports(files, forbiddenTargets, ownerLabel) {
+  for (const file of files) {
+    const text = await readText(file);
+    for (const specifier of importSpecifiers(text)) {
+      const target = sourceImportTarget(file, specifier);
+      if (!target) {
+        continue;
+      }
+      const forbidden = forbiddenTargets.find((entry) => target === entry.target || target.startsWith(`${entry.target}/`));
+      if (forbidden) {
+        failures.push(`${file} imports ${specifier}; ${ownerLabel} must not depend on the ${forbidden.label}`);
+      }
+    }
+  }
+}
+
+function importSpecifiers(text) {
+  return [...text.matchAll(/\bfrom\s+["']([^"']+)["']|import\s*\(\s*["']([^"']+)["']\s*\)/gu)].map((match) => match[1] ?? match[2]);
+}
+
+function sourceImportTarget(importer, specifier) {
+  if (!specifier.startsWith(".")) {
+    return undefined;
+  }
+  const resolved = path.posix.normalize(path.posix.join(path.posix.dirname(importer), specifier));
+  const withoutExtension = resolved.replace(/\.(?:c|m)?js$/u, "").replace(/\.ts$/u, "");
+  return withoutExtension.endsWith("/index") ? withoutExtension.slice(0, -"/index".length) : withoutExtension;
 }
 
 async function listFiles(dir, suffix) {

@@ -24,7 +24,7 @@ import type {
   RepoSnapshotFact,
   RiskSignalFact
 } from "./types.js";
-import { normalizePath, stableId, uniqueSorted } from "./util.js";
+import { mapLimit, normalizePath, stableId, uniqueSorted } from "./util.js";
 import { writeArtifacts } from "./artifacts.js";
 
 export const CODEBASE_DIR = ".codex/codebase";
@@ -33,6 +33,7 @@ const PARSE_CACHE_PATH = ".codex/cache/codexa-parse-cache.json";
 const INDEX_LOCK_DIR = ".codex/cache/codexa-index.lock";
 const INDEX_LOCK_STALE_MS = 120_000;
 const PYTHON_SEMANTIC_SOURCE_TOTAL_BYTES = 16 * 1024 * 1024;
+const FACTS_NDJSON_WRITE_BUFFER_BYTES = 1024 * 1024;
 
 interface ParseCache {
   version: string;
@@ -776,8 +777,10 @@ function freshnessFromStored(
 
 function applyRanking(index: CodexaIndex, churnByPath: Map<string, number>, outcomeSignals?: OutcomeRankSignals): CodexaIndex {
   const incomingImports = countBy(index.imports.flatMap((imp) => (imp.resolvedPath ? [imp.resolvedPath] : [])));
+  const importsByPath = countBy(index.imports.map((imp) => imp.path));
   const usageByPath = countBy(index.usageSites.map((usage) => usage.path));
   const symbolsByPath = countBy(index.symbols.map((symbol) => symbol.path));
+  const filesWithTestEdges = new Set(index.testEdges.flatMap((edge) => (edge.targetPath ? [edge.targetPath] : [])));
   const riskByPath = new Map<string, number>();
   for (const risk of index.risks) {
     riskByPath.set(risk.path, (riskByPath.get(risk.path) ?? 0) + risk.score);
@@ -789,7 +792,7 @@ function applyRanking(index: CodexaIndex, churnByPath: Map<string, number>, outc
     const symbols = symbolsByPath.get(file.path) ?? 0;
     const publicSurface = file.path.includes("/api/") || file.path.includes("app.") || file.path.includes("index.") ? 2 : 0;
     const churn = churnByPath.get(file.path) ?? 0;
-    const testProximity = file.test ? 0.5 : index.testEdges.some((edge) => edge.targetPath === file.path) ? 1.5 : 0;
+    const testProximity = file.test ? 0.5 : filesWithTestEdges.has(file.path) ? 1.5 : 0;
     const dirtyRisk = file.dirty ? 3 : 0;
     const riskScore = riskByPath.get(file.path) ?? 0;
     const generatedPenalty = file.generated ? -2 : 0;
@@ -811,7 +814,7 @@ function applyRanking(index: CodexaIndex, churnByPath: Map<string, number>, outc
       ...file,
       symbolCount: symbols,
       usageCount: usage,
-      importCount: index.imports.filter((imp) => imp.path === file.path).length,
+      importCount: importsByPath.get(file.path) ?? 0,
       riskScore,
       rank,
       rankReasons
@@ -871,8 +874,17 @@ function allFacts(index: CodexaIndex): CodexaFact[] {
 async function writeFactsNdjson(filePath: string, facts: CodexaFact[]): Promise<void> {
   const handle = await fs.open(filePath, "w");
   try {
+    let buffer = "";
     for (const fact of facts) {
-      await handle.write(`${JSON.stringify(fact)}\n`);
+      const line = `${JSON.stringify(fact)}\n`;
+      if (buffer.length + line.length > FACTS_NDJSON_WRITE_BUFFER_BYTES && buffer.length > 0) {
+        await handle.write(buffer);
+        buffer = "";
+      }
+      buffer += line;
+    }
+    if (buffer.length > 0) {
+      await handle.write(buffer);
     }
   } finally {
     await handle.close();
@@ -895,20 +907,6 @@ function countBy(values: string[]): Map<string, number> {
     counts.set(value, (counts.get(value) ?? 0) + 1);
   }
   return counts;
-}
-
-async function mapLimit<T, R>(items: T[], limit: number, mapper: (item: T) => Promise<R>): Promise<R[]> {
-  const results: R[] = new Array(items.length);
-  let cursor = 0;
-  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
-    while (cursor < items.length) {
-      const index = cursor;
-      cursor += 1;
-      results[index] = await mapper(items[index]);
-    }
-  });
-  await Promise.all(workers);
-  return results;
 }
 
 async function pathExists(candidate: string): Promise<boolean> {

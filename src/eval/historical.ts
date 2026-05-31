@@ -7,7 +7,7 @@ import path from "node:path";
 import { buildIndex } from "../indexer.js";
 import { changePlanQuery, contextPackQuery, focusBriefQuery, impactQuery, postEditReviewQuery, taskBriefQuery, workflowPathQuery } from "../queries.js";
 import type { QueryOptions, QueryResult } from "../types.js";
-import type { EvalScenario, EvalOracle } from "../eval.js";
+import type { EvalScenario, EvalOracle } from "./types.js";
 
 type HistoricalTool = "task_brief" | "context_pack" | "focus_brief" | "impact" | "workflow_path" | "change_plan" | "post_edit_review";
 

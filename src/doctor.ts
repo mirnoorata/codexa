@@ -5,7 +5,7 @@ import { fileURLToPath } from "node:url";
 import { effectiveAutonomyMode, type CodexaAutonomyStatus } from "./autonomy.js";
 import { getFreshness } from "./indexer.js";
 import { MCP_TOOL_CATALOG } from "./mcp-tool-catalog.js";
-import { resolveMcpRepoRoot, type McpRepoRootResolution, type McpRepoRootResolutionOptions } from "./mcp-repo-root.js";
+import { resolveMcpRepoRoot, shouldPreferConfiguredRepoRoot, type McpRepoRootResolution, type McpRepoRootResolutionOptions } from "./mcp-repo-root.js";
 import { codexaHookEventsRelativePath, loadLatestCodexaHookEvent } from "./post-edit-outcomes.js";
 
 export interface DoctorOptions {
@@ -76,7 +76,7 @@ export async function runDoctor(repoInput: string, options: DoctorOptions = {}):
   const routingOptions: McpRepoRootResolutionOptions = {
     workspaceFocusFile: options.workspaceFocusFile,
     workspaceSessionId: options.workspaceSessionId,
-    preferConfiguredRoot: !workspaceRoutingRequested && (await codexaConfigExists(configuredRoot))
+    preferConfiguredRoot: !workspaceRoutingRequested && (await shouldPreferConfiguredRepoRoot(configuredRoot, options))
   };
   const mcpRouting = options.mcpReadiness ? await inspectMcpRouting(configuredRoot, routingOptions) : undefined;
   const repoRoot = mcpRouting?.resolution?.repoRoot ?? configuredRoot;
@@ -321,7 +321,7 @@ async function mcpToolSurface(): Promise<{
 
 async function registeredMcpToolNamesFromServerSource(): Promise<{ names: string[]; sourcePath?: string; error?: string }> {
   const moduleDir = path.dirname(fileURLToPath(import.meta.url));
-  const candidates = [path.join(moduleDir, "mcp.js"), path.join(moduleDir, "mcp.ts")];
+  const candidates = [path.join(moduleDir, "mcp/tools.js"), path.join(moduleDir, "mcp.js"), path.join(moduleDir, "mcp/tools.ts"), path.join(moduleDir, "mcp.ts")];
   const errors: string[] = [];
   for (const candidate of candidates) {
     const text = await readTextIfExists(candidate);
@@ -329,7 +329,10 @@ async function registeredMcpToolNamesFromServerSource(): Promise<{ names: string
       errors.push(`${candidate}: not found`);
       continue;
     }
-    const names = [...text.matchAll(/server\.registerTool\(\s*["']([a-z0-9_:-]+)["']/giu)].map((match) => match[1]);
+    const names = [
+      ...text.matchAll(/server\.registerTool\(\s*["']([a-z0-9_:-]+)["']/giu),
+      ...text.matchAll(/\bname:\s*["']([a-z0-9_:-]+)["']/giu)
+    ].map((match) => match[1]);
     if (names.length === 0) {
       errors.push(`${candidate}: no registerTool calls found`);
       continue;
@@ -337,15 +340,6 @@ async function registeredMcpToolNamesFromServerSource(): Promise<{ names: string
     return { names: [...new Set(names)], sourcePath: candidate };
   }
   return { names: [], error: errors.join("; ") };
-}
-
-async function codexaConfigExists(repoRoot: string): Promise<boolean> {
-  try {
-    await fs.access(path.join(repoRoot, ".codex", "config.toml"));
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function checkLatestEval(

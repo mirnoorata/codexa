@@ -10,44 +10,8 @@ import { MCP_TOOL_CATALOG } from "./mcp-tool-catalog.js";
 import { changePlanQuery, contextPackQuery, diffImpactQuery, focusBriefQuery, impactQuery, postEditReviewQuery, searchQuery, taskBriefQuery, testPlanQuery, workflowPathQuery } from "./queries.js";
 import type { QueryOptions, QueryResult, TestRecommendation } from "./types.js";
 import { externalHistoricalTaskPackScenarios, historicalFixtureScenarios } from "./eval/historical.js";
-
-export type EvalSuite = "all" | "project" | "synthetic" | "historical-fixture" | "task-pack";
-export type EvalScenarioSuite = Exclude<EvalSuite, "all"> | "historical-task-pack";
-
-export interface EvalScenario {
-  id: string;
-  suite: EvalScenarioSuite;
-  description: string;
-  repoRoot: string;
-  scored?: boolean;
-  baselineCommand?: string[];
-  baselineCommands?: string[][];
-  baselineCwd?: string;
-  codexa: () => Promise<QueryResult>;
-  oracle: EvalOracle;
-  privatePack?: boolean;
-  taskPackPath?: string;
-  cleanupRepoRoot?: string;
-  cleanupRepoRoots?: string[];
-}
-
-export interface EvalOracle {
-  expectedFiles?: string[];
-  expectedChangedFiles?: string[];
-  expectedTests?: string[];
-  forbiddenFiles?: string[];
-  topFiles?: string[];
-  knownTraps?: string[];
-  expectedCodexaCalls?: string[];
-  maxTextChars?: number;
-  maxDataBytes?: number;
-  maxFalsePositiveFiles?: number;
-  minFileRecall?: number;
-  minChangedFileRecall?: number;
-  minTestRecall?: number;
-  minFilePrecisionAtK?: number;
-  maxSelectedToBaselineRatio?: number;
-}
+import type { EvalOracle, EvalScenario, EvalSuite } from "./eval/types.js";
+export type { EvalOracle, EvalScenario, EvalScenarioSuite, EvalSuite } from "./eval/types.js";
 
 interface EvalVerificationProvenance {
   schemaVersion?: number;
