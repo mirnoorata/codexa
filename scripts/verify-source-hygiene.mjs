@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import ts from "typescript";
 
 const repoRoot = process.cwd();
 const failures = [];
@@ -125,14 +126,14 @@ async function enforceSourceBoundaries() {
     [{ target: "src/mcp/tools", label: "executable MCP tool registration adapter" }],
     "CLI, doctor, and release tooling"
   );
-  await forbidRegexMcpToolScanning();
+  await forbidMcpToolRegistrationScanning();
 }
 
-async function forbidRegexMcpToolScanning() {
+async function forbidMcpToolRegistrationScanning() {
   const files = ["src/doctor.ts", "src/eval.ts", "src/cli.ts", "src/github-release.ts"];
   for (const file of files) {
     const text = await readText(file);
-    if (/\bregisterTool\s*\(/u.test(text) || /server\.registerTool/u.test(text)) {
+    if (hasMcpToolRegistrationCall(file, text)) {
       failures.push(`${file} must use the typed MCP tool registry instead of scanning registerTool calls`);
     }
   }
@@ -141,7 +142,7 @@ async function forbidRegexMcpToolScanning() {
 async function forbidImports(files, forbiddenTargets, ownerLabel) {
   for (const file of files) {
     const text = await readText(file);
-    for (const specifier of importSpecifiers(text)) {
+    for (const specifier of importSpecifiers(file, text)) {
       const target = sourceImportTarget(file, specifier);
       if (!target) {
         continue;
@@ -154,8 +155,48 @@ async function forbidImports(files, forbiddenTargets, ownerLabel) {
   }
 }
 
-function importSpecifiers(text) {
-  return [...text.matchAll(/\bfrom\s+["']([^"']+)["']|import\s*\(\s*["']([^"']+)["']\s*\)/gu)].map((match) => match[1] ?? match[2]);
+function importSpecifiers(file, text) {
+  const sourceFile = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  const specifiers = [];
+  const visit = (node) => {
+    if ((ts.isImportDeclaration(node) || ts.isExportDeclaration(node)) && node.moduleSpecifier && ts.isStringLiteralLike(node.moduleSpecifier)) {
+      specifiers.push(node.moduleSpecifier.text);
+    }
+    if (ts.isCallExpression(node) && node.expression.kind === ts.SyntaxKind.ImportKeyword && node.arguments.length > 0 && ts.isStringLiteralLike(node.arguments[0])) {
+      specifiers.push(node.arguments[0].text);
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return specifiers;
+}
+
+function hasMcpToolRegistrationCall(file, text) {
+  const sourceFile = ts.createSourceFile(file, text, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+  let found = false;
+  const visit = (node) => {
+    if (found) {
+      return;
+    }
+    if (ts.isCallExpression(node)) {
+      if (ts.isIdentifier(node.expression) && node.expression.text === "registerTool") {
+        found = true;
+        return;
+      }
+      if (
+        ts.isPropertyAccessExpression(node.expression) &&
+        node.expression.name.text === "registerTool" &&
+        ts.isIdentifier(node.expression.expression) &&
+        node.expression.expression.text === "server"
+      ) {
+        found = true;
+        return;
+      }
+    }
+    ts.forEachChild(node, visit);
+  };
+  visit(sourceFile);
+  return found;
 }
 
 function sourceImportTarget(importer, specifier) {

@@ -1,4 +1,4 @@
-import type { McpServer, RegisteredTool, ToolCallback } from "@modelcontextprotocol/sdk/server/mcp.js";
+import type { McpServer, ToolCallback } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { AnySchema, ShapeOutput, ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-compat.js";
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
@@ -44,7 +44,7 @@ type McpToolContext = string | { toolName: string; input?: Record<string, unknow
 type ChangeType = "style" | "api" | "behavior" | "rename" | "delete" | "unknown";
 
 interface McpToolDefinition<InputSchema extends ZodRawShapeCompat> {
-  name: string;
+  name: McpToolName;
   inputSchema: InputSchema;
   annotations: ToolAnnotations;
   handler: (input: ShapeOutput<InputSchema>) => Promise<CallToolResult>;
@@ -89,11 +89,9 @@ type RegisterToolConfig<OutputArgs extends ZodRawShapeCompat | AnySchema, InputA
 
 function registerMcpTool<InputSchema extends ZodRawShapeCompat>(
   { server, outputSchema }: Pick<RegisterMcpToolsOptions, "server" | "outputSchema">,
-  tool: McpToolDefinition<InputSchema>,
-  registeredToolNames: McpToolName[]
+  tool: McpToolDefinition<InputSchema>
 ): void {
   const metadata = requireMcpToolMetadata(tool.name);
-  registeredToolNames.push(metadata.name);
   // Keep the MCP SDK's conditional callback cast inside this adapter helper.
   const handler = (async (input: ShapeOutput<InputSchema>) => tool.handler(input)) as unknown as ToolCallback<InputSchema>;
   server.registerTool(
@@ -132,23 +130,28 @@ export const MCP_REGISTERED_TOOL_NAMES = MCP_TOOL_NAMES;
 export function registerMcpTools(options: RegisterMcpToolsOptions): void {
   const { server, queryOptions, outputSchema, toolQueryOptions, runTool, runFreshnessTool } = options;
   const { pureRead, sourceContext, cacheWrite, memoryWrite } = options.annotations;
-  const registeredToolNames: McpToolName[] = [];
-  const registerTool = <OutputArgs extends ZodRawShapeCompat | AnySchema, InputArgs extends undefined | ZodRawShapeCompat | AnySchema = undefined>(
-    name: string,
+  const toolDefinitions = new Map<McpToolName, () => void>();
+  const defineTool = <OutputArgs extends ZodRawShapeCompat | AnySchema, InputArgs extends undefined | ZodRawShapeCompat | AnySchema = undefined>(
+    name: McpToolName,
     config: RegisterToolConfig<OutputArgs, InputArgs>,
     handler: ToolCallback<InputArgs>
-  ): RegisteredTool => {
+  ): void => {
     const metadata = requireMcpToolMetadata(name);
-    registeredToolNames.push(metadata.name);
-    return server.registerTool(
-      metadata.name,
-      {
-        ...config,
-        title: metadata.title,
-        description: metadata.description
-      },
-      handler
-    );
+    toolDefinitions.set(metadata.name, () => {
+      server.registerTool(
+        metadata.name,
+        {
+          ...config,
+          title: metadata.title,
+          description: metadata.description
+        },
+        handler
+      );
+    });
+  };
+  const defineMcpTool = <InputSchema extends ZodRawShapeCompat>(tool: McpToolDefinition<InputSchema>): void => {
+    const metadata = requireMcpToolMetadata(tool.name);
+    toolDefinitions.set(metadata.name, () => registerMcpTool({ server, outputSchema }, tool));
   };
   const {
     changeType: changeTypeSchema,
@@ -164,7 +167,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
     sessionMemoryEvidence: sessionMemoryEvidenceSchema
   } = options.schemas;
 
-  registerTool(
+  defineTool(
     "freshness",
     {
       inputSchema: {},
@@ -174,7 +177,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
     async () => runFreshnessTool()
   );
 
-  registerTool(
+  defineTool(
     "repo_map",
     {
       inputSchema: { limit: z.number().int().positive().max(50).optional(), tokenBudget: z.number().int().min(400).max(8000).optional() },
@@ -184,7 +187,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
     async ({ limit, tokenBudget }) => runTool((session) => repoMapQuery(session, limit ?? 20, queryOptions, tokenBudget ?? 1500), "repo_map")
   );
 
-  registerTool(
+  defineTool(
     "find_context",
     {
       inputSchema: { query: z.string().min(1), limit: z.number().int().positive().max(30).optional(), ...semanticQuerySchema },
@@ -194,7 +197,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
     async (input) => runTool((session) => findContextQuery(session, input.query, input.limit ?? 12, toolQueryOptions(input)), { toolName: "find_context", input })
   );
 
-  registerTool(
+  defineTool(
     "search",
     {
       inputSchema: {
@@ -211,7 +214,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
       runTool((session) => searchQuery(session, { query: input.query, patterns: input.patterns, limit: input.limit ?? 12, includeRaw: input.includeRaw ?? true }, toolQueryOptions(input)), "search")
   );
 
-  registerTool(
+  defineTool(
     "placeholder_report",
     {
       inputSchema: {
@@ -227,7 +230,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
     async (input) => runTool((session) => placeholderReportQuery(session, input, queryOptions), "placeholder_report")
   );
 
-  registerTool(
+  defineTool(
     "symbol_context",
     {
       inputSchema: {
@@ -252,7 +255,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
       )
   );
 
-  registerTool(
+  defineTool(
     "impact",
     {
       inputSchema: {
@@ -267,7 +270,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
     async (input) => runTool((session) => impactQuery(session, { file: input.file, symbol: input.symbol, changeType: input.changeType, depth: input.depth }, queryOptions), { toolName: "impact", input })
   );
 
-  registerTool(
+  defineTool(
     "diff_impact",
     {
       inputSchema: {},
@@ -277,7 +280,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
     async () => runTool((session) => diffImpactQuery(session, queryOptions), "diff_impact")
   );
 
-  registerTool(
+  defineTool(
     "test_plan",
     {
       inputSchema: { diff: z.boolean().optional(), changeType: changeTypeSchema.optional() },
@@ -295,7 +298,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
       )
   );
 
-  registerTool(
+  defineTool(
     "task_brief",
     {
       inputSchema: {
@@ -317,7 +320,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
     async (input) => runTool((session) => taskBriefQuery(session, input, toolQueryOptions(input)), { toolName: "task_brief", input })
   );
 
-  registerTool(
+  defineTool(
     "context_pack",
     {
       inputSchema: {
@@ -339,7 +342,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
     async (input) => runTool((session) => contextPackQuery(session, input, toolQueryOptions(input)), { toolName: "context_pack", input })
   );
 
-  registerTool(
+  defineTool(
     "focus_brief",
     {
       inputSchema: {
@@ -355,7 +358,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
     async (input) => runTool((session) => focusBriefQuery(session, input, toolQueryOptions(input)), { toolName: "focus_brief", input })
   );
 
-  registerTool(
+  defineTool(
     "session_context",
     {
       inputSchema: {
@@ -371,7 +374,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
     async (input) => runTool(async (session) => asSessionContextResult(await focusBriefQuery(session, input, toolQueryOptions(input))), { toolName: "session_context", input })
   );
 
-  registerTool(
+  defineTool(
     "session_memory",
     {
       inputSchema: {
@@ -438,7 +441,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
     }
   ] satisfies Array<McpToolDefinition<typeof graphTargetSchema>>;
   for (const tool of graphTools) {
-    registerMcpTool({ server, outputSchema }, tool, registeredToolNames);
+    defineMcpTool(tool);
   }
 
   const dependencyPathSchema = {
@@ -448,15 +451,13 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
     toSymbol: z.string().optional(),
     maxDepth: z.number().int().min(1).max(10).optional()
   } satisfies z.ZodRawShape;
-  registerMcpTool(
-    { server, outputSchema },
+  defineMcpTool(
     {
       name: "dependency_path",
       inputSchema: dependencyPathSchema,
       annotations: sourceContext,
       handler: async (input) => runTool((session) => dependencyPathQuery(session, input, queryOptions), "dependency_path")
-    },
-    registeredToolNames
+    }
   );
 
   const workflowPathSchema = {
@@ -466,18 +467,16 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
     limit: z.number().int().positive().max(30).optional(),
     ...semanticQuerySchema
   } satisfies z.ZodRawShape;
-  registerMcpTool(
-    { server, outputSchema },
+  defineMcpTool(
     {
       name: "workflow_path",
       inputSchema: workflowPathSchema,
       annotations: sourceContext,
       handler: async (input) => runTool((session) => workflowPathQuery(session, input, toolQueryOptions(input)), "workflow_path")
-    },
-    registeredToolNames
+    }
   );
 
-  registerTool(
+  defineTool(
     "change_plan",
     {
       inputSchema: {
@@ -502,7 +501,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
     async (input) => runTool((session) => changePlanQuery(session, input, toolQueryOptions(input)), { toolName: "change_plan", input })
   );
 
-  registerTool(
+  defineTool(
     "post_edit_review",
     {
       inputSchema: {
@@ -553,7 +552,14 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
     },
     async (input) => runTool((session) => postEditReviewQuery(session, { ...input, persistOutcome: false }, queryOptions), { toolName: "post_edit_review", input })
   );
-  assertMcpToolRegistrationCoverage(registeredToolNames);
+  assertMcpToolRegistrationCoverage([...toolDefinitions.keys()]);
+  for (const toolName of MCP_TOOL_NAMES) {
+    const register = toolDefinitions.get(toolName);
+    if (!register) {
+      throw new Error(`MCP tool ${toolName} is missing an executable definition`);
+    }
+    register();
+  }
 }
 
 function asSessionContextResult(result: QueryResult): QueryResult {

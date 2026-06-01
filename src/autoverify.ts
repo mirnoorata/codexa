@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { getGitStateAsync, repoRelativePath as gitRepoRelativePath } from "./git.js";
 import { effectiveAutonomyMode } from "./autonomy.js";
 import { isSourcePath, isTestPath, shouldSkipPath } from "./language.js";
+import { AUTO_VERIFY_POLICY_DIGEST, AUTO_VERIFY_POLICY_ID, autoVerifyPolicySignature as policySignature, isTrustedAutoVerifyReport, markTrustedAutoVerifyReport } from "./autoverify/policy.js";
 import type { AutoVerifyCandidate, VerificationCommandReport } from "./types.js";
 import { isSubpath, stableId, uniqueSorted } from "./util.js";
 
@@ -16,18 +17,6 @@ const DEFAULT_MAX_COMMANDS = 2;
 const DEFAULT_TIMEOUT_MS = 15_000;
 const MAX_OUTPUT_SUMMARY = 500;
 const MAX_OUTPUT_CAPTURE = 20_000;
-const POLICY_ID = "local-targeted-tests-v1";
-const POLICY_DIGEST = stableId(
-  POLICY_ID,
-  "hook-only",
-  "minimal-env",
-  "targeted-tests",
-  "no-shell",
-  "no-lifecycle-hooks",
-  "source-mutation-non-covering"
-);
-const AUTO_VERIFY_TRUST_TOKEN = Symbol("codexa.autoverify.trusted-report");
-
 interface AutoVerifyCandidateInternal extends AutoVerifyCandidate {
   protectedPaths: string[];
 }
@@ -74,11 +63,11 @@ export interface AutoVerifyCommandReport extends VerificationCommandReport {
 }
 
 export function isTrustedAutoVerifyCommandReport(report: unknown): report is AutoVerifyCommandReport {
-  return Boolean(report && typeof report === "object" && (report as { [AUTO_VERIFY_TRUST_TOKEN]?: unknown })[AUTO_VERIFY_TRUST_TOKEN] === true);
+  return isTrustedAutoVerifyReport(report);
 }
 
 export function autoVerifyPolicySignature(): string {
-  return `${POLICY_ID}:${POLICY_DIGEST}`;
+  return policySignature();
 }
 
 export interface AutoVerifyReportRunner {
@@ -772,8 +761,8 @@ async function runVerificationCommand(repoRoot: string, command: SafeAutoVerifyC
     reportKind: "codexa-autoverify-report",
     runnerName: "codexa",
     runnerVersion: process.env.npm_package_version ?? "0.0.0",
-    policyId: POLICY_ID,
-    policyDigest: POLICY_DIGEST,
+    policyId: AUTO_VERIFY_POLICY_ID,
+    policyDigest: AUTO_VERIFY_POLICY_DIGEST,
     taskId: command.candidate.taskId,
     snapshotDigest: command.candidate.snapshotDigest,
     commandId: command.candidate.commandId,
@@ -833,10 +822,7 @@ async function runVerificationCommand(repoRoot: string, command: SafeAutoVerifyC
       )
     }
   };
-  Object.defineProperty(report, AUTO_VERIFY_TRUST_TOKEN, {
-    value: true,
-    enumerable: false
-  });
+  markTrustedAutoVerifyReport(report);
   Object.freeze(report.runner.targetRealpaths);
   Object.freeze(report.runner.allowedBy);
   Object.freeze(report.runner);

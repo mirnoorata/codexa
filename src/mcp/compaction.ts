@@ -1,4 +1,5 @@
 import { CURRENT_VERIFICATION_PROVENANCE } from "../types.js";
+import { asCodexaQueryData, asPostEditReviewData } from "../query-data.js";
 import type { ChangePlanData, CodexaQueryData, ContextPacketData, FocusBriefData, FreshnessInfo, PostEditReviewData, QueryResult, TestPlanData } from "../types.js";
 
 const MCP_STRUCTURED_DATA_TARGET_BYTES = 96_000;
@@ -19,7 +20,7 @@ export function compactMcpResult(result: QueryResult): QueryResult {
   const originalBytes = structuredByteLength(originalData);
   const mode = typeof originalData.mode === "string" ? originalData.mode : inferMcpDataMode(originalData);
   const effectiveMode = mode ?? "unknown";
-  const typedData = mcpQueryDataFromRecord(originalData, mode);
+  const typedData = asCodexaQueryData(originalData, mode);
   const compaction = (typedData ? compactMcpDataByMode(typedData) : undefined) ?? compactGenericMcpData(originalData, effectiveMode);
   const clamped = clampLargeStrings(compaction.data);
   const dataWithoutMetrics = withMergedTruncation(clamped.value as Record<string, unknown>, compaction.truncation);
@@ -50,13 +51,6 @@ export function compactNonPostEditMcpResult(result: QueryResult): QueryResult {
 export function inferMcpDataMode(data: Record<string, unknown>): string | undefined {
   if (Array.isArray(data.verificationCommands) && Array.isArray(data.verificationCoverage) && Array.isArray(data.tests)) {
     return Array.isArray(data.focusFiles) || Array.isArray(data.nextReads) ? "context_pack" : "test_plan";
-  }
-  return undefined;
-}
-
-function mcpQueryDataFromRecord(data: Record<string, unknown>, mode: string | undefined): CodexaQueryData | undefined {
-  if (mode === "context_pack" || mode === "task_brief" || mode === "focus_brief" || mode === "session_context" || mode === "change_plan" || mode === "post_edit_review" || mode === "test_plan") {
-    return { mode, ...data } as CodexaQueryData;
   }
   return undefined;
 }
@@ -292,7 +286,10 @@ export function compactPostEditMcpResult(result: QueryResult): QueryResult {
   if (!result.data || typeof result.data !== "object") {
     return result;
   }
-  const data = result.data as PostEditReviewData;
+  const data = asPostEditReviewData(result.data);
+  if (!data) {
+    return result;
+  }
   const snapshot = data.snapshot && typeof data.snapshot === "object" ? (data.snapshot as Record<string, unknown>) : undefined;
   const outcome = data.outcome && typeof data.outcome === "object" ? (data.outcome as Record<string, unknown>) : undefined;
   const truncation = compactPostEditTruncation(data, snapshot, outcome);
@@ -375,7 +372,7 @@ export function compactPostEditMcpResult(result: QueryResult): QueryResult {
             verificationCoverage: limitArray(outcome.verificationCoverage, 40),
             verificationLedger: limitArray(outcome.verificationLedger, 60),
             verificationProvenance: outcome.verificationProvenance ?? data.verificationProvenance ?? CURRENT_VERIFICATION_PROVENANCE,
-            waivedVerification: limitArray(outcome.waivedVerification ?? data.waivedVerification, 30),
+            waivedVerification: limitArray(nonEmptyArray(outcome.waivedVerification) ? outcome.waivedVerification : data.waivedVerification, 30),
             modifiedPublicSymbols: limitArray(outcome.modifiedPublicSymbols, 40),
             hookSummary: outcome.hookSummary,
             truncation: nestedTruncation("outcome", truncation)
@@ -1248,6 +1245,10 @@ function truncatedArray(name: string, value: unknown, limit: number): Record<str
 
 function limitArray(value: unknown, limit: number): unknown {
   return Array.isArray(value) ? value.slice(0, limit) : value;
+}
+
+function nonEmptyArray(value: unknown): value is unknown[] {
+  return Array.isArray(value) && value.length > 0;
 }
 
 function compactSnapshotLoad(value: unknown): unknown {

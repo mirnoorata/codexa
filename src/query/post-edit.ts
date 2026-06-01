@@ -22,6 +22,7 @@ import { pointerForSessionMemory, readSessionMemory } from "../session-memory.js
 import { loadTaskSnapshot, saveBlockedTaskSnapshot, saveTaskSnapshot, type TaskSnapshotLoadResult } from "../task-snapshots.js";
 import { CURRENT_VERIFICATION_PROVENANCE } from "../types.js";
 import { isTrustedAutoVerifyCommandReport } from "../autoverify.js";
+import { AUTO_VERIFY_POLICY_DIGEST, AUTO_VERIFY_POLICY_ID } from "../autoverify/policy.js";
 import type { AutoVerifyCommandReport, AutoVerifyReportRunner } from "../autoverify.js";
 import type {
   AutoVerifyCandidate,
@@ -813,16 +814,6 @@ interface AutoVerifyRunnerReviewEntry {
   timedOut?: boolean;
 }
 
-const AUTO_VERIFY_POLICY_DIGEST = stableId(
-  "local-targeted-tests-v1",
-  "hook-only",
-  "minimal-env",
-  "targeted-tests",
-  "no-shell",
-  "no-lifecycle-hooks",
-  "source-mutation-non-covering"
-);
-
 async function reviewTrustedRunnerReports(
   reports: AutoVerifyCommandReport[],
   ctx: { freshness: { headCommit: string | null; dirtyFiles: string[]; dirtyFileHashes: Record<string, string> }; snapshot: TaskSnapshot | undefined; repoRoot: string }
@@ -869,7 +860,7 @@ function runnerReportRejectionReasons(
   if (!runner || runner.schemaVersion !== 1 || runner.reportKind !== "codexa-autoverify-report" || runner.runnerName !== "codexa") {
     return ["missing trusted AutoVerify runner metadata"];
   }
-  if (runner.policyId !== "local-targeted-tests-v1") reasons.push("unexpected runner policy");
+  if (runner.policyId !== AUTO_VERIFY_POLICY_ID) reasons.push("unexpected runner policy");
   if (runner.policyDigest !== AUTO_VERIFY_POLICY_DIGEST) reasons.push("unexpected runner policy digest");
   if (runner.envMode !== "minimal") reasons.push("unexpected runner environment");
   if (!runner.outputRedacted) reasons.push("runner output was not redacted");

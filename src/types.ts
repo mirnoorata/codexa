@@ -479,6 +479,75 @@ export interface GuidedNextToolV1 {
   writes: string[];
 }
 
+export type QueryPrimitive = string | number | boolean | null;
+export type QueryValue = QueryPrimitive | VerificationProvenance | QueryValue[] | { [key: string]: QueryValue | undefined };
+export type QueryObject = { [key: string]: QueryValue | undefined };
+
+export type CompactFileFact = Pick<FileFact, "path" | "language" | "dirty" | "generated" | "test" | "rank" | "symbolCount" | "usageCount" | "importCount" | "riskScore">;
+export type CompactSymbolFact = Pick<SymbolFact, "path" | "name" | "qualifiedName" | "kind" | "language" | "range" | "confidence">;
+
+export interface CompactChangedSymbol {
+  symbol: CompactSymbolFact;
+  changedLines: string[];
+}
+
+export interface CompactDiffImpactGroup extends Omit<DiffImpactGroup, "changedSymbols"> {
+  changedSymbols: CompactChangedSymbol[];
+}
+
+export type ContextSourceKind = "explicit_target" | "natural_retrieval" | "lexical_query" | "dirty_worktree" | "graph_impact" | "workflow_trace" | "test_evidence" | "rank_fallback";
+
+export interface ContextSourceSummaryData {
+  source: ContextSourceKind;
+  fileCount: number;
+  evidenceTierCounts: Record<EvidenceTier, number>;
+  sampleFiles: string[];
+  sampleReasons: string[];
+}
+
+export interface ContextPacketFocusFile {
+  file: CompactFileFact;
+  reasons: string[];
+  rank: number;
+  tier: EvidenceTier;
+}
+
+export interface RetrievalSummaryData extends QueryObject {
+  query?: string;
+  intents?: string[];
+  terms?: string[];
+  broad?: boolean;
+  matches?: QueryObject[];
+  workflows?: QueryObject[];
+  modules?: QueryObject[];
+  diagnostics?: string[];
+}
+
+export interface NextCallData extends QueryObject {
+  tool?: string;
+  reason?: string;
+}
+
+export interface SnapshotLoadData extends QueryObject {
+  latestTaskId?: string;
+  missingReason?: string;
+  error?: string;
+  ambiguousLatest?: boolean;
+  ambiguityReason?: string;
+}
+
+export interface PostEditOutcomeData extends QueryObject {
+  schemaVersion?: 1;
+  outcomeId?: string;
+  persisted?: boolean;
+  verdict?: string;
+  path?: string;
+  driftReasons?: string[];
+  ranTests?: string[];
+  ranCommands?: string[];
+  verificationProvenance?: VerificationProvenance;
+}
+
 export type QueryResultMode =
   | "context_pack"
   | "task_brief"
@@ -502,20 +571,20 @@ export type QueryResultMode =
   | "freshness";
 
 export interface BaseQueryData {
-  mode: QueryResultMode | string;
+  mode: QueryResultMode;
   task?: string;
-  quality?: unknown;
-  worktree?: unknown;
+  quality?: QueryObject;
+  worktree?: QueryObject;
   worktreeDegradationReasons?: string[];
   gaps?: string[];
   warnings?: string[];
   diagnostics?: string[];
   nextTools?: Array<GuidedNextToolV1 | string>;
   systemMessage?: string;
-  sessionMemory?: unknown;
-  priorSessionMemory?: unknown;
-  runtime?: unknown;
-  session?: unknown;
+  sessionMemory?: QueryObject;
+  priorSessionMemory?: QueryObject;
+  runtime?: QueryObject;
+  session?: QueryObject;
   truncation?: Record<string, { total: number; returned: number }>;
   verificationProvenance?: VerificationProvenance;
 }
@@ -526,75 +595,78 @@ export interface ContextPacketData extends BaseQueryData {
   actionability?: string;
   tokenBudget?: number;
   packetVerdict?: string;
-  focusFiles?: unknown[];
+  focusFiles?: ContextPacketFocusFile[];
   changedFiles?: string[];
   changedEntries?: ChangedFileEntry[];
-  changedSymbols?: unknown[];
+  changedSymbols?: CompactChangedSymbol[];
   unindexedChanged?: string[];
-  groups?: unknown[];
+  groups?: CompactDiffImpactGroup[];
   tests?: TestRecommendation[];
-  snippets?: unknown[];
-  contextSources?: unknown[];
+  snippets?: string[];
+  contextSources?: ContextSourceSummaryData[];
   nextReads?: string[];
-  baseline?: unknown;
-  retrieval?: unknown;
+  baseline?: QueryObject;
+  retrieval?: RetrievalSummaryData;
   recipes?: string[];
   verificationCommands?: string[];
   verificationCoverage?: VerificationCoverage[];
   verificationCommandPlan?: VerificationCommandPlanEntry[];
-  value?: unknown;
+  value?: QueryObject;
 }
 
 export interface FocusBriefData extends BaseQueryData {
   mode: "focus_brief" | "session_context";
   actionability?: string;
-  retrieval?: unknown;
+  retrieval?: RetrievalSummaryData;
   packetVerdict?: string;
-  focusFiles?: unknown[];
-  workflows?: unknown[];
-  modules?: unknown[];
-  groups?: unknown[];
+  focusFiles?: CompactFileFact[];
+  workflows?: QueryObject[];
+  modules?: QueryObject[];
+  groups?: CompactDiffImpactGroup[];
   tests?: TestRecommendation[];
-  nextCall?: unknown;
+  nextCall?: NextCallData;
 }
 
 export interface ChangePlanData extends BaseQueryData {
   mode: "change_plan";
-  editReadiness?: unknown;
-  followCandidate?: unknown;
-  snapshotBlock?: unknown;
-  targetCandidates?: unknown[];
+  editReadiness?: QueryObject;
+  followCandidate?: QueryObject;
+  snapshotBlock?: QueryObject;
+  targetCandidates?: QueryObject[];
   steps?: string[];
-  focus?: FocusBriefData | Record<string, unknown>;
-  context?: ContextPacketData | Record<string, unknown>;
+  focus?: FocusBriefData | QueryObject;
+  context?: ContextPacketData | QueryObject;
   files?: string[];
   plannedEditTargets?: string[];
   tests?: TestRecommendation[];
   recipes?: string[];
-  requiredWorkflowChecks?: unknown[];
-  requiredDependencyChecks?: unknown[];
-  snapshot?: TaskSnapshot | Record<string, unknown>;
+  requiredWorkflowChecks?: TaskSnapshotRequiredCheck[];
+  requiredDependencyChecks?: TaskSnapshotRequiredCheck[];
+  snapshot?: TaskSnapshot | QueryObject;
 }
 
 export interface PostEditReviewData extends BaseQueryData {
   mode: "post_edit_review";
   verdict?: string;
   files?: string[];
-  reviewTargets?: unknown;
+  reviewTargets?: string[];
   changedSinceSnapshot?: string[];
-  changedGroups?: unknown[];
+  changedGroups?: CompactDiffImpactGroup[];
   resolvedBaselineFiles?: string[];
   unplannedEditedFiles?: string[];
-  plannedRenames?: unknown[];
-  unplannedChangedSymbols?: unknown[];
+  plannedRenames?: QueryObject[];
+  unplannedChangedSymbols?: CompactChangedSymbol[];
   plannedButUntouchedFiles?: string[];
   headChanged?: boolean;
-  symbolDeltas?: unknown[];
-  modifiedSymbols?: unknown[];
-  modifiedPublicSymbols?: unknown[];
-  riskDeltas?: unknown[];
+  symbolDeltas?: QueryObject[];
+  modifiedSymbols?: string[];
+  modifiedPublicSymbols?: string[];
+  riskDeltas?: QueryObject[];
+  affectedEdges?: GraphEdgeFact[];
   affectedTests?: TestRecommendation[];
   tests?: TestRecommendation[];
+  degradedSnapshotTests?: TestRecommendation[];
+  supersededDegradedSnapshotTests?: TestRecommendation[];
   testsNotRun?: TestRecommendation[];
   missedLikelyTests?: TestRecommendation[];
   ranTests?: string[];
@@ -607,24 +679,29 @@ export interface PostEditReviewData extends BaseQueryData {
   verificationLedger?: VerificationLedgerEntry[];
   waivedVerification?: VerificationLedgerEntry[];
   unindexedEditedFiles?: string[];
-  riskEscalations?: unknown[];
+  riskEscalations?: QueryObject[];
+  riskEscalationsCoveredByVerification?: boolean;
+  riskEscalationsNeedInspection?: boolean;
   workflows?: WorkflowTraceFact[];
   workflowChecks?: TaskSnapshotRequiredCheck[];
   dependencyChecks?: TaskSnapshotRequiredCheck[];
   driftReasons?: string[];
   nextActions?: string[];
-  snapshotLoad?: unknown;
-  snapshot?: TaskSnapshot | Record<string, unknown>;
-  outcome?: Record<string, unknown>;
+  snapshotLoad?: SnapshotLoadData;
+  snapshot?: TaskSnapshot | QueryObject;
+  outcome?: PostEditOutcomeData;
+  context?: ContextPacketData | QueryObject;
+  autoVerifyCandidates?: QueryObject[];
+  autoVerifyRunnerEvidence?: QueryObject[];
 }
 
 export interface TestPlanData extends BaseQueryData {
   mode: "test_plan";
   changedFiles?: string[];
   changedEntries?: ChangedFileEntry[];
-  changedSymbols?: unknown[];
+  changedSymbols?: CompactChangedSymbol[];
   unindexedChanged?: string[];
-  groups?: unknown[];
+  groups?: CompactDiffImpactGroup[];
   tests?: TestRecommendation[];
   verificationCommands?: string[];
   verificationCoverage?: VerificationCoverage[];

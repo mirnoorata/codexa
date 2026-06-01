@@ -1,7 +1,7 @@
 import type { RetrievalResult } from "../retrieval.js";
-import type { ChangedSymbol, DiffImpactGroup, FileFact, SymbolFact, WorkflowTraceFact } from "../types.js";
+import type { ChangedSymbol, CompactChangedSymbol, CompactDiffImpactGroup, CompactFileFact, CompactSymbolFact, DiffImpactGroup, FileFact, SymbolFact, WorkflowTraceFact } from "../types.js";
 
-export function compactFileFact(file: FileFact): Pick<FileFact, "path" | "language" | "dirty" | "generated" | "test" | "rank" | "symbolCount" | "usageCount" | "importCount" | "riskScore"> {
+export function compactFileFact(file: FileFact): CompactFileFact {
   return {
     path: file.path,
     language: file.language,
@@ -16,7 +16,7 @@ export function compactFileFact(file: FileFact): Pick<FileFact, "path" | "langua
   };
 }
 
-export function compactSymbolFact(symbol: SymbolFact): Pick<SymbolFact, "path" | "name" | "qualifiedName" | "kind" | "language" | "range" | "confidence"> {
+export function compactSymbolFact(symbol: SymbolFact): CompactSymbolFact {
   return {
     path: symbol.path,
     name: symbol.name,
@@ -28,14 +28,14 @@ export function compactSymbolFact(symbol: SymbolFact): Pick<SymbolFact, "path" |
   };
 }
 
-export function compactChangedSymbol(entry: ChangedSymbol): { symbol: ReturnType<typeof compactSymbolFact>; changedLines: string[] } {
+export function compactChangedSymbol(entry: ChangedSymbol): CompactChangedSymbol {
   return {
     symbol: compactSymbolFact(entry.symbol),
     changedLines: entry.changedLines.slice(0, 12)
   };
 }
 
-export function compactDiffGroup(group: DiffImpactGroup): Omit<DiffImpactGroup, "changedSymbols"> & { changedSymbols: ReturnType<typeof compactChangedSymbol>[] } {
+export function compactDiffGroup(group: DiffImpactGroup): CompactDiffImpactGroup {
   return {
     ...group,
     files: group.files.slice(0, 40),
