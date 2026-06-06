@@ -22,6 +22,7 @@ import { classifyTaskIntent, retrieveForTask, type IntentConfidence, type Retrie
 import { semanticOptionsFromQueryOptions } from "../semantic-retrieval.js";
 import { compactChangedSymbol, compactDiffGroup, compactFileFact, compactRetrievalResult, compactWorkflowTrace } from "./compact-data.js";
 import { summarizeSessionMemory } from "../session-memory.js";
+import { workspaceGuidancePreview } from "./workspace-guidance.js";
 
 type FocusSelectionEntry = { file: FileFact; score: number; reasons: string[]; matchedTerms: string[]; tier: EvidenceTier };
 type ContextSourceKind = "explicit_target" | "natural_retrieval" | "lexical_query" | "dirty_worktree" | "graph_impact" | "workflow_trace" | "test_evidence" | "rank_fallback";
@@ -209,6 +210,14 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     topics: contextInput.task ? [contextInput.task] : explicitQuery ? [explicitQuery] : [],
     limit: 6
   });
+  const workspaceGuidance = await workspaceGuidancePreview({
+    repoRoot,
+    task: contextInput.task,
+    query: explicitQuery,
+    files: uniqueSorted([...requestedFiles, ...focusPaths]).slice(0, 24),
+    symbols: requestedSymbols,
+    limit: 6
+  });
   const contextSources = summarizeContextSources(focusEntries);
   const nextTools = [
     packetIntent?.verdict === "needs-target" || packetIntent?.verdict === "orientation-only"
@@ -260,6 +269,9 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     sessionMemory.lines.length > 0 ? "" : undefined,
     sessionMemory.lines.length > 0 ? "Session memory:" : undefined,
     ...sessionMemory.lines,
+    workspaceGuidance.lines.length > 0 ? "" : undefined,
+    workspaceGuidance.lines.length > 0 ? "Workspace guidance:" : undefined,
+    ...workspaceGuidance.lines,
     suppressActionGuidance ? undefined : "",
     suppressActionGuidance ? undefined : "If run, these commands would cover:",
     ...(suppressActionGuidance ? [] : formatVerificationCoverage(verificationCoverage)),
@@ -302,6 +314,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       retrieval: naturalRetrieval ? compactRetrievalResult(naturalRetrieval) : undefined,
       lspAssist,
       sessionMemory: sessionMemory.data,
+      workspaceGuidance: workspaceGuidance.data,
       intentConfidence: packetIntent,
       packetVerdict: packetIntent?.verdict,
       actionability,
@@ -724,6 +737,12 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
     topics: [task],
     limit: 6
   });
+  const workspaceGuidance = await workspaceGuidancePreview({
+    repoRoot,
+    task,
+    files: focusFiles.map((file) => file.path),
+    limit: 6
+  });
   const text = [
     freshnessBanner(freshness, refresh),
     formatContextQuality(quality),
@@ -757,6 +776,9 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
     sessionMemory.lines.length > 0 ? "" : undefined,
     sessionMemory.lines.length > 0 ? "Session memory:" : undefined,
     ...sessionMemory.lines,
+    workspaceGuidance.lines.length > 0 ? "" : undefined,
+    workspaceGuidance.lines.length > 0 ? "Workspace guidance:" : undefined,
+    ...workspaceGuidance.lines,
     "",
     "Likely tests:",
     ...formatTestRecommendations(tests),
@@ -788,6 +810,7 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
       tests: tests.slice(0, 30),
       nextCall,
       sessionMemory: sessionMemory.data,
+      workspaceGuidance: workspaceGuidance.data,
       quality,
       gaps
     }

@@ -31,6 +31,8 @@ const MAX_HOOK_EVENTS_BYTES = 512 * 1024;
 const MAX_HOOK_EVENT_LINES = 200;
 
 export type PostEditVerdict = "continue" | "run_tests" | "inspect" | "replan";
+export type PostEditInspectMode = "none" | "advisory" | "blocking";
+export type PostEditCompletionAuthority = "complete" | "tests_required" | "advisory_inspect" | "blocking_inspect" | "replan_required";
 export type CodexaHookName = "session-start" | "pre-edit" | "post-edit";
 export type CodexaHookEventStatus = "ok" | "skipped" | "failed";
 
@@ -40,6 +42,9 @@ export interface PostEditOutcomeInput {
   taskId?: string;
   snapshotPath?: string;
   verdict: PostEditVerdict;
+  inspectMode: PostEditInspectMode;
+  inspectReasons: string[];
+  completionAuthority: PostEditCompletionAuthority;
   freshness: FreshnessInfo;
   changedFiles: string[];
   plannedEditTargets: string[];
@@ -107,6 +112,9 @@ export interface PostEditOutcome {
   taskId?: string;
   snapshotPath?: string;
   verdict: PostEditVerdict;
+  inspectMode: PostEditInspectMode;
+  inspectReasons: string[];
+  completionAuthority: PostEditCompletionAuthority;
   headCommit: string | null;
   indexSnapshotId: string;
   changedFiles: string[];
@@ -181,6 +189,9 @@ export function buildPostEditOutcome(input: PostEditOutcomeInput, createdAt = ne
     taskId: input.taskId,
     snapshotPath: input.snapshotPath,
     verdict: input.verdict,
+    inspectMode: input.inspectMode,
+    inspectReasons: input.inspectReasons,
+    completionAuthority: input.completionAuthority,
     headCommit: input.freshness.headCommit,
     indexSnapshotId: input.freshness.snapshotId,
     changedFiles: input.changedFiles,
@@ -662,6 +673,7 @@ function calibrationLabels(input: PostEditOutcomeInput): string[] {
     labels.push("requires-replan");
   } else if (input.verdict === "inspect") {
     labels.push("requires-inspection");
+    labels.push(input.inspectMode === "blocking" ? "blocking-inspection" : "advisory-inspection");
   }
   return [...new Set(labels)].sort();
 }

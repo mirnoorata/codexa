@@ -660,6 +660,42 @@ describe("Codexa indexer", () => {
     expect(plan.text).toContain(`cd ${repo} && pytest tests/test_app.py`);
   });
 
+  it("surfaces prior outcome learning in test-plan recommendations", async () => {
+    const repo = await createFixtureRepo();
+    const outcomeDir = path.join(repo, ".codex/cache/codexa-outcomes");
+    await mkdir(outcomeDir, { recursive: true });
+    await writeFile(
+      path.join(outcomeDir, "learned-test-outcome.json"),
+      JSON.stringify(
+        {
+          schemaVersion: 1,
+          outcomeId: "learned-test-outcome",
+          verdict: "inspect",
+          changedFiles: ["service/helpers.py"],
+          reviewTargets: ["service/helpers.py"],
+          missedLikelyTests: [{ path: "tests/test_app.py", reason: "previously missed route regression" }],
+          testsNotRun: [{ path: "tests/test_app.py", reason: "not accounted for" }],
+          recommendedTests: [{ path: "tests/test_app.py", reason: "recommended" }]
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+    await buildIndex({ repoRoot: repo });
+    await writeFile(path.join(repo, "service/helpers.py"), "def normalize(value):\n    return value.strip().lower()\n", "utf8");
+
+    const plan = await testPlanQuery(repo, true, { autoRefresh: false });
+    const data = plan.data as { outcomeLearning?: Array<{ path: string; evidence?: string[]; sources?: string[]; command?: string }> };
+
+    expect(plan.text).toContain("Outcome learning:");
+    expect(plan.text).toContain("tests/test_app.py");
+    expect(data.outcomeLearning?.map((entry) => entry.path)).toContain("tests/test_app.py");
+    expect(data.outcomeLearning?.[0].sources).toContain("outcome_history");
+    expect(data.outcomeLearning?.[0].evidence?.join(" ")).toContain("outcome");
+    expect(data.outcomeLearning?.[0].command).toBe(`cd ${repo} && pytest tests/test_app.py`);
+  });
+
   it("recommends scoped pytest consumers when conftest fixtures change", async () => {
     const repo = await createFixtureRepo();
     await buildIndex({ repoRoot: repo });
@@ -1147,6 +1183,70 @@ describe("Codexa indexer", () => {
     expect(pack.text).toContain("Likely tests:");
     expect(pack.text).toContain("tests/test_app.py");
     expect(pack.text.length).toBeLessThanOrEqual(900 * 4 + 40);
+  });
+
+  it("bridges bounded workspace working and memory guidance into context surfaces", async () => {
+    const originalRepo = await createFixtureRepo();
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-workspace-"));
+    const repo = path.join(workspace, "codexa");
+    await rename(originalRepo, repo);
+    await mkdir(path.join(workspace, ".codex"), { recursive: true });
+    await writeFile(
+      path.join(workspace, ".codex", "WORKING.md"),
+      [
+        "# WORKING",
+        "session | repo | task | next",
+        `active | ${repo} | Codexa context pack should read workspace guidance | wait for verification`,
+        `active | ${path.join(workspace, "atlas")} | Atlas publish note should stay unrelated`
+      ].join("\n"),
+      "utf8"
+    );
+    await writeFile(
+      path.join(workspace, ".codex", "MEMORY.md"),
+      [
+        "# MEMORY",
+        "- Codexa context pack should surface workspace memory guidance without dumping full memory.",
+        "- Springwood furniture palette guidance should stay unrelated."
+      ].join("\n"),
+      "utf8"
+    );
+    await buildIndex({ repoRoot: repo });
+
+    const pack = await contextPackQuery(
+      repo,
+      {
+        task: "Improve Codexa context pack workspace memory handling",
+        files: ["src/api.ts"],
+        diff: false,
+        tokenBudget: 1400,
+        limit: 6
+      },
+      { autoRefresh: false }
+    );
+    const packData = pack.data as {
+      workspaceGuidance?: { workspaceRoot: string; lines: Array<{ source: string; text: string }> };
+    };
+    expect(pack.text).toContain("Workspace guidance:");
+    expect(pack.text).toContain("WORKING.md:");
+    expect(pack.text).toContain("MEMORY.md:");
+    expect(pack.text).toContain("Codexa context pack");
+    expect(pack.text).not.toContain("Atlas publish note");
+    expect(pack.text).not.toContain("Springwood furniture");
+    expect(packData.workspaceGuidance?.workspaceRoot).toBe(workspace);
+    expect(packData.workspaceGuidance?.lines.map((line) => line.source)).toEqual(expect.arrayContaining(["WORKING.md", "MEMORY.md"]));
+
+    const focus = await focusBriefQuery(
+      repo,
+      {
+        task: "Improve Codexa context pack workspace memory handling",
+        diff: false,
+        tokenBudget: 1400,
+        limit: 6
+      },
+      { autoRefresh: false }
+    );
+    expect(focus.text).toContain("Workspace guidance:");
+    expect((focus.data as { workspaceGuidance?: { lines: unknown[] } }).workspaceGuidance?.lines.length).toBeGreaterThan(0);
   });
 
   it("keeps source-anchored edit packets ready when dirty tests are selected", async () => {
@@ -1753,6 +1853,8 @@ describe("Codexa indexer", () => {
     expect(review.text).toContain("Tests still unaccounted for");
     const reviewData = review.data as {
       verdict: string;
+      inspectMode: string;
+      completionAuthority: string;
       unplannedEditedFiles: string[];
       tests: Array<{ path: string }>;
       symbolDeltas: unknown[];
@@ -1767,6 +1869,8 @@ describe("Codexa indexer", () => {
       outcome: {
         path: string;
         verdict: string;
+        inspectMode: string;
+        completionAuthority: string;
         calibrationLabels: string[];
         testsNotRun: Array<{ path: string }>;
         modifiedSymbols: string[];
@@ -1776,9 +1880,14 @@ describe("Codexa indexer", () => {
       };
     };
     expect(reviewData.verdict).not.toBe("continue");
+    expect(reviewData.inspectMode).toBe("blocking");
+    expect(reviewData.completionAuthority).toBe("blocking_inspect");
     expect(reviewData.outcome.verdict).toBe(reviewData.verdict);
+    expect(reviewData.outcome.inspectMode).toBe("blocking");
+    expect(reviewData.outcome.completionAuthority).toBe("blocking_inspect");
     expect(reviewData.outcome.path).toMatch(/^\.codex\/cache\/codexa-outcomes\/.+\.json$/u);
     expect(reviewData.outcome.calibrationLabels).toContain("unplanned-edits");
+    expect(reviewData.outcome.calibrationLabels).toContain("blocking-inspection");
     expect(reviewData.outcome.calibrationLabels).toContain("modified-public-symbols");
     expect(reviewData.outcome.testsNotRun.some((test) => test.path === "tests/test_app.py")).toBe(true);
     expect(reviewData.outcome.missedLikelyTests.some((test) => test.path === "tests/test_app.py")).toBe(true);
@@ -1962,11 +2071,17 @@ describe("Codexa indexer", () => {
       const review = await postEditReviewQuery(repo, { taskId: "legacy-planned-test-provenance", ranTests: [] }, { autoRefresh: true });
       const data = review.data as {
         verdict: string;
+        inspectMode: string;
+        completionAuthority: string;
+        inspectReasons: string[];
         degradedSnapshotTests: Array<{ path: string; provenance?: { degradedReason?: string } }>;
         missedLikelyTests: Array<{ path: string }>;
         driftReasons: string[];
       };
       expect(data.verdict).toBe("inspect");
+      expect(data.inspectMode).toBe("advisory");
+      expect(data.completionAuthority).toBe("advisory_inspect");
+      expect(data.inspectReasons).toContain("planned snapshot tests have degraded provenance");
       expect(data.degradedSnapshotTests.map((test) => test.path)).toContain("tests/manual_legacy.py");
       expect(data.degradedSnapshotTests.map((test) => test.path)).toContain("tests/manual_v1_stale.py");
       expect(data.degradedSnapshotTests.find((test) => test.path === "tests/manual_legacy.py")?.provenance?.degradedReason).toContain("legacy snapshot test lacks planned-test provenance");
@@ -2004,8 +2119,10 @@ describe("Codexa indexer", () => {
       await writeFile(path.join(repo, "service/helpers.py"), "def normalize(value):\n    return value.strip().upper()\n", "utf8");
 
       const review = await postEditReviewQuery(repo, { ranTests: ["tests/test_app.py"], persistOutcome: false }, { autoRefresh: true });
-      const data = review.data as { verdict: string; driftReasons: string[] };
+      const data = review.data as { verdict: string; inspectMode: string; completionAuthority: string; driftReasons: string[] };
       expect(data.verdict).toBe("inspect");
+      expect(data.inspectMode).toBe("advisory");
+      expect(data.completionAuthority).toBe("advisory_inspect");
       expect(data.driftReasons.some((reason) => reason.includes("used latest snapshot second-helper-edit without an explicit taskId"))).toBe(true);
     });
 
@@ -2040,16 +2157,22 @@ describe("Codexa indexer", () => {
       await writeFile(path.join(repo, "src/main.ts"), "export function main() { return 2 }\n", "utf8");
 
     const review = await postEditReviewQuery(repo, { taskId: "no-test-proof", persistOutcome: false }, { autoRefresh: true });
-    const data = review.data as { verdict: string; tests: unknown[]; driftReasons: string[]; nextActions: string[] };
+    const data = review.data as { verdict: string; inspectMode: string; completionAuthority: string; inspectReasons: string[]; tests: unknown[]; driftReasons: string[]; nextActions: string[] };
     expect(data.tests).toEqual([]);
     expect(data.verdict).toBe("inspect");
+    expect(data.inspectMode).toBe("blocking");
+    expect(data.completionAuthority).toBe("blocking_inspect");
+    expect(data.inspectReasons).toContain("edited files have no credible verification evidence");
     expect(data.driftReasons).toContain("edited files have no credible verification evidence");
     expect(data.nextActions).toContain("Report a relevant test, build, or typecheck command before treating edited files as verified.");
 
     const auditOnly = await postEditReviewQuery(repo, { taskId: "no-test-proof", ranCommands: ["npm audit"], persistOutcome: false }, { autoRefresh: false });
-    const auditOnlyData = auditOnly.data as { verdict: string; tests: unknown[]; driftReasons: string[]; nextActions: string[] };
+    const auditOnlyData = auditOnly.data as { verdict: string; inspectMode: string; completionAuthority: string; inspectReasons: string[]; tests: unknown[]; driftReasons: string[]; nextActions: string[] };
     expect(auditOnlyData.tests).toEqual([]);
     expect(auditOnlyData.verdict).toBe("inspect");
+    expect(auditOnlyData.inspectMode).toBe("blocking");
+    expect(auditOnlyData.completionAuthority).toBe("blocking_inspect");
+    expect(auditOnlyData.inspectReasons).toContain("edited files have no credible verification evidence");
     expect(auditOnlyData.driftReasons).toContain("edited files have no credible verification evidence");
     expect(auditOnlyData.nextActions).toContain("Report a relevant test, build, or typecheck command before treating edited files as verified.");
     });

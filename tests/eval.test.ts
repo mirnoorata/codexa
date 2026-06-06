@@ -50,13 +50,17 @@ describe("Codexa eval benchmark", () => {
     const result = await runEval("/tmp/codexa-eval-target", { autoRefresh: false }, { suite: "historical-fixture", seed: "unit-historical", failOnRefresh: true });
 
     expect(result.passed).toBe(true);
-    expect(result.data.scenarios).toHaveLength(5);
+    expect(result.data.scenarios).toHaveLength(6);
     expect(result.data.scenarios.every((scenario) => scenario.suite === "historical-fixture")).toBe(true);
     expect(result.data.scenarios.some((scenario) => scenario.id === "historical-fixture-post-edit-drift")).toBe(true);
+    expect(result.data.scenarios.some((scenario) => scenario.id === "historical-fixture-target-led-broad-dirty")).toBe(true);
     const changePlanScenario = result.data.scenarios.find((scenario) => scenario.id === "historical-fixture-exact-shared-api");
     const postEditScenario = result.data.scenarios.find((scenario) => scenario.id === "historical-fixture-post-edit-drift");
+    const broadDirtyScenario = result.data.scenarios.find((scenario) => scenario.id === "historical-fixture-target-led-broad-dirty");
     expect(changePlanScenario?.plannedFiles).toContain("src/shared.ts");
     expect(postEditScenario?.plannedFiles).toContain("src/shared.ts");
+    expect(broadDirtyScenario?.files).toContain("src/shared.ts");
+    expect(broadDirtyScenario?.tests).toContain("src/feature.test.ts");
     expect(result.data.calibrationSummary.rawRgBetterScenarios).toHaveLength(0);
     expect(result.text).toContain("Codexa quality observations");
   });
@@ -107,6 +111,24 @@ describe("Codexa eval benchmark", () => {
       await expect(runEval(repo, { autoRefresh: false }, { suite: "task-pack", seed: "unit-unsafe-rg-flag-pack", taskPackPath: unsafeRgFlagPackPath, failOnRefresh: true })).rejects.toThrow(
         /unsafe baseline argument|unsupported baseline executable/
       );
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("restores temporary dirty historical patches when a scenario fails", async () => {
+    const repo = await createExternalPackRepo();
+    try {
+      const commit = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+      const dirtyFailurePackPath = path.join(repo, "dirty-failure-pack.json");
+      await writeFile(dirtyFailurePackPath, `${JSON.stringify(dirtyFailurePack(commit), null, 2)}\n`, "utf8");
+
+      await expect(runEval(repo, { autoRefresh: false }, { suite: "task-pack", seed: "unit-dirty-failure-pack", taskPackPath: dirtyFailurePackPath, failOnRefresh: true })).rejects.toThrow(
+        "replacement string was not found"
+      );
+
+      const status = execFileSync("git", ["status", "--short", "--", "src/setup-dirty.ts", "src/external.ts"], { cwd: repo, encoding: "utf8" });
+      expect(status.trim()).toBe("");
     } finally {
       await rm(repo, { recursive: true, force: true });
     }
@@ -416,6 +438,34 @@ function externalPack(repoCommit: string, baselineCommands: string[][]): unknown
         baselineCommands,
         expectedCodexaCalls: ["change_plan"],
         maxFalsePositiveFiles: 1
+      }
+    ]
+  };
+}
+
+function dirtyFailurePack(repoCommit: string): unknown {
+  return {
+    schemaVersion: 1,
+    packId: "dirty-failure-pack",
+    repoCommit,
+    tasks: [
+      {
+        id: "dirty-failure",
+        task: "Use dirty patches without leaking failed setup edits",
+        tool: "context_pack",
+        files: ["src/external.ts"],
+        dirtyPatch: [
+          {
+            path: "src/setup-dirty.ts",
+            append: "export const leakedDirtyPatch = true\n"
+          },
+          {
+            path: "src/external.ts",
+            replace: [{ from: "missingExternalNeedle", to: "replacement" }]
+          }
+        ],
+        expectedReadFirst: ["src/external.ts"],
+        expectedCodexaCalls: ["context_pack"]
       }
     ]
   };

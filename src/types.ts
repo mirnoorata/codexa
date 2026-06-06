@@ -541,6 +541,9 @@ export interface PostEditOutcomeData extends QueryObject {
   outcomeId?: string;
   persisted?: boolean;
   verdict?: string;
+  inspectMode?: "none" | "advisory" | "blocking";
+  inspectReasons?: string[];
+  completionAuthority?: "complete" | "tests_required" | "advisory_inspect" | "blocking_inspect" | "replan_required";
   path?: string;
   driftReasons?: string[];
   ranTests?: string[];
@@ -582,6 +585,7 @@ export interface BaseQueryData {
   nextTools?: Array<GuidedNextToolV1 | string>;
   systemMessage?: string;
   sessionMemory?: QueryObject;
+  workspaceGuidance?: QueryObject;
   priorSessionMemory?: QueryObject;
   runtime?: QueryObject;
   session?: QueryObject;
@@ -648,6 +652,9 @@ export interface ChangePlanData extends BaseQueryData {
 export interface PostEditReviewData extends BaseQueryData {
   mode: "post_edit_review";
   verdict?: string;
+  inspectMode?: "none" | "advisory" | "blocking";
+  inspectReasons?: string[];
+  completionAuthority?: "complete" | "tests_required" | "advisory_inspect" | "blocking_inspect" | "replan_required";
   files?: string[];
   reviewTargets?: string[];
   changedSinceSnapshot?: string[];
@@ -703,6 +710,7 @@ export interface TestPlanData extends BaseQueryData {
   unindexedChanged?: string[];
   groups?: CompactDiffImpactGroup[];
   tests?: TestRecommendation[];
+  outcomeLearning?: QueryObject[];
   verificationCommands?: string[];
   verificationCoverage?: VerificationCoverage[];
   verificationCommandPlan?: VerificationCommandPlanEntry[];

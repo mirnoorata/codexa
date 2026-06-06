@@ -1,7 +1,7 @@
 import { formatDiffGroups, formatGaps, groupDiffImpact, indexGaps } from "./diff.js";
 import { freshnessBanner } from "./runtime.js";
 import { ensureQuerySession, type QuerySessionInput } from "./session.js";
-import { formatTestRecommendations, recommendTests } from "./tests.js";
+import { formatOutcomeLearningRecommendations, formatTestRecommendations, outcomeLearningRecommendations, recommendTests } from "./tests.js";
 import { compactChangedSymbol, compactDiffGroup } from "./compact-data.js";
 import { compactWorktreeState, getWorktreeState, worktreeStateGaps, worktreeStateText } from "./worktree-state.js";
 import {
@@ -37,6 +37,7 @@ export async function testPlanQuery(input: QuerySessionInput, diff = true, optio
     repoRoot,
     changeType
   );
+  const outcomeLearning = outcomeLearningRecommendations(tests, 8);
   const verificationCommands = verificationCommandsForContext(index, repoRoot, changed.length > 0 ? changed : index.files.slice(0, 10).map((file) => file.path), tests, 16);
   const verificationPreview = verificationLedgerForPostEdit({
     index,
@@ -69,6 +70,7 @@ export async function testPlanQuery(input: QuerySessionInput, diff = true, optio
         ]
       : []),
     ...formatTestRecommendations(tests.slice(0, 30)),
+    ...(outcomeLearning.length > 0 ? ["", "Outcome learning:", ...formatOutcomeLearningRecommendations(outcomeLearning)] : []),
     "",
     "If run, these commands would cover:",
     ...formatVerificationCoverage(verificationCoverage),
@@ -95,6 +97,7 @@ export async function testPlanQuery(input: QuerySessionInput, diff = true, optio
       worktreeDegradationReasons: worktree?.degradedReasons ?? [],
       groups: groups.slice(0, 20).map(compactDiffGroup),
       tests: tests.slice(0, 30),
+      outcomeLearning,
       verificationCommands: verificationCommands.slice(0, 30),
       verificationCoverage: verificationCoverage.slice(0, 60),
         commandEnvelopes: verificationPreview.commandEnvelopes.slice(0, 60),

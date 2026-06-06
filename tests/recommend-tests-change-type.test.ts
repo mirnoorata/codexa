@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { narrowTestRecommendationsByChangeType, recommendTests, uniqueTests } from "../src/query/tests.js";
+import { narrowTestRecommendationsByChangeType, outcomeLearningRecommendations, recommendTests, uniqueTests } from "../src/query/tests.js";
 import type { CodexaIndex } from "../src/types.js";
 
 /**
@@ -105,6 +105,23 @@ describe("recommendTests change-type filter", () => {
     expect(test.reason).toContain("outcome history");
     expect(test.provenance?.sources).toContain("outcome_history");
     expect(test.rank).toBeGreaterThan(5);
+  });
+
+  it("surfaces outcome learning recommendations from outcome-history provenance", () => {
+    const index = makeIndex();
+    const testFile = (index.files as Array<{ path: string; rankReasons?: Record<string, number> }>).find((file) => file.path === "tests/test_app.py");
+    testFile!.rankReasons = { outcomeHistory: 2 };
+
+    const [test] = recommendTests(index, ["myapi/store.py"], "/fake/repo", "behavior");
+    const learning = outcomeLearningRecommendations([test]);
+
+    expect(learning).toHaveLength(1);
+    expect(learning[0]).toMatchObject({
+      path: "tests/test_app.py"
+    });
+    expect(learning[0].sources).toContain("outcome_history");
+    expect(learning[0].targetPaths).toEqual(expect.arrayContaining(["myapi/store.py", "tests/test_app.py"]));
+    expect(learning[0].evidence.join(" ")).toContain("outcome");
   });
 
   it("drops Python pytest recommendations on style edits when no Python was touched", () => {

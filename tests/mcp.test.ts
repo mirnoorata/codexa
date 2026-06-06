@@ -218,6 +218,14 @@ function buildTestPlanPacket() {
       symbols: seq(25, (symbolIndex) => `symbol-${index}-${symbolIndex}`)
     })),
 	    tests: seq(35, (index) => ({ path: `tests/test-${index}.ts` })),
+	    outcomeLearning: seq(16, (index) => ({
+	      path: `tests/learned-${index}.ts`,
+	      rank: 10 - index,
+	      reason: "outcome history raised priority",
+	      targetPaths: [`src/changed-${index}.ts`],
+	      sources: ["outcome_history"],
+	      evidence: [`outcome evidence-${index}`]
+	    })),
 	    verificationCommands: seq(25, (index) => `cmd-${index}`),
     verificationCoverage: seq(50, (index) => ({
       kind: "unknown",
@@ -1271,6 +1279,10 @@ describe("Codexa MCP server", () => {
       refresh: { refreshed: false },
       text: "post edit review",
       data: {
+        verdict: "inspect",
+        inspectMode: "advisory",
+        inspectReasons: ["latest snapshot was ambiguous"],
+        completionAuthority: "advisory_inspect",
         changedSinceSnapshot: Array.from({ length: 45 }, (_, index) => ({ path: `src/file-${index}.ts` })),
         tests: Array.from({ length: 35 }, (_, index) => ({ path: `tests/file-${index}.test.ts` })),
         ranCommandReports: Array.from({ length: 35 }, (_, index) => ({ command: `npm test ${index}` })),
@@ -1294,6 +1306,10 @@ describe("Codexa MCP server", () => {
           requiredDependencyCheckCount: 42
         },
         outcome: {
+          verdict: "inspect",
+          inspectMode: "advisory",
+          inspectReasons: ["latest snapshot was ambiguous"],
+          completionAuthority: "advisory_inspect",
           testsNotRun: Array.from({ length: 35 }, (_, index) => ({ path: `tests/missing-${index}.test.ts` })),
           ranCommandReports: Array.from({ length: 35 }, (_, index) => ({ command: `npm test ${index}` })),
           commandEnvelopes: Array.from({ length: 35 }, (_, index) => ({
@@ -1314,6 +1330,9 @@ describe("Codexa MCP server", () => {
     });
     const data = compacted.data as {
       changedSinceSnapshot: Array<unknown>;
+      inspectMode?: string;
+      inspectReasons?: string[];
+      completionAuthority?: string;
       tests: Array<unknown>;
       ranCommandReports: Array<unknown>;
       commandEnvelopes: Array<unknown>;
@@ -1348,6 +1367,9 @@ describe("Codexa MCP server", () => {
         requiredDependencyCheckCount?: number;
       };
       outcome?: {
+        inspectMode?: string;
+        inspectReasons?: string[];
+        completionAuthority?: string;
         testsNotRun: Array<unknown>;
         ranCommandReports: Array<unknown>;
         commandEnvelopes: Array<unknown>;
@@ -1360,6 +1382,9 @@ describe("Codexa MCP server", () => {
     };
 
     expect(data.changedSinceSnapshot).toHaveLength(40);
+    expect(data.inspectMode).toBe("advisory");
+    expect(data.inspectReasons).toEqual(["latest snapshot was ambiguous"]);
+    expect(data.completionAuthority).toBe("advisory_inspect");
     expect(data.tests).toHaveLength(30);
     expect(data.ranCommandReports).toHaveLength(30);
     expect(data.commandEnvelopes).toHaveLength(30);
@@ -1392,6 +1417,9 @@ describe("Codexa MCP server", () => {
       "outcome.modifiedPublicSymbols": { total: 45, returned: 40 }
     });
     expect(data.outcome?.testsNotRun).toHaveLength(30);
+    expect(data.outcome?.inspectMode).toBe("advisory");
+    expect(data.outcome?.inspectReasons).toEqual(["latest snapshot was ambiguous"]);
+    expect(data.outcome?.completionAuthority).toBe("advisory_inspect");
     expect(data.outcome?.ranCommandReports).toHaveLength(30);
     expect(data.outcome?.commandEnvelopes).toHaveLength(30);
     expect(data.outcome?.verificationProvenance).toEqual(CURRENT_VERIFICATION_PROVENANCE);
@@ -1477,7 +1505,8 @@ describe("Codexa MCP server", () => {
       changedSymbols: unknown[];
       unindexedChanged: unknown[];
       groups: unknown[];
-      tests: unknown[];
+	      tests: unknown[];
+	      outcomeLearning: unknown[];
 	      verificationCommands: unknown[];
 	      verificationCoverage: unknown[];
 	      commandEnvelopes: unknown[];
@@ -1494,6 +1523,7 @@ describe("Codexa MCP server", () => {
     expect(testPlanData.mcp.returnedBytes).toBeLessThanOrEqual(testPlanData.mcp.targetBytes);
     expect(testPlanData.changedFiles.length).toBeGreaterThan(0);
     expect(testPlanData.tests.length).toBeGreaterThan(0);
+	    expect(testPlanData.outcomeLearning.length).toBeGreaterThan(0);
 	    expect(testPlanData.verificationCommands.length).toBeGreaterThan(0);
 	    expect(testPlanData.verificationCoverage.length).toBeGreaterThan(0);
 	    expect(testPlanData.commandEnvelopes.length).toBeGreaterThan(0);

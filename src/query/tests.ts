@@ -4,6 +4,16 @@ import type { ChangeType, CodexaIndex, Confidence, EvidenceTier, TestRecommendat
 import { uniqueSorted } from "../util.js";
 import { candidateTestCommand } from "./test-commands.js";
 
+export interface OutcomeLearningRecommendation {
+  path: string;
+  rank: number;
+  reason: string;
+  command?: string;
+  targetPaths: string[];
+  sources: TestRecommendationProvenanceSource[];
+  evidence: string[];
+}
+
 /**
  * Recommend tests to run for a set of changed paths.
  *
@@ -306,6 +316,36 @@ export function formatTestRecommendations(tests: TestRecommendation[]): string[]
   ];
 }
 
+export function outcomeLearningRecommendations(tests: TestRecommendation[], limit = 8): OutcomeLearningRecommendation[] {
+  return tests
+    .filter((test) => hasOutcomeHistory(test))
+    .map((test) => {
+      const evidence = outcomeLearningEvidence(test);
+      return {
+        path: test.path,
+        rank: test.rank,
+        reason: test.reason,
+        command: test.command,
+        targetPaths: uniqueSorted(test.provenance?.targetPaths ?? [test.path]).slice(0, 8),
+        sources: uniqueSorted(test.provenance?.sources ?? ["outcome_history"]) as TestRecommendationProvenanceSource[],
+        evidence
+      };
+    })
+    .sort((a, b) => b.rank - a.rank || a.path.localeCompare(b.path))
+    .slice(0, limit);
+}
+
+export function formatOutcomeLearningRecommendations(recommendations: OutcomeLearningRecommendation[]): string[] {
+  if (recommendations.length === 0) {
+    return [];
+  }
+  return recommendations.map((entry) => {
+    const evidence = entry.evidence.length > 0 ? `; ${entry.evidence.slice(0, 2).join("; ")}` : "";
+    const command = entry.command ? `; command: ${entry.command}` : "";
+    return `- ${entry.path}: outcome history raised priority${evidence}${command}`;
+  });
+}
+
 export function uniqueTests(tests: TestRecommendation[]): TestRecommendation[] {
   const byPath = new Map<string, TestRecommendation>();
   for (const test of tests) {
@@ -368,6 +408,21 @@ function mergeTestProvenance(a?: TestRecommendationProvenance, b?: TestRecommend
     degraded: a?.degraded === true && b?.degraded === true ? true : undefined,
     degradedReason: a?.degraded === true && b?.degraded === true ? a.degradedReason ?? b.degradedReason : undefined
   };
+}
+
+function hasOutcomeHistory(test: TestRecommendation): boolean {
+  return test.provenance?.sources.includes("outcome_history") === true || /\boutcome history\b/iu.test(test.reason);
+}
+
+function outcomeLearningEvidence(test: TestRecommendation): string[] {
+  const evidence = uniqueSorted([
+    ...(test.provenance?.evidence ?? []).filter((entry) => /\boutcome\b/iu.test(entry)),
+    ...test.reason
+      .split(";")
+      .map((entry) => entry.trim())
+      .filter((entry) => /\boutcome\b/iu.test(entry))
+  ]).slice(0, 5);
+  return evidence.length > 0 ? evidence : [test.reason];
 }
 
 function transitiveImporters(index: CodexaIndex, sourcePaths: string[], maxDepth: number): Map<string, string> {
