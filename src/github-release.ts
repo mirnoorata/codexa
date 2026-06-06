@@ -454,7 +454,8 @@ function changedArea(file: string): string {
     normalized === "src/github-release.ts" ||
     normalized === "scripts/verify-release-path.mjs" ||
     normalized === "docs/PUBLIC_RELEASE_CHECKLIST.md" ||
-    normalized === ".github/workflows/check.yml"
+    normalized === ".github/workflows/check.yml" ||
+    normalized === ".github/workflows/npm-publish.yml"
   ) {
     return "Release and publishing";
   }

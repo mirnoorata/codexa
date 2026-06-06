@@ -53,6 +53,8 @@ has to come back clean against the *new* single commit before you push.
 - `.github/ISSUE_TEMPLATE/config.yml`
 - `.github/pull_request_template.md`
 - `.github/workflows/check.yml` (already exists — CI)
+- `.github/workflows/npm-publish.yml` (publishes npm only from a published
+  GitHub Release)
 - User-facing docs that match the current tool surface: proof-carrying
   `symbol_context`, `EdgeEvidenceV1`, planned-test provenance,
   `CodexaSymbolReportV1`, local outcome ranking, structured `nextTools`, eval
@@ -139,6 +141,40 @@ mean "I cannot merge my own PRs." It just makes the CI green light mandatory.
   - Under `Fork pull request workflows from outside collaborators`: pick
     **Require approval for all outside collaborators**. Prevents a drive-by
     fork PR from running your Actions minutes without your review.
+
+### npm package publishing
+
+- Before the first npm release, add a repository secret named `NPM_TOKEN` at
+  `Settings → Secrets and variables → Actions → Repository secrets`.
+- The secret must be a granular npm access token with write access to the
+  `@mirnoorata` scope or package namespace and Bypass 2FA enabled. Do not paste
+  the token into the workflow, PR, README, issue, release notes, or terminal
+  transcript.
+- Keep the repository public before publishing. npm provenance for GitHub-backed
+  publishes requires a public repository and a public package.
+- The npm publish workflow is `.github/workflows/npm-publish.yml`. It runs on
+  `release: published`, checks that the tag is exactly
+  `v${package.json.version}`, requires the tag commit to be contained in the
+  repository default branch, rejects GitHub prereleases and semver prerelease
+  versions until an explicit npm dist-tag policy exists, requires the package
+  identity and repository URL to match `@mirnoorata/codexa` on GitHub, no-ops if
+  that exact version is already on npm before the gate or appears during the
+  gate, runs `npm run security:check`, and
+  publishes with
+  `npm publish --registry https://registry.npmjs.org --access public --tag latest --provenance --ignore-scripts`.
+  The explicit `--ignore-scripts` prevents npm from re-running `prepublishOnly`
+  inside the token-bearing publish step after the full security gate has already
+  passed, the explicit registry flag prevents publish redirection by future npm
+  config drift, and the explicit `--tag latest` prevents stable releases from
+  inheriting a stale npm dist-tag. Pre-publish run steps blank
+  `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN`, so build,
+  install, validation, and test commands cannot mint GitHub OIDC tokens; only the
+  final publish step keeps OIDC available for provenance.
+- After `@mirnoorata/codexa` exists on npm, replace token publishing with npm
+  trusted publishing for the same repository and workflow filename. The trusted
+  publisher should be GitHub Actions, `mirnoorata/codexa`, workflow filename
+  `npm-publish.yml`, no environment name unless the workflow adds one, and
+  allowed action `npm publish`.
 
 ### Notifications
 

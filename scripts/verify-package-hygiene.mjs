@@ -35,7 +35,7 @@ if (targets.length > 0) {
 } else {
   const tempDir = mkdtempSync(path.join(os.tmpdir(), "codexa-package-hygiene-"));
   try {
-    const packJson = execFileSync("npm", ["pack", "--json", "--pack-destination", tempDir], {
+    const packJson = execFileSync("npm", ["pack", "--dry-run=false", "--json", "--pack-destination", tempDir], {
       encoding: "utf8",
       stdio: ["ignore", "pipe", "pipe"]
     });

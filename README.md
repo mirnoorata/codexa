@@ -622,6 +622,70 @@ then runs current-file, history, and source-hygiene gates inside the temporary
 repo. It requires a clean working tree so the verified snapshot exactly matches
 the committed source.
 
+## npm Package Publishing
+
+The npm package is published by GitHub Actions after the existing GitHub Release
+lane publishes a release. The trigger is the GitHub event
+`release: published`; pushed tags alone do not publish to npm. The workflow
+checks out the released tag, requires the tag to match
+`v${package.json.version}`, requires the tag commit to be contained in the
+repository default branch, rejects GitHub prereleases and semver prerelease
+versions until an explicit npm dist-tag policy exists, requires the package
+identity and repository URL to match `@mirnoorata/codexa` on GitHub, confirms the
+package version is not already on the npm registry, runs `npm run security:check`,
+re-checks the exact version in case another publisher created it while the gate
+was running, then runs:
+
+```bash
+npm publish --registry https://registry.npmjs.org --access public --tag latest --provenance --ignore-scripts
+```
+
+For the first public npm release, configure a GitHub repository secret named
+`NPM_TOKEN`. The package does not exist on npm until that first publish, and the
+current npm trusted-publishing CLI requires the package to already exist before
+creating a trusted publisher relationship. Use a granular npm access token with
+write access to the `@mirnoorata` scope or package namespace and Bypass 2FA
+enabled. CI does not receive an OTP; npm handles non-interactive 2FA through
+the token's Bypass 2FA capability.
+
+The workflow runs `npm run security:check` before the publish step, then passes
+`--ignore-scripts` to `npm publish` so npm does not re-run `prepublishOnly`
+with `NODE_AUTH_TOKEN` and OIDC access in the publish-step environment. The
+publish step repeats the exact `npm view` version check after the gate, so a
+concurrent or manual publish during the check window becomes a clean no-op
+instead of a failed duplicate-version publish. The
+publish and registry lookup commands also pass the npmjs registry explicitly so
+a future `.npmrc` or package config change cannot redirect the release, and the
+publish command passes `--tag latest` explicitly so stable GitHub Releases
+cannot inherit a stale npm dist-tag. The pre-publish run steps blank
+`ACTIONS_ID_TOKEN_REQUEST_URL` and
+`ACTIONS_ID_TOKEN_REQUEST_TOKEN`, so build, install, validation, and test
+commands cannot mint GitHub OIDC tokens; only the final publish step keeps OIDC
+available for provenance.
+
+After `@mirnoorata/codexa` exists on npm, migrate to trusted publishing:
+
+```bash
+npm install -g npm@^11.10.0
+npm trust github @mirnoorata/codexa --repo mirnoorata/codexa --file npm-publish.yml --allow-publish
+```
+
+Or configure the same trusted publisher on npmjs.com:
+
+- Publisher: GitHub Actions
+- Organization or user: `mirnoorata`
+- Repository: `codexa`
+- Workflow filename: `npm-publish.yml`
+- Environment name: blank unless the workflow later uses a GitHub deployment
+  environment
+- Allowed action: `npm publish`
+
+Once trusted publishing is verified, remove the `NPM_TOKEN` secret and change
+the publish step to omit `NODE_AUTH_TOKEN` and `--provenance`, while keeping the
+explicit pre-publish `security:check` gate and `--ignore-scripts`; npm
+generates provenance automatically for public packages published from public
+GitHub repositories through trusted publishing.
+
 Before creating a public source archive, remove local generated artifacts and
 export from git rather than from the working directory:
 

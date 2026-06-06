@@ -1,0 +1,180 @@
+name: Publish Codexa to npm
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codexa-npm-publish-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 30
+    env:
+      NPM_REGISTRY: https://registry.npmjs.org
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Use Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "24.x"
+          registry-url: "https://registry.npmjs.org"
+          package-manager-cache: false
+
+      - name: Use provenance-capable npm
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
+        run: |
+          set -euo pipefail
+          npm install -g npm@^11.10.0 --registry "${NPM_REGISTRY}" --ignore-scripts
+          node --version
+          npm --version
+
+      - name: Validate release package
+        id: package
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
+          ACTIONS_ID_TOKEN_REQUEST_URL: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
+        run: |
+          set -euo pipefail
+
+          if [[ "${REPOSITORY_PRIVATE}" == "true" ]]; then
+            echo "::error::npm provenance for GitHub-backed publishes requires a public repository."
+            exit 1
+          fi
+
+          if [[ -z "${DEFAULT_BRANCH}" ]]; then
+            echo "::error::Repository default branch is unavailable in the release event."
+            exit 1
+          fi
+
+          git fetch --no-tags --prune origin "+refs/heads/${DEFAULT_BRANCH}:refs/remotes/origin/${DEFAULT_BRANCH}"
+          if ! git merge-base --is-ancestor HEAD "refs/remotes/origin/${DEFAULT_BRANCH}"; then
+            echo "::error::Release tag ${RELEASE_TAG} does not point to a commit contained in ${DEFAULT_BRANCH}."
+            exit 1
+          fi
+
+          if [[ "${RELEASE_PRERELEASE}" == "true" ]]; then
+            echo "::error::npm publishing is stable-release-only; GitHub prereleases require an explicit dist-tag policy first."
+            exit 1
+          fi
+
+          expected_name="@mirnoorata/codexa"
+          expected_repository="git+https://github.com/mirnoorata/codexa.git"
+          package_name="$(node -p "require('./package.json').name")"
+          package_version="$(node -p "require('./package.json').version")"
+          package_access="$(node -p "require('./package.json').publishConfig?.access ?? ''")"
+          package_repository="$(node -p "const pkg = require('./package.json'); typeof pkg.repository === 'string' ? pkg.repository : (pkg.repository?.url ?? '')")"
+          expected_tag="v${package_version}"
+
+          if [[ "${package_name}" != "${expected_name}" ]]; then
+            echo "::error::package.json name must be ${expected_name}; found ${package_name}."
+            exit 1
+          fi
+
+          if [[ "${package_version}" == *-* ]]; then
+            echo "::error::npm publishing is stable-release-only; prerelease package version ${package_version} would not publish to latest safely."
+            exit 1
+          fi
+
+          if [[ "${RELEASE_TAG}" != "${expected_tag}" ]]; then
+            echo "::error::Release tag ${RELEASE_TAG} does not match package version tag ${expected_tag}."
+            exit 1
+          fi
+
+          if [[ "${package_repository}" != "${expected_repository}" ]]; then
+            echo "::error::package.json repository.url must be ${expected_repository}; found ${package_repository}."
+            exit 1
+          fi
+
+          if [[ "${package_access}" != "public" ]]; then
+            echo "::error::package.json publishConfig.access must be public for @mirnoorata/codexa."
+            exit 1
+          fi
+
+          echo "name=${package_name}" >> "${GITHUB_OUTPUT}"
+          echo "version=${package_version}" >> "${GITHUB_OUTPUT}"
+
+          set +e
+          npm view "${package_name}@${package_version}" version --json --registry "${NPM_REGISTRY}" >"${RUNNER_TEMP}/npm-view.json" 2>"${RUNNER_TEMP}/npm-view.err"
+          status=$?
+          set -e
+
+          if [[ "${status}" -eq 0 ]]; then
+            echo "already_published=true" >> "${GITHUB_OUTPUT}"
+            echo "${package_name}@${package_version} is already published; skipping npm publish."
+            exit 0
+          fi
+
+          if grep -Eq "E404|404 Not Found|not in this registry" "${RUNNER_TEMP}/npm-view.err"; then
+            echo "already_published=false" >> "${GITHUB_OUTPUT}"
+            echo "${package_name}@${package_version} is not published yet; continuing."
+            exit 0
+          fi
+
+          cat "${RUNNER_TEMP}/npm-view.err" >&2
+          exit "${status}"
+
+      - name: Install dependencies
+        if: steps.package.outputs.already_published != 'true'
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
+        run: npm ci
+
+      - name: Run security gate
+        if: steps.package.outputs.already_published != 'true'
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
+        run: npm run security:check
+
+      - name: Publish to npm with provenance
+        if: steps.package.outputs.already_published != 'true'
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+          PACKAGE_NAME: ${{ steps.package.outputs.name }}
+          PACKAGE_VERSION: ${{ steps.package.outputs.version }}
+        run: |
+          set -euo pipefail
+
+          if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
+            echo "::error::NPM_TOKEN repository secret is not configured."
+            exit 1
+          fi
+
+          set +e
+          npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version --json --registry "${NPM_REGISTRY}" >"${RUNNER_TEMP}/npm-view-final.json" 2>"${RUNNER_TEMP}/npm-view-final.err"
+          status=$?
+          set -e
+
+          if [[ "${status}" -eq 0 ]]; then
+            echo "${PACKAGE_NAME}@${PACKAGE_VERSION} was published after the security gate; skipping npm publish."
+            exit 0
+          fi
+
+          if ! grep -Eq "E404|404 Not Found|not in this registry" "${RUNNER_TEMP}/npm-view-final.err"; then
+            cat "${RUNNER_TEMP}/npm-view-final.err" >&2
+            exit "${status}"
+          fi
+
+          npm publish --registry "${NPM_REGISTRY}" --access public --tag latest --provenance --ignore-scripts
