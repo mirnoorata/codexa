@@ -21,6 +21,7 @@ export function registerWorkflowPrompts(server: McpServer): void {
             text: [
               `Use Codexa before editing ${target}.`,
               task ? `Task: ${task}` : undefined,
+              "If the target is unclear, call first-class `search` before planning.",
               "Call `change_plan` with `saveSnapshot: true` for the target and task before editing.",
               "Call `impact` only if the plan reports medium/low quality, broad fanout, or a high-risk public contract.",
               "After editing, call `post_edit_review` with the returned task snapshot id.",
@@ -52,7 +53,7 @@ export function registerWorkflowPrompts(server: McpServer): void {
             text: [
               "Use Codexa to review the current dirty diff.",
               task ? `Expected intent: ${task}` : undefined,
-              "Call `post_edit_review` first if a change_plan snapshot exists; otherwise call `task_brief` with `diff: true`.",
+              "Call `post_edit_review` first if a change_plan snapshot exists; otherwise call `search` for target discovery or `task_brief` with `diff: true` when the target is already clear.",
               "Then call `diff_impact` or `test_plan` only if the review or brief leaves a gap.",
               "Check changed-but-unindexed files, parser errors, heuristic-only links, and candidate test command provenance."
             ]
@@ -84,9 +85,9 @@ export function registerWorkflowPrompts(server: McpServer): void {
               "Use Codexa's snapshot edit loop.",
               `Task: ${task}`,
               target ? `Target: ${target}` : undefined,
-              "Before editing, call `change_plan` with `saveSnapshot: true` and a short `taskId`.",
+              "Before editing, call first-class `search` if the target is unclear, then `change_plan` with `saveSnapshot: true` and a short `taskId`.",
               "Use the returned planned files, tests, workflows, quality, and gaps to guide source reads.",
-              "After editing, call `post_edit_review` with that `taskId` and any tests already run.",
+              "After editing, call go-to `post_edit_review` with that `taskId` and any tests already run.",
               "If the review says `inspect` or `replan`, resolve that drift before claiming the edit is complete."
             ]
               .filter((line): line is string => Boolean(line))

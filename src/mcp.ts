@@ -1,5 +1,8 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
+import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/streamableHttp.js";
+import http from "node:http";
+import type { AddressInfo } from "node:net";
 import path from "node:path";
 import { z } from "zod";
 import { statusQuery } from "./queries.js";
@@ -14,10 +17,100 @@ import { registerArtifactResources } from "./mcp/resources.js";
 import { createMcpRuntime, notifyResourceListChangedAfterRefresh, withSessionRuntime } from "./mcp/runtime.js";
 import { withAutoRecordedSessionMemory } from "./mcp/session-memory.js";
 import { registerMcpTools, type McpOptionalQueryInput } from "./mcp/tools.js";
+import { NO_SOURCE_MUTATION_CONTRACT, PRIMARY_CODEX_LOOP } from "./mcp-tool-catalog.js";
+import { CODEXA_VERSION } from "./version.js";
 export { compactMcpResult, compactNonPostEditMcpResult, compactPostEditMcpResult } from "./mcp/compaction.js";
 export { MCP_TOOL_CATALOG, PRIMARY_CODEX_LOOP, PRIMARY_MCP_TOOL_NAMES } from "./mcp-tool-catalog.js";
 
+export type McpTransportKind = "stdio" | "http";
+
+export interface ServeMcpHttpOptions {
+  host?: string;
+  port: number;
+  endpoint?: string;
+}
+
+const MCP_SERVER_INSTRUCTIONS = [
+  "Use Codexa as a Codex-native codebase context and edit safety server.",
+  `Primary Codex loop: ${PRIMARY_CODEX_LOOP}.`,
+  "When the target is unclear, use first-class search before task_brief.",
+  "Before source edits, use change_plan with saveSnapshot; after edits, use post_edit_review as the go-to review gate; before final response, account for test_plan.",
+  `Trust rules: ${NO_SOURCE_MUTATION_CONTRACT} Semantic retrieval is used only when configured; verify heuristic-heavy packets against source before editing.`
+].join("\n");
+
 export async function serveMcp(repoRoot: string, options: QueryOptions = { autoRefresh: true }): Promise<void> {
+  const { configuredRepoRoot, queryOptions, server } = await createCodexaMcpServer(repoRoot, options);
+  await server.connect(new StdioServerTransport());
+  console.error(`codexa MCP server ready for ${configuredRepoRoot} (transport=stdio, autoRefresh=${queryOptions.autoRefresh})`);
+}
+
+export async function serveMcpHttp(repoRoot: string, options: QueryOptions = { autoRefresh: true }, httpOptions: ServeMcpHttpOptions): Promise<void> {
+  const configuredRepoRoot = path.resolve(repoRoot);
+  const queryOptions: QueryOptions = { ...options, autoRefresh: options.autoRefresh ?? true };
+  const host = httpOptions.host ?? "127.0.0.1";
+  if (!isLoopbackHttpHost(host)) {
+    throw new Error(`Codexa HTTP MCP transport requires a loopback host unless authentication/origin protection is added; received ${host}`);
+  }
+  const port = httpOptions.port;
+  const endpoint = normalizeMcpEndpoint(httpOptions.endpoint ?? "/mcp");
+  const httpServer = http.createServer(async (req, res) => {
+    try {
+      if (!isAllowedHttpOrigin(req.headers.origin)) {
+        sendJsonRpcHttpError(res, 403, "MCP HTTP Origin is not allowed");
+        return;
+      }
+      const requestUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? `${host}:${port}`}`);
+      if (requestUrl.pathname !== endpoint) {
+        sendJsonRpcHttpError(res, 404, "MCP endpoint not found");
+        return;
+      }
+      const { server } = await createCodexaMcpServer(configuredRepoRoot, queryOptions);
+      const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
+      res.on("close", () => {
+        void transport.close();
+        void server.close();
+      });
+      await server.connect(transport);
+      await transport.handleRequest(req, res);
+    } catch (error) {
+      console.error(`codexa MCP HTTP request failed: ${error instanceof Error ? error.message : String(error)}`);
+      if (!res.headersSent) {
+        sendJsonRpcHttpError(res, 500, "MCP request failed");
+      } else {
+        res.end();
+      }
+    }
+  });
+
+  await new Promise<void>((resolve, reject) => {
+    const onError = (error: Error) => reject(error);
+    httpServer.once("error", onError);
+    httpServer.listen(port, host, () => {
+      httpServer.off("error", onError);
+      resolve();
+    });
+  });
+  const address = httpServer.address() as AddressInfo | string | null;
+  const actualPort = typeof address === "object" && address ? address.port : port;
+  console.error(`codexa MCP HTTP server ready for ${configuredRepoRoot} at http://${host}:${actualPort}${endpoint} (transport=http, autoRefresh=${queryOptions.autoRefresh})`);
+
+  await new Promise<void>((resolve) => {
+    let closing = false;
+    const shutdown = () => {
+      if (closing) {
+        return;
+      }
+      closing = true;
+      process.off("SIGINT", shutdown);
+      process.off("SIGTERM", shutdown);
+      httpServer.close(() => resolve());
+    };
+    process.once("SIGINT", shutdown);
+    process.once("SIGTERM", shutdown);
+  });
+}
+
+async function createCodexaMcpServer(repoRoot: string, options: QueryOptions): Promise<{ configuredRepoRoot: string; queryOptions: QueryOptions; server: McpServer }> {
   const configuredRepoRoot = path.resolve(repoRoot);
   const queryOptions: QueryOptions = { ...options, autoRefresh: options.autoRefresh ?? true };
   const sessionMemoryMode = queryOptions.sessionMemory ?? "auto";
@@ -31,10 +124,15 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
     .then((resolution) => resolution.repoRoot)
     .catch(() => configuredRepoRoot);
   const mcpRuntime = createMcpRuntime({ configuredRepoRoot, queryOptions, preferConfiguredRoot });
-  const server = new McpServer({
-    name: "codexa",
-    version: "0.1.0"
-  });
+  const server = new McpServer(
+    {
+      name: "codexa",
+      version: CODEXA_VERSION
+    },
+    {
+      instructions: MCP_SERVER_INSTRUCTIONS
+    }
+  );
   const outputSchema = createMcpOutputSchema();
   const sourceContextAnnotations = {
     readOnlyHint: !queryOptions.autoRefresh,
@@ -216,10 +314,50 @@ export async function serveMcp(repoRoot: string, options: QueryOptions = { autoR
   await registerArtifactResources(server, mcpRuntime.resolveActiveRepoRoot);
   registerWorkflowPrompts(server);
 
-  await server.connect(new StdioServerTransport());
-  console.error(`codexa MCP server ready for ${configuredRepoRoot} (autoRefresh=${queryOptions.autoRefresh})`);
+  return { configuredRepoRoot, queryOptions, server };
 }
 
+function normalizeMcpEndpoint(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === "/") {
+    return "/mcp";
+  }
+  return trimmed.startsWith("/") ? trimmed.replace(/\/+$/u, "") || "/mcp" : `/${trimmed.replace(/\/+$/u, "")}`;
+}
+
+function isLoopbackHttpHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase().replace(/^\[/u, "").replace(/\]$/u, "");
+  return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1" || normalized === "0:0:0:0:0:0:0:1";
+}
+
+function isAllowedHttpOrigin(origin: string | string[] | undefined): boolean {
+  if (!origin) {
+    return true;
+  }
+  if (Array.isArray(origin)) {
+    return false;
+  }
+  try {
+    const parsed = new URL(origin);
+    return (parsed.protocol === "http:" || parsed.protocol === "https:") && isLoopbackHttpHost(parsed.hostname);
+  } catch {
+    return false;
+  }
+}
+
+function sendJsonRpcHttpError(res: http.ServerResponse, statusCode: number, message: string): void {
+  res.writeHead(statusCode, { "Content-Type": "application/json" });
+  res.end(
+    JSON.stringify({
+      jsonrpc: "2.0",
+      error: {
+        code: -32000,
+        message
+      },
+      id: null
+    })
+  );
+}
 
 function semanticEnabledForServer(options: QueryOptions): boolean {
   return options.semantic === true || process.env.CODEXA_SEMANTIC === "1";

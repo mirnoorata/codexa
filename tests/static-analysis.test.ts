@@ -192,7 +192,9 @@ describe("static-analysis scanner runners", () => {
 
     const result = await updateStaticAnalysisReports(repo, { symbolReports: [reportPath], index: true });
     expect(result.reports.some((report) => report.kind === "symbol-report")).toBe(true);
-    expect(result.index?.files.some((file) => file.path === "src/lib.rs" && file.language === "rust" && file.source === "static-analysis")).toBe(true);
+    const rustFile = result.index?.files.find((file) => file.path === "src/lib.rs");
+    expect(rustFile?.language).toBe("rust");
+    expect(rustFile?.source).toBe("git");
     const symbol = result.index?.symbols.find((candidate) => candidate.qualifiedName === "crate::start_server");
     expect(symbol?.confidence).toBe("derived");
 

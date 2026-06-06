@@ -1,15 +1,17 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdtemp, mkdir, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
+import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { describe, expect, it } from "vitest";
 import { buildIndex } from "../src/indexer.js";
-import { MCP_TOOL_CATALOG, compactNonPostEditMcpResult, compactPostEditMcpResult } from "../src/mcp.js";
+import { MCP_TOOL_CATALOG, PRIMARY_CODEX_LOOP, compactNonPostEditMcpResult, compactPostEditMcpResult } from "../src/mcp.js";
 import { MCP_TOOL_NAMES, MCP_TOOL_REGISTRY } from "../src/mcp/tool-registry.js";
 import { MCP_REGISTERED_TOOL_NAMES } from "../src/mcp/tools.js";
 import { CURRENT_VERIFICATION_PROVENANCE } from "../src/types.js";
+import { CODEXA_VERSION } from "../src/version.js";
 
 function freshnessFixture() {
   return {
@@ -36,6 +38,60 @@ function seq<T>(count: number, factory: (index: number) => T): T[] {
 
 function serializedBytes(value: unknown): number {
   return Buffer.byteLength(JSON.stringify(value), "utf8");
+}
+
+async function waitForStderr(child: ChildProcessWithoutNullStreams, pattern: RegExp, timeoutMs = 5000): Promise<string> {
+  const chunks: Buffer[] = [];
+  return await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      cleanup();
+      reject(new Error(`Timed out waiting for stderr pattern ${pattern}`));
+    }, timeoutMs);
+    const onData = (chunk: Buffer) => {
+      chunks.push(chunk);
+      const text = Buffer.concat(chunks).toString("utf8");
+      if (pattern.test(text)) {
+        cleanup();
+        resolve(text);
+      }
+    };
+    const onExit = () => {
+      cleanup();
+      reject(new Error(`Process exited before stderr pattern ${pattern}: ${Buffer.concat(chunks).toString("utf8")}`));
+    };
+    const cleanup = () => {
+      clearTimeout(timer);
+      child.stderr.off("data", onData);
+      child.off("exit", onExit);
+    };
+    child.stderr.on("data", onData);
+    child.once("exit", onExit);
+  });
+}
+
+async function stopChild(child: ChildProcessWithoutNullStreams): Promise<void> {
+  if (child.exitCode !== null || child.signalCode !== null) {
+    return;
+  }
+  child.kill("SIGTERM");
+  await new Promise<void>((resolve) => {
+    child.once("exit", () => resolve());
+    setTimeout(resolve, 1500).unref();
+  });
+}
+
+async function waitForExit(child: ChildProcessWithoutNullStreams, timeoutMs = 5000): Promise<{ code: number | null; signal: NodeJS.Signals | null; stderr: string }> {
+  const stderrChunks: Buffer[] = [];
+  child.stderr.on("data", (chunk: Buffer) => stderrChunks.push(chunk));
+  return await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(new Error(`Timed out waiting for process exit: ${Buffer.concat(stderrChunks).toString("utf8")}`));
+    }, timeoutMs);
+    child.once("exit", (code, signal) => {
+      clearTimeout(timer);
+      resolve({ code, signal, stderr: Buffer.concat(stderrChunks).toString("utf8") });
+    });
+  });
 }
 
 async function createIndexedMcpRepo(parent: string, name: string, fileStem: string, symbol: string): Promise<string> {
@@ -345,7 +401,7 @@ describe("Codexa MCP server", () => {
   it("keeps the primary MCP happy path small and demotes graph/workflow tools", () => {
     const primaryTools = MCP_TOOL_CATALOG.filter((tool) => tool.tier === "primary").map((tool) => tool.name);
 
-    expect(primaryTools).toEqual(["session_context", "task_brief", "change_plan", "post_edit_review", "test_plan", "search"]);
+    expect(primaryTools).toEqual(["session_context", "search", "task_brief", "change_plan", "post_edit_review", "test_plan"]);
     expect(MCP_TOOL_CATALOG.find((tool) => tool.name === "workflow_path")).toMatchObject({ tier: "advanced" });
     expect(MCP_TOOL_CATALOG.find((tool) => tool.name === "change_plan")).toMatchObject({
       useWhen: expect.stringContaining("saveSnapshot=true"),
@@ -354,14 +410,15 @@ describe("Codexa MCP server", () => {
     expect(MCP_TOOL_CATALOG.find((tool) => tool.name === "search")).toMatchObject({
       readOnly: false,
       writeEffects: expect.stringContaining("index-cache-if-auto-refresh"),
-      useWhen: expect.stringContaining("Narrow ambiguous tasks")
+      useWhen: expect.stringContaining("Before task_brief")
     });
     expect(MCP_TOOL_CATALOG.map((tool) => tool.name)).toEqual(MCP_TOOL_NAMES);
     expect(MCP_REGISTERED_TOOL_NAMES).toEqual(MCP_TOOL_NAMES);
     expect(MCP_TOOL_REGISTRY.map((tool) => ({ name: tool.name, title: tool.title, description: tool.description }))).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: "change_plan", title: "Codexa change plan", description: expect.stringContaining("saveSnapshot=true") }),
-        expect.objectContaining({ name: "post_edit_review", title: "Codexa post-edit review", description: expect.stringContaining("change_plan snapshot") })
+        expect.objectContaining({ name: "search", title: "Codexa hybrid semantic search", description: expect.stringContaining("First-class target discovery") }),
+        expect.objectContaining({ name: "post_edit_review", title: "Codexa post-edit review", description: expect.stringContaining("Go-to post-edit review gate") })
       ])
     );
   });
@@ -1766,6 +1823,105 @@ describe("Codexa MCP server", () => {
     await client.close();
   });
 
+  it("reports package version and Codexa loop instructions during MCP initialization", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-server-info-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdir(path.join(repo, "src"), { recursive: true });
+    await writeFile(path.join(repo, "src/index.ts"), "export function main() { return 1 }\n", "utf8");
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    await buildIndex({ repoRoot: repo });
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh"],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-server-info-test", version: "0.1.0" });
+    await client.connect(transport);
+    try {
+      expect(client.getServerVersion()).toMatchObject({ name: "codexa", version: CODEXA_VERSION });
+      expect(client.getInstructions()).toContain(PRIMARY_CODEX_LOOP);
+      expect(client.getInstructions()).toContain("post_edit_review");
+      expect(client.getInstructions()).toContain("must not mutate source files");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("serves Codexa tools over explicit Streamable HTTP transport", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-http-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdir(path.join(repo, "src"), { recursive: true });
+    await writeFile(path.join(repo, "src/index.ts"), "export function httpMarker() { return 1 }\n", "utf8");
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    await buildIndex({ repoRoot: repo });
+
+    const child = spawn(process.execPath, [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--transport", "http", "--port", "0", "--no-auto-refresh"], {
+      cwd: process.cwd(),
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    try {
+      const ready = await waitForStderr(child, /http:\/\/127\.0\.0\.1:(\d+)\/mcp/u);
+      const url = /http:\/\/127\.0\.0\.1:(\d+)\/mcp/u.exec(ready)?.[0];
+      expect(url).toBeTruthy();
+      const rejected = await fetch(url!, {
+        method: "POST",
+        headers: {
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          origin: "https://evil.example"
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: "origin-test", method: "initialize", params: {} })
+      });
+      expect(rejected.status).toBe(403);
+      expect(await rejected.text()).toContain("Origin");
+      const rejectedNonWebOrigin = await fetch(url!, {
+        method: "POST",
+        headers: {
+          accept: "application/json, text/event-stream",
+          "content-type": "application/json",
+          origin: "file://localhost"
+        },
+        body: JSON.stringify({ jsonrpc: "2.0", id: "origin-scheme-test", method: "initialize", params: {} })
+      });
+      expect(rejectedNonWebOrigin.status).toBe(403);
+      expect(await rejectedNonWebOrigin.text()).toContain("Origin");
+      const transport = new StreamableHTTPClientTransport(new URL(url!));
+      const client = new Client({ name: "codexa-http-test", version: "0.1.0" });
+      await client.connect(transport);
+      try {
+        expect(client.getServerVersion()).toMatchObject({ name: "codexa", version: CODEXA_VERSION });
+        expect(client.getInstructions()).toContain(PRIMARY_CODEX_LOOP);
+        const tools = await client.listTools();
+        expect(tools.tools.map((tool) => tool.name)).toContain("search");
+        const result = await client.callTool({ name: "search", arguments: { query: "httpMarker", limit: 3 } });
+        expect(JSON.stringify(result)).toContain("httpMarker");
+      } finally {
+        await client.close();
+      }
+    } finally {
+      await stopChild(child);
+    }
+  });
+
+  it("refuses Streamable HTTP binds on non-loopback hosts without auth", async () => {
+    const child = spawn(process.execPath, [path.join(process.cwd(), "dist/cli.js"), "serve", process.cwd(), "--transport", "http", "--host", "0.0.0.0", "--port", "0", "--no-auto-refresh"], {
+      cwd: process.cwd(),
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    const result = await waitForExit(child);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toContain("requires a loopback host");
+  });
+
   it("can disable MCP session-memory auto-recording for a strict read-only launch", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-memory-off-"));
     execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
@@ -1875,7 +2031,7 @@ describe("Codexa MCP server", () => {
     }
   });
 
-  it("marks semantic OpenAI-capable MCP tools as open-world, including change_plan", async () => {
+  it("marks semantic OpenAI-capable MCP tools as open-world, including post_edit_review", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-semantic-openworld-"));
     execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
     await mkdir(path.join(repo, "src"), { recursive: true });
@@ -1897,6 +2053,9 @@ describe("Codexa MCP server", () => {
     const tools = await client.listTools();
     expect(tools.tools.find((tool) => tool.name === "search")?.annotations?.openWorldHint).toBe(true);
     expect(tools.tools.find((tool) => tool.name === "change_plan")?.annotations?.openWorldHint).toBe(true);
+    expect(tools.tools.find((tool) => tool.name === "post_edit_review")?.annotations?.openWorldHint).toBe(true);
+    const postEditSchema = JSON.stringify(tools.tools.find((tool) => tool.name === "post_edit_review")?.inputSchema);
+    expect(postEditSchema).toContain("semanticProvider");
     await client.close();
   });
 

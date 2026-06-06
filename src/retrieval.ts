@@ -155,12 +155,13 @@ const LANE_WEIGHTS: Record<RetrievalLane, number> = {
   exact: 4,
   symbol: 3.2,
   bm25: 2,
-  semantic: 1.15,
+  semantic: 2.6,
   graph: 0.65,
   workflow: 2.8,
   test: 2.5,
   dirty: 1.7
 };
+const SEMANTIC_ANCHOR_MIN_SCORE = 9;
 const RETRIEVAL_RUNTIME_CACHE_LIMIT = 4;
 const retrievalRuntimeCache = new Map<string, RetrievalRuntime>();
 
@@ -665,13 +666,16 @@ function analyzeIntentConfidence(
   const primaryIntent = intents.find((intent) => intent !== "unknown") ?? "unknown";
   const allowTestAnchors = /\b(test|tests|spec|specs|pytest|vitest|coverage|verification|verify)\b/i.test(query);
   const directAnchorMatches = matches.filter((match) => (match.lanes.exact ?? 0) > 0 || (match.lanes.symbol ?? 0) > 0 || (match.lanes.workflow ?? 0) > 0);
+  const directAnchorPaths = new Set(directAnchorMatches.map((match) => match.file.path));
+  const semanticAnchorMatches = matches.filter((match) => !directAnchorPaths.has(match.file.path) && (match.lanes.semantic ?? 0) >= SEMANTIC_ANCHOR_MIN_SCORE);
   const anchors = uniqueSorted(
-    directAnchorMatches
+    [...directAnchorMatches, ...semanticAnchorMatches]
       .filter((match) => allowTestAnchors || (!match.file.test && !isTestPath(match.file.path)))
       .map((match) => match.file.path)
   ).slice(0, 8);
+  const semanticAnchorCount = semanticAnchorMatches.filter((match) => anchors.includes(match.file.path)).length;
   const testOnlyAnchorCount =
-    allowTestAnchors || anchors.length > 0 ? 0 : directAnchorMatches.filter((match) => match.file.test || isTestPath(match.file.path)).length;
+    allowTestAnchors || anchors.length > 0 ? 0 : [...directAnchorMatches, ...semanticAnchorMatches].filter((match) => match.file.test || isTestPath(match.file.path)).length;
   const missingAnchors: string[] = [];
   if (matches.length === 0) {
     missingAnchors.push("no retrieval matches");
@@ -718,6 +722,7 @@ function analyzeIntentConfidence(
     `primary intent ${primaryIntent}`,
     broad ? "broad natural-language prompt" : "anchored prompt",
     anchors.length > 0 ? `${anchors.length} direct anchor(s)` : "no direct anchors",
+    semanticAnchorCount > 0 ? `${semanticAnchorCount} semantic anchor(s)` : undefined,
     workflows.length > 0 ? `${workflows.length} workflow trace(s)` : undefined,
     ...missingAnchors.map((anchor) => `missing ${anchor}`)
   ].filter((entry): entry is string => Boolean(entry));

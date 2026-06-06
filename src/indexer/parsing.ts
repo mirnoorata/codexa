@@ -6,7 +6,7 @@ import { MAX_INDEXED_SOURCE_BYTES, type RepoSkippedFile, type RepoSourceFile } f
 import type { ParseResult } from "../types.js";
 import { mapLimit, stableId } from "../util.js";
 
-const PARSE_CACHE_VERSION = "parse-cache-v1-placeholder-signals-20260515a";
+const PARSE_CACHE_VERSION = "parse-cache-v1-shallow-rust-go-java-20260606";
 const PARSE_CACHE_PATH = ".codex/cache/codexa-parse-cache.json";
 const PYTHON_SEMANTIC_SOURCE_TOTAL_BYTES = 16 * 1024 * 1024;
 

@@ -23,6 +23,7 @@ import { loadTaskSnapshot, saveBlockedTaskSnapshot, saveTaskSnapshot, type TaskS
 import { CURRENT_VERIFICATION_PROVENANCE } from "../types.js";
 import { isTrustedAutoVerifyCommandReport } from "../autoverify.js";
 import { AUTO_VERIFY_POLICY_DIGEST, AUTO_VERIFY_POLICY_ID } from "../autoverify/policy.js";
+import type { SemanticRetrievalSummary } from "../semantic-retrieval.js";
 import type { AutoVerifyCommandReport, AutoVerifyReportRunner } from "../autoverify.js";
 import type {
   AutoVerifyCandidate,
@@ -141,7 +142,7 @@ async function postEditReviewQueryInternal(
       limit,
       includeSnippets: input.includeSnippets ?? false
     },
-    { autoRefresh: false }
+    { ...options, autoRefresh: false }
   );
   const contextData = context.data as {
     focusFiles?: Array<{ file: FileFact; reasons: string[]; tier: EvidenceTier }>;
@@ -153,7 +154,9 @@ async function postEditReviewQueryInternal(
     quality?: ContextQuality;
     gaps?: string[];
     warnings?: string[];
+    retrieval?: { semantic?: SemanticRetrievalSummary };
   };
+  const semanticReviewContext = contextData.retrieval?.semantic;
   const priorSessionMemory = await readSessionMemory({
     repoRoot,
     taskId: effectiveTaskId,
@@ -399,10 +402,12 @@ async function postEditReviewQueryInternal(
     freshnessBanner(freshness, refresh),
     quality ? formatContextQuality(quality) : undefined,
     "Codexa post-edit review",
+    "Review gate: first-class post-edit review; reconcile snapshot, dirty diff, semantic context, and verification before finalizing.",
     `Task: ${task}`,
     snapshot ? `Snapshot: ${snapshot.taskId} (${snapshot.createdAt})` : `Snapshot: unavailable${loadedSnapshot.missingReason ? ` (${loadedSnapshot.missingReason})` : ""}; using current dirty tree only`,
     `Verdict: ${verdict}`,
     `Inspect classification: ${inspectMode}; authority ${completionAuthority}`,
+    semanticReviewContext ? formatPostEditSemanticReviewContext(semanticReviewContext) : undefined,
     `Outcome record: ${outcomePath ?? "not persisted"}`,
     "",
     "Changed since snapshot:",
@@ -572,17 +577,28 @@ async function postEditReviewQueryInternal(
       dependencyChecks: limitArray(dependencyChecks, 30),
       context: compactContextData(context.data),
       quality,
-	      driftReasons,
-	      nextActions,
-	      nextTools: structuredNextTools,
-	      systemMessage: structuredNextTools[0]?.reason,
-	      outcome: {
+      semanticReviewContext,
+      driftReasons,
+      nextActions,
+      nextTools: structuredNextTools,
+      systemMessage: structuredNextTools[0]?.reason,
+      outcome: {
         ...outcome,
         persisted: Boolean(savedOutcome),
         path: outcomePath
       }
     }
   };
+}
+
+function formatPostEditSemanticReviewContext(summary: SemanticRetrievalSummary): string {
+  if (summary.status === "ok") {
+    return `Semantic review context: ok (${summary.provider ?? "provider"} ${summary.model ?? "model"}; ${summary.chunkCount ?? 0} chunks)`;
+  }
+  if (summary.status === "unavailable") {
+    return `Semantic review context: unavailable${summary.diagnostics.length > 0 ? ` (${summary.diagnostics.join("; ")})` : ""}`;
+  }
+  return "Semantic review context: disabled";
 }
 
 function compareSnapshotSymbols(

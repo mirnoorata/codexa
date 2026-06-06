@@ -56,7 +56,70 @@ export async function loadImportAliases(repoRoot: string, files: string[]): Prom
       continue;
     }
   }
+  for (const alias of await loadGoModuleAliases(repoRoot, files)) {
+    aliases.push(alias);
+  }
   return aliases.sort((a, b) => b.prefix.length - a.prefix.length || a.prefix.localeCompare(b.prefix));
+}
+
+async function loadGoModuleAliases(repoRoot: string, files: string[]): Promise<ImportAliasRule[]> {
+  const aliases: ImportAliasRule[] = [];
+  const seen = new Set<string>();
+  for (const moduleDir of goModuleCandidateDirs(files)) {
+    try {
+      const moduleName = parseGoModulePath(await fs.readFile(path.join(repoRoot, moduleDir, "go.mod"), "utf8"));
+      if (!moduleName) {
+        continue;
+      }
+      const key = `${moduleDir}\0${moduleName}`;
+      if (seen.has(key)) {
+        continue;
+      }
+      seen.add(key);
+      const targetPrefix = moduleDir === "." ? "" : `${moduleDir.replace(/\/+$/u, "")}/`;
+      aliases.push({
+        prefix: moduleName,
+        targetPrefix,
+        exact: true,
+        scopePrefix: moduleDir === "." ? undefined : moduleDir
+      });
+      aliases.push({
+        prefix: `${moduleName}/`,
+        targetPrefix,
+        exact: false,
+        scopePrefix: moduleDir === "." ? undefined : moduleDir
+      });
+    } catch {
+      continue;
+    }
+  }
+  return aliases;
+}
+
+function goModuleCandidateDirs(files: string[]): string[] {
+  const candidates = new Set<string>(["."]);
+  for (const file of files) {
+    if (!file.endsWith(".go")) {
+      continue;
+    }
+    let dir = path.posix.dirname(file);
+    while (dir && dir !== ".") {
+      candidates.add(dir);
+      dir = path.posix.dirname(dir);
+    }
+  }
+  return [...candidates].sort((a, b) => a.length - b.length || a.localeCompare(b));
+}
+
+function parseGoModulePath(contents: string): string | undefined {
+  for (const line of contents.split(/\r?\n/u)) {
+    const trimmed = line.replace(/\/\/.*$/u, "").trim();
+    const match = /^module\s+(\S+)$/u.exec(trimmed);
+    if (match && /^[^\s"'`]+$/u.test(match[1])) {
+      return match[1];
+    }
+  }
+  return undefined;
 }
 
 function packageExportTargets(parsed: { exports?: unknown; main?: string; module?: string; types?: string }): Array<{ subpath: string; target: string }> {

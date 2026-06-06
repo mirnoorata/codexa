@@ -24,20 +24,32 @@ export const MCP_TOOL_REGISTRY = [
     writeEffects: "session-memory-auto",
     readOnly: false,
     useWhen: "Start or resume work in a repo and choose the next focused Codexa call.",
-    avoidWhen: "You already have an explicit file or symbol target; use task_brief instead.",
-    nextToolUse: ["task_brief", "search"]
+    avoidWhen: "You already have an explicit file or symbol target; use task_brief or change_plan instead.",
+    nextToolUse: ["search", "task_brief"]
+  },
+  {
+    name: "search",
+    title: "Codexa hybrid semantic search",
+    description: "First-class target discovery for natural-language tasks, identifiers, and ambiguous requests. Combines bounded raw search, exact/symbol signals, semantic retrieval when configured, Codexa ranking, likely tests, and value/gap labels.",
+    tier: "primary",
+    phase: "inspect",
+    writeEffects: "index-cache-if-auto-refresh",
+    readOnly: false,
+    useWhen: "Before task_brief when the target is unclear, when a prompt is broad, or when you need one hybrid semantic/raw pass instead of repeated searches.",
+    avoidWhen: "You already have precise files/symbols and need edit planning, drift review, or verification proof.",
+    nextToolUse: ["task_brief", "change_plan"]
   },
   {
     name: "task_brief",
     title: "Codexa task brief",
     description:
-      "Default first Codexa call before editing, debugging, or reviewing code. Returns a bounded task packet with read-first files, impact expansion, risks, likely tests, freshness, confidence labels, and snippets.",
+      "Default edit-context packet once a target or bounded task is known. Returns read-first files, impact expansion, risks, likely tests, freshness, confidence labels, and snippets.",
     tier: "primary",
     phase: "brief",
     writeEffects: "session-memory-auto",
     readOnly: false,
-    useWhen: "First context call before editing, debugging, or reviewing a specific task.",
-    avoidWhen: "The packet says raw_search_better or needs_target; narrow with search or explicit files first.",
+    useWhen: "Before editing, debugging, or reviewing a specific task after search/session context has supplied a plausible target.",
+    avoidWhen: "The target is still unclear; run first-class search or provide explicit files first.",
     nextToolUse: ["change_plan"]
   },
   {
@@ -57,12 +69,12 @@ export const MCP_TOOL_REGISTRY = [
     name: "post_edit_review",
     title: "Codexa post-edit review",
     description:
-      "After editing, compare the dirty tree against the latest or requested change_plan snapshot. Reports changed files grouped by module, planned-vs-actual drift, symbol/risk deltas, affected callers/tests/workflows, and targeted tests still unaccounted for. MCP calls do not persist outcome files; use the CLI for persisted outcomes.",
+      "Go-to post-edit review gate. After editing, compare the dirty tree against the latest or requested change_plan snapshot with semantic-aware context, planned-vs-actual drift, symbol/risk deltas, affected callers/tests/workflows, and targeted tests still unaccounted for. MCP calls do not persist outcome files; use the CLI for persisted outcomes.",
     tier: "primary",
     phase: "review",
     writeEffects: "session-memory-auto",
     readOnly: false,
-    useWhen: "After edits, compare the dirty tree with the saved change_plan snapshot and ran commands.",
+    useWhen: "Immediately after edits and before final response; pass the saved change_plan task id plus commands/tests that actually ran.",
     avoidWhen: "Before editing or without a meaningful diff to review.",
     nextToolUse: ["test_plan"]
   },
@@ -77,18 +89,6 @@ export const MCP_TOOL_REGISTRY = [
     useWhen: "Select verification for the current diff or after post_edit_review.",
     avoidWhen: "You need proof that tests ran; recommendations are not execution evidence.",
     nextToolUse: []
-  },
-  {
-    name: "search",
-    title: "Codexa search comparison",
-    description: "Compare raw string search with Codexa-ranked files, symbols, likely tests, and value/gap labels.",
-    tier: "primary",
-    phase: "inspect",
-    writeEffects: "index-cache-if-auto-refresh",
-    readOnly: false,
-    useWhen: "Narrow ambiguous tasks, exact identifiers, or broad packets where raw search is likely better.",
-    avoidWhen: "You need impact, workflow, or test proof; search is a locator, not a verifier.",
-    nextToolUse: ["task_brief"]
   },
   {
     name: "workflow_path",
@@ -279,7 +279,7 @@ export const PRIMARY_MCP_TOOL_NAMES = Object.freeze(MCP_TOOL_REGISTRY.filter((to
 export const ADVANCED_MCP_TOOL_NAMES = Object.freeze(MCP_TOOL_REGISTRY.filter((tool) => tool.tier === "advanced").map((tool) => tool.name));
 export const SOURCE_CONTEXT_MCP_TOOL_NAMES = Object.freeze(MCP_TOOL_REGISTRY.filter((tool) => tool.writeEffects === "index-cache-if-auto-refresh").map((tool) => tool.name));
 export const MEMORY_RECORDING_MCP_TOOL_NAMES = Object.freeze(MCP_TOOL_REGISTRY.filter((tool) => tool.writeEffects === "session-memory-auto").map((tool) => tool.name));
-export const PRIMARY_CODEX_LOOP = "session_context -> task_brief -> change_plan(saveSnapshot) -> post_edit_review -> test_plan";
+export const PRIMARY_CODEX_LOOP = "session_context -> search(if target unclear) -> task_brief -> change_plan(saveSnapshot) -> post_edit_review -> test_plan";
 export const NO_SOURCE_MUTATION_CONTRACT = "Codexa MCP tools may write Codexa cache artifacts, but must not mutate source files.";
 
 export function mcpToolRegistryEntry(name: string): McpToolRegistryEntry | undefined {

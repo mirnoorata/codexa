@@ -9,7 +9,7 @@ import { publishProjectGithubRelease } from "./github-release.js";
 import { runDoctor } from "./doctor.js";
 import { initializeProject, sessionStartSummary } from "./init.js";
 import { runLiveIndexer, type LiveIndexEvent } from "./live-index.js";
-import { serveMcp } from "./mcp.js";
+import { serveMcp, serveMcpHttp, type McpTransportKind } from "./mcp.js";
 import { resolveMcpRepoRoot } from "./mcp-repo-root.js";
 import { buildSemanticIndex, semanticProviderFromValue, type SemanticProviderKind } from "./semantic-retrieval.js";
 import { updateStaticAnalysisReports } from "./static-analysis.js";
@@ -39,6 +39,7 @@ import {
 import { RAW_SEARCH_EXPLICIT_PATTERN_LIMIT } from "./query/raw-search.js";
 import type { ChangeType, QueryOptions, SessionMemoryInput, VerificationCommandReport, VerificationWaiver } from "./types.js";
 import { runEval } from "./eval.js";
+import { CODEXA_VERSION } from "./version.js";
 
 const program = new Command();
 const cliModulePath = fileURLToPath(import.meta.url);
@@ -49,7 +50,7 @@ const defaultCliPath = cliModulePath.endsWith(`${path.sep}src${path.sep}cli.ts`)
 program
   .name(invokedCliName())
   .description("Codex-native codebase intelligence context compiler and MCP context server.")
-  .version("0.1.0");
+  .version(CODEXA_VERSION);
 
 program
   .command("init")
@@ -150,7 +151,7 @@ program
 
 program
   .command("semantic-index")
-  .argument("<repo>", "repository root to embed for optional semantic retrieval")
+  .argument("<repo>", "repository root to embed for first-class hybrid semantic retrieval")
   .requiredOption("--provider <provider>", "embedding provider: openai or local-command", parseSemanticProvider)
   .option("--model <model>", "embedding model name; defaults to provider-specific default")
   .option("--dimensions <n>", "embedding dimensions when the provider supports it", parseIntOption)
@@ -159,7 +160,7 @@ program
   .option("--timeout-ms <n>", "embedding provider timeout in milliseconds", parseIntOption, 60_000)
   .option("--batch-size <n>", "number of chunks to send per provider request", parseIntOption, 64)
   .option("--max-files <n>", "maximum indexed files to embed", parseIntOption, 750)
-  .description("Build the opt-in semantic retrieval cache under .codex/cache/codexa-semantic-v1.")
+  .description("Build the semantic retrieval cache used by first-class hybrid Codexa search and task context.")
   .action(
     async (
       repo: string,
@@ -448,7 +449,7 @@ program
   .option("--semantic-batch-size <n>", "semantic query batch size", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
-  .description("Compare raw search with Codexa-ranked targets, tests, and known gaps.")
+  .description("Run first-class hybrid semantic search over raw hits, Codexa ranking, tests, and known gaps.")
   .action(async (repo: string, opts: { query: string; pattern?: string[]; limit: number; raw: boolean } & CliQueryOptions) =>
     printQuery(
       await searchQuery(
@@ -941,6 +942,15 @@ program
   .option("--ran-command-report <json...>", "structured command report JSON with command, cwd, packageManager, workspace/packageRoot/packageName, scriptName, args, exitCode, durationMs, and output summaries")
   .option("--waive-check <target...>", "legacy test-target waiver shortcut; use --waiver for workflow/dependency checks")
   .option("--waiver <json...>", "structured verification waiver JSON: {\"kind\":\"test\",\"target\":\"tests/foo.test.ts\",\"reason\":\"manual check\"}")
+  .option("--semantic", "force the semantic retrieval lane even when auto-detection would skip it")
+  .option("--no-semantic", "disable automatic semantic retrieval for this review")
+  .option("--semantic-provider <provider>", "semantic query provider: openai or local-command", parseSemanticProvider)
+  .option("--semantic-model <model>", "semantic embedding model name")
+  .option("--semantic-dimensions <n>", "semantic embedding dimensions", parseIntOption)
+  .option("--semantic-command <command>", "local semantic embedding command for --semantic-provider local-command")
+  .option("--semantic-arg <arg...>", "argument for the local semantic embedding command")
+  .option("--semantic-timeout-ms <n>", "semantic query timeout in milliseconds", parseIntOption)
+  .option("--semantic-batch-size <n>", "semantic query batch size", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Compare the current dirty tree against a saved Codexa change-plan snapshot.")
@@ -962,7 +972,7 @@ program
         waiveCheck?: string[];
         waiver?: string[];
         autoRefresh: boolean;
-      }
+      } & CliQueryOptions
     ) =>
       printQuery(
         await postEditReviewQuery(
@@ -982,7 +992,7 @@ program
             waivedChecks: opts.waiveCheck,
             waivers: parseWaiverOptions(opts.waiver)
           },
-          { autoRefresh: opts.autoRefresh }
+          queryOptionsFromCli(opts)
         )
       )
   );
@@ -1054,9 +1064,19 @@ program
   .option("--session-memory <mode>", "auto-record MCP session memory: auto or off", parseSessionMemoryMode, "auto")
   .option("--workspace-focus-file <path>", "workspace focus file to consult when <repo> is a workspace launch root")
   .option("--workspace-session <id>", "active WORKING.md session row to prefer when <repo> is a workspace launch root")
-  .description("Start the stdio MCP server.")
-  .action(async (repo: string, opts: CliQueryOptions) => {
-    await serveMcp(path.resolve(repo), queryOptionsFromCli(opts));
+  .option("--transport <transport>", "MCP transport: stdio or http", parseMcpTransport, "stdio")
+  .option("--host <host>", "HTTP host for --transport http; must be loopback", "127.0.0.1")
+  .option("--port <n>", "HTTP port for --transport http", parseIntOption, 8729)
+  .option("--endpoint <path>", "HTTP MCP endpoint path for --transport http", "/mcp")
+  .description("Start the MCP server over stdio by default, or Streamable HTTP with --transport http.")
+  .action(async (repo: string, opts: CliQueryOptions & { transport: McpTransportKind; host: string; port: number; endpoint: string }) => {
+    const resolved = path.resolve(repo);
+    const queryOptions = queryOptionsFromCli(opts);
+    if (opts.transport === "http") {
+      await serveMcpHttp(resolved, queryOptions, { host: opts.host, port: opts.port, endpoint: opts.endpoint });
+      return;
+    }
+    await serveMcp(resolved, queryOptions);
   });
 
 program.parseAsync(process.argv).catch((error) => {
@@ -1120,6 +1140,13 @@ function parseSessionMemoryMode(value: string): "auto" | "off" {
     return value;
   }
   throw new Error("session memory mode must be auto or off");
+}
+
+function parseMcpTransport(value: string): McpTransportKind {
+  if (value === "stdio" || value === "http") {
+    return value;
+  }
+  throw new Error("MCP transport must be stdio or http");
 }
 
 function parseIntOption(value: string): number {

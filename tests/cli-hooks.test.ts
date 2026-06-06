@@ -1038,7 +1038,7 @@ describe("Codexa hook CLI", () => {
     expect(doctorText.stdout).toContain("Latest hook: session-start ok");
     expect(doctorText.stdout).toContain("MCP readiness:");
     expect(doctorText.stdout).toContain("typed envelope: yes");
-    expect(doctorText.stdout).toContain("primary tools: session_context, task_brief, change_plan, post_edit_review, test_plan, search");
+    expect(doctorText.stdout).toContain("primary tools: session_context, search, task_brief, change_plan, post_edit_review, test_plan");
     expect(doctorText.stdout).toContain("registered tools: 20");
     expect(doctorText.stdout).toContain("catalog/server parity: ok");
     expect(doctorText.stdout).toContain("source mutation tools: none");
@@ -1098,7 +1098,7 @@ describe("Codexa hook CLI", () => {
       workspaceSessionId: "codex-target"
     });
     expect(selectedData.mcpReadiness.routing.warnings).toEqual([]);
-    expect(selectedData.mcpReadiness.toolSurface.primaryTools).toEqual(["session_context", "task_brief", "change_plan", "post_edit_review", "test_plan", "search"]);
+    expect(selectedData.mcpReadiness.toolSurface.primaryTools).toEqual(["session_context", "search", "task_brief", "change_plan", "post_edit_review", "test_plan"]);
     expect(selectedData.mcpReadiness.toolSurface.sourceMutationTools).toEqual([]);
     expect(selectedData.mcpReadiness.toolSurface.registeredTools).toEqual(
       expect.arrayContaining(["session_context", "task_brief", "change_plan", "post_edit_review", "test_plan", "search", "workflow_path"])

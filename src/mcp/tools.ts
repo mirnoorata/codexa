@@ -545,12 +545,13 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
             })
           )
           .max(30)
-          .optional()
+          .optional(),
+        ...semanticQuerySchema
       },
       outputSchema,
       annotations: memoryWrite
     },
-    async (input) => runTool((session) => postEditReviewQuery(session, { ...input, persistOutcome: false }, queryOptions), { toolName: "post_edit_review", input })
+    async (input) => runTool((session) => postEditReviewQuery(session, { ...input, persistOutcome: false }, toolQueryOptions(input)), { toolName: "post_edit_review", input })
   );
   assertMcpToolRegistrationCoverage([...toolDefinitions.keys()]);
   for (const toolName of MCP_TOOL_NAMES) {
