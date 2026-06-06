@@ -8,8 +8,8 @@ import { nextTool } from "./next-tools.js";
 import { ensureQuerySession, type QuerySessionInput } from "./session.js";
 import { formatTestRecommendations, recommendTests } from "./tests.js";
 import { findFile } from "./targets.js";
-import { retrieveForTask } from "../retrieval.js";
-import { semanticOptionsFromQueryOptions } from "../semantic-retrieval.js";
+import { retrieveForTask, type RetrievalMatch } from "../retrieval.js";
+import { semanticOptionsFromQueryOptions, type SemanticRetrievalSummary } from "../semantic-retrieval.js";
 import type { CodexaIndex, FileFact, QueryOptions, QueryResult, SymbolFact, UsageSiteFact } from "../types.js";
 import { limitText, uniqueSorted } from "../util.js";
 
@@ -105,7 +105,7 @@ export async function searchQuery(
   }
   for (const match of retrieval.matches) {
     const existing = interpreted.reasons.get(match.file.path) ?? [];
-    existing.push(`BM25 task retrieval ${match.matchedTerms.slice(0, 5).join(", ") || "intent"}`);
+    existing.push(`${formatRetrievalLaneSummary(match.lanes)} ${match.matchedTerms.slice(0, 5).join(", ") || "intent"}`);
     interpreted.reasons.set(match.file.path, existing);
   }
   const searchFiles = uniqueFiles(
@@ -149,8 +149,9 @@ export async function searchQuery(
     freshnessBanner(freshness, refresh),
     formatContextQuality(quality),
     formatValueEstimate(value),
-    `Search: ${queryInput.query}`,
+    `Hybrid semantic search: ${queryInput.query}`,
     raw.patterns.length > 1 ? `Search patterns: ${formatSearchPatterns(raw.patterns)}` : undefined,
+    formatSemanticLaneSummary(retrieval.semantic),
     `Packet verdict: ${retrieval.intentConfidence.verdict}; edit-ready ${retrieval.intentConfidence.editReady ? "yes" : "no"}; confidence ${Math.round(retrieval.intentConfidence.confidence * 100)}%`,
     `Actionability: ${actionability}`,
     retrieval.diagnostics.length > 0 ? `Retrieval diagnostics: ${retrieval.diagnostics.join("; ")}` : undefined,
@@ -161,7 +162,7 @@ export async function searchQuery(
       ? raw.hits.slice(0, limit).map((hit) => formatRawHit(hit, raw.patterns.length > 1))
       : raw.files.slice(0, limit).map((file) => `- ${file}`)),
     "",
-    "Codexa target guesses:",
+    "Codexa hybrid targets:",
     ...searchFiles.map((file) => `- ${file.path}: rank ${file.rank.toFixed(2)}; ${interpreted.reasons.get(file.path)?.join("; ") ?? "match"}`),
     "",
     "Likely tests:",
@@ -180,6 +181,7 @@ export async function searchQuery(
       patterns: raw.patterns,
       searchDiscipline,
       raw,
+      semantic: retrieval.semantic,
       files: searchFiles,
       symbols: interpreted.symbols,
       usageSites: interpreted.usageSites,
@@ -197,6 +199,22 @@ export async function searchQuery(
 	      session: { warnings: session.warnings, provenance: session.provenance }
     }
   };
+}
+
+function formatSemanticLaneSummary(semantic: SemanticRetrievalSummary): string {
+  if (semantic.status === "ok") {
+    return `Semantic lane: ok (${semantic.provider ?? "provider"} ${semantic.model ?? "model"}; ${semantic.chunkCount ?? 0} chunks)`;
+  }
+  if (semantic.status === "unavailable") {
+    return `Semantic lane: unavailable${semantic.diagnostics.length > 0 ? ` (${semantic.diagnostics.join("; ")})` : ""}`;
+  }
+  return "Semantic lane: disabled (run `codexa semantic-index <repo>` to make natural-language search first-class)";
+}
+
+function formatRetrievalLaneSummary(lanes: RetrievalMatch["lanes"]): string {
+  const laneOrder: Array<keyof RetrievalMatch["lanes"]> = ["exact", "symbol", "semantic", "bm25", "workflow", "test", "dirty", "graph"];
+  const active = laneOrder.filter((lane) => (lanes[lane] ?? 0) > 0);
+  return `${active.includes("semantic") ? "hybrid semantic" : "hybrid"} retrieval${active.length > 0 ? ` (${active.join("+")})` : ""}`;
 }
 
 function actionabilityFromSearchVerdict(verdict: string): string {
@@ -230,12 +248,12 @@ function searchDisciplineLine(raw: RawSearchResult): string {
     return "Search discipline: raw search is narrow; read the top source file now unless you need impact/tests.";
   }
   if (raw.patterns.length > 1 && raw.hits.length > 0) {
-    return `Search discipline: searched ${raw.patterns.length} literal patterns in one pass; read the best target guesses before trying more variants.`;
+    return `Search discipline: searched ${raw.patterns.length} literal patterns in one pass; read the best hybrid targets before trying more variants.`;
   }
   if (raw.hits.length > 0) {
     return "Search discipline: use this as the first pass, then read source; pass identifier variants together instead of issuing repeated searches.";
   }
-  return "Search discipline: no raw literal hits; use Codexa target guesses/gaps, or retry once with concrete identifier variants.";
+  return "Search discipline: no raw literal hits; use Codexa hybrid targets/gaps, or retry once with concrete identifier variants.";
 }
 
 function formatSearchPatterns(patterns: string[]): string {

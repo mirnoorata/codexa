@@ -7,9 +7,11 @@
 >
 > - **Response times are days to weeks, not hours.** Pinging for faster triage
 >   will not make it faster.
-> - **Scope is narrow on purpose.** New language indexers, new LLM-based
+> - **Scope is narrow on purpose.** Deep language indexers, new LLM-based
 >   layers, and general-purpose search modes are usually closed as out of
->   scope even when they are clearly useful somewhere else. See
+>   scope even when they are clearly useful somewhere else. Shallow
+>   deterministic extraction is acceptable when it improves codebase coverage
+>   without adding native parser/runtime ownership. See
 >   [CONTRIBUTING.md](CONTRIBUTING.md) for the exact scope.
 > - **Not every working PR will be merged.** Please open an issue first for
 >   anything beyond a typo or docs fix. A rejected PR after an "issue-first"
@@ -23,12 +25,14 @@
 
 Codexa is a Codex-native codebase intelligence compiler. It indexes a target
 repository, writes concise `.codex/codebase/` artifacts for Codex to read, and
-serves focused MCP context tools over stdio.
+serves focused MCP context tools over stdio by default or Streamable HTTP when
+started with `--transport http`.
 
 ## V1 Scope
 
 - TypeScript CLI and MCP server.
-- Tree-sitter parsing for TypeScript, TSX, JavaScript, JSX, and Python, plus
+- Tree-sitter parsing for TypeScript, TSX, JavaScript, JSX, and Python; shallow
+  deterministic symbol/import extraction for Rust, Go, and Java; plus
   lightweight indexing for JSON manifests, Markdown/MDX/RST/text docs,
   `scripts/*.sh`, and `.service` files.
 - In-memory relationship graph persisted as `.codex/codebase/index.json`,
@@ -95,6 +99,11 @@ serves focused MCP context tools over stdio.
   intent rules. Broad prompts such as "how does queue polling work?" classify
   likely subsystems, explain why, and recommend the next MCP call instead of
   falling back to top-ranked files.
+- First-class hybrid semantic search: `search` is the target-discovery surface
+  for ambiguous natural-language tasks, identifiers, and broad prompts. It
+  combines bounded raw search, exact/symbol evidence, semantic retrieval when
+  configured, Codexa ranking, likely tests, value labels, and known gaps in one
+  pass.
 - Automatic semantic retrieval stores embeddings in
   `.codex/cache/codexa-semantic-v1/` after `codexa semantic-index <repo>`.
   After that one-time setup, normal query commands decide whether to use the
@@ -102,23 +111,24 @@ serves focused MCP context tools over stdio.
   force/debug override. Providers are OpenAI embeddings or an explicit local
   JSONL embedding command. Codexa still ships no vector database and does not
   call embedding providers unless a semantic cache and provider configuration
-  are present, or semantic retrieval is explicitly forced.
+  are present, or semantic retrieval is explicitly forced. Cache manifests point
+  at source/provider-addressed vector files so readers can keep using the
+  previous cache while a new `semantic-index` run publishes.
 - Explicit graph queries over persisted typed edges: `DEFINES`, `IMPORTS`,
   `CALLS`, `REFERENCES`, `TESTS`, `ROUTE`, `JOB`, `RISK`, route/UI/store
   workflow edges, `IMPLEMENTS`, `EXTENDS`, `EXPORTS`, and `TYPE_EXPORTS`.
 - Workflow traces for route/job/manifest execution paths plus generated
   architecture playbooks under `.codex/codebase/playbooks/`.
-- Adaptive search that compares raw `rg` with Codexa ranking and explicitly says
-  when raw search is already enough.
 - Change-type-aware impact/context output for `style`, `api`, `behavior`,
   `rename`, `delete`, and `unknown`, including fanout collapse and verification
   recipes.
 - Task snapshots for the edit loop: MCP `change_plan` with `saveSnapshot=true`,
   or CLI `change-plan --save-snapshot`, records the plan-time dirty baseline
-  under `.codex/cache/`. `post_edit_review` / `post-edit-review` compares the
-  actual post-edit dirty tree against that snapshot for drift, unplanned files,
-  risk/workflow signals, placeholder risk deltas, and tests still unaccounted
-  for. Planned tests carry provenance for explicit targets,
+  under `.codex/cache/`. `post_edit_review` / `post-edit-review` is the go-to
+  post-edit review gate: it compares the actual dirty tree against that snapshot
+  for drift, unplanned files, semantic-aware context gaps, risk/workflow signals,
+  placeholder risk deltas, and tests still unaccounted for. Planned tests carry
+  provenance for explicit targets,
   test edges, impact expansion, package/import evidence, natural retrieval,
   outcome history, or legacy snapshots; stale or scope-mismatched snapshot tests
   are degraded instead of silently trusted.
@@ -166,10 +176,10 @@ serves focused MCP context tools over stdio.
 Codexa's current workflow is a local, auditable loop rather than a general
 semantic memory layer:
 
-1. Use `search`, `focus_brief`, or `task_brief` to find the likely target and
-   see freshness, search value, quality, known gaps, and the recommended next
-   call. Surfaces that support structured guidance return `nextTools`; broad
-   focus/session packets may return a simpler `nextCall`.
+1. Use first-class `search` when the target is unclear. It performs one hybrid
+   semantic/raw pass and returns freshness, search value, quality, known gaps,
+   likely tests, and the recommended next call. If a session/focus packet already
+   provides an explicit target, go straight to `task_brief`.
 2. Use `symbol_context`, `impact`, `callers`, or `callees` for proof-carrying
    relationship context. Returned edges include compact `EdgeEvidenceV1`
    records with edge kind, source, confidence, reason, range when available,
@@ -178,24 +188,36 @@ semantic memory layer:
    `change-plan --save-snapshot`, before editing. The snapshot stores edit
    targets, read-first files, planned tests with provenance, recipes, freshness,
    and dirty-file hashes.
-4. Use MCP `post_edit_review` or CLI `post-edit-review` after editing. It
-   reconciles the dirty tree against the saved snapshot, degrades stale
-   planned-test evidence, and reports drift and unaccounted verification. The
-   CLI/hook path persists compact local outcomes; MCP review calls stay
-   non-persistent.
+4. Use MCP `post_edit_review` or CLI `post-edit-review` after editing. It is the
+   default review gate before the final response: it reconciles the dirty tree
+   against the saved snapshot, degrades stale planned-test evidence, and reports
+   drift and unaccounted verification. The CLI/hook path persists compact local
+   outcomes; MCP review calls stay non-persistent.
 5. Future ranking and test planning can read recent
    `.codex/cache/codexa-outcomes/` records for bounded, visible boosts. Outcome
    boosts never override explicit targets, freshness, or authoritative graph
    evidence.
 
-For languages outside Codexa's native TypeScript/JavaScript/Python lane, import
-a `CodexaSymbolReportV1` through
+Rust, Go, and Java get shallow built-in symbol/import extraction with
+`derived` confidence. For deeper language analysis, or for languages outside
+Codexa's native and shallow lanes, import a `CodexaSymbolReportV1` through
 `static-analysis <repo> --symbol-report <path>`. Those facts are report-backed,
 labeled `source: "static-analysis"`, and confidence-capped at `derived`, so they
 can power `symbol_context` and `impact` without pretending to be native parser
 evidence. Transitive centrality/PageRank remains an eval-only experiment until
 it improves retrieval metrics without reducing precision or making ranking
 explanations opaque.
+
+Go import resolution is module-aware: Codexa reads root and nested `go.mod`
+files and resolves imports that match those module prefixes to local package
+directories. It does not suffix-match arbitrary external module paths to local
+packages, because that creates false local impact edges for dependencies that
+only happen to share a path tail. Bare Go imports such as `fmt` are treated as
+external unless they are relative imports; a local `fmt.go` file is not enough
+to claim a source edge.
+Namespace calls through a local Go package import search sibling non-test
+`.go` files in that package directory, so package-level symbols do not have to
+live in the representative file chosen for the import edge.
 
 ## Commands
 
@@ -250,10 +272,13 @@ node dist/cli.js eval <repo> --suite all --seed codexa-v1-benchmark
 node dist/cli.js eval <repo> --suite all --seed codexa-v1-benchmark --centrality-experiment
 node dist/cli.js github-sync-check <codexa-checkout>
 node dist/cli.js serve <repo>
+node dist/cli.js serve <repo> --transport http --host 127.0.0.1 --port 8729
 ```
 
 The public package name for the Codex-focused release is `@mirnoorata/codexa`; the
-installed command remains `codexa`:
+installed command remains `codexa`. As of 2026-06-06, the package is not present
+in the public npm registry, so the `npx -y @mirnoorata/codexa ...` form below is
+the post-publish path, not the current first-run path:
 
 ```bash
 npm install -g @mirnoorata/codexa
@@ -261,9 +286,16 @@ codexa init <repo>
 npx -y @mirnoorata/codexa serve <repo> --auto-refresh
 ```
 
-If the npm registry has not been published yet, use a GitHub checkout with
-`npm install`, `npm run build`, and `npm link` until the package owner completes
-the first public publish.
+Current checkout setup:
+
+```bash
+git clone https://github.com/mirnoorata/codexa.git
+cd codexa
+npm install
+npm run build
+npm link
+codexa init <repo>
+```
 
 In the commands above, substitute `<repo>` with the absolute path of the
 repository you are indexing.
@@ -301,24 +333,27 @@ proof-carrying, and zero-charge by default. The intended win is not a bigger
 parser zoo; it is edit readiness, freshness, provenance, post-edit drift review,
 and auditable verification evidence.
 
-Semantic retrieval is a two-step installed capability. First build the cache:
+Semantic retrieval is a two-step installed capability that powers the first-class
+hybrid `search` lane. First build the cache:
 
 ```bash
 codexa semantic-index <repo> --provider openai
 codexa semantic-index <repo> --provider local-command --command ./embed-jsonl
 ```
 
-After that, `find-context`, `search`, `brief`, `context-pack`, `focus-brief`,
-`session-context`, `workflow-path`, `change-plan`, and `serve` use the semantic
-lane automatically when the cache snapshot matches and the provider can embed
-the query. OpenAI uses `OPENAI_API_KEY` and defaults to
+After that, `search`, `find-context`, `brief`, `context-pack`, `focus-brief`,
+`session-context`, `workflow-path`, `change-plan`, `post-edit-review`, and
+`serve` use the semantic lane automatically when the cache snapshot matches and
+the provider can embed the query. OpenAI uses `OPENAI_API_KEY` and defaults to
 `text-embedding-3-small`. `local-command` receives JSONL on stdin with
 `{id,text,model,dimensions}` and must return JSON, JSONL, or
 `{embeddings:[...]}` records containing `{id,embedding}`. Use `--semantic` only
 to force diagnostics when auto-detection would skip the lane, and
 `--no-semantic` to disable it for a single call. If the cache is missing, stale,
 or provider settings do not match during forced use, Codexa reports the semantic
-lane as unavailable and returns normal non-semantic context.
+lane as unavailable and returns normal non-semantic context. Vector files are
+addressed by the manifest's source/provider settings, which avoids transient
+cache mismatches while a new semantic index is being staged.
 
 LSP assist is also opt-in. Pass `--lsp` to `explain`, `brief`, `context-pack`,
 `change-plan`, or `serve`, or set `CODEXA_LSP=1`. Codexa discovers
@@ -630,35 +665,54 @@ codexa init
 Codex should initialize the current focused repo, then run the session-start
 check.
 
-The npm package also ships a Codex plugin bundle at `plugins/codexa/`. The
-plugin contains the Codexa skill, plugin manifest, and a small MCP wrapper that
-resolves the focused git repository from `CODEXA_REPO`, Codex workspace
-environment variables, the current directory, or a workspace root with
-`.codex/WORKING.md`, then launches the bundled Codexa MCP server.
+The source tree and eventual npm package also ship a Codex plugin bundle at
+`plugins/codexa/`. The plugin contains the Codexa skill, plugin manifest, and a
+small MCP wrapper that resolves the focused git repository from `CODEXA_REPO`,
+Codex workspace environment variables, the current directory, or a workspace
+root with `.codex/WORKING.md`, then launches the bundled Codexa MCP server.
 
 ## MCP Configuration
 
-`codexa init` writes the local Codex MCP entry automatically. The generated
-entry looks like:
+`codexa init` writes the local Codex MCP entry automatically. The default server
+name is `codexa-<repo-slug>`. A hand-written equivalent entry looks like:
 
 ```toml
-[mcp_servers.codexa-project]
+[mcp_servers.codexa]
 command = "node"
-args = ["<installed-or-checkout>/dist/cli.js", "serve", "<repo>", "--auto-refresh"]
+args = ["/absolute/path/to/codexa/dist/cli.js", "serve", "/absolute/path/to/repo", "--auto-refresh"]
+env = {}
 startup_timeout_sec = 10
 tool_timeout_sec = 60
 ```
 
-For a hand-written registry-backed config, use the package binary through
-`npx`:
+For a hand-written registry-backed config after the package is published, use
+the package binary through `npx`:
 
 ```toml
-[mcp_servers.codexa-project]
+[mcp_servers.codexa]
 command = "npx"
-args = ["-y", "@mirnoorata/codexa", "serve", "<repo>", "--auto-refresh"]
+args = ["-y", "@mirnoorata/codexa", "serve", "/absolute/path/to/repo", "--auto-refresh"]
+env = {}
 startup_timeout_sec = 10
 tool_timeout_sec = 60
 ```
+
+Codexa defaults to stdio because that is the lowest-friction local Codex path.
+For a shared or long-running local MCP server, start the optional Streamable
+HTTP transport and point a URL-style MCP config at the single `/mcp` endpoint:
+
+```bash
+node /absolute/path/to/codexa/dist/cli.js serve /absolute/path/to/repo --transport http --host 127.0.0.1 --port 8729 --auto-refresh
+```
+
+```toml
+[mcp_servers.codexa]
+url = "http://127.0.0.1:8729/mcp"
+```
+
+HTTP mode is loopback-only in this release. Binding to `0.0.0.0` or another
+non-loopback address is rejected until Codexa has an authenticated remote-server
+mode with explicit origin protection.
 
 If an MCP host starts Codexa from a workspace root, `codexa serve
 <workspace-root>` resolves the active repository from
@@ -680,7 +734,10 @@ workspace root. `CODEXA_REPO` and `CODEXA_FOCUSED_REPO` are fallback inputs for
 non-git launch roots and explicit escape hatches for out-of-tree repos; they do
 not override an explicit git repository argument.
 
-The server exposes only context tools. It does not apply patches or expose a
+The server reports the package version from `package.json` during MCP
+initialization and includes server-level instructions for the primary Codexa
+loop, source-mutation boundary, semantic-search conditions, and post-edit review
+gate. It exposes only context tools. It does not apply patches or expose a
 manual reindex/source-mutation tool, but context queries can auto-refresh the
 generated `.codex/codebase/` cache when freshness checks prove it is missing or
 stale. `change_plan` can also write a small task snapshot under

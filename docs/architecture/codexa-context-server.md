@@ -6,7 +6,7 @@ Codexa V1 is a Codex-first context compiler plus an MCP context server. It is
 not a general knowledge-graph platform and intentionally keeps the runtime
 small.
 
-The first milestone used a private application repository as the acceptance project, but Codexa is not project-specialized. It optimizes for generic blast-radius analysis and keeps the implementation intentionally small: TypeScript CLI, Tree-sitter parsing for TypeScript/TSX/Python, offline TypeScript/Python static assists, an in-memory graph, JSON/NDJSON persistence, concise Codex-native artifacts, and a focused MCP context surface.
+The first milestone used a private application repository as the acceptance project, but Codexa is not project-specialized. It optimizes for generic blast-radius analysis and keeps the implementation intentionally small: TypeScript CLI, Tree-sitter parsing for TypeScript/TSX/Python, shallow deterministic Rust/Go/Java extraction, offline TypeScript/Python static assists, an in-memory graph, JSON/NDJSON persistence, concise Codex-native artifacts, and a focused MCP context surface.
 
 ## Key Decisions
 
@@ -17,13 +17,14 @@ The first milestone used a private application repository as the acceptance proj
 - Dirty working trees are supported from day one because Codex works inside active edits.
 - Artifacts are Codex-first: short, ranked, actionable, and provenance-backed.
 - Python support is included for simple structure, imports, decorators, tests, and direct usage sites, but dynamic/framework behavior is marked heuristic.
+- Rust, Go, and Java support is shallow by design: built-in symbol/import/test/call hints are labeled `derived` and can drive target discovery and impact routing without Codexa claiming full native-parser ownership.
 - Generic project support includes TypeScript path alias/project-reference metadata, package manifest symbols, Python package and `__init__.py` resolution, changed-symbol summaries for dirty diffs, framework route/job/test surfaces, and heuristic candidate test commands.
 - Research-driven V1.1 additions keep the same small architecture while adding a default `task_brief` path, task-shaped `context_pack` output, bounded impact expansion inside task packets, grouped dirty-diff impact, MCP output schemas/annotations/resources/prompts, content-hash parse caching, generic framework detectors, repo-local SessionStart/edit-loop helpers, provenance-aware test command suggestions, known-gap reporting, and a structured anti-cheat eval harness.
 - The current implementation also adds natural-language `focus_brief`/`session_context`, a small BM25/inverted-index retrieval layer, first-class typed graph edges, route/job/manifest workflow traces, generated architecture playbooks, proof-carrying symbol neighborhoods, change-plan packets with planned-test provenance, outcome-informed local ranking, external symbol report ingestion, and cross-process refresh locking. These are still local, deterministic, and dependency-light.
 - `session_memory` follows `docs/architecture/session-memory.md`: cache-only structured working memory, bounded auto-recorded `viewed` entries, one MCP tool with actions, no embeddings or learned similarity, and no promotion of agent assertions into the codebase fact graph.
 - The first competitive Codex-native differentiator is the generated
   `.codex/codebase/codex-contract.md` plus SessionStart packet. It tells Codex
-  exactly when to call `task_brief`, `change_plan`, `workflow_path`,
+  exactly when to call first-class `search`, `task_brief`, `change_plan`, `workflow_path`,
   `dependency_path`, `post_edit_review`, and `test_plan`, avoiding a noisy
   generic graph preview at startup.
 - The v1 graph is in-memory and serialized to JSON/NDJSON. No graph DB, vector
@@ -42,15 +43,27 @@ The first milestone used a private application repository as the acceptance proj
 Codexa's intended public npm package name is `@mirnoorata/codexa`; when
 published, the installed binary remains `codexa` so existing Codex workflows do
 not need to change.
-The package also includes `plugins/codexa/`, a Codex plugin bundle with a
-manifest, skill, and MCP wrapper that launches the same npm `codexa serve`
-entrypoint for the focused git repository or a workspace root that carries a
-`.codex/WORKING.md` focused-project marker.
+The source tree and eventual npm package also include `plugins/codexa/`, a Codex
+plugin bundle with a manifest, skill, and MCP wrapper that launches the same
+`codexa serve` entrypoint for the focused git repository or a workspace root
+that carries a `.codex/WORKING.md` focused-project marker.
 
 ```bash
 # Once the package is published:
 npm install -g @mirnoorata/codexa
 npx -y @mirnoorata/codexa serve <repo> --auto-refresh
+```
+
+As of 2026-06-06, the public `@mirnoorata/codexa` npm package is not published.
+Until it is, use a checkout:
+
+```bash
+git clone https://github.com/mirnoorata/codexa.git
+cd codexa
+npm install
+npm run build
+npm link
+codexa init <repo>
 ```
 
 `<repo>` is the target repository root — the absolute path of the
@@ -93,6 +106,7 @@ codexa post-edit-review <repo> --task-id <snapshot_id>
 codexa eval <repo>
 codexa github-sync-check <codexa-checkout>
 codexa serve <repo>
+codexa serve <repo> --transport http --host 127.0.0.1 --port 8729
 ```
 
 When an MCP host launches from a workspace root, `codexa serve
@@ -113,8 +127,10 @@ MCP entry, writes/updates the SessionStart and edit-loop hooks, and indexes the 
 need `focus on <repo>`; Codexa is discovered from the project `.codex` config.
 `index` writes `.codex/codebase/*` inside the target repo. `watch` keeps those
 artifacts live during active edit sessions with debounced filesystem events plus
-a fallback git freshness poll. `serve` starts a stdio MCP server and must keep
-stdout protocol-clean; logs go to stderr.
+a fallback git freshness poll. `serve` starts a stdio MCP server by default and
+must keep stdout protocol-clean; logs go to stderr. With `--transport http`, it
+starts an optional Streamable HTTP MCP endpoint, defaulting to
+`http://127.0.0.1:8729/mcp`.
 
 Artifact writes are staged in a temporary directory and then swapped into place so a failed write does not leave a partially updated live index.
 
@@ -145,17 +161,21 @@ languages. It can optionally run user-installed `semgrep` or `codeql` binaries,
 but this is never implicit and is not exposed through MCP. The command writes
 reports/cache files under `.codex/` only; it does not edit source code.
 
-`search` is deliberately honest about value. It runs a bounded raw `rg` lookup,
-then overlays Codexa ranking, likely tests, freshness, and known gaps. If raw
-search already returns a narrow exact result, the response says so instead of
-pretending Codexa added high value.
+`search` is the first-class target-discovery surface. It runs a bounded raw
+`rg` lookup, then overlays exact/symbol evidence, semantic retrieval when the
+cache/provider are ready, Codexa ranking, likely tests, freshness, and known
+gaps. If raw search already returns a narrow exact result, the response says so
+instead of pretending Codexa added high value.
 
-`semantic-index` builds an optional embedding cache under
+`semantic-index` builds the cache for first-class hybrid semantic retrieval under
 `.codex/cache/codexa-semantic-v1/`. The cache stores manifest metadata plus JSONL
-vectors tied to the current Codexa snapshot id and provider settings. Once the
-cache exists, query commands automatically use the lane when the snapshot
-matches and the provider can embed the query; `--semantic` only forces the lane
-for diagnostics and `--no-semantic` disables it for one call. Stale, missing, or
+vectors tied to the current Codexa snapshot id and provider settings. The
+manifest names the exact source/provider-addressed vector file to read;
+`semantic-index` renames vectors into place before publishing the manifest so
+concurrent readers can keep using the previous complete cache. Once the cache
+exists, query commands automatically use the lane when the snapshot matches and
+the provider can embed the query; `--semantic` only forces the lane for
+diagnostics and `--no-semantic` disables it for one call. Stale, missing, or
 provider-mismatched caches produce diagnostics only when forced and otherwise
 fall back to the normal exact/symbol/BM25/graph retrieval lanes. Providers are
 `openai` and `local-command`. OpenAI uses the standard embeddings endpoint and
@@ -198,7 +218,9 @@ an explicit target.
 
 Candidate test commands are ranked hints, not authoritative execution contracts. They include command provenance through package/Python metadata and are omitted when Codexa cannot find evidence for a runner.
 
-`brief` is the preferred first query for Codex before editing, debugging, or reviewing a dirty tree. It uses the same compact packet format as `context-pack`, but defaults to a smaller task budget and is described to MCP hosts as the first-call workflow.
+`brief` is the preferred edit-context query once the target is known. For
+ambiguous tasks, `search` comes first, then `brief` uses the same compact packet
+format as `context-pack` with a smaller task budget.
 
 `context-pack` composes existing facts rather than inventing a second wiki layer. It accepts a task, focus files, symbols, query text, current diff inclusion, and a token budget, then returns the highest-utility files, bounded impact expansion, change groups, snippets, tests, freshness, warnings, known gaps, baseline search noise, and next-read order. Explicit files/symbols and small focused diffs seed bounded impact expansion, so likely callers and covering tests appear in the same packet instead of requiring a separate `impact` call for ordinary tasks.
 
@@ -256,6 +278,11 @@ metric deltas without changing production ranking.
 ### Indexer
 
 The indexer walks git-visible files while respecting ignore rules and common generated directories. It parses TypeScript, TSX, JavaScript, JSX, and Python with Tree-sitter, then extracts files, symbols, imports, usage sites, decorators, tests, route/job hints, parser errors, and simple module clusters.
+Rust, Go, and Java use a separate shallow extractor: it reads declarations,
+imports, direct call shapes, and obvious tests without building a full AST. Those
+facts use heuristic source and `derived` confidence so downstream tools can use
+them for target discovery, import impact, and likely-test routing while still
+signaling that deep native-language semantics are outside V1.
 
 Unchanged files are reused from a content-hash parse cache at `.codex/cache/codexa-parse-cache.json`. The cache stores pre-resolution parse results and rebases snapshot metadata on reuse. The resolver still runs over the full current index, so changed files can relink against cached unchanged files. Cache misses, corrupt caches, parser-version changes, and missing entries fall back to normal parsing.
 
@@ -265,11 +292,18 @@ name and the local alias. The resolver then binds usage sites through named
 imports, aliased imports, default-export aliases, namespace imports, object
 literal methods, Python relative imports, Python `__init__.py` re-exports, and
 Python module namespace calls before falling back to same-file or unique global
-symbol names. Test files that import source files produce direct `TestEdge`
-facts, which gives test planning stronger evidence than filename proximity
-alone. TypeScript ESM imports that name `.js`, `.mjs`, `.cjs`, or `.jsx` outputs
-can resolve back to `.ts`/`.tsx` source files, which keeps source-first projects
-like Codexa linked before build output exists.
+symbol names. It also handles direct non-dotted import candidates plus simple
+Rust `crate::`/`self::`/`super::` module paths, Go module imports backed by
+root or nested `go.mod` prefixes, direct Go package-directory imports, and Java
+package/class paths. Go resolution intentionally avoids suffix-matching
+external module paths to local packages, and bare Go imports remain external so
+standard-library imports do not bind to local same-name files. Namespace member
+binding for local Go package imports checks sibling non-test `.go` files in the
+same package directory. Test files that import source files produce direct
+`TestEdge` facts, which gives test planning stronger evidence than filename
+proximity alone. TypeScript ESM imports that name `.js`, `.mjs`, `.cjs`, or
+`.jsx` outputs can resolve back to `.ts`/`.tsx` source files, which keeps
+source-first projects like Codexa linked before build output exists.
 
 JSON node package manifests that expose a `nodes[]` array produce `node` symbols
 for each `type_id`. Literal node type references across Python, TypeScript,
@@ -381,6 +415,26 @@ V1 does not attempt full Python type checking, runtime tracing, dynamic import
 resolution, deep framework plugins, or deep cross-language linking. LSP assist is
 an optional query-time supplement, not a required indexing dependency.
 
+### Shallow Rust, Go, And Java Support
+
+V1 also includes shallow first-party extraction for `.rs`, `.go`, and `.java`
+files:
+
+- Rust: `use`/`mod` edges, functions, methods under `impl`, types, traits,
+  enums, and `#[test]`/`test_` functions.
+- Go: import blocks, package-level types/functions, methods, constants,
+  variables, and `Test*` functions. Local module imports resolve through
+  `go.mod`; external imports stay external unless their full path is present in
+  the repository.
+- Java: imports, packages, classes, interfaces, enums, records, methods, and
+  direct call-like usage sites.
+
+These facts are intentionally `derived`, not authoritative. They let Codexa act
+like a codebase tool for common polyglot repos while preserving the V1 boundary:
+no external parser zoo, no build-system execution, and no claim to resolve
+language-specific overloads, generics, macros, reflection, or dynamic classpath
+behavior.
+
 ### Data Model
 
 The index is stored as:
@@ -481,6 +535,21 @@ cache-write semantics because `saveSnapshot=true` writes
 `.codex/cache/codexa-tasks/` and reads the legacy
 `.codex/cache/codexa-task-snapshots/` path only as a migration fallback. They
 never mutate source files.
+
+The MCP handshake reports the `package.json` version and server-level
+instructions. Those instructions surface the primary Codexa loop
+(`session_context -> search(if target unclear) -> task_brief ->
+change_plan(saveSnapshot) -> post_edit_review -> test_plan`), the source
+mutation prohibition, semantic-search conditions, and the expectation that
+heuristic-heavy packets are verified against source before editing.
+
+Stdio remains the default transport for local Codex CLI use. Codexa also supports
+explicit Streamable HTTP with `codexa serve <repo> --transport http`, defaulting
+to `127.0.0.1` and `/mcp`. The HTTP mode is loopback-only in V1: non-loopback
+bind addresses are rejected, and requests with non-loopback `Origin` headers are
+rejected before the MCP SDK sees them. Authenticated remote-server mode is
+deferred until Codexa can add explicit auth and origin policy instead of
+accidentally exposing an unauthenticated context server.
 `doctor --mcp-readiness` compares the declared MCP tool catalog with the server
 registrations and reports drift before release. It also checks that the latest
 passing eval was recorded against the current repo `HEAD` and MCP catalog tool
@@ -617,8 +686,9 @@ If implementation drift is found, either fix the code or update this document wi
 
 ## Test Plan
 
-Unit tests cover TS/TSX/Python parsing, Python imports/decorators/pytest
-fixtures/direct calls, usage-site source/confidence labeling, dirty working-tree
+Unit tests cover TS/TSX/Python parsing, shallow Rust/Go/Java symbol and import
+extraction, Python imports/decorators/pytest fixtures/direct calls,
+usage-site source/confidence labeling, dirty working-tree
 overlays, deterministic ranking, planned-test provenance, stale snapshot
 degradation, symbol ambiguity, callers/callees, implements/extends evidence,
 outcome boost caps, artifact validity, bounded Markdown output, static-analysis
@@ -628,7 +698,8 @@ Integration tests index a mixed TS/Python fixture repo, run status before and
 after edits, run MCP `symbol_context` at depth 2 or CLI
 `explain --symbol <id> --depth 2`, impact for TS and Python symbols/files,
 imported symbol-report relationships, `test-plan --diff`, live watch debouncing,
-`serve`, selected MCP tools plus catalog parity through a test client,
+stdio `serve`, Streamable HTTP `serve`, MCP handshake version/instructions,
+selected MCP tools plus catalog parity through a test client,
 structured `nextTools`, edge evidence rendering, and stdout JSON-RPC protocol
 cleanliness.
 

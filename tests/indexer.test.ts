@@ -239,6 +239,171 @@ describe("Codexa indexer", () => {
     expect(index.risks.some((risk) => risk.path.startsWith("..") || path.isAbsolute(risk.path))).toBe(false);
   });
 
+  it("indexes shallow Rust, Go, and Java symbols and imports as codebase context", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-shallow-languages-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, "tests"));
+    await mkdirp(path.join(repo, "cmd/app"));
+    await mkdirp(path.join(repo, "pkg/worker"));
+    await mkdirp(path.join(repo, "pkg/external"));
+    await mkdirp(path.join(repo, "src/main/java/com/acme"));
+    await writeFile(path.join(repo, "go.mod"), "module example.com/project\n\ngo 1.22\n", "utf8");
+    await writeFile(
+      path.join(repo, "src/lib.rs"),
+      [
+        "mod worker;",
+        "pub struct Config {}",
+        "pub struct RefConfig<'a> { value: &'a str }",
+        "impl Config {",
+        "  pub fn load() -> Self { Config {} }",
+        "}",
+        "impl<'a> RefConfig<'a> {",
+        "  pub fn borrowed(&self) -> &'a str { self.value }",
+        "}",
+        "pub fn start_server() { worker::run_worker(); }",
+        "pub fn string_literal_not_call() {",
+        "  let _text = \"start_server(\";",
+        "}",
+        "/*",
+        "  start_server();",
+        "  }",
+        "*/",
+        "pub fn after_block_comment() {}",
+        "pub mod scoped {",
+        "  pub struct ScopedRef<'a> { value: &'a str }",
+        "  pub fn module_after_lifetime() {}",
+        "}",
+        "pub mod raw_scope {",
+        "  pub fn raw_string_not_call() {",
+        "    let _raw = r#\"",
+        "      start_server();",
+        "      }",
+        "    \"#;",
+        "  }",
+        "  pub fn after_raw_string() {}",
+        "}",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    await writeFile(path.join(repo, "src/worker.rs"), "pub enum Mode { Ready }\npub fn run_worker() {}\n", "utf8");
+    await writeFile(
+      path.join(repo, "tests/worker_test.rs"),
+      "use crate::worker::run_worker;\nuse crate::{start_server};\n\n#[test]\nfn run_worker_smoke() {\n  run_worker();\n  start_server();\n}\n",
+      "utf8"
+    );
+    await writeFile(
+      path.join(repo, "pkg/worker/a_runner.go"),
+      "package worker\n\ntype Runner struct {}\nfunc (r *Runner) Run() string { return Helper() }\n",
+      "utf8"
+    );
+    await writeFile(
+      path.join(repo, "pkg/worker/z_helper.go"),
+      [
+        "package worker",
+        "",
+        "func Helper() string { return \"ok\" }",
+        "func AfterRawString() string {",
+        "  _ = `",
+        "    GhostCall()",
+        "    }",
+        "  `",
+        "  return Helper()",
+        "}",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    await writeFile(path.join(repo, "pkg/external/external.go"), "package external\n\nfunc Helper() string { return \"external\" }\n", "utf8");
+    await writeFile(
+      path.join(repo, "cmd/app/main.go"),
+      "package main\n\nimport (\n  worker \"example.com/project/pkg/worker\"\n  other \"github.com/other/project/pkg/external\"\n  \"fmt\"\n)\n\nfunc main() {\n  fmt.Println(worker.Helper())\n  _ = other.Helper()\n}\n",
+      "utf8"
+    );
+    await writeFile(path.join(repo, "fmt.go"), "package fmt\n\nfunc Println(v any) {}\n", "utf8");
+    await writeFile(path.join(repo, "src/main/java/com/acme/Worker.java"), "package com.acme;\npublic class Worker {\n  public String run() { return \"ok\"; }\n}\n", "utf8");
+    await writeFile(
+      path.join(repo, "src/main/java/com/acme/App.java"),
+      [
+        "package com.acme;",
+        "import com.acme.Worker;",
+        "public class App {",
+        "  public String start() { return new Worker().run(); }",
+        "  /*",
+        "   * Ghost.call();",
+        "   * }",
+        "   */",
+        "  public String url() { return \"https://example.invalid/{notAScope}\"; }",
+        "  public String textBlock() {",
+        "    String payload = \"\"\"",
+        "      Ghost.call();",
+        "      }",
+        "      \"\"\";",
+        "    return payload;",
+        "  }",
+        "  public String afterTextBlock() { return url(); }",
+        "}",
+        "class Utility {",
+        "  public String helper() { return \"ok\"; }",
+        "}",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+
+    const index = await buildIndex({ repoRoot: repo });
+
+    expect(index.files.find((file) => file.path === "src/lib.rs")?.language).toBe("rust");
+    expect(index.files.find((file) => file.path === "cmd/app/main.go")?.language).toBe("go");
+    expect(index.files.find((file) => file.path === "src/main/java/com/acme/App.java")?.language).toBe("java");
+    expect(index.symbols.some((symbol) => symbol.path === "src/lib.rs" && symbol.qualifiedName === "start_server" && symbol.kind === "function")).toBe(true);
+    expect(index.symbols.some((symbol) => symbol.path === "src/lib.rs" && symbol.qualifiedName === "Config.load" && symbol.kind === "method")).toBe(true);
+    expect(index.symbols.some((symbol) => symbol.path === "src/lib.rs" && symbol.qualifiedName === "RefConfig.borrowed" && symbol.kind === "method")).toBe(true);
+    expect(index.symbols.some((symbol) => symbol.path === "src/lib.rs" && symbol.qualifiedName === "after_block_comment" && symbol.kind === "function")).toBe(true);
+    expect(index.symbols.some((symbol) => symbol.path === "src/lib.rs" && symbol.qualifiedName === "scoped.ScopedRef" && symbol.kind === "type")).toBe(true);
+    expect(index.symbols.some((symbol) => symbol.path === "src/lib.rs" && symbol.qualifiedName === "scoped.module_after_lifetime" && symbol.kind === "function")).toBe(true);
+    expect(index.symbols.some((symbol) => symbol.path === "src/lib.rs" && symbol.qualifiedName === "module_after_lifetime")).toBe(false);
+    expect(index.symbols.some((symbol) => symbol.path === "src/lib.rs" && symbol.qualifiedName === "raw_scope.after_raw_string" && symbol.kind === "function")).toBe(true);
+    expect(index.symbols.some((symbol) => symbol.path === "pkg/worker/a_runner.go" && symbol.qualifiedName === "Runner.Run" && symbol.kind === "method")).toBe(true);
+    expect(index.symbols.some((symbol) => symbol.path === "pkg/worker/z_helper.go" && symbol.qualifiedName === "AfterRawString" && symbol.kind === "function")).toBe(true);
+    expect(index.symbols.some((symbol) => symbol.path === "src/main/java/com/acme/App.java" && symbol.qualifiedName === "App.start" && symbol.kind === "method")).toBe(true);
+    expect(index.symbols.some((symbol) => symbol.path === "src/main/java/com/acme/App.java" && symbol.qualifiedName === "App.url" && symbol.kind === "method")).toBe(true);
+    expect(index.symbols.some((symbol) => symbol.path === "src/main/java/com/acme/App.java" && symbol.qualifiedName === "App.afterTextBlock" && symbol.kind === "method")).toBe(true);
+    expect(index.symbols.some((symbol) => symbol.path === "src/main/java/com/acme/App.java" && symbol.qualifiedName === "Utility" && symbol.kind === "class")).toBe(true);
+    expect(index.symbols.some((symbol) => symbol.path === "src/main/java/com/acme/App.java" && symbol.qualifiedName === "App.Utility")).toBe(false);
+    expect(index.imports.some((imp) => imp.path === "src/lib.rs" && imp.specifier === "./worker" && imp.resolvedPath === "src/worker.rs")).toBe(true);
+    expect(index.imports.some((imp) => imp.path === "tests/worker_test.rs" && imp.specifier === "crate::worker" && imp.importedName === "run_worker" && imp.resolvedPath === "src/worker.rs")).toBe(true);
+    expect(index.imports.some((imp) => imp.path === "tests/worker_test.rs" && imp.specifier === "crate" && imp.importedName === "start_server" && imp.resolvedPath === "src/lib.rs")).toBe(true);
+    expect(index.testEdges.some((edge) => edge.path === "tests/worker_test.rs" && edge.reason.includes("run_worker_smoke"))).toBe(true);
+    expect(index.imports.some((imp) => imp.path === "cmd/app/main.go" && imp.specifier === "example.com/project/pkg/worker" && imp.localName === "worker" && imp.resolvedPath === "pkg/worker/a_runner.go")).toBe(true);
+    expect(index.imports.some((imp) => imp.path === "cmd/app/main.go" && imp.specifier === "github.com/other/project/pkg/external" && imp.resolvedPath)).toBe(false);
+    expect(index.imports.some((imp) => imp.path === "cmd/app/main.go" && imp.specifier === "fmt" && imp.resolvedPath)).toBe(false);
+    expect(index.imports.some((imp) => imp.path === "src/main/java/com/acme/App.java" && imp.specifier === "com.acme.Worker" && imp.resolvedPath === "src/main/java/com/acme/Worker.java")).toBe(true);
+    const goHelper = index.symbols.find((symbol) => symbol.path === "pkg/worker/z_helper.go" && symbol.qualifiedName === "Helper");
+    const rustStartServer = index.symbols.find((symbol) => symbol.path === "src/lib.rs" && symbol.qualifiedName === "start_server");
+    const externalHelper = index.symbols.find((symbol) => symbol.path === "pkg/external/external.go" && symbol.qualifiedName === "Helper");
+    const localFmtPrintln = index.symbols.find((symbol) => symbol.path === "fmt.go" && symbol.qualifiedName === "Println");
+    expect(goHelper?.id).toBeTruthy();
+    expect(rustStartServer?.id).toBeTruthy();
+    expect(externalHelper?.id).toBeTruthy();
+    expect(localFmtPrintln?.id).toBeTruthy();
+    expect(index.usageSites.some((usage) => usage.path === "cmd/app/main.go" && usage.name === "worker.Helper" && usage.kind === "call" && usage.targetSymbolId === goHelper?.id)).toBe(true);
+    expect(index.usageSites.some((usage) => usage.path === "cmd/app/main.go" && usage.name === "other.Helper" && usage.kind === "call" && usage.targetSymbolId === externalHelper?.id)).toBe(false);
+    expect(index.usageSites.some((usage) => usage.path === "cmd/app/main.go" && usage.name === "fmt.Println" && usage.kind === "call" && usage.targetSymbolId === localFmtPrintln?.id)).toBe(false);
+    expect(index.usageSites.some((usage) => usage.path === "src/lib.rs" && usage.name === "start_server" && usage.text.includes("let _text"))).toBe(false);
+    expect(index.usageSites.some((usage) => usage.path === "src/lib.rs" && usage.name === "start_server" && usage.text.includes("start_server();"))).toBe(false);
+    expect(index.usageSites.some((usage) => usage.path === "pkg/worker/z_helper.go" && usage.name === "GhostCall")).toBe(false);
+    expect(index.usageSites.some((usage) => usage.path === "src/main/java/com/acme/App.java" && usage.name === "Ghost.call")).toBe(false);
+    expect(index.usageSites.some((usage) => usage.path === "tests/worker_test.rs" && usage.name === "start_server" && usage.kind === "call" && usage.targetSymbolId === rustStartServer?.id)).toBe(true);
+    expect(index.graphEdges.some((edge) => edge.edgeKind === "IMPORTS" && edge.fromPath === "src/main/java/com/acme/App.java" && edge.toPath === "src/main/java/com/acme/Worker.java")).toBe(true);
+  });
+
   it("bounds source indexing and surfaces oversized files as parser evidence", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-large-source-"));
     execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });

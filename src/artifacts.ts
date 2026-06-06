@@ -58,6 +58,9 @@ ${ADVANCED_MCP_TOOL_NAMES.map((tool) => `- \`${tool}\``).join("\n")}
 MCP resources expose this generated artifact set under \`codexa://repo/codebase/...\`.
 MCP prompts provide small workflows for snapshot-backed editing, impact-before-edit,
 dirty-diff review, and targeted test planning.
+Use \`search\` as the first-class target-discovery surface when a task is
+ambiguous; it combines raw hits, semantic retrieval when configured, Codexa
+ranking, likely tests, and gaps before \`task_brief\`.
 Read \`codex-contract.md\` first when a new Codex session needs the automatic-use
 rules without loading broader maps.
 

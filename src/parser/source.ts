@@ -13,6 +13,7 @@ import { parseMarkdownDocument } from "./markdown.js";
 import { extractPython } from "./python.js";
 import { extractDottedStringReferences, extractEndpointStringReferences } from "./references.js";
 import { addCommonRisks, addPatternRisks, addPlaceholderRisks } from "./risks.js";
+import { extractShallowSource, supportsShallowSourceExtraction } from "./shallow.js";
 
 export type { ParseFileInput } from "./context.js";
 
@@ -58,6 +59,16 @@ export async function parseFile(input: ParseFileInput): Promise<ParseResult> {
 
   try {
     const ctx = createExtractContext(input, language, sourceText, test);
+    if (supportsShallowSourceExtraction(language)) {
+      extractShallowSource(ctx);
+      extractDottedStringReferences(ctx);
+      extractEndpointStringReferences(ctx);
+      addCommonRisks(ctx);
+      addPatternRisks(ctx);
+      addPlaceholderRisks(ctx);
+      return { ...empty, ...ctx, file: baseFile };
+    }
+
     if (!["typescript", "javascript", "python"].includes(language)) {
       addCommonRisks(ctx);
       addPatternRisks(ctx);

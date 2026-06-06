@@ -42,7 +42,7 @@ describe("Codexa project init", () => {
     const summary = await sessionStartSummary(repo, false);
     expect(summary).toContain(`Codexa context for ${repo}`);
     expect(summary).toContain("Codexa MCP is ready");
-    expect(summary).toContain("primary loop session_context -> task_brief -> change_plan(saveSnapshot) -> post_edit_review -> test_plan");
+    expect(summary).toContain("primary loop session_context -> search(if target unclear) -> task_brief -> change_plan(saveSnapshot) -> post_edit_review -> test_plan");
     expect(summary).not.toContain("broad task -> focus_brief/session_context");
   });
 
