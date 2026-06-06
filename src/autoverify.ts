@@ -28,6 +28,7 @@ interface SafeAutoVerifyCommand {
   spawnCwd: string;
   executable: string;
   spawnExecutable: string;
+  spawnArgs: string[];
   args: string[];
   reportArgs?: string[];
   packageManager?: string;
@@ -36,6 +37,13 @@ interface SafeAutoVerifyCommand {
   targetRealpaths: string[];
   allowedBy: string[];
   pathEnv: string;
+}
+
+interface ResolvedExecutable {
+  executablePath: string;
+  spawnExecutable: string;
+  spawnArgs: string[];
+  pathEnvExecutable: string;
 }
 
 interface RunnerDirtyState {
@@ -348,11 +356,11 @@ async function safeAutoVerifyCommand(repoRoot: string, candidate: AutoVerifyCand
   }
   const executable = safety.executable ?? candidate.commandExecutable;
   const args = safety.args ?? candidate.commandArgs;
-  const spawnExecutable = await resolveAllowlistedExecutable(executable, repoRealRoot, { packageBinRoot: safety.packageBinRoot });
-  if (!spawnExecutable) {
+  const resolvedExecutable = await resolveAllowlistedExecutable(executable, repoRealRoot, { packageBinRoot: safety.packageBinRoot, args });
+  if (!resolvedExecutable) {
     return { ok: false, reason: "runner executable is unavailable or unsafe" };
   }
-  const pathEnv = await safeRunnerPathEnv(repoRealRoot, cwdReal, spawnExecutable);
+  const pathEnv = await safeRunnerPathEnv(repoRealRoot, cwdReal, resolvedExecutable.pathEnvExecutable);
   return {
     ok: true,
     command: {
@@ -361,7 +369,8 @@ async function safeAutoVerifyCommand(repoRoot: string, candidate: AutoVerifyCand
       cwd,
       spawnCwd: cwdReal,
       executable,
-      spawnExecutable,
+      spawnExecutable: resolvedExecutable.spawnExecutable,
+      spawnArgs: resolvedExecutable.spawnArgs,
       args,
       reportArgs: safety.reportArgs,
       packageManager: safety.packageManager,
@@ -578,15 +587,16 @@ async function repoTestTargetRealpath(repoRoot: string, repoRealRoot: string, cw
   return isTestPath(relative) || isTestPath(realRelative) ? real : undefined;
 }
 
-async function resolveAllowlistedExecutable(executable: string, repoRealRoot: string, options: { packageBinRoot?: string } = {}): Promise<string | undefined> {
+async function resolveAllowlistedExecutable(executable: string, repoRealRoot: string, options: { packageBinRoot?: string; args?: string[] } = {}): Promise<ResolvedExecutable | undefined> {
+  const args = options.args ?? [];
   if (executable === "node") {
     const nodeReal = await realpathOrUndefined(process.execPath);
-    return nodeReal && !isUnsafeExecutableRealpath(nodeReal, repoRealRoot) ? nodeReal : undefined;
+    return nodeReal && !isUnsafeExecutableRealpath(nodeReal, repoRealRoot) ? directExecutableResolution(nodeReal, args) : undefined;
   }
   if (options.packageBinRoot) {
     const localBin = await packageLocalBinExecutable(executable, options.packageBinRoot);
     if (localBin) {
-      return localBin;
+      return await packageLocalBinResolution(localBin, args, repoRealRoot);
     }
   }
   const pathValue = process.env.PATH ?? "";
@@ -609,9 +619,67 @@ async function resolveAllowlistedExecutable(executable: string, repoRealRoot: st
     if (!real || isUnsafeExecutableRealpath(real, repoRealRoot) || (await isWorldWritableDir(path.dirname(real)))) {
       continue;
     }
-    return real;
+    return directExecutableResolution(real, args);
   }
   return undefined;
+}
+
+function directExecutableResolution(executablePath: string, args: string[]): ResolvedExecutable {
+  return {
+    executablePath,
+    spawnExecutable: executablePath,
+    spawnArgs: args,
+    pathEnvExecutable: executablePath
+  };
+}
+
+async function packageLocalBinResolution(localBin: string, args: string[], repoRealRoot: string): Promise<ResolvedExecutable | undefined> {
+  if (process.platform !== "win32" || path.extname(localBin).toLowerCase() !== ".cmd") {
+    return directExecutableResolution(localBin, args);
+  }
+  if (![localBin, ...args].every(isSafeWindowsCmdArgument)) {
+    return undefined;
+  }
+  const shell = await resolveWindowsCommandShell(repoRealRoot);
+  if (!shell) {
+    return undefined;
+  }
+  return {
+    executablePath: localBin,
+    spawnExecutable: shell,
+    spawnArgs: ["/d", "/v:off", "/c", "call", localBin, ...args],
+    pathEnvExecutable: shell
+  };
+}
+
+async function resolveWindowsCommandShell(repoRealRoot: string): Promise<string | undefined> {
+  const comspec = process.env.ComSpec;
+  if (comspec && path.isAbsolute(comspec)) {
+    const real = await executableRealpath(comspec);
+    if (real && !isUnsafeExecutableRealpath(real, repoRealRoot) && !(await isWorldWritableDir(path.dirname(real)))) {
+      return real;
+    }
+  }
+  const pathValue = process.env.PATH ?? "";
+  for (const dir of pathValue.split(path.delimiter)) {
+    if (!dir || !path.isAbsolute(dir)) {
+      continue;
+    }
+    const absoluteDir = path.resolve(dir);
+    if (isUnsafePathCandidate(absoluteDir, repoRealRoot) || (await isUnsafeSearchDir(absoluteDir, repoRealRoot))) {
+      continue;
+    }
+    const candidate = path.join(absoluteDir, "cmd.exe");
+    const real = await executableRealpath(candidate);
+    if (real && !isUnsafeExecutableRealpath(real, repoRealRoot) && !(await isWorldWritableDir(path.dirname(real)))) {
+      return real;
+    }
+  }
+  return undefined;
+}
+
+function isSafeWindowsCmdArgument(value: string): boolean {
+  return value.length > 0 && !/[\0\r\n"%!^]/u.test(value);
 }
 
 async function packageLocalBinExecutable(executable: string, packageRoot: string): Promise<string | undefined> {
@@ -704,7 +772,7 @@ async function runVerificationCommand(repoRoot: string, command: SafeAutoVerifyC
   try {
     result = await new Promise<{ exitCode: number; stdout: string; stderr: string; timedOut: boolean; signal?: string }>((resolve) => {
       const detached = process.platform !== "win32";
-      const child = spawn(command.spawnExecutable, command.args, {
+      const child = spawn(command.spawnExecutable, command.spawnArgs, {
         cwd: command.spawnCwd,
         env: minimalChildEnv(tempHome, command.pathEnv),
         detached,

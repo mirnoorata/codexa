@@ -2,8 +2,8 @@ import { execFileSync, spawnSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
-import { sanitizeAutoVerifyText } from "../src/autoverify.js";
+import { describe, expect, it, vi } from "vitest";
+import { runAutoVerifyForPostEdit, sanitizeAutoVerifyText } from "../src/autoverify.js";
 
 describe("Codexa hook CLI", () => {
   it("rejects malformed integer options instead of truncating them", async () => {
@@ -684,6 +684,63 @@ describe("Codexa hook CLI", () => {
     expect(postEdit.stdout).toContain("passed");
   });
 
+  it("launches Windows package-local cmd shims through a trusted command shell", async () => {
+    const repo = await createAutoVerifyFixtureRepo({ test: "vitest run" });
+    await addFakeWindowsVitestCmdBin(repo);
+    const { cmdExe, marker } = await createFakeCmdExe();
+    const platformSpy = vi.spyOn(process, "platform", "get").mockReturnValue("win32");
+    const previousAutoVerify = process.env.CODEXA_AUTOVERIFY;
+    const previousComSpec = process.env.ComSpec;
+    process.env.CODEXA_AUTOVERIFY = "1";
+    process.env.ComSpec = cmdExe;
+    try {
+      const result = await runAutoVerifyForPostEdit(repo, {
+        reviewTargets: ["src/main.js"],
+        autoVerifyCandidates: [
+          {
+            schemaVersion: 1,
+            taskId: "windows-cmd-shim",
+            snapshotDigest: "snapshot",
+            commandId: "command",
+            command: "npm run test -- tests/main.test.js",
+            commandExecutable: "npm",
+            commandArgs: ["run", "test", "--", "tests/main.test.js"],
+            commandCwd: repo,
+            targetPaths: ["tests/main.test.js"],
+            source: "explicit",
+            rank: 1
+          }
+        ]
+      });
+
+      expect(result.skipped).toEqual([]);
+      expect(result.reports).toHaveLength(1);
+      expect(result.reports[0].exitCode).toBe(0);
+      const cmdArgs = JSON.parse(await readFile(marker, "utf8")) as string[];
+      expect(cmdArgs).toEqual([
+        "/d",
+        "/v:off",
+        "/c",
+        "call",
+        path.join(repo, "node_modules", ".bin", "vitest.cmd"),
+        "run",
+        "tests/main.test.js"
+      ]);
+    } finally {
+      platformSpy.mockRestore();
+      if (previousAutoVerify === undefined) {
+        delete process.env.CODEXA_AUTOVERIFY;
+      } else {
+        process.env.CODEXA_AUTOVERIFY = previousAutoVerify;
+      }
+      if (previousComSpec === undefined) {
+        delete process.env.ComSpec;
+      } else {
+        process.env.ComSpec = previousComSpec;
+      }
+    }
+  });
+
   it("does not execute shell metacharacters from recommended test paths", async () => {
     const repo = await createAutoVerifyFixtureRepo({ test: "node --test" }, "main;touch shell-pwned.test.js");
     const cli = path.resolve(process.cwd(), "dist/cli.js");
@@ -1205,6 +1262,37 @@ async function addFakeVitestBin(repo: string): Promise<void> {
     cwd: repo,
     stdio: "ignore"
   });
+}
+
+async function addFakeWindowsVitestCmdBin(repo: string): Promise<void> {
+  const binPath = path.join(repo, "node_modules", ".bin", "vitest.cmd");
+  await mkdir(path.dirname(binPath), { recursive: true });
+  await writeFile(binPath, "@echo off\r\n", "utf8");
+  await chmod(binPath, 0o755);
+  execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+  execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "add local windows vitest bin"], {
+    cwd: repo,
+    stdio: "ignore"
+  });
+}
+
+async function createFakeCmdExe(): Promise<{ cmdExe: string; marker: string }> {
+  const cmdDir = await mkdtemp(path.join(os.tmpdir(), "codexa-fake-cmd-"));
+  const marker = path.join(cmdDir, "cmd-args.json");
+  const cmdExe = path.join(cmdDir, "cmd.exe");
+  await writeFile(
+    cmdExe,
+    [
+      "#!/usr/bin/env node",
+      "const { writeFileSync } = require('node:fs');",
+      `writeFileSync(${JSON.stringify(marker)}, JSON.stringify(process.argv.slice(2)), "utf8");`,
+      "process.exit(0);",
+      ""
+    ].join("\n"),
+    "utf8"
+  );
+  await chmod(cmdExe, 0o755);
+  return { cmdExe, marker };
 }
 
 async function createNestedAutoVerifyFixtureRepo(testSource?: string): Promise<string> {
