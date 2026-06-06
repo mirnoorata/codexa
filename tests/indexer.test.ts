@@ -318,9 +318,10 @@ describe("Codexa indexer", () => {
     await writeFile(path.join(repo, "pkg/external/external.go"), "package external\n\nfunc Helper() string { return \"external\" }\n", "utf8");
     await writeFile(
       path.join(repo, "cmd/app/main.go"),
-      "package main\n\nimport (\n  worker \"example.com/project/pkg/worker\"\n  other \"github.com/other/project/pkg/external\"\n  \"fmt\"\n)\n\nfunc main() {\n  fmt.Println(worker.Helper())\n  _ = other.Helper()\n}\n",
+      "package main\n\nimport (\n  app \"example.com/project\"\n  worker \"example.com/project/pkg/worker\"\n  other \"github.com/other/project/pkg/external\"\n  \"fmt\"\n)\n\nfunc main() {\n  fmt.Println(worker.Helper())\n  _ = app.RootHelper()\n  _ = other.Helper()\n}\n",
       "utf8"
     );
+    await writeFile(path.join(repo, "app.go"), "package project\n\nfunc RootHelper() string { return \"root\" }\n", "utf8");
     await writeFile(path.join(repo, "fmt.go"), "package fmt\n\nfunc Println(v any) {}\n", "utf8");
     await writeFile(path.join(repo, "src/main/java/com/acme/Worker.java"), "package com.acme;\npublic class Worker {\n  public String run() { return \"ok\"; }\n}\n", "utf8");
     await writeFile(
@@ -370,6 +371,7 @@ describe("Codexa indexer", () => {
     expect(index.symbols.some((symbol) => symbol.path === "src/lib.rs" && symbol.qualifiedName === "scoped.module_after_lifetime" && symbol.kind === "function")).toBe(true);
     expect(index.symbols.some((symbol) => symbol.path === "src/lib.rs" && symbol.qualifiedName === "module_after_lifetime")).toBe(false);
     expect(index.symbols.some((symbol) => symbol.path === "src/lib.rs" && symbol.qualifiedName === "raw_scope.after_raw_string" && symbol.kind === "function")).toBe(true);
+    expect(index.symbols.some((symbol) => symbol.path === "app.go" && symbol.qualifiedName === "RootHelper" && symbol.kind === "function")).toBe(true);
     expect(index.symbols.some((symbol) => symbol.path === "pkg/worker/a_runner.go" && symbol.qualifiedName === "Runner.Run" && symbol.kind === "method")).toBe(true);
     expect(index.symbols.some((symbol) => symbol.path === "pkg/worker/z_helper.go" && symbol.qualifiedName === "AfterRawString" && symbol.kind === "function")).toBe(true);
     expect(index.symbols.some((symbol) => symbol.path === "src/main/java/com/acme/App.java" && symbol.qualifiedName === "App.start" && symbol.kind === "method")).toBe(true);
@@ -381,19 +383,23 @@ describe("Codexa indexer", () => {
     expect(index.imports.some((imp) => imp.path === "tests/worker_test.rs" && imp.specifier === "crate::worker" && imp.importedName === "run_worker" && imp.resolvedPath === "src/worker.rs")).toBe(true);
     expect(index.imports.some((imp) => imp.path === "tests/worker_test.rs" && imp.specifier === "crate" && imp.importedName === "start_server" && imp.resolvedPath === "src/lib.rs")).toBe(true);
     expect(index.testEdges.some((edge) => edge.path === "tests/worker_test.rs" && edge.reason.includes("run_worker_smoke"))).toBe(true);
+    expect(index.imports.some((imp) => imp.path === "cmd/app/main.go" && imp.specifier === "example.com/project" && imp.localName === "app" && imp.resolvedPath === "app.go")).toBe(true);
     expect(index.imports.some((imp) => imp.path === "cmd/app/main.go" && imp.specifier === "example.com/project/pkg/worker" && imp.localName === "worker" && imp.resolvedPath === "pkg/worker/a_runner.go")).toBe(true);
     expect(index.imports.some((imp) => imp.path === "cmd/app/main.go" && imp.specifier === "github.com/other/project/pkg/external" && imp.resolvedPath)).toBe(false);
     expect(index.imports.some((imp) => imp.path === "cmd/app/main.go" && imp.specifier === "fmt" && imp.resolvedPath)).toBe(false);
     expect(index.imports.some((imp) => imp.path === "src/main/java/com/acme/App.java" && imp.specifier === "com.acme.Worker" && imp.resolvedPath === "src/main/java/com/acme/Worker.java")).toBe(true);
     const goHelper = index.symbols.find((symbol) => symbol.path === "pkg/worker/z_helper.go" && symbol.qualifiedName === "Helper");
+    const goRootHelper = index.symbols.find((symbol) => symbol.path === "app.go" && symbol.qualifiedName === "RootHelper");
     const rustStartServer = index.symbols.find((symbol) => symbol.path === "src/lib.rs" && symbol.qualifiedName === "start_server");
     const externalHelper = index.symbols.find((symbol) => symbol.path === "pkg/external/external.go" && symbol.qualifiedName === "Helper");
     const localFmtPrintln = index.symbols.find((symbol) => symbol.path === "fmt.go" && symbol.qualifiedName === "Println");
     expect(goHelper?.id).toBeTruthy();
+    expect(goRootHelper?.id).toBeTruthy();
     expect(rustStartServer?.id).toBeTruthy();
     expect(externalHelper?.id).toBeTruthy();
     expect(localFmtPrintln?.id).toBeTruthy();
     expect(index.usageSites.some((usage) => usage.path === "cmd/app/main.go" && usage.name === "worker.Helper" && usage.kind === "call" && usage.targetSymbolId === goHelper?.id)).toBe(true);
+    expect(index.usageSites.some((usage) => usage.path === "cmd/app/main.go" && usage.name === "app.RootHelper" && usage.kind === "call" && usage.targetSymbolId === goRootHelper?.id)).toBe(true);
     expect(index.usageSites.some((usage) => usage.path === "cmd/app/main.go" && usage.name === "other.Helper" && usage.kind === "call" && usage.targetSymbolId === externalHelper?.id)).toBe(false);
     expect(index.usageSites.some((usage) => usage.path === "cmd/app/main.go" && usage.name === "fmt.Println" && usage.kind === "call" && usage.targetSymbolId === localFmtPrintln?.id)).toBe(false);
     expect(index.usageSites.some((usage) => usage.path === "src/lib.rs" && usage.name === "start_server" && usage.text.includes("let _text"))).toBe(false);
