@@ -20,11 +20,15 @@ Run from the repo root, with a clean working tree:
 npm run check                  # build + lint + tests
 npm run privacy                # tracked files and .codex/ hints
 npm run privacy:history        # full git log scan
-npm run security:check         # dependency audit
+npm run security:check         # check + audit + snapshot + package smoke
 npm run public:snapshot-check  # refuses to run if the tree is dirty
 ```
 
-All five must exit zero. `privacy:history` is the one that catches local
+All five must exit zero. `security:check` includes `npm run check`, dependency
+audit, clean-tree public snapshot verification, package hygiene, and installed
+package smoke. Because the snapshot check verifies the archive for exactly
+`HEAD`, commit the release candidate before running it. `privacy:history` is
+the one that catches local
 home-directory paths, workspace-root paths, hardcoded emails, tokens, and
 private-key blocks that slipped into any historical commit, even commits
 you plan to squash away. Run
@@ -42,11 +46,17 @@ has to come back clean against the *new* single commit before you push.
 - `SECURITY.md`
 - `CONTRIBUTING.md`
 - `CODE_OF_CONDUCT.md`
+- `package.json` with public package metadata, scoped name, executable,
+  files list, and keywords that match the shipped product surface
 - `.github/ISSUE_TEMPLATE/bug_report.md`
 - `.github/ISSUE_TEMPLATE/feature_request.md`
 - `.github/ISSUE_TEMPLATE/config.yml`
 - `.github/pull_request_template.md`
 - `.github/workflows/check.yml` (already exists — CI)
+- User-facing docs that match the current tool surface: proof-carrying
+  `symbol_context`, `EdgeEvidenceV1`, planned-test provenance,
+  `CodexaSymbolReportV1`, local outcome ranking, structured `nextTools`, eval
+  numbers, and npm install/publish status.
 
 ### Identity
 
@@ -199,8 +209,18 @@ Neither of these is failure. Both are normal open-source lifecycles.
 
 ## Quarterly (or whenever you remember)
 
-- Re-run `npm run security:check` locally. Dependabot is the continuous
-  version of this, but a local run confirms nothing is stuck.
+- Re-run `npm run security:check` locally from a clean committed tree.
+  Dependabot is the continuous version of this, but a local run confirms
+  nothing is stuck and the packed/plugin install path still works.
+- Refresh public proof before cutting a release:
+  `node dist/cli.js eval <repo> --suite all --seed codexa-v1-benchmark`, plus
+  `--centrality-experiment` when ranking changes are under consideration. Update
+  README metrics only from the latest reproducible run.
+- Verify npm and repository discoverability before announcing a package:
+  `npm view @mirnoorata/codexa version --json` after publish, package keywords
+  in `package.json`, and GitHub topics aligned with the actual scope (`codex`,
+  `mcp`, `code-intelligence`, `symbol-search`, `impact-analysis`,
+  `local-first`, `verification`).
 - Glance at open issues. Close anything you would not pick up in the next six
   months, with a short "out of scope / not planned" note. Issues that sit
   open for a year with no reply are worse for everyone than closed issues.

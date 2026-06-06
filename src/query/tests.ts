@@ -1,8 +1,18 @@
 import path from "node:path";
 import { isTestPath } from "../language.js";
-import type { ChangeType, CodexaIndex, Confidence, EvidenceTier, TestRecommendation } from "../types.js";
+import type { ChangeType, CodexaIndex, Confidence, EvidenceTier, TestRecommendation, TestRecommendationProvenance, TestRecommendationProvenanceSource } from "../types.js";
 import { uniqueSorted } from "../util.js";
 import { candidateTestCommand } from "./test-commands.js";
+
+export interface OutcomeLearningRecommendation {
+  path: string;
+  rank: number;
+  reason: string;
+  command?: string;
+  targetPaths: string[];
+  sources: TestRecommendationProvenanceSource[];
+  evidence: string[];
+}
 
 /**
  * Recommend tests to run for a set of changed paths.
@@ -36,6 +46,8 @@ export function recommendTests(
     reasons: Set<string>;
     rank: number;
     evidenceTier: EvidenceTier;
+    provenanceSources: Set<TestRecommendationProvenanceSource>;
+    provenanceTargets: Set<string>;
     // True when any edge that contributed to this candidate directly
     // covers a file in the changed set (as opposed to reaching it via
     // transitive importers or package-wide heuristics). Such candidates
@@ -51,7 +63,9 @@ export function recommendTests(
     rank = 1,
     sourcePath?: string,
     evidenceTier: EvidenceTier = "derived",
-    directlyCoversChanged = false
+    directlyCoversChanged = false,
+    provenanceSource: TestRecommendationProvenanceSource = evidenceTier === "heuristic" || evidenceTier === "fallback" ? "heuristic_match" : "derived_impact_expansion",
+    provenanceTargets: string[] = sourcePath ? [sourcePath] : paths
   ) => {
     const compatibilityGate = evidenceTier === "heuristic" || evidenceTier === "fallback";
     if (sourcePath && compatibilityGate && !compatibleTestPath(sourcePath, pathValue)) {
@@ -65,6 +79,10 @@ export function recommendTests(
       existing.reasons.add(reason);
       existing.rank += rank;
       existing.evidenceTier = betterTier(existing.evidenceTier, evidenceTier);
+      existing.provenanceSources.add(provenanceSource);
+      for (const target of provenanceTargets) {
+        existing.provenanceTargets.add(target);
+      }
       if (directlyCoversChanged) {
         existing.directlyCoversChanged = true;
       }
@@ -74,6 +92,8 @@ export function recommendTests(
         reasons: new Set([reason]),
         rank,
         evidenceTier,
+        provenanceSources: new Set([provenanceSource]),
+        provenanceTargets: new Set(provenanceTargets),
         directlyCoversChanged
       });
     }
@@ -84,10 +104,10 @@ export function recommendTests(
       // Direct coverage of an edited file. NEVER filter this out on
       // change-type narrowing — even if the test is a different language
       // than the edit, this edge is the whole point.
-      add(edge.path, `${edge.reason}; covers ${edge.targetPath}`, 5, edge.targetPath, confidenceTier(edge.confidence), true);
+      add(edge.path, `${edge.reason}; covers ${edge.targetPath}`, 5, edge.targetPath, confidenceTier(edge.confidence), true, "authoritative_test_edge", [edge.targetPath]);
     }
     if (changedSet.has(edge.path)) {
-      add(edge.path, "changed test file", 4, undefined, "authoritative", true);
+      add(edge.path, "changed test file", 4, edge.path, "authoritative", true, "explicit_target", [edge.path]);
     }
   }
 
@@ -97,13 +117,13 @@ export function recommendTests(
     if (relatedFile?.test) {
       // Reached via transitive importers — NOT direct coverage. Subject
       // to change-type narrowing.
-      add(relatedFile.path, `imports ${source} through affected path`, 4, source, "authoritative", false);
+      add(relatedFile.path, `imports ${source} through affected path`, 4, source, "authoritative", false, "derived_impact_expansion", [source]);
     }
   }
   for (const edge of index.testEdges) {
     if (edge.targetPath && related.has(edge.targetPath)) {
       const source = related.get(edge.targetPath) ?? edge.targetPath;
-      add(edge.path, `${edge.reason}; covers ${edge.targetPath} via ${source}`, 4, source, confidenceTier(edge.confidence), false);
+      add(edge.path, `${edge.reason}; covers ${edge.targetPath} via ${source}`, 4, source, confidenceTier(edge.confidence), false, "derived_impact_expansion", [source, edge.targetPath]);
     }
   }
 
@@ -114,7 +134,7 @@ export function recommendTests(
     }
     for (const testFile of index.files.filter((candidate) => candidate.test)) {
       if (testFile.path.includes(basename)) {
-        add(testFile.path, `near ${file}`, 2, file, "heuristic", false);
+        add(testFile.path, `near ${file}`, 2, file, "heuristic", false, "heuristic_match", [file]);
       }
     }
   }
@@ -127,7 +147,18 @@ export function recommendTests(
     }
     const packageImportTests = new Set(index.imports.filter((edge) => isTestPath(edge.path) && edge.specifier.replace(/^\.+/, "").startsWith(packageRoot)).map((edge) => edge.path));
     for (const testPath of packageImportTests) {
-      add(testPath, `imports ${packageRoot} package near ${file}`, 3, file, "derived", false);
+      add(testPath, `imports ${packageRoot} package near ${file}`, 3, file, "derived", false, "package_import", [file]);
+    }
+  }
+
+  for (const candidate of candidates.values()) {
+    const testFile = index.files.find((file) => file.path === candidate.path);
+    const outcomeBoost = Math.min(3, testFile?.rankReasons?.outcomeHistory ?? 0);
+    if (outcomeBoost > 0) {
+      candidate.rank += outcomeBoost;
+      candidate.reasons.add("outcome history: this test was recently missed, unaccounted for, or repeatedly needed");
+      candidate.provenanceSources.add("outcome_history");
+      candidate.provenanceTargets.add(candidate.path);
     }
   }
 
@@ -141,6 +172,13 @@ export function recommendTests(
   const results = [...candidates.values()]
     .map((candidate) => {
       const command = candidateTestCommand(repoRoot, candidate.path);
+      const provenance: TestRecommendationProvenance = {
+        schemaVersion: 1,
+        origin: "current",
+        sources: uniqueSorted(candidate.provenanceSources) as TestRecommendationProvenanceSource[],
+        targetPaths: uniqueSorted(candidate.provenanceTargets),
+        evidence: [...candidate.reasons].sort().slice(0, 8)
+      };
       return {
         path: candidate.path,
         reason: limitReasonText([...candidate.reasons].sort().join("; ")),
@@ -151,7 +189,8 @@ export function recommendTests(
         commandExecutable: command?.commandExecutable,
         commandArgs: command?.commandArgs,
         commandSource: command?.source,
-        commandConfidence: command?.confidence
+        commandConfidence: command?.confidence,
+        provenance
       };
     });
 
@@ -256,7 +295,10 @@ export function formatTestRecommendations(tests: TestRecommendation[]): string[]
   if (tests.length === 0) {
     return ["- No targeted test file found."];
   }
-  const lines = tests.map((test) => `- ${test.path}: ${test.evidenceTier ?? "derived"}; ${test.reason}`);
+  const lines = tests.map((test) => {
+    const degraded = test.provenance?.degraded ? `; degraded: ${test.provenance.degradedReason ?? "provenance degraded"}` : "";
+    return `- ${test.path}: ${test.evidenceTier ?? "derived"}; ${test.reason}${degraded}`;
+  });
   const commands = uniqueSorted(tests.flatMap((test) => (test.command ? [test.command] : [])));
   if (commands.length === 0) {
     return lines;
@@ -274,16 +316,47 @@ export function formatTestRecommendations(tests: TestRecommendation[]): string[]
   ];
 }
 
-export function uniqueTests(tests: TestRecommendation[]): TestRecommendation[] {
-  const seen = new Set<string>();
-  const result: TestRecommendation[] = [];
-  for (const test of tests) {
-    if (!seen.has(test.path)) {
-      seen.add(test.path);
-      result.push(test);
-    }
+export function outcomeLearningRecommendations(tests: TestRecommendation[], limit = 8): OutcomeLearningRecommendation[] {
+  return tests
+    .filter((test) => hasOutcomeHistory(test))
+    .map((test) => {
+      const evidence = outcomeLearningEvidence(test);
+      return {
+        path: test.path,
+        rank: test.rank,
+        reason: test.reason,
+        command: test.command,
+        targetPaths: uniqueSorted(test.provenance?.targetPaths ?? [test.path]).slice(0, 8),
+        sources: uniqueSorted(test.provenance?.sources ?? ["outcome_history"]) as TestRecommendationProvenanceSource[],
+        evidence
+      };
+    })
+    .sort((a, b) => b.rank - a.rank || a.path.localeCompare(b.path))
+    .slice(0, limit);
+}
+
+export function formatOutcomeLearningRecommendations(recommendations: OutcomeLearningRecommendation[]): string[] {
+  if (recommendations.length === 0) {
+    return [];
   }
-  return result.sort((a, b) => tierScore(a.evidenceTier ?? "fallback") - tierScore(b.evidenceTier ?? "fallback") || b.rank - a.rank || a.path.localeCompare(b.path));
+  return recommendations.map((entry) => {
+    const evidence = entry.evidence.length > 0 ? `; ${entry.evidence.slice(0, 2).join("; ")}` : "";
+    const command = entry.command ? `; command: ${entry.command}` : "";
+    return `- ${entry.path}: outcome history raised priority${evidence}${command}`;
+  });
+}
+
+export function uniqueTests(tests: TestRecommendation[]): TestRecommendation[] {
+  const byPath = new Map<string, TestRecommendation>();
+  for (const test of tests) {
+    const existing = byPath.get(test.path);
+    if (!existing) {
+      byPath.set(test.path, test);
+      continue;
+    }
+    byPath.set(test.path, mergeTestRecommendations(existing, test));
+  }
+  return [...byPath.values()].sort((a, b) => tierScore(a.evidenceTier ?? "fallback") - tierScore(b.evidenceTier ?? "fallback") || b.rank - a.rank || a.path.localeCompare(b.path));
 }
 
 export function wasTestRun(test: TestRecommendation, ranTests: string[]): boolean {
@@ -292,6 +365,64 @@ export function wasTestRun(test: TestRecommendation, ranTests: string[]): boolea
   }
   const expected = normalizeDirectTestIdentity(test.path);
   return ranTests.some((entry) => normalizeDirectTestIdentity(entry) === expected);
+}
+
+function mergeTestRecommendations(existing: TestRecommendation, candidate: TestRecommendation): TestRecommendation {
+  const existingDegraded = existing.provenance?.degraded === true;
+  const candidateDegraded = candidate.provenance?.degraded === true;
+  const preferred =
+    existingDegraded !== candidateDegraded
+      ? candidateDegraded
+        ? existing
+        : candidate
+      : tierScore(candidate.evidenceTier ?? "fallback") < tierScore(existing.evidenceTier ?? "fallback") || candidate.rank > existing.rank
+        ? candidate
+        : existing;
+  const other = preferred === existing ? candidate : existing;
+  return {
+    ...preferred,
+    reason: limitReasonText(uniqueSorted([preferred.reason, other.reason].filter(Boolean)).join("; ")),
+    rank: Math.max(preferred.rank, other.rank),
+    evidenceTier: betterTier(preferred.evidenceTier ?? "fallback", other.evidenceTier ?? "fallback"),
+    provenance: mergeTestProvenance(preferred.provenance, other.provenance)
+  };
+}
+
+function mergeTestProvenance(a?: TestRecommendationProvenance, b?: TestRecommendationProvenance): TestRecommendationProvenance | undefined {
+  if (!a && !b) {
+    return undefined;
+  }
+  if (a?.degraded === true && b && b.degraded !== true) {
+    return b;
+  }
+  if (b?.degraded === true && a && a.degraded !== true) {
+    return a;
+  }
+  const base = a && !a.degraded ? a : b && !b.degraded ? b : a ?? b!;
+  return {
+    schemaVersion: 1,
+    origin: base.origin,
+    sources: uniqueSorted([...(a?.sources ?? []), ...(b?.sources ?? [])]) as TestRecommendationProvenanceSource[],
+    targetPaths: uniqueSorted([...(a?.targetPaths ?? []), ...(b?.targetPaths ?? [])]),
+    evidence: uniqueSorted([...(a?.evidence ?? []), ...(b?.evidence ?? [])]).slice(0, 10),
+    degraded: a?.degraded === true && b?.degraded === true ? true : undefined,
+    degradedReason: a?.degraded === true && b?.degraded === true ? a.degradedReason ?? b.degradedReason : undefined
+  };
+}
+
+function hasOutcomeHistory(test: TestRecommendation): boolean {
+  return test.provenance?.sources.includes("outcome_history") === true || /\boutcome history\b/iu.test(test.reason);
+}
+
+function outcomeLearningEvidence(test: TestRecommendation): string[] {
+  const evidence = uniqueSorted([
+    ...(test.provenance?.evidence ?? []).filter((entry) => /\boutcome\b/iu.test(entry)),
+    ...test.reason
+      .split(";")
+      .map((entry) => entry.trim())
+      .filter((entry) => /\boutcome\b/iu.test(entry))
+  ]).slice(0, 5);
+  return evidence.length > 0 ? evidence : [test.reason];
 }
 
 function transitiveImporters(index: CodexaIndex, sourcePaths: string[], maxDepth: number): Map<string, string> {

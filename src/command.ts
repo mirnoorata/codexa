@@ -3,10 +3,12 @@ import { spawn } from "node:child_process";
 export interface RunCommandOptions {
   cwd?: string;
   env?: NodeJS.ProcessEnv;
+  input?: string;
   timeoutMs?: number;
   maxBufferBytes?: number;
   okExitCodes?: number[];
   budget?: CommandBudget;
+  killProcessGroup?: boolean;
 }
 
 export interface CommandResult {
@@ -46,6 +48,7 @@ export async function runCommand(command: string, args: string[], options: RunCo
   const maxBufferBytes = Math.max(1024, options.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES);
   const okExitCodes = new Set(options.okExitCodes ?? [0]);
   const startedAt = Date.now();
+  const detached = Boolean(options.killProcessGroup && process.platform !== "win32");
 
   if (timeoutMs <= 0) {
     const result: CommandResult = {
@@ -69,7 +72,8 @@ export async function runCommand(command: string, args: string[], options: RunCo
     const child = spawn(command, args, {
       cwd: options.cwd,
       env: options.env,
-      stdio: ["ignore", "pipe", "pipe"]
+      detached,
+      stdio: [options.input === undefined ? "ignore" : "pipe", "pipe", "pipe"]
     });
     const stdout: Buffer[] = [];
     const stderr: Buffer[] = [];
@@ -110,10 +114,10 @@ export async function runCommand(command: string, args: string[], options: RunCo
       if (child.killed) {
         return;
       }
-      child.kill("SIGTERM");
+      killChild(child, detached, "SIGTERM");
       killTimer = setTimeout(() => {
         if (!settled) {
-          child.kill("SIGKILL");
+          killChild(child, detached, "SIGKILL");
         }
       }, 2_000);
     };
@@ -146,9 +150,25 @@ export async function runCommand(command: string, args: string[], options: RunCo
 
     child.stdout?.on("data", (chunk: Buffer) => collect(stdout, chunk));
     child.stderr?.on("data", (chunk: Buffer) => collect(stderr, chunk));
+    child.stdin?.on("error", () => undefined);
     child.on("error", (error) => finish({ exitCode: null, signal: null, error }));
     child.on("close", (exitCode, signal) => finish({ exitCode, signal }));
+    if (options.input !== undefined) {
+      child.stdin?.end(options.input, "utf8");
+    }
   });
+}
+
+function killChild(child: ReturnType<typeof spawn>, detached: boolean, signal: NodeJS.Signals): void {
+  if (detached && child.pid) {
+    try {
+      process.kill(-child.pid, signal);
+      return;
+    } catch {
+      // Fall back to killing the direct child if process-group signaling is unavailable.
+    }
+  }
+  child.kill(signal);
 }
 
 class MutableCommandBudget implements CommandBudget {

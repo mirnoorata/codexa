@@ -4,6 +4,7 @@ import { confidenceTier, tierScore, clampInt, fitLinesToTokenBudget } from "./fo
 import { assessContextQuality, formatContextQuality, formatValueEstimate, valueEstimate } from "./quality.js";
 import { assertRawSearchPatternLimit, normalizeRawSearchPatterns, RAW_SEARCH_PATTERN_LIMIT, rawSearch, type RawSearchHit, type RawSearchResult } from "./raw-search.js";
 import { freshnessBanner } from "./runtime.js";
+import { nextTool } from "./next-tools.js";
 import { ensureQuerySession, type QuerySessionInput } from "./session.js";
 import { formatTestRecommendations, recommendTests } from "./tests.js";
 import { findFile } from "./targets.js";
@@ -137,6 +138,13 @@ export async function searchQuery(
     quality
   });
   const searchDiscipline = searchDisciplineLine(raw);
+  const actionability = raw.sufficient ? "raw_search_sufficient" : actionabilityFromSearchVerdict(retrieval.intentConfidence.verdict);
+  const nextTools = [
+    interpreted.symbols.length === 1 ? nextTool("symbol_context", "one symbol matched; inspect its proof-carrying neighborhood", { symbol: interpreted.symbols[0].id, depth: 1 }) : undefined,
+    interpreted.symbols.length > 1 ? nextTool("symbol_context", "multiple symbols matched; rerun with an exact symbol id", { symbol: interpreted.symbols[0].id, depth: 1 }) : undefined,
+    searchFiles.length > 0 ? nextTool("task_brief", "turn search hits into an edit-ready context packet", { task: queryInput.query, files: searchFiles.slice(0, 5).map((file) => file.path) }) : undefined,
+    tests.length > 0 ? nextTool("test_plan", "select targeted verification for the returned files", { files: searchFiles.slice(0, 5).map((file) => file.path) }) : undefined
+  ].filter((tool): tool is ReturnType<typeof nextTool> => Boolean(tool));
   const text = [
     freshnessBanner(freshness, refresh),
     formatContextQuality(quality),
@@ -144,6 +152,7 @@ export async function searchQuery(
     `Search: ${queryInput.query}`,
     raw.patterns.length > 1 ? `Search patterns: ${formatSearchPatterns(raw.patterns)}` : undefined,
     `Packet verdict: ${retrieval.intentConfidence.verdict}; edit-ready ${retrieval.intentConfidence.editReady ? "yes" : "no"}; confidence ${Math.round(retrieval.intentConfidence.confidence * 100)}%`,
+    `Actionability: ${actionability}`,
     retrieval.diagnostics.length > 0 ? `Retrieval diagnostics: ${retrieval.diagnostics.join("; ")}` : undefined,
     searchDiscipline,
     "",
@@ -166,7 +175,8 @@ export async function searchQuery(
     refresh,
     text: limitText(text, Math.min(6000, session.maxResultBytes)),
     data: {
-      query: queryInput.query,
+	      query: queryInput.query,
+	      mode: "search",
       patterns: raw.patterns,
       searchDiscipline,
       raw,
@@ -176,14 +186,33 @@ export async function searchQuery(
       retrieval,
       intentConfidence: retrieval.intentConfidence,
       packetVerdict: retrieval.intentConfidence.verdict,
+      actionability,
       diagnostics: retrieval.diagnostics,
       tests,
       value,
       quality,
-      gaps: indexGaps(index, freshness),
-      session: { warnings: session.warnings, provenance: session.provenance }
+	      gaps: indexGaps(index, freshness),
+	      nextTools,
+	      systemMessage: nextTools[0]?.reason,
+	      session: { warnings: session.warnings, provenance: session.provenance }
     }
   };
+}
+
+function actionabilityFromSearchVerdict(verdict: string): string {
+  if (verdict === "edit-ready") {
+    return "edit_ready";
+  }
+  if (verdict === "orientation-only") {
+    return "orientation";
+  }
+  if (verdict === "raw-search-better") {
+    return "raw_search_better";
+  }
+  if (verdict === "needs-target") {
+    return "needs_target";
+  }
+  return "inspect_first";
 }
 
 function rawSearchPatternsForQuery(query: string, explicitPatterns?: string[]): string[] {

@@ -8,10 +8,11 @@ const MAX_TEXT_BYTES = 10 * 1024 * 1024;
 const MAX_FAILURES = 250;
 const targets = process.argv.slice(2);
 const failures = [];
+const localPathTerminator = String.raw`(?=$|[/\s,.;:)\]}])`;
 
 const forbiddenPatterns = [
-  { label: "workspace absolute path", pattern: new RegExp(`/${"srv"}(?:/|$)`, "u") },
-  { label: "local home path", pattern: /\/home\/(?!runner\/|node\/|app\/)[a-z][\w-]*(?:\/|$)/iu },
+  { label: "workspace absolute path", pattern: new RegExp(`/${"srv"}${localPathTerminator}`, "u") },
+  { label: "local home path", pattern: new RegExp(String.raw`/home/(?!runner/|node/|app/)[a-z][\w-]*${localPathTerminator}`, "iu") },
   { label: "GitHub token", pattern: /\b(?:gh[opsu]_|github_pat_)[A-Za-z0-9_]{20,}\b/u },
   { label: "OpenAI-style API key", pattern: /\bsk-(?:proj-|live-|test-)?[A-Za-z0-9_-]{20,}\b/u },
   { label: "npm token", pattern: /\bnpm_[A-Za-z0-9]{30,}\b/u },

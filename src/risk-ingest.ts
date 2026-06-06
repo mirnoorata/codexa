@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { Confidence, RiskSignalFact } from "./types.js";
@@ -18,29 +19,99 @@ const RISK_REPORT_PATHS = [
 ];
 
 const RISK_REPORT_DIRS = [".codex/static-analysis", "reports/static-analysis"];
+export const MAX_RISK_REPORT_BYTES = 8 * 1024 * 1024;
+const MAX_RISK_REPORT_CANDIDATES = 250;
+const MAX_RISKS_PER_REPORT = 5_000;
+const MAX_TOTAL_EXTERNAL_RISKS = 20_000;
+
+export interface ExternalRiskReportDiagnostic {
+  path: string;
+  reason: "report-too-large" | "invalid-json";
+  sizeBytes?: number;
+  limitBytes?: number;
+}
+
+export interface ExternalRiskSignalReport {
+  risks: RiskSignalFact[];
+  reportHashes: Record<string, string>;
+  diagnostics: ExternalRiskReportDiagnostic[];
+}
 
 export async function loadExternalRiskSignals(repoRoot: string, snapshotId: string, indexedAt: string): Promise<RiskSignalFact[]> {
-  const risks: RiskSignalFact[] = [];
+  return (await loadExternalRiskSignalReport(repoRoot, snapshotId, indexedAt)).risks;
+}
+
+export async function loadExternalRiskSignalReport(repoRoot: string, snapshotId: string, indexedAt: string): Promise<ExternalRiskSignalReport> {
+  const uniqueRisks = new Map<string, RiskSignalFact>();
+  const reportHashes: Record<string, string> = {};
+  const diagnostics: ExternalRiskReportDiagnostic[] = [];
   for (const relativePath of await candidateRiskReports(repoRoot)) {
     const absolutePath = path.join(repoRoot, relativePath);
     let parsed: unknown;
     try {
-      parsed = JSON.parse(await fs.readFile(absolutePath, "utf8"));
+      const stat = await fs.stat(absolutePath);
+      if (!stat.isFile()) {
+        continue;
+      }
+      if (stat.size > MAX_RISK_REPORT_BYTES) {
+        reportHashes[relativePath] = metadataHash(stat);
+        diagnostics.push({ path: relativePath, reason: "report-too-large", sizeBytes: stat.size, limitBytes: MAX_RISK_REPORT_BYTES });
+        continue;
+      }
+      const content = await fs.readFile(absolutePath, "utf8");
+      reportHashes[relativePath] = hashText(content);
+      parsed = JSON.parse(content);
+    } catch {
+      if (await pathExists(absolutePath)) {
+        diagnostics.push({ path: relativePath, reason: "invalid-json" });
+      }
+      continue;
+    }
+    addRisksFromReport(parsed, relativePath, repoRoot, snapshotId, indexedAt, uniqueRisks, Math.min(MAX_RISKS_PER_REPORT, Math.max(0, MAX_TOTAL_EXTERNAL_RISKS - uniqueRisks.size)));
+    if (uniqueRisks.size >= MAX_TOTAL_EXTERNAL_RISKS) {
+      break;
+    }
+  }
+  return {
+    risks: sortRisks([...uniqueRisks.values()]),
+    reportHashes: Object.fromEntries(Object.entries(reportHashes).sort(([a], [b]) => a.localeCompare(b))),
+    diagnostics
+  };
+}
+
+export async function externalRiskReportSnapshot(repoRoot: string): Promise<Pick<ExternalRiskSignalReport, "reportHashes" | "diagnostics">> {
+  const reportHashes: Record<string, string> = {};
+  const diagnostics: ExternalRiskReportDiagnostic[] = [];
+  for (const relativePath of await candidateRiskReports(repoRoot)) {
+    const absolutePath = path.join(repoRoot, relativePath);
+    try {
+      const stat = await fs.stat(absolutePath);
+      if (!stat.isFile()) {
+        continue;
+      }
+      if (stat.size > MAX_RISK_REPORT_BYTES) {
+        reportHashes[relativePath] = metadataHash(stat);
+        diagnostics.push({ path: relativePath, reason: "report-too-large", sizeBytes: stat.size, limitBytes: MAX_RISK_REPORT_BYTES });
+        continue;
+      }
+      reportHashes[relativePath] = hashText(await fs.readFile(absolutePath, "utf8"));
     } catch {
       continue;
     }
-    risks.push(...risksFromReport(parsed, relativePath, repoRoot, snapshotId, indexedAt));
   }
-  return dedupeRisks(risks);
+  return {
+    reportHashes: Object.fromEntries(Object.entries(reportHashes).sort(([a], [b]) => a.localeCompare(b))),
+    diagnostics
+  };
 }
 
 async function candidateRiskReports(repoRoot: string): Promise<string[]> {
   const candidates = new Set(RISK_REPORT_PATHS);
   for (const relativeDir of RISK_REPORT_DIRS) {
     const absoluteDir = path.join(repoRoot, relativeDir);
-    for (const report of await walkReportDir(absoluteDir, relativeDir, 0)) {
+    for (const report of await walkReportDir(absoluteDir, relativeDir, 0, Math.max(0, MAX_RISK_REPORT_CANDIDATES - candidates.size))) {
       candidates.add(report);
-      if (candidates.size >= 250) {
+      if (candidates.size >= MAX_RISK_REPORT_CANDIDATES) {
         break;
       }
     }
@@ -48,8 +119,8 @@ async function candidateRiskReports(repoRoot: string): Promise<string[]> {
   return [...candidates].sort((a, b) => a.localeCompare(b));
 }
 
-async function walkReportDir(absoluteDir: string, relativeDir: string, depth: number): Promise<string[]> {
-  if (depth > 2) {
+async function walkReportDir(absoluteDir: string, relativeDir: string, depth: number, limit: number): Promise<string[]> {
+  if (depth > 2 || limit <= 0) {
     return [];
   }
   let entries: Array<{ name: string; isDirectory(): boolean; isFile(): boolean }>;
@@ -63,11 +134,14 @@ async function walkReportDir(absoluteDir: string, relativeDir: string, depth: nu
     return [];
   }
   const reports: string[] = [];
-  for (const entry of entries) {
+  for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name))) {
+    if (reports.length >= limit) {
+      break;
+    }
     const relativePath = normalizePath(path.posix.join(relativeDir, entry.name));
     const absolutePath = path.join(absoluteDir, entry.name);
     if (entry.isDirectory()) {
-      reports.push(...(await walkReportDir(absolutePath, relativePath, depth + 1)));
+      reports.push(...(await walkReportDir(absolutePath, relativePath, depth + 1, limit - reports.length)));
       continue;
     }
     if (entry.isFile() && /\.(json|sarif)$/i.test(entry.name)) {
@@ -77,37 +151,97 @@ async function walkReportDir(absoluteDir: string, relativeDir: string, depth: nu
   return reports.sort((a, b) => a.localeCompare(b));
 }
 
-function risksFromReport(value: unknown, reportPath: string, repoRoot: string, snapshotId: string, indexedAt: string): RiskSignalFact[] {
+function addRisksFromReport(
+  value: unknown,
+  reportPath: string,
+  repoRoot: string,
+  snapshotId: string,
+  indexedAt: string,
+  uniqueRisks: Map<string, RiskSignalFact>,
+  limit: number
+): void {
   if (!value || typeof value !== "object") {
-    return [];
+    return;
+  }
+  if (limit <= 0) {
+    return;
   }
   const record = value as Record<string, unknown>;
+  const startingUniqueCount = uniqueRisks.size;
+  const remaining = () => Math.max(0, limit - (uniqueRisks.size - startingUniqueCount));
+  const hasCapacity = () => remaining() > 0;
+  const push = (entries: RiskSignalFact[]) => {
+    for (const entry of entries) {
+      if (!hasCapacity()) {
+        break;
+      }
+      uniqueRisks.set(riskDedupeKey(entry), entry);
+    }
+  };
   if (Array.isArray(record.runs)) {
-    return record.runs.flatMap((run) => risksFromSarifRun(run, reportPath, repoRoot, snapshotId, indexedAt));
+    for (const run of record.runs) {
+      addRisksFromSarifRun(run, reportPath, repoRoot, snapshotId, indexedAt, uniqueRisks, remaining());
+      if (!hasCapacity()) {
+        break;
+      }
+    }
+    return;
   }
   if (Array.isArray(record.results)) {
-    return record.results.flatMap((entry) => riskFromSemgrepResult(entry, reportPath, repoRoot, snapshotId, indexedAt));
+    for (const entry of record.results) {
+      push(riskFromSemgrepResult(entry, reportPath, repoRoot, snapshotId, indexedAt));
+      if (!hasCapacity()) {
+        break;
+      }
+    }
+    return;
   }
   if (Array.isArray(record.risks)) {
-    return record.risks.flatMap((entry) => riskFromGenericEntry(entry, reportPath, repoRoot, snapshotId, indexedAt));
+    for (const entry of record.risks) {
+      push(riskFromGenericEntry(entry, reportPath, repoRoot, snapshotId, indexedAt));
+      if (!hasCapacity()) {
+        break;
+      }
+    }
+    return;
   }
   if (Array.isArray(record.findings)) {
-    return record.findings.flatMap((entry) => riskFromGenericEntry(entry, reportPath, repoRoot, snapshotId, indexedAt));
+    for (const entry of record.findings) {
+      push(riskFromGenericEntry(entry, reportPath, repoRoot, snapshotId, indexedAt));
+      if (!hasCapacity()) {
+        break;
+      }
+    }
   }
-  return [];
 }
 
-function risksFromSarifRun(value: unknown, reportPath: string, repoRoot: string, snapshotId: string, indexedAt: string): RiskSignalFact[] {
+function addRisksFromSarifRun(
+  value: unknown,
+  reportPath: string,
+  repoRoot: string,
+  snapshotId: string,
+  indexedAt: string,
+  uniqueRisks: Map<string, RiskSignalFact>,
+  limit: number
+): void {
   if (!value || typeof value !== "object") {
-    return [];
+    return;
+  }
+  if (limit <= 0) {
+    return;
   }
   const run = value as Record<string, unknown>;
   const ruleInfoById = sarifRuleInfoById(run);
   const tool = sarifToolName(run);
   const results = Array.isArray(run.results) ? run.results : [];
-  return results.flatMap((result) => {
+  const startingUniqueCount = uniqueRisks.size;
+  const hasCapacity = () => uniqueRisks.size - startingUniqueCount < limit;
+  for (const result of results) {
+    if (!hasCapacity()) {
+      break;
+    }
     if (!result || typeof result !== "object") {
-      return [];
+      continue;
     }
     const record = result as Record<string, unknown>;
     const signal = stringValue(record.ruleId) ?? "sarif-finding";
@@ -115,42 +249,44 @@ function risksFromSarifRun(value: unknown, reportPath: string, repoRoot: string,
     const reason = sarifMessageText(record.message) ?? ruleInfo?.message ?? signal;
     const locations = Array.isArray(record.locations) ? record.locations : [];
     if (locations.length === 0) {
-      return [];
+      continue;
     }
-    return locations.flatMap((location) => {
+    for (const location of locations) {
+      if (!hasCapacity()) {
+        break;
+      }
       if (!location || typeof location !== "object") {
-        return [];
+        continue;
       }
       const physical = (location as Record<string, unknown>).physicalLocation as Record<string, unknown> | undefined;
       const artifact = physical?.artifactLocation as Record<string, unknown> | undefined;
       const region = physical?.region as Record<string, unknown> | undefined;
       const filePath = stringValue(artifact?.uri);
       if (!filePath) {
-        return [];
+        continue;
       }
       const line = numberValue(region?.startLine);
       const normalizedPath = normalizeReportPath(filePath, repoRoot);
       if (!normalizedPath) {
-        return [];
+        continue;
       }
       const tags = ruleInfo?.tags.length ? `; tags ${ruleInfo.tags.slice(0, 4).join(",")}` : "";
-      return [
-        {
-          id: stableId("external-risk", reportPath, filePath, signal, line ?? 0, reason),
-          type: "RiskSignal" as const,
-          path: normalizedPath,
-          range: line ? { startLine: line, endLine: line, startByte: 0, endByte: 0 } : undefined,
-          source: "static-analysis" as const,
-          confidence: sarifConfidence(record, ruleInfo),
-          snapshotId,
-          indexedAt,
-          signal,
-          score: sarifScore(record, ruleInfo),
-          reason: `${reportPath}${tool ? ` ${tool}` : ""}: ${reason}${tags}`.slice(0, 240)
-        }
-      ];
-    });
-  });
+      const risk: RiskSignalFact = {
+        id: stableId("external-risk", reportPath, filePath, signal, line ?? 0, reason),
+        type: "RiskSignal" as const,
+        path: normalizedPath,
+        range: line ? { startLine: line, endLine: line, startByte: 0, endByte: 0 } : undefined,
+        source: "static-analysis" as const,
+        confidence: sarifConfidence(record, ruleInfo),
+        snapshotId,
+        indexedAt,
+        signal,
+        score: sarifScore(record, ruleInfo),
+        reason: `${reportPath}${tool ? ` ${tool}` : ""}: ${reason}${tags}`.slice(0, 240)
+      };
+      uniqueRisks.set(riskDedupeKey(risk), risk);
+    }
+  }
 }
 
 function riskFromSemgrepResult(value: unknown, reportPath: string, repoRoot: string, snapshotId: string, indexedAt: string): RiskSignalFact[] {
@@ -223,18 +359,29 @@ function riskFromGenericEntry(value: unknown, reportPath: string, repoRoot: stri
   ];
 }
 
-function dedupeRisks(risks: RiskSignalFact[]): RiskSignalFact[] {
-  const seen = new Set<string>();
-  const result: RiskSignalFact[] = [];
-  for (const risk of risks) {
-    const key = `${risk.path}\0${risk.signal}\0${risk.range?.startLine ?? 0}\0${risk.reason}`;
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    result.push(risk);
+function sortRisks(risks: RiskSignalFact[]): RiskSignalFact[] {
+  return risks.sort((a, b) => a.path.localeCompare(b.path) || b.score - a.score || a.signal.localeCompare(b.signal));
+}
+
+function riskDedupeKey(risk: RiskSignalFact): string {
+  return `${risk.path}\0${risk.signal}\0${risk.range?.startLine ?? 0}\0${risk.reason}`;
+}
+
+function hashText(value: string): string {
+  return createHash("sha1").update(value).digest("hex");
+}
+
+function metadataHash(stat: { size: number; mtimeMs: number }): string {
+  return `metadata:${stat.size}:${Math.trunc(stat.mtimeMs)}`;
+}
+
+async function pathExists(filePath: string): Promise<boolean> {
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch {
+    return false;
   }
-  return result.sort((a, b) => a.path.localeCompare(b.path) || b.score - a.score || a.signal.localeCompare(b.signal));
 }
 
 function stringValue(value: unknown): string | undefined {

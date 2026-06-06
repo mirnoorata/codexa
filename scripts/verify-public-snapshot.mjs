@@ -35,6 +35,10 @@ try {
     cwd: snapshotRoot,
     stdio: "pipe"
   });
+  execFileSync("npm", ["ci", "--ignore-scripts", "--no-audit", "--fund=false"], {
+    cwd: snapshotRoot,
+    stdio: "pipe"
+  });
   execFileSync(process.execPath, ["scripts/verify-source-hygiene.mjs"], {
     cwd: snapshotRoot,
     stdio: "pipe"

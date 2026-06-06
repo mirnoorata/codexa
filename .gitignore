@@ -7,9 +7,11 @@
 .local/
 docs/plans/*
 !docs/plans/codexa-mcp-codex-shine-plan-2026-05-18.md
+!docs/plans/codexa-verifier-runner-lane-2026-05-31.md
 docs/architecture/*-plan.md
 .codex/codebase/
 .codex/cache/
+.codex/tmp/
 .codex/static-analysis/
 .codex/.codebase.*
 .codex/config.toml

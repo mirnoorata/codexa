@@ -41,7 +41,7 @@ case "${#children[@]}" in
       "$PWD" "${#children[@]}" >&2
     rc=0
     for child in "${children[@]}"; do
-      printf '=== %s ===\n' "$child"
+      printf '=== %s ===\n' "$(claudio_display_path "$child")"
       if ! "$NODE_BIN" "$CODEXA_CLI" status "$child"; then
         rc=1
       fi

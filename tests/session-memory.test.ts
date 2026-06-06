@@ -12,7 +12,7 @@ import {
   sessionMemoryCacheDir,
   summarizeSessionMemory
 } from "../src/session-memory.js";
-import type { CodexaIndex, FileFact, FreshnessInfo, QueryResult, RepoSnapshotFact } from "../src/types.js";
+import { CURRENT_VERIFICATION_PROVENANCE, type CodexaIndex, type FileFact, type FreshnessInfo, type QueryResult, type RepoSnapshotFact } from "../src/types.js";
 
 describe("session memory storage", () => {
   it("records bounded entries with provenance, confidence, latest pointer, and summary buckets", async () => {
@@ -538,6 +538,153 @@ describe("session memory storage", () => {
     expect(memory.memory.nextReads).toEqual([]);
     expect(memory.memory.verification).toEqual([]);
   });
+
+  it("auto-records post-edit outcomes and test plans with bounded verification proof", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-session-memory-outcome-"));
+    const freshness = freshnessFixture("snap-outcome");
+    const index = indexFixture(repo, freshness, [
+      fileFixture("src/a.ts", freshness),
+      fileFixture("tests/a.test.ts", freshness, { test: true })
+    ]);
+    const ledger = [
+      {
+        kind: "test" as const,
+        recommended: "tests/a.test.ts",
+        target: "tests/a.test.ts",
+        status: "covered" as const,
+        evidence: ["npm test covered tests/a.test.ts"],
+        coverageKinds: ["javascript-tests" as const],
+        command: "npm test",
+        source: "package.json#scripts.test"
+      },
+      {
+        kind: "dependency" as const,
+        recommended: "public surface was not touched",
+        target: "public-surface: src/a.ts",
+        status: "not_applicable" as const,
+        evidence: ["not applicable to edited/reviewed paths"],
+        coverageKinds: []
+      }
+    ];
+
+    await recordViewedMemoryForTool({
+      repoRoot: repo,
+      toolName: "post_edit_review",
+      result: {
+        freshness,
+        text: "post edit review",
+        data: {
+          mode: "post_edit_review",
+          task: "tighten verification memory",
+          verdict: "continue",
+          driftReasons: [],
+          testsNotRun: [],
+          ranCommands: ["npm test"],
+          ranCommandReports: [{ command: "npm test", cwd: repo, exitCode: 0, stdoutSummary: "passed" }],
+          verificationLedger: ledger,
+          verificationProvenance: CURRENT_VERIFICATION_PROVENANCE,
+          nextActions: ["No drift detected against the saved snapshot."],
+          snapshot: { taskId: "task-outcome" },
+          snapshotLoad: { taskId: "task-outcome", path: ".codex/cache/codexa-tasks/task-outcome.json" },
+          outcome: {
+            outcomeId: "outcome-1",
+            path: ".codex/cache/codexa-outcomes/outcome-1.json",
+            verdict: "continue",
+            testsNotRun: [],
+            ranCommands: ["npm test"],
+            verificationLedger: ledger,
+            verificationProvenance: CURRENT_VERIFICATION_PROVENANCE
+          }
+        }
+      } satisfies QueryResult,
+      index
+    });
+
+    await recordViewedMemoryForTool({
+      repoRoot: repo,
+      taskId: "task-outcome",
+      toolName: "test_plan",
+      result: {
+        freshness,
+        text: "test plan",
+        data: {
+            mode: "test_plan",
+            tests: [{ path: "tests/a.test.ts" }],
+            verificationCommands: ["npm test"],
+          verificationLedgerPreview: [{ ...ledger[0], status: "would_cover" as const, evidence: ["would cover if run: npm test covers javascript-tests repo scope"] }],
+            verificationProvenance: CURRENT_VERIFICATION_PROVENANCE,
+          testsNotRun: []
+        }
+      } satisfies QueryResult,
+      index
+    });
+
+      const memory = await readSessionMemory({ repoRoot: repo, taskId: "task-outcome", freshness, limit: 20 });
+      expect(memory.memory.verification.some((entry) => entry.summary.includes("post_edit_review verdict continue; 0 drift reason(s); 0 test(s) still unaccounted for; ledger 1/2 covered"))).toBe(true);
+      expect(memory.memory.verification.some((entry) => entry.summary.includes("test_plan recommended 1 test target(s), 1 verification command(s); preview would cover 1/1 ledger item(s) if run"))).toBe(true);
+    expect(memory.memory.verification.some((entry) => entry.details?.includes(`verificationLedgerVersion=${CURRENT_VERIFICATION_PROVENANCE.verificationLedgerVersion}`))).toBe(true);
+      expect(memory.memory.decisions[0]?.details).toContain("No drift detected against the saved snapshot.");
+      expect(memory.memory.verification.some((entry) => entry.scope.refs.some((ref) => ref.kind === "outcome" && ref.id === "outcome-1"))).toBe(true);
+      expect(memory.memory.verification.some((entry) => entry.scope.refs.some((ref) => ref.kind === "snapshot" && ref.id === "task-outcome"))).toBe(true);
+
+      const longLedger = Array.from({ length: 61 }, (_, index) => ({
+        ...ledger[0],
+        target: `tests/${index}.test.ts`,
+        status: index === 60 ? ("missing" as const) : ("covered" as const),
+        evidence: index === 60 ? [] : [`npm test ${index}`]
+      }));
+      await recordViewedMemoryForTool({
+        repoRoot: repo,
+        taskId: "task-truncated",
+        toolName: "post_edit_review",
+        result: {
+          freshness,
+          text: "post edit truncated",
+          data: {
+            mode: "post_edit_review",
+            task: "truncated ledger",
+            verdict: "inspect",
+            driftReasons: ["one missing check"],
+            testsNotRun: [],
+            verificationLedger: longLedger.slice(0, 60),
+            nextActions: [],
+            outcome: {
+              outcomeId: "outcome-truncated",
+              verdict: "inspect",
+              verificationLedger: longLedger
+            }
+          }
+        } satisfies QueryResult,
+        index
+      });
+      const truncatedMemory = await readSessionMemory({ repoRoot: repo, taskId: "task-truncated", freshness, limit: 20 });
+      expect(truncatedMemory.memory.verification.some((entry) => entry.summary.includes("ledger 60/61 covered"))).toBe(true);
+      expect(truncatedMemory.memory.verification.some((entry) => entry.details?.includes("ledger missing=1"))).toBe(true);
+
+    const manyDriftReasons = Array.from({ length: 9 }, (_, index) => `drift-${index}`);
+    await recordViewedMemoryForTool({
+      repoRoot: repo,
+      taskId: "task-drift-count",
+      toolName: "post_edit_review",
+      result: {
+        freshness,
+        text: "post edit drift count",
+        data: {
+          mode: "post_edit_review",
+          task: "count full drift list",
+          verdict: "inspect",
+          driftReasons: manyDriftReasons,
+          testsNotRun: [],
+          verificationLedger: [],
+          nextActions: []
+        }
+      } satisfies QueryResult,
+      index
+    });
+    const driftMemory = await readSessionMemory({ repoRoot: repo, taskId: "task-drift-count", freshness, limit: 20 });
+    expect(driftMemory.memory.verification.some((entry) => entry.summary.includes("9 drift reason(s)"))).toBe(true);
+    expect(driftMemory.memory.risks.some((entry) => entry.details?.includes("drift-0") && !entry.details?.includes("drift-8"))).toBe(true);
+    });
 
   it("bounds direct entry scope arrays before writing cache state", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-session-memory-bounds-"));

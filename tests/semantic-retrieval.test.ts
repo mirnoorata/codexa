@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -131,6 +131,97 @@ describe("semantic retrieval lane", () => {
     } finally {
       restoreEnv("CODEXA_SEMANTIC_COMMAND", previousCommand);
       restoreEnv("CODEXA_SEMANTIC_ARGS_JSON", previousArgs);
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("runs local-command semantic providers with a scrubbed environment", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-semantic-scrubbed-env-"));
+    const previousSecret = process.env.CODEXA_SECRET_FIXTURE;
+    const previousProvider = process.env.CODEXA_SEMANTIC_PROVIDER;
+    try {
+      execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+      await mkdir(path.join(repo, "src"), { recursive: true });
+      await writeFile(path.join(repo, "src", "index.ts"), "export const invoice = 'billing payment subscription'\n", "utf8");
+      execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+      execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+        cwd: repo,
+        stdio: "ignore"
+      });
+      const envLog = path.join(repo, "semantic-env.json");
+      const embedder = path.join(repo, "embedder.mjs");
+      await writeFile(
+        embedder,
+        `
+import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(envLog)}, JSON.stringify({
+  secret: process.env.CODEXA_SECRET_FIXTURE ?? null,
+  provider: process.env.CODEXA_SEMANTIC_PROVIDER ?? null,
+  home: process.env.HOME ?? null,
+  user: process.env.USER ?? null,
+  shell: process.env.SHELL ?? null
+}));
+process.stdin.setEncoding("utf8");
+let input = "";
+process.stdin.on("data", (chunk) => input += chunk);
+process.stdin.on("end", () => {
+  for (const line of input.split(/\\r?\\n/u)) {
+    if (!line.trim()) continue;
+    const item = JSON.parse(line);
+    console.log(JSON.stringify({ id: item.id, embedding: [1, 0, 0] }));
+  }
+});
+`.trimStart(),
+        "utf8"
+      );
+      process.env.CODEXA_SECRET_FIXTURE = "do-not-forward";
+      process.env.CODEXA_SEMANTIC_PROVIDER = "openai";
+
+      const index = await buildIndexLocked({ repoRoot: repo, writeArtifacts: true });
+      await buildSemanticIndex(repo, index, {
+        provider: "local-command",
+        command: process.execPath,
+        args: [embedder],
+        timeoutMs: 5000
+      });
+
+      const childEnv = JSON.parse(await readFile(envLog, "utf8")) as { secret?: unknown; provider?: unknown; home?: unknown; user?: unknown; shell?: unknown };
+      expect(childEnv.secret).toBeNull();
+      expect(childEnv.provider).toBeNull();
+      expect(childEnv.home).toBeNull();
+      expect(childEnv.user).toBeNull();
+      expect(childEnv.shell).toBeNull();
+    } finally {
+      restoreEnv("CODEXA_SECRET_FIXTURE", previousSecret);
+      restoreEnv("CODEXA_SEMANTIC_PROVIDER", previousProvider);
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("fails closed when local-command semantic output exceeds the output cap", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-semantic-output-cap-"));
+    try {
+      execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+      await mkdir(path.join(repo, "src"), { recursive: true });
+      await writeFile(path.join(repo, "src", "index.ts"), "export const invoice = 'billing payment subscription'\n", "utf8");
+      execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+      execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+        cwd: repo,
+        stdio: "ignore"
+      });
+      const embedder = path.join(repo, "embedder.mjs");
+      await writeFile(embedder, "process.stdout.write('x'.repeat(17 * 1024 * 1024));\n", "utf8");
+
+      const index = await buildIndexLocked({ repoRoot: repo, writeArtifacts: true });
+      await expect(
+        buildSemanticIndex(repo, index, {
+          provider: "local-command",
+          command: process.execPath,
+          args: [embedder],
+          timeoutMs: 5000
+        })
+      ).rejects.toThrow(/output cap/u);
+    } finally {
       await rm(repo, { recursive: true, force: true });
     }
   });
