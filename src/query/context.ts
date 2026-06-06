@@ -15,6 +15,7 @@ import { codeLikeQueryFromTask, fileStemQueryTerms, matchReason, matchScore, uni
 import { freshnessBanner } from "./runtime.js";
 import { ensureQuerySession, type QuerySessionInput } from "./session.js";
 import { compactWorktreeState, getWorktreeState, worktreeStateGaps, worktreeStateText } from "./worktree-state.js";
+import { isCodexaControlPath } from "./worktree.js";
 import { formatTestRecommendations, recommendTests } from "./tests.js";
 import { findFile, resolveFileTarget, resolveSymbolTarget } from "./targets.js";
 import { coverageForDisplay, formatVerificationCoverage, verificationCommandPlan, verificationCommandsForContext } from "./verification.js";
@@ -39,6 +40,16 @@ type ContextSourceSummary = {
   evidenceTierCounts: Record<EvidenceTier, number>;
   sampleFiles: string[];
   sampleReasons: string[];
+};
+type DirtyScopeSummary = {
+  requested: boolean;
+  mode: "edit" | "orientation";
+  canPlan: boolean;
+  broad: boolean;
+  changedFileCount: number;
+  representativeCount: number;
+  plannedEditTargets: string[];
+  reason: string;
 };
 
 export async function contextPackQuery(input: QuerySessionInput, contextInput: ContextPackInput = {}, options: QueryOptions = {}): Promise<QueryResult> {
@@ -153,11 +164,27 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       .join(" ");
   const snippets = includeSnippets ? await contextSnippets(repoRoot, index, focusPaths, snippetChangedSymbols, snippetQueryText, limit) : [];
   const nextReads = focusEntries.slice(0, Math.min(8, focusEntries.length)).map((entry) => entry.file.path);
+  const dirtyScope = dirtyContextTask
+    ? dirtyScopeSummary({
+        taskIntents,
+        changed,
+        worktree,
+        broadDirty,
+        focusEntries
+      })
+    : undefined;
   const packetIntent = naturalRetrieval
     ? packetIntentConfidence(naturalRetrieval.intentConfidence, focusEntries, {
         explicitTargetProvided,
         dirtyAnchorAllowed: Boolean(contextInput.task && taskReferencesDirtyContext(contextInput.task) && dirtyDrivesFocus && !broadDirty)
       })
+    : dirtyScope
+      ? dirtyWorktreeIntentConfidence({
+          taskIntents,
+          dirtyScope,
+          focusEntries,
+          worktree
+        })
     : undefined;
   const packetDiagnostics = packetIntent ? packetIntentDiagnostics(packetIntent, naturalRetrieval?.diagnostics ?? []) : [];
   const actionability = packetIntent
@@ -219,12 +246,22 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     limit: 6
   });
   const contextSources = summarizeContextSources(focusEntries);
+  const dirtyScopeChangePlan = dirtyScope?.mode === "edit" && dirtyScope.canPlan && packetIntent?.verdict === "edit-ready";
+  const changePlanInputs = dirtyScopeChangePlan
+    ? { task: contextInput.task, diff: true, changeType, saveSnapshot: true }
+    : { task: contextInput.task, files: focusPaths.slice(0, 8), changeType, saveSnapshot: true };
   const nextTools = [
     packetIntent?.verdict === "needs-target" || packetIntent?.verdict === "orientation-only"
       ? nextTool(packetIntent.recommendedNextTool, "context packet needs a narrower edit target", { task: contextInput.task ?? explicitQuery })
       : undefined,
     focusPaths.length > 0
-      ? nextTool("change_plan", "save the focused edit plan and planned verification before editing", { task: contextInput.task, files: focusPaths.slice(0, 8), changeType, saveSnapshot: true }, true, [".codex/cache/codexa-task-snapshots"])
+      ? nextTool(
+          "change_plan",
+          dirtyScopeChangePlan ? "save the full dirty-worktree edit plan and planned verification before editing" : "save the focused edit plan and planned verification before editing",
+          changePlanInputs,
+          true,
+          [".codex/cache/codexa-task-snapshots"]
+        )
       : undefined,
     displayedTests.length > 0 ? nextTool("test_plan", "inspect targeted verification for the focused files", { files: focusPaths.slice(0, 8) }) : undefined
   ].filter((tool): tool is ReturnType<typeof nextTool> => Boolean(tool));
@@ -304,6 +341,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       unindexedChanged: unindexedChanged.slice(0, 80),
       worktree: worktree ? compactWorktreeState(worktree) : undefined,
       worktreeDegradationReasons: worktree?.degradedReasons ?? [],
+      dirtyScope,
       groups: groups.slice(0, 20).map(compactDiffGroup),
       tests: displayedTests.slice(0, 30),
       snippets,
@@ -948,6 +986,104 @@ function shouldAddExplicitNaturalMatch(match: RetrievalMatch, explicitConfigTarg
   }
   const evidenceText = `${match.file.path} ${match.reasons.join(" ")}`.toLowerCase();
   return /\b(adapter|manifest|node|type_id|node_type)\b/u.test(evidenceText) || /(^|\/)adapters?\//u.test(match.file.path);
+}
+
+function dirtyScopeSummary(input: {
+  taskIntents: TaskIntent[];
+  changed: string[];
+  worktree: import("./worktree-state.js").WorktreeState | undefined;
+  broadDirty: boolean;
+  focusEntries: PacketFocusEntry[];
+}): DirtyScopeSummary {
+  const mode = dirtyScopeMode(input.taskIntents);
+  const changedPlanFiles = uniqueSorted(input.changed.filter((filePath) => !isCodexaControlPath(filePath)));
+  const degraded = input.worktree?.degraded ?? false;
+  const canPlan = changedPlanFiles.length > 0 && !degraded;
+  const reason = degraded
+    ? `worktree state unavailable: ${input.worktree?.degradedReasons.join("; ") || "unknown"}`
+    : changedPlanFiles.length === 0
+      ? "no dirty files available for the requested dirty-worktree scope"
+      : mode === "edit"
+        ? "current dirty worktree is the explicit edit scope"
+        : "current dirty worktree is the explicit inspection scope";
+  return {
+    requested: true,
+    mode,
+    canPlan,
+    broad: input.broadDirty,
+    changedFileCount: changedPlanFiles.length,
+    representativeCount: input.focusEntries.filter((entry) => entry.provenance.some((item) => item.source === "dirty_worktree")).length,
+    plannedEditTargets: changedPlanFiles,
+    reason
+  };
+}
+
+function dirtyScopeMode(taskIntents: TaskIntent[]): "edit" | "orientation" {
+  return taskIntents.some((intent) => intent === "implementation" || intent === "debugging") ? "edit" : "orientation";
+}
+
+function dirtyWorktreeIntentConfidence(input: {
+  taskIntents: TaskIntent[];
+  dirtyScope: DirtyScopeSummary;
+  focusEntries: PacketFocusEntry[];
+  worktree: import("./worktree-state.js").WorktreeState | undefined;
+}): IntentConfidence {
+  const primaryIntent = input.taskIntents.find((intent) => intent !== "unknown") ?? "unknown";
+  const dirtyAnchors = uniqueSorted(
+    input.focusEntries
+      .filter((entry) => entry.provenance.some((item) => item.source === "dirty_worktree"))
+      .map((entry) => entry.file.path)
+  ).slice(0, 8);
+  const missingAnchors: string[] = [];
+  if (input.dirtyScope.changedFileCount === 0) {
+    missingAnchors.push("no dirty files");
+  }
+  if (input.worktree?.degraded) {
+    missingAnchors.push("worktree state unavailable");
+  }
+  if (input.dirtyScope.mode === "edit" && dirtyAnchors.length === 0) {
+    missingAnchors.push("no selected dirty-worktree anchors");
+  }
+  const confidence = Math.max(
+    0,
+    Math.min(
+      1,
+      0.46 +
+        Math.min(0.24, dirtyAnchors.length * 0.06) +
+        (input.dirtyScope.canPlan ? 0.18 : 0) -
+        (input.dirtyScope.broad ? 0.08 : 0) -
+        missingAnchors.length * 0.2
+    )
+  );
+  const editReady = input.dirtyScope.mode === "edit" && input.dirtyScope.canPlan && dirtyAnchors.length > 0 && missingAnchors.length === 0 && confidence >= 0.48;
+  const verdict: IntentConfidence["verdict"] =
+    editReady
+      ? "edit-ready"
+      : input.dirtyScope.mode === "orientation" && dirtyAnchors.length > 0 && !input.worktree?.degraded
+        ? "orientation-only"
+        : "needs-target";
+  const recommendedNextTool = verdict === "edit-ready" ? "change_plan" : verdict === "orientation-only" ? "diff_impact" : "search";
+  return {
+    mode: input.dirtyScope.mode,
+    intent: primaryIntent,
+    confidence,
+    anchors: dirtyAnchors,
+    selectedAnchorCount: dirtyAnchors.length,
+    discardedAnchorCount: Math.max(0, input.dirtyScope.changedFileCount - dirtyAnchors.length),
+    missingAnchors: uniqueSorted(missingAnchors),
+    recommendedNextTool,
+    editReady,
+    verdict,
+    reasons: uniqueSorted([
+      `mode ${input.dirtyScope.mode}`,
+      `primary intent ${primaryIntent}`,
+      "explicit dirty-worktree scope",
+      `${input.dirtyScope.changedFileCount} dirty file(s)`,
+      input.dirtyScope.broad ? "broad dirty tree represented by ranked change groups" : undefined,
+      dirtyAnchors.length > 0 ? `${dirtyAnchors.length} selected dirty-worktree anchor(s)` : "no selected dirty-worktree anchors",
+      ...missingAnchors.map((anchor) => `missing ${anchor}`)
+    ].filter((entry): entry is string => Boolean(entry)))
+  };
 }
 
 function packetIntentConfidence(

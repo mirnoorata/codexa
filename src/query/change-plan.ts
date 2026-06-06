@@ -6,7 +6,7 @@ import { formatContextQuality, type ContextQuality } from "./quality.js";
 import { freshnessBanner } from "./runtime.js";
 import { ensureQuerySession, type QuerySession, type QuerySessionInput } from "./session.js";
 import { normalizeSearchText } from "./search.js";
-import { formatTestRecommendations, recommendTests } from "./tests.js";
+import { formatTestRecommendations, recommendTests, uniqueTests } from "./tests.js";
 import { findFile, normalizeInputPaths, resolveFileTarget, resolveSymbolTarget } from "./targets.js";
 import { compactSnapshotTests, snapshotRiskBaseline, snapshotSymbolBaseline } from "./post-edit/snapshot-contract.js";
 import { pointerForSessionMemory } from "../session-memory.js";
@@ -55,6 +55,15 @@ export async function changePlanQuery(
     changedFiles?: string[];
     tests?: TestRecommendation[];
     recipes?: string[];
+    dirtyScope?: {
+      requested?: boolean;
+      mode?: "edit" | "orientation";
+      canPlan?: boolean;
+      broad?: boolean;
+      changedFileCount?: number;
+      plannedEditTargets?: string[];
+      reason?: string;
+    };
     packetVerdict?: string;
     intentConfidence?: { editReady?: boolean; confidence?: number; verdict?: string; recommendedNextTool?: string; missingAnchors?: string[] };
     quality?: ContextQuality;
@@ -75,18 +84,35 @@ export async function changePlanQuery(
     input: effectiveInput,
     focusFiles,
     explicitTargetProvided: explicitFiles.length > 0 || explicitSymbolFiles.length > 0,
+    dirtyScope: packData.dirtyScope,
     quality,
     packetVerdict: packData.packetVerdict,
     intentConfidence: packData.intentConfidence
   });
-  const plannedEditTargets = editReadiness.editable ? uniqueSorted(explicitFiles.length > 0 || explicitSymbolFiles.length > 0 ? [...explicitFiles, ...explicitSymbolFiles] : files.slice(0, 6)) : [];
+  const dirtyScopeTargets =
+    editReadiness.source === "dirty-worktree"
+      ? uniqueSorted(packData.dirtyScope?.plannedEditTargets ?? [])
+      : [];
+  const plannedEditTargets = editReadiness.editable
+    ? uniqueSorted(
+        dirtyScopeTargets.length > 0
+          ? dirtyScopeTargets
+          : explicitFiles.length > 0 || explicitSymbolFiles.length > 0
+            ? [...explicitFiles, ...explicitSymbolFiles]
+            : files.slice(0, 6)
+      )
+    : [];
   const focusPathSet = new Set(files);
   const explicitWorkflowPaths = new Set(normalizeInputPaths(effectiveInput.files ?? [], repoRoot));
   const workflowMatchPaths = explicitWorkflowPaths.size > 0 ? explicitWorkflowPaths : focusPathSet;
   const relatedWorkflow = focusData.workflows?.find((workflow) => workflow.relatedFiles.some((file) => workflowMatchPaths.has(file)));
   const requiredWorkflowChecks = requiredWorkflowChecksForPlan(focusData.workflows ?? [], workflowMatchPaths, effectiveInput.changeType ?? "unknown").slice(0, 8);
   const requiredDependencyChecks = requiredDependencyChecksForPlan(session.index, plannedEditTargets, effectiveInput.changeType ?? "unknown").slice(0, 12);
-  const plannedTests = editReadiness.editable ? tests : [];
+  const dirtyScopeTests =
+    editReadiness.source === "dirty-worktree"
+      ? recommendTests(session.index, plannedEditTargets, repoRoot, effectiveInput.changeType ?? "unknown")
+      : [];
+  const plannedTests = editReadiness.editable ? uniqueTests([...tests, ...dirtyScopeTests]).slice(0, 12) : [];
   const plannedRecipes = editReadiness.editable ? recipes : [];
   const blockedSnapshot = effectiveInput.saveSnapshot && !editReadiness.editable && !requestedFollowCandidate
     ? await saveBlockedTaskSnapshot({
@@ -124,17 +150,23 @@ export async function changePlanQuery(
   }
   const planSteps = editReadiness.editable
     ? [
-        `1. Read ${files.slice(0, 6).join(", ") || "the focus files returned by Codexa"} before editing.`,
+        editReadiness.source === "dirty-worktree"
+          ? `1. Treat the current dirty worktree as the planned edit scope (${plannedEditTargets.length} files); read representatives ${files.slice(0, 6).join(", ") || "returned by Codexa"} before editing.`
+          : `1. Read ${files.slice(0, 6).join(", ") || "the focus files returned by Codexa"} before editing.`,
         relatedWorkflow
           ? `2. Inspect workflow_path for ${relatedWorkflow.title} if the change touches runtime flow.`
           : effectiveInput.files?.length || effectiveInput.symbols?.length
             ? "2. Use callers, callees, or dependency_path if this focused edit changes an exported API or runtime contract."
-            : `2. Use ${focusData.nextCall?.tool ?? "task_brief"} next if the edit target is still ambiguous.`,
+            : editReadiness.source === "dirty-worktree"
+              ? "2. Use change groups, callers, or dependency_path to split the dirty scope only if the representative reads reveal unrelated work."
+              : `2. Use ${focusData.nextCall?.tool ?? "task_brief"} next if the edit target is still ambiguous.`,
         plannedTests.length > 0
           ? `3. Keep these tests in scope: ${plannedTests.slice(0, 5).map((test) => test.path).join(", ")}.`
           : "3. No targeted tests were proven; inspect repo test metadata before inventing a command.",
         plannedRecipes.length > 0 ? `4. Verification: ${plannedRecipes.slice(0, 3).join(" ")}` : "4. Run the narrowest verified test or type check that covers the touched files.",
-        "5. Re-run Codexa task_brief after edits if freshness reports dirty-files-changed."
+        editReadiness.source === "dirty-worktree"
+          ? "5. Run post_edit_review after edits; the snapshot dirty baseline separates pre-existing dirty files from new changes."
+          : "5. Re-run Codexa task_brief after edits if freshness reports dirty-files-changed."
       ]
     : [
         `1. Do not edit yet: ${editReadiness.reason}.`,
@@ -269,6 +301,12 @@ function changePlanEditReadiness(input: {
   input: ChangePlanInput;
   focusFiles: Array<{ file: FileFact; reasons: string[]; tier: EvidenceTier }>;
   explicitTargetProvided: boolean;
+  dirtyScope?: {
+    requested?: boolean;
+    mode?: "edit" | "orientation";
+    canPlan?: boolean;
+    plannedEditTargets?: string[];
+  };
   quality?: ContextQuality;
   packetVerdict?: string;
   intentConfidence?: { editReady?: boolean; confidence?: number; verdict?: string; recommendedNextTool?: string; missingAnchors?: string[] };
@@ -276,7 +314,7 @@ function changePlanEditReadiness(input: {
   editable: boolean;
   status: "edit-ready" | "orientation-only";
   reason: string;
-  source: "explicit-target" | "high-confidence-context" | "insufficient-context";
+  source: "explicit-target" | "high-confidence-context" | "dirty-worktree" | "insufficient-context";
   explicitTargetProvided: boolean;
   packetVerdict?: string;
   qualityLevel?: ContextQuality["level"];
@@ -289,14 +327,25 @@ function changePlanEditReadiness(input: {
   const qualityLevel = input.quality?.level;
   const hasEvidenceBackedFocus = input.focusFiles.some((entry) => entry.tier === "authoritative" || entry.tier === "derived");
   const highConfidenceContext = qualityLevel === "high" && hasEvidenceBackedFocus && (packetVerdict === undefined || packetVerdict === "edit-ready");
-  const editable = input.explicitTargetProvided || highConfidenceContext;
+  const dirtyWorktreeContext =
+    !input.explicitTargetProvided &&
+    input.dirtyScope?.requested === true &&
+    input.dirtyScope.mode === "edit" &&
+    input.dirtyScope.canPlan === true &&
+    (input.dirtyScope.plannedEditTargets?.length ?? 0) > 0 &&
+    hasEvidenceBackedFocus &&
+    packetVerdict !== "raw-search-better";
+  const editable = input.explicitTargetProvided || highConfidenceContext || dirtyWorktreeContext;
   const missingAnchors = uniqueSorted([
     ...(input.intentConfidence?.missingAnchors ?? []),
-    ...(input.explicitTargetProvided ? [] : ["file-or-symbol-target"]),
-    ...(highConfidenceContext || input.explicitTargetProvided ? [] : ["edit-ready-context"])
+    ...(input.explicitTargetProvided || dirtyWorktreeContext ? [] : ["file-or-symbol-target"]),
+    ...(highConfidenceContext || input.explicitTargetProvided || dirtyWorktreeContext ? [] : ["edit-ready-context"]),
+    ...(input.dirtyScope?.requested && !input.dirtyScope.canPlan ? ["known-dirty-worktree-scope"] : [])
   ]);
   const reason = input.explicitTargetProvided
     ? "explicit file or symbol target provided"
+    : dirtyWorktreeContext
+      ? `current dirty worktree explicitly requested as edit scope (${input.dirtyScope?.plannedEditTargets?.length ?? 0} file(s))`
     : highConfidenceContext
       ? "high-confidence evidence-backed packet"
       : packetVerdict === "raw-search-better"
@@ -310,7 +359,7 @@ function changePlanEditReadiness(input: {
     editable,
     status: editable ? "edit-ready" : "orientation-only",
     reason,
-    source: input.explicitTargetProvided ? "explicit-target" : highConfidenceContext ? "high-confidence-context" : "insufficient-context",
+    source: input.explicitTargetProvided ? "explicit-target" : dirtyWorktreeContext ? "dirty-worktree" : highConfidenceContext ? "high-confidence-context" : "insufficient-context",
     explicitTargetProvided: input.explicitTargetProvided,
     packetVerdict,
     qualityLevel,
