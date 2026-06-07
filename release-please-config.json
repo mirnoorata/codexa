@@ -1,0 +1,11 @@
+{
+  "bootstrap-sha": "a37a0f78771a26350239ccd30819d2adf4d67c08",
+  "release-type": "node",
+  "include-v-in-tag": true,
+  "include-component-in-tag": false,
+  "packages": {
+    ".": {
+      "package-name": "@mirnoorata/codexa"
+    }
+  }
+}
