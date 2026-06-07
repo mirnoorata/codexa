@@ -25,7 +25,7 @@
     "access": "public"
   },
   "bin": {
-    "codexa": "./dist/cli.js"
+    "codexa": "dist/cli.js"
   },
   "files": [
     "dist",

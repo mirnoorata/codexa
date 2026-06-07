@@ -20,7 +20,7 @@ try {
   mkdirSync(packDir, { recursive: true });
   mkdirSync(consumerRoot, { recursive: true });
 
-  const pack = run("npm", ["pack", "--json", "--pack-destination", packDir], {
+  const pack = run("npm", ["pack", "--dry-run=false", "--json", "--pack-destination", packDir], {
     cwd: repoRoot,
     label: "npm pack"
   });
@@ -42,7 +42,7 @@ try {
   rejectPackedPrefix(packageFiles, ".codex/");
 
   writeFileSync(path.join(consumerRoot, "package.json"), `${JSON.stringify({ name: "codexa-package-smoke", private: true, type: "module" }, null, 2)}\n`, "utf8");
-  run("npm", ["install", tarball, "--no-audit", "--fund=false"], {
+  run("npm", ["install", tarball, "--dry-run=false", "--no-audit", "--fund=false"], {
     cwd: consumerRoot,
     label: "install packed tarball",
     timeoutMs: 120_000
