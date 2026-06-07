@@ -76,9 +76,16 @@ async function loadGoModuleAliases(repoRoot: string, files: string[]): Promise<I
         continue;
       }
       seen.add(key);
+      const targetPrefix = moduleDir === "." ? "" : `${moduleDir.replace(/\/+$/u, "")}/`;
+      aliases.push({
+        prefix: moduleName,
+        targetPrefix,
+        exact: true,
+        scopePrefix: moduleDir === "." ? undefined : moduleDir
+      });
       aliases.push({
         prefix: `${moduleName}/`,
-        targetPrefix: moduleDir === "." ? "" : `${moduleDir.replace(/\/+$/u, "")}/`,
+        targetPrefix,
         exact: false,
         scopePrefix: moduleDir === "." ? undefined : moduleDir
       });

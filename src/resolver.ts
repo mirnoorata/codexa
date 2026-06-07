@@ -138,7 +138,7 @@ function resolveImportPath(imp: ImportEdgeFact, files: Set<string>, aliases: Imp
     }
   }
   const aliasCandidate = resolveAliasCandidate(imp.specifier, imp.path, aliases);
-  if (aliasCandidate) {
+  if (aliasCandidate !== undefined) {
     const resolved = resolveCandidate(aliasCandidate, files) ?? (imp.path.endsWith(".go") ? resolvePackageDirectoryCandidate(aliasCandidate, files, ".go") : undefined);
     if (resolved) {
       return resolved;
@@ -262,9 +262,10 @@ function resolveCandidate(candidate: string, files: Set<string>): string | undef
 }
 
 function resolvePackageDirectoryCandidate(candidate: string, files: Set<string>, ext: ".go"): string | undefined {
-  const prefix = `${candidate.replace(/\/+$/u, "")}/`;
+  const normalized = candidate.replace(/\/+$/u, "");
+  const prefix = normalized ? `${normalized}/` : "";
   const matches = [...files]
-    .filter((file) => file.startsWith(prefix) && file.endsWith(ext) && !isTestPath(file))
+    .filter((file) => file.startsWith(prefix) && file.endsWith(ext) && !isTestPath(file) && (normalized || !file.includes("/")))
     .sort((a, b) => {
       const aDepth = a.slice(prefix.length).split("/").length;
       const bDepth = b.slice(prefix.length).split("/").length;
