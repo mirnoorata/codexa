@@ -543,6 +543,22 @@ restore commands, branch/worktree continuation commands, and forward-only PR rol
 Official releases should come from a clean `main` after the normal GitHub flow
 has landed.
 
+## npm Package Publishing
+
+The npm package is published by GitHub Actions after the GitHub Release lane
+publishes a release. The trigger is `release: published`; pushed tags alone do
+not publish to npm. The workflow checks the released tag, package identity,
+repository URL, version availability, and `npm run security:check`, then runs:
+
+```bash
+npm publish --registry https://registry.npmjs.org --access public --tag latest --provenance --ignore-scripts
+```
+
+For the first public npm release, configure an `NPM_TOKEN` GitHub repository
+secret with publish access. After the package exists and npm trusted publishing
+is configured, the workflow can remove token-based publishing while keeping the
+same release gate and `--ignore-scripts` protection.
+
 ## Contributing
 
 Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a PR.
