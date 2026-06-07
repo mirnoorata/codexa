@@ -543,6 +543,22 @@ restore commands, branch/worktree continuation commands, and forward-only PR rol
 Official releases should come from a clean `main` after the normal GitHub flow
 has landed.
 
+## Release Automation
+
+Release Please runs after pushes to `main`. It reads conventional commits,
+opens or updates a release PR with the package version and changelog changes,
+and creates the GitHub Release after that release PR is merged.
+
+This does not publish npm on every main merge. Normal feature and fix PRs land
+on `main` first, Release Please batches releasable changes into its release PR,
+and npm publishing stays downstream of the GitHub Release event.
+
+Configure a `RELEASE_PLEASE_TOKEN` GitHub repository secret with a personal
+access token that can create pull requests, tags, and releases. Do not use the
+default `GITHUB_TOKEN` for Release Please if npm publishing should happen
+automatically, because releases created by `GITHUB_TOKEN` do not trigger the
+separate `release: published` npm workflow.
+
 ## npm Package Publishing
 
 The npm package is published by GitHub Actions after the GitHub Release lane
