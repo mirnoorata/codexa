@@ -3612,6 +3612,17 @@ describe("Codexa indexer", () => {
     });
     await writeFile(path.join(monorepo, "sub/.codex/codebase/index.json"), "{}", "utf8");
     await writeFile(path.join(monorepo, "sub/b.ts"), "export const b = 2\n", "utf8");
+    const noiseDir = path.join(monorepo, "parent-noise");
+    await mkdir(noiseDir, { recursive: true });
+    const longName = "x".repeat(220);
+    for (let batch = 0; batch < 18; batch += 1) {
+      await Promise.all(
+        Array.from({ length: 250 }, (_, offset) => {
+          const index = String(batch * 250 + offset).padStart(4, "0");
+          return writeFile(path.join(noiseDir, `${index}-${longName}.txt`), "noise\n", "utf8");
+        })
+      );
+    }
     expect(getGitState(path.join(monorepo, "sub")).dirtyFiles).toEqual(["b.ts"]);
   });
 
