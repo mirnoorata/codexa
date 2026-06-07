@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 const failures = [];
 
 const packageJson = JSON.parse(read("package.json"));
+const releasePleaseManifest = JSON.parse(read(".release-please-manifest.json"));
 const scripts = packageJson.scripts ?? {};
 
 requirePackageValue("name", packageJson.name, "@mirnoorata/codexa");
@@ -101,7 +102,7 @@ requireText("release-please-config.json", [
   "\"include-component-in-tag\": false",
   "\"package-name\": \"@mirnoorata/codexa\""
 ]);
-requireText(".release-please-manifest.json", ["\".\": \"0.1.3\""]);
+requirePackageValue(".release-please-manifest.json[\".\"]", releasePleaseManifest["."], packageJson.version);
 requireText("scripts/codexa-publish.sh", [
   "npm run release:github",
   "commit_current_source_if_dirty",
