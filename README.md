@@ -55,7 +55,11 @@ codexa session-start /path/to/project
 ```
 
 After `codexa init`, the target repository gets a repo-local `.codex/config.toml`
-entry that lets Codex discover the Codexa MCP server automatically.
+entry that lets Codex discover the Codexa MCP server automatically. Useful flags:
+`--tools core` exposes only the primary-loop tools (plus `impact`/`freshness`) via an
+`enabled_tools` allowlist to cut per-turn schema token cost (confirm your Codex CLI
+supports `enabled_tools` first), and `--agents-md` (opt-in) writes a managed Codexa
+workflow block into the repo's `AGENTS.md`.
 
 The package metadata targets `@mirnoorata/codexa` and the installed command is
 `codexa`. If the npm registry does not have the package yet, use the checkout
@@ -133,7 +137,7 @@ writes are allowed; source-file mutation is not exposed through MCP tools.
 
 | Command | Use it for |
 | --- | --- |
-| `codexa init <repo>` | Write repo-local Codex MCP config/hooks and index the repo. |
+| `codexa init <repo>` | Write repo-local Codex MCP config/hooks and index the repo (`--tools core` for a lean tool allowlist, `--agents-md` for an AGENTS.md workflow block). |
 | `codexa session-start <repo>` | Print cheap startup status and the automatic-use loop. |
 | `codexa index <repo>` | Build `.codex/codebase/` artifacts once. |
 | `codexa watch <repo>` | Keep artifacts fresh during active edit sessions. |
