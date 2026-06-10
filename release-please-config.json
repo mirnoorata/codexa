@@ -5,7 +5,19 @@
   "include-component-in-tag": false,
   "packages": {
     ".": {
-      "package-name": "@mirnoorata/codexa"
+      "package-name": "@mirnoorata/codexa",
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "server.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "server.json",
+          "jsonpath": "$.packages[0].version"
+        }
+      ]
     }
   }
 }
