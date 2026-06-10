@@ -1707,6 +1707,166 @@ describe("Codexa MCP server", () => {
     expect(data.runtime).toBeTruthy();
   });
 
+  it("honors CODEXA_MCP_STRUCTURED_BUDGET_BYTES for host-specific packet budgets", () => {
+    const previous = process.env.CODEXA_MCP_STRUCTURED_BUDGET_BYTES;
+    process.env.CODEXA_MCP_STRUCTURED_BUDGET_BYTES = "9500";
+    try {
+      const compacted = compactNonPostEditMcpResult({
+        freshness: freshnessFixture(),
+        refresh: { refreshed: false },
+        text: "large test plan text",
+        data: {
+          ...buildTestPlanPacket(),
+          verificationLedgerPreview: seq(90, (index) => ({
+            kind: "test",
+            recommended: `run large test-${index}`,
+            target: `tests/large-${index}.test.ts`,
+            status: index % 2 === 0 ? "covered" : "missing",
+            evidence: seq(12, (evidenceIndex) => `evidence-${index}-${evidenceIndex}-${"x".repeat(5000)}`)
+          }))
+        }
+      });
+      const data = compacted.data as {
+        mcp: { returnedBytes: number; targetBytes: number; hardBudgetEnforced?: boolean };
+      };
+      expect(data.mcp.targetBytes).toBe(9500);
+      expect(data.mcp.returnedBytes).toBeLessThanOrEqual(9500);
+      expect(serializedBytes(data)).toBeLessThanOrEqual(9500);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.CODEXA_MCP_STRUCTURED_BUDGET_BYTES;
+      } else {
+        process.env.CODEXA_MCP_STRUCTURED_BUDGET_BYTES = previous;
+      }
+    }
+  });
+
+  it("meets a tiny byte budget even when targetCandidates carry heavy evidence", () => {
+    const previous = process.env.CODEXA_MCP_STRUCTURED_BUDGET_BYTES;
+    process.env.CODEXA_MCP_STRUCTURED_BUDGET_BYTES = "4000";
+    try {
+      const compacted = compactNonPostEditMcpResult({
+        freshness: freshnessFixture(),
+        refresh: { refreshed: false },
+        text: "large packet",
+        data: {
+          ...buildTestPlanPacket(),
+          targetCandidates: seq(8, (index) => ({
+            path: `src/candidate-${index}.ts`,
+            reasons: seq(8, (j) => `reason-${index}-${j}-${"r".repeat(1000)}`),
+            evidence: seq(8, (j) => `evidence-${index}-${j}-${"e".repeat(1000)}`),
+            tests: seq(8, (j) => `tests/candidate-${index}-${j}.test.ts`),
+            symbols: seq(8, (j) => `symbol-${index}-${j}-${"s".repeat(1000)}`)
+          })),
+          verificationLedgerPreview: seq(90, (index) => ({
+            kind: "test",
+            target: `tests/large-${index}.test.ts`,
+            status: "missing",
+            evidence: seq(12, (j) => `evidence-${index}-${j}-${"x".repeat(5000)}`)
+          }))
+        }
+      });
+      const data = compacted.data as {
+        mcp: { returnedBytes: number; targetBytes: number; budgetCompaction?: string };
+      };
+      expect(data.mcp.targetBytes).toBe(4000);
+      expect(serializedBytes(data)).toBeLessThanOrEqual(4000);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.CODEXA_MCP_STRUCTURED_BUDGET_BYTES;
+      } else {
+        process.env.CODEXA_MCP_STRUCTURED_BUDGET_BYTES = previous;
+      }
+    }
+  });
+
+  it("meets a tiny byte budget even when minimal-tier survivors are oversized", () => {
+    const previous = process.env.CODEXA_MCP_STRUCTURED_BUDGET_BYTES;
+    process.env.CODEXA_MCP_STRUCTURED_BUDGET_BYTES = "4000";
+    try {
+      const compacted = compactNonPostEditMcpResult({
+        freshness: freshnessFixture(),
+        refresh: { refreshed: false },
+        text: "large packet",
+        data: {
+          ...buildTestPlanPacket(),
+          verificationProvenance: Object.fromEntries(seq(200, (index) => [`claim-${index}`, `p`.repeat(150)])),
+          nextTools: seq(8, (index) => ({
+            schemaVersion: 1,
+            tool: `tool-${index}`,
+            reason: "r".repeat(150),
+            requiredInputs: Object.fromEntries(seq(120, (j) => [`arg-${index}-${j}`, "v".repeat(150)])),
+            readOnly: true,
+            writes: []
+          })),
+          verificationLedgerPreview: seq(90, (index) => ({
+            kind: "test",
+            target: `tests/large-${index}.test.ts`,
+            status: "missing",
+            evidence: seq(12, (j) => `evidence-${index}-${j}-${"x".repeat(5000)}`)
+          }))
+        }
+      });
+      const data = compacted.data as { mcp: { returnedBytes: number; targetBytes: number } };
+      expect(data.mcp.targetBytes).toBe(4000);
+      expect(serializedBytes(data)).toBeLessThanOrEqual(4000);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.CODEXA_MCP_STRUCTURED_BUDGET_BYTES;
+      } else {
+        process.env.CODEXA_MCP_STRUCTURED_BUDGET_BYTES = previous;
+      }
+    }
+  });
+
+  it("rejects malformed CODEXA_MCP_STRUCTURED_BUDGET_BYTES values instead of misparsing them", () => {
+    const previous = process.env.CODEXA_MCP_STRUCTURED_BUDGET_BYTES;
+    process.env.CODEXA_MCP_STRUCTURED_BUDGET_BYTES = "96_000";
+    try {
+      const compacted = compactNonPostEditMcpResult({
+        freshness: freshnessFixture(),
+        refresh: { refreshed: false },
+        text: "plain",
+        data: buildTestPlanPacket()
+      });
+      const data = compacted.data as { mcp: { targetBytes: number } };
+      expect(data.mcp.targetBytes).toBe(96_000);
+    } finally {
+      if (previous === undefined) {
+        delete process.env.CODEXA_MCP_STRUCTURED_BUDGET_BYTES;
+      } else {
+        process.env.CODEXA_MCP_STRUCTURED_BUDGET_BYTES = previous;
+      }
+    }
+  });
+
+  it("compacts to the concise tier when responseFormat=concise is requested", () => {
+    const compacted = compactNonPostEditMcpResult(
+      {
+        freshness: freshnessFixture(),
+        refresh: { refreshed: false },
+        text: "large test plan text",
+        data: {
+          ...buildTestPlanPacket(),
+          verificationLedgerPreview: seq(90, (index) => ({
+            kind: "test",
+            recommended: `run large test-${index}`,
+            target: `tests/large-${index}.test.ts`,
+            status: index % 2 === 0 ? "covered" : "missing",
+            evidence: seq(12, (evidenceIndex) => `evidence-${index}-${evidenceIndex}-${"x".repeat(5000)}`)
+          }))
+        }
+      },
+      { format: "concise" }
+    );
+    const data = compacted.data as {
+      mcp: { returnedBytes: number; targetBytes: number };
+    };
+    expect(data.mcp.targetBytes).toBe(12_000);
+    expect(data.mcp.returnedBytes).toBeLessThanOrEqual(12_000);
+    expect(serializedBytes(data)).toBeLessThanOrEqual(12_000);
+  });
+
   it("preserves post-edit nextTools and systemMessage under hard MCP budget compaction", () => {
     const requiredInputs = Object.fromEntries(seq(30, (index) => [`arg${index}`, `value-${index}`]));
     const compacted = compactNonPostEditMcpResult({

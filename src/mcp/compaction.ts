@@ -2,7 +2,21 @@ import { CURRENT_VERIFICATION_PROVENANCE } from "../types.js";
 import { asCodexaQueryData, asPostEditReviewData } from "../query-data.js";
 import type { ChangePlanData, CodexaQueryData, ContextPacketData, FocusBriefData, FreshnessInfo, PostEditReviewData, QueryResult, TestPlanData } from "../types.js";
 
-const MCP_STRUCTURED_DATA_TARGET_BYTES = 96_000;
+const DEFAULT_MCP_STRUCTURED_DATA_TARGET_BYTES = 96_000;
+const MIN_MCP_STRUCTURED_DATA_TARGET_BYTES = 4_000;
+const MAX_MCP_STRUCTURED_DATA_TARGET_BYTES = 512_000;
+
+export function mcpStructuredDataTargetBytes(): number {
+  const raw = process.env.CODEXA_MCP_STRUCTURED_BUDGET_BYTES;
+  if (!raw) {
+    return DEFAULT_MCP_STRUCTURED_DATA_TARGET_BYTES;
+  }
+  if (!/^\d+$/u.test(raw.trim())) {
+    return DEFAULT_MCP_STRUCTURED_DATA_TARGET_BYTES;
+  }
+  const parsed = Number.parseInt(raw.trim(), 10);
+  return Math.min(MAX_MCP_STRUCTURED_DATA_TARGET_BYTES, Math.max(MIN_MCP_STRUCTURED_DATA_TARGET_BYTES, parsed));
+}
 
 type McpTruncation = Record<string, { total: number; returned: number }>;
 
@@ -12,7 +26,13 @@ interface McpCompactionResult {
   compacted: boolean;
 }
 
-export function compactMcpResult(result: QueryResult): QueryResult {
+const CONCISE_RESPONSE_TARGET_BYTES = 12_000;
+
+export interface McpCompactionOptions {
+  format?: "concise" | "detailed";
+}
+
+export function compactMcpResult(result: QueryResult, options?: McpCompactionOptions): QueryResult {
   if (!result.data || typeof result.data !== "object" || Array.isArray(result.data)) {
     return result;
   }
@@ -25,18 +45,20 @@ export function compactMcpResult(result: QueryResult): QueryResult {
   const clamped = clampLargeStrings(compaction.data);
   const dataWithoutMetrics = withMergedTruncation(clamped.value as Record<string, unknown>, compaction.truncation);
   const compactedBytes = structuredByteLength(dataWithoutMetrics);
+  const baseTargetBytes = mcpStructuredDataTargetBytes();
+  const targetBytes = options?.format === "concise" ? Math.min(baseTargetBytes, CONCISE_RESPONSE_TARGET_BYTES) : baseTargetBytes;
   const structuredData = {
     compacted: compaction.compacted || compactedBytes < originalBytes,
     originalBytes,
-    targetBytes: MCP_STRUCTURED_DATA_TARGET_BYTES,
+    targetBytes,
     stringTruncations: clamped.stringTruncations,
     mode: effectiveMode,
-    verificationProvenance: isRecord(originalData.verificationProvenance) ? originalData.verificationProvenance : undefined
+    verificationProvenance: boundedVerificationProvenance(originalData.verificationProvenance)
   };
   let data = attachMcpMetrics(dataWithoutMetrics, structuredData);
   const returnedBytes = structuredByteLength(data);
-  if (returnedBytes > MCP_STRUCTURED_DATA_TARGET_BYTES) {
-    data = enforceMcpStructuredBudget(dataWithoutMetrics, structuredData, returnedBytes, effectiveMode);
+  if (returnedBytes > targetBytes) {
+    data = enforceMcpStructuredBudget(dataWithoutMetrics, structuredData, returnedBytes, effectiveMode, targetBytes);
   }
   return {
     ...result,
@@ -44,8 +66,8 @@ export function compactMcpResult(result: QueryResult): QueryResult {
   };
 }
 
-export function compactNonPostEditMcpResult(result: QueryResult): QueryResult {
-  return compactMcpResult(result);
+export function compactNonPostEditMcpResult(result: QueryResult, options?: McpCompactionOptions): QueryResult {
+  return compactMcpResult(result, options);
 }
 
 export function inferMcpDataMode(data: Record<string, unknown>): string | undefined {
@@ -87,10 +109,11 @@ function enforceMcpStructuredBudget(
   dataWithoutMetrics: Record<string, unknown>,
   structuredData: Record<string, unknown>,
   preEnforcementBytes: number,
-  mode: string
+  mode: string,
+  targetBytes: number
 ): Record<string, unknown> {
   const hardTruncation = mergeTruncation(truncationFromValue(dataWithoutMetrics.truncation), {
-    "__mcp.hardBudget": { total: preEnforcementBytes, returned: MCP_STRUCTURED_DATA_TARGET_BYTES }
+    "__mcp.hardBudget": { total: preEnforcementBytes, returned: targetBytes }
   });
   const hardCompacted = compactGenericValue(dataWithoutMetrics, { arrayLimit: 12, objectKeyLimit: 40, maxDepth: 6 }, hardTruncation);
   const hardClamped = clampLargeStrings(hardCompacted, 240);
@@ -104,12 +127,12 @@ function enforceMcpStructuredBudget(
     budgetCompaction: "hard",
     stringTruncations: metricNumber(structuredData, "stringTruncations") + hardClamped.stringTruncations
   });
-  if (structuredByteLength(hardResult) <= MCP_STRUCTURED_DATA_TARGET_BYTES) {
+  if (structuredByteLength(hardResult) <= targetBytes) {
     return hardResult;
   }
 
   const summaryTruncation = mergeTruncation(hardTruncation, {
-    "__mcp.summaryBudget": { total: structuredByteLength(hardResult), returned: MCP_STRUCTURED_DATA_TARGET_BYTES }
+    "__mcp.summaryBudget": { total: structuredByteLength(hardResult), returned: targetBytes }
   });
   const summaryClamped = clampLargeStrings(buildMcpBudgetSummaryData(dataWithoutMetrics, mode, summaryTruncation), 160);
   const summaryRecord = isRecord(summaryClamped.value) ? summaryClamped.value : { value: summaryClamped.value };
@@ -121,14 +144,14 @@ function enforceMcpStructuredBudget(
     budgetCompaction: "summary",
     stringTruncations: metricNumber(structuredData, "stringTruncations") + hardClamped.stringTruncations + summaryClamped.stringTruncations
   });
-  if (structuredByteLength(summaryResult) <= MCP_STRUCTURED_DATA_TARGET_BYTES) {
+  if (structuredByteLength(summaryResult) <= targetBytes) {
     return summaryResult;
   }
 
   const fallbackTruncation = mergeTruncation(summaryTruncation, {
-    "__mcp.fallbackBudget": { total: structuredByteLength(summaryResult), returned: MCP_STRUCTURED_DATA_TARGET_BYTES }
+    "__mcp.fallbackBudget": { total: structuredByteLength(summaryResult), returned: targetBytes }
   });
-  return attachMcpMetrics(
+  const fallbackClamped = clampLargeStrings(
     {
       mode,
       task: typeof dataWithoutMetrics.task === "string" ? dataWithoutMetrics.task.slice(0, 160) : dataWithoutMetrics.task,
@@ -138,20 +161,80 @@ function enforceMcpStructuredBudget(
       snapshotBlock: compactSnapshotBlock(dataWithoutMetrics.snapshotBlock),
       targetCandidates: Array.isArray(dataWithoutMetrics.targetCandidates) ? dataWithoutMetrics.targetCandidates.slice(0, 8).map(compactTargetCandidate) : dataWithoutMetrics.targetCandidates,
       packetVerdict: dataWithoutMetrics.packetVerdict,
-      verificationProvenance: dataWithoutMetrics.verificationProvenance,
+      verificationProvenance: boundedVerificationProvenance(dataWithoutMetrics.verificationProvenance),
       nextTools: compactNextTools(dataWithoutMetrics.nextTools, fallbackTruncation),
       systemMessage: stringValue(dataWithoutMetrics.systemMessage),
       runtime: compactSession(dataWithoutMetrics.runtime),
       truncation: fallbackTruncation
     },
+    160
+  );
+  const fallbackRecord = isRecord(fallbackClamped.value) ? fallbackClamped.value : { value: fallbackClamped.value };
+  const fallbackResult = attachMcpMetrics(fallbackRecord, {
+    ...structuredData,
+    compacted: true,
+    hardBudgetEnforced: true,
+    preEnforcementBytes,
+    budgetCompaction: "fallback",
+    stringTruncations: metricNumber(structuredData, "stringTruncations") + hardClamped.stringTruncations + summaryClamped.stringTruncations + fallbackClamped.stringTruncations
+  });
+  if (structuredByteLength(fallbackResult) <= targetBytes) {
+    return fallbackResult;
+  }
+
+  // Last-resort tier: evidence-bearing fields are dropped entirely so the
+  // verdict and routing guidance always fit the host's hard result limit.
+  const minimalTruncation = mergeTruncation(fallbackTruncation, {
+    "__mcp.minimalBudget": { total: structuredByteLength(fallbackResult), returned: targetBytes }
+  });
+  const minimalClamped = clampLargeStrings(
     {
-      ...structuredData,
-      compacted: true,
-      hardBudgetEnforced: true,
-      preEnforcementBytes,
-      budgetCompaction: "fallback",
-      stringTruncations: metricNumber(structuredData, "stringTruncations") + hardClamped.stringTruncations + summaryClamped.stringTruncations
-    }
+      mode,
+      task: typeof dataWithoutMetrics.task === "string" ? dataWithoutMetrics.task.slice(0, 160) : undefined,
+      verdict: dataWithoutMetrics.verdict,
+      editReadiness: dataWithoutMetrics.editReadiness,
+      packetVerdict: dataWithoutMetrics.packetVerdict,
+      verificationProvenance: boundedVerificationProvenance(dataWithoutMetrics.verificationProvenance),
+      nextTools: compactNextTools(dataWithoutMetrics.nextTools, minimalTruncation),
+      systemMessage: stringValue(dataWithoutMetrics.systemMessage),
+      truncation: minimalTruncation
+    },
+    160
+  );
+  const minimalRecord = isRecord(minimalClamped.value) ? minimalClamped.value : { value: minimalClamped.value };
+  const minimalMetrics = {
+    ...structuredData,
+    compacted: true,
+    hardBudgetEnforced: true,
+    preEnforcementBytes,
+    budgetCompaction: "minimal",
+    stringTruncations:
+      metricNumber(structuredData, "stringTruncations") + hardClamped.stringTruncations + summaryClamped.stringTruncations + fallbackClamped.stringTruncations + minimalClamped.stringTruncations
+  };
+  const minimalResult = attachMcpMetrics(minimalRecord, minimalMetrics);
+  if (structuredByteLength(minimalResult) <= targetBytes) {
+    return minimalResult;
+  }
+  // Unbounded inputs (provenance objects, wide nextTools) can survive string
+  // clamping; the verdict and tool names alone must always fit.
+  const nextToolNames = Array.isArray(dataWithoutMetrics.nextTools)
+    ? dataWithoutMetrics.nextTools.slice(0, 5).flatMap((tool) => {
+        if (typeof tool === "string") {
+          return [tool.slice(0, 80)];
+        }
+        return isRecord(tool) && typeof tool.tool === "string" ? [tool.tool.slice(0, 80)] : [];
+      })
+    : undefined;
+  return attachMcpMetrics(
+    {
+      mode,
+      verdict: typeof dataWithoutMetrics.verdict === "string" ? dataWithoutMetrics.verdict.slice(0, 160) : undefined,
+      packetVerdict: typeof dataWithoutMetrics.packetVerdict === "string" ? dataWithoutMetrics.packetVerdict.slice(0, 160) : undefined,
+      nextTools: nextToolNames,
+      systemMessage: stringValue(dataWithoutMetrics.systemMessage)?.slice(0, 160),
+      truncation: { "__mcp.verdictOnlyBudget": { total: structuredByteLength(minimalResult), returned: targetBytes } }
+    },
+    minimalMetrics
   );
 }
 
@@ -172,7 +255,7 @@ function buildMcpBudgetSummaryData(data: Record<string, unknown>, mode: string, 
     changedFiles: compactSummaryArray("changedFiles", data.changedFiles, 12, truncation),
     tests: compactSummaryArray("tests", data.tests, 12, truncation, compactTestRecommendation),
     verificationCommands: compactSummaryArray("verificationCommands", data.verificationCommands, 10, truncation),
-    verificationProvenance: data.verificationProvenance,
+    verificationProvenance: boundedVerificationProvenance(data.verificationProvenance),
     commandEnvelopes: compactSummaryArray("commandEnvelopes", data.commandEnvelopes, 10, truncation, compactCommandEnvelope),
     verificationCommandPlan: compactSummaryArray("verificationCommandPlan", data.verificationCommandPlan, 10, truncation, compactVerificationPlan),
     verificationLedgerPreview: compactSummaryArray("verificationLedgerPreview", data.verificationLedgerPreview, 10, truncation, compactVerificationLedgerEntry),
@@ -208,6 +291,15 @@ function compactBudgetSnapshot(value: unknown, truncation: McpTruncation): unkno
     requiredWorkflowCheckCount: typeof value.requiredWorkflowCheckCount === "number" ? value.requiredWorkflowCheckCount : Array.isArray(value.requiredWorkflowChecks) ? value.requiredWorkflowChecks.length : undefined,
     requiredDependencyCheckCount: typeof value.requiredDependencyCheckCount === "number" ? value.requiredDependencyCheckCount : Array.isArray(value.requiredDependencyChecks) ? value.requiredDependencyChecks.length : undefined
   };
+}
+
+// The provenance marker is a small fixed shape in practice; an oversized one is
+// untrusted input and must not ride into every compaction tier via the metrics.
+function boundedVerificationProvenance(value: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(value)) {
+    return undefined;
+  }
+  return structuredByteLength(value) <= 2_000 ? value : { truncated: true };
 }
 
 function attachMcpMetrics(dataWithoutMetrics: Record<string, unknown>, structuredData: Record<string, unknown>): Record<string, unknown> {

@@ -31,11 +31,11 @@ export interface ServeMcpHttpOptions {
 }
 
 const MCP_SERVER_INSTRUCTIONS = [
-  "Use Codexa as a Codex-native codebase context and edit safety server.",
-  `Primary Codex loop: ${PRIMARY_CODEX_LOOP}.`,
-  "When the target is unclear, use first-class search before task_brief.",
-  "Before source edits, use change_plan with saveSnapshot; after edits, use post_edit_review as the go-to review gate; before final response, account for test_plan.",
-  `Trust rules: ${NO_SOURCE_MUTATION_CONTRACT} Semantic retrieval is used only when configured; verify heuristic-heavy packets against source before editing.`
+  `Codexa is a Codex-native codebase context and edit-safety server. Loop: ${PRIMARY_CODEX_LOOP}.`,
+  "Target unclear -> search first. Before edits -> change_plan(saveSnapshot=true). After edits -> post_edit_review with the commands that actually ran. Before final response -> test_plan.",
+  "Each tool description states its typical output cost (compact/medium/large); prefer the cheapest sufficient tool. Tools refresh stale Codexa artifacts automatically when auto-refresh is enabled.",
+  `Trust rules: ${NO_SOURCE_MUTATION_CONTRACT} Semantic retrieval is used only when configured; verify heuristic-heavy packets against source before editing.`,
+  "Structured results are budget-compacted with truncation records naming dropped fields. Hosts with small MCP result limits can set CODEXA_MCP_STRUCTURED_BUDGET_BYTES."
 ].join("\n");
 
 export async function serveMcp(repoRoot: string, options: QueryOptions = { autoRefresh: true }): Promise<void> {
@@ -271,7 +271,8 @@ async function createCodexaMcpServer(repoRoot: string, options: QueryOptions): P
         const session = await mcpRuntime.createQuerySession(activeRepoRoot);
         const rawResult = withSessionRuntime(await producer(session), session);
         const memoryResult = autoRecord && autoRecordSessionMemory ? await withAutoRecordedSessionMemory(session, rawResult, autoRecord.toolName, autoRecord.input) : rawResult;
-        const result = compactMcpResult(memoryResult);
+        const responseFormat = toolInput?.responseFormat === "concise" ? ("concise" as const) : undefined;
+        const result = compactMcpResult(memoryResult, responseFormat ? { format: responseFormat } : undefined);
         await notifyResourceListChangedAfterRefresh(server, session);
         return result;
       }, activeRepoRoot),
