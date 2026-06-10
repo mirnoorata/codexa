@@ -8,6 +8,26 @@ import { describe, expect, it } from "vitest";
 const execFileAsync = promisify(execFile);
 
 describe("Codexa plugin package", () => {
+  it("keeps MCP registry metadata in sync with package.json", async () => {
+    const pkg = JSON.parse(await readFile(path.join(process.cwd(), "package.json"), "utf8")) as {
+      version: string;
+      mcpName?: string;
+      name: string;
+    };
+    const serverManifest = JSON.parse(await readFile(path.join(process.cwd(), "server.json"), "utf8")) as {
+      name: string;
+      version: string;
+      packages: Array<{ identifier: string; version: string; registryType: string }>;
+    };
+    expect(pkg.mcpName).toBe(serverManifest.name);
+    expect(serverManifest.version).toBe(pkg.version);
+    for (const entry of serverManifest.packages) {
+      expect(entry.registryType).toBe("npm");
+      expect(entry.identifier).toBe(pkg.name);
+      expect(entry.version).toBe(pkg.version);
+    }
+  });
+
   it("validates the local plugin manifest, MCP config, and skill package", async () => {
     const result = await execFileAsync(process.execPath, ["scripts/verify-plugin-package.mjs"], {
       cwd: process.cwd(),
