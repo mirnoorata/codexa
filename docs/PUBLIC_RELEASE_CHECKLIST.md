@@ -20,11 +20,15 @@ Run from the repo root, with a clean working tree:
 npm run check                  # build + lint + tests
 npm run privacy                # tracked files and .codex/ hints
 npm run privacy:history        # full git log scan
-npm run security:check         # dependency audit
+npm run security:check         # check + audit + snapshot + package smoke
 npm run public:snapshot-check  # refuses to run if the tree is dirty
 ```
 
-All five must exit zero. `privacy:history` is the one that catches local
+All five must exit zero. `security:check` includes `npm run check`, dependency
+audit, clean-tree public snapshot verification, package hygiene, and installed
+package smoke. Because the snapshot check verifies the archive for exactly
+`HEAD`, commit the release candidate before running it. `privacy:history` is
+the one that catches local
 home-directory paths, workspace-root paths, hardcoded emails, tokens, and
 private-key blocks that slipped into any historical commit, even commits
 you plan to squash away. Run
@@ -42,11 +46,23 @@ has to come back clean against the *new* single commit before you push.
 - `SECURITY.md`
 - `CONTRIBUTING.md`
 - `CODE_OF_CONDUCT.md`
+- `package.json` with public package metadata, scoped name, executable,
+  files list, and keywords that match the shipped product surface
 - `.github/ISSUE_TEMPLATE/bug_report.md`
 - `.github/ISSUE_TEMPLATE/feature_request.md`
 - `.github/ISSUE_TEMPLATE/config.yml`
 - `.github/pull_request_template.md`
 - `.github/workflows/check.yml` (already exists — CI)
+- `.github/workflows/npm-publish.yml` (publishes npm only from a published
+  GitHub Release)
+- `.github/workflows/release-please.yml` (opens or updates the automated
+  Release Please PR after pushes to `main`)
+- `release-please-config.json` and `.release-please-manifest.json` (tracks the
+  Release Please package strategy and current package version)
+- User-facing docs that match the current tool surface: proof-carrying
+  `symbol_context`, `EdgeEvidenceV1`, planned-test provenance,
+  `CodexaSymbolReportV1`, local outcome ranking, structured `nextTools`, eval
+  numbers, and npm install/publish status.
 
 ### Identity
 
@@ -130,6 +146,50 @@ mean "I cannot merge my own PRs." It just makes the CI green light mandatory.
     **Require approval for all outside collaborators**. Prevents a drive-by
     fork PR from running your Actions minutes without your review.
 
+### npm package publishing
+
+- Add a repository secret named `RELEASE_PLEASE_TOKEN` at
+  `Settings → Secrets and variables → Actions → Repository secrets`. It should
+  be a personal access token that can create pull requests, tags, and releases
+  for `mirnoorata/codexa`. Release Please must not use the default
+  `GITHUB_TOKEN` when npm publishing depends on a later `release: published`
+  workflow event.
+- Before the first npm release, add a repository secret named `NPM_TOKEN` at
+  `Settings → Secrets and variables → Actions → Repository secrets`.
+- The secret must be a granular npm access token with write access to the
+  `@mirnoorata` scope or package namespace and Bypass 2FA enabled. Do not paste
+  the token into the workflow, PR, README, issue, release notes, or terminal
+  transcript.
+- Keep the repository public before publishing. npm provenance for GitHub-backed
+  publishes requires a public repository and a public package.
+- The npm publish workflow is `.github/workflows/npm-publish.yml`. It runs on
+  `release: published`, checks that the tag is exactly
+  `v${package.json.version}`, requires the tag commit to be contained in the
+  repository default branch, rejects GitHub prereleases and semver prerelease
+  versions until an explicit npm dist-tag policy exists, requires the package
+  identity and repository URL to match `@mirnoorata/codexa` on GitHub, no-ops if
+  that exact version is already on npm before the gate or appears during the
+  gate, runs `npm run security:check`, and
+  publishes with
+  `npm publish --registry https://registry.npmjs.org --access public --tag latest --provenance --ignore-scripts`.
+  The explicit `--ignore-scripts` prevents npm from re-running `prepublishOnly`
+  inside the token-bearing publish step after the full security gate has already
+  passed, the explicit registry flag prevents publish redirection by future npm
+  config drift, and the explicit `--tag latest` prevents stable releases from
+  inheriting a stale npm dist-tag. Pre-publish run steps blank
+  `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN`, so build,
+  install, validation, and test commands cannot mint GitHub OIDC tokens; only the
+  final publish step keeps OIDC available for provenance.
+- The automated release chain is: normal PRs merge to `main`, Release Please
+  opens or updates its release PR, the maintainer merges that release PR, GitHub
+  publishes the Release, and `.github/workflows/npm-publish.yml` publishes npm.
+  Release Please does not mean every merge to `main` immediately publishes npm.
+- After `@mirnoorata/codexa` exists on npm, replace token publishing with npm
+  trusted publishing for the same repository and workflow filename. The trusted
+  publisher should be GitHub Actions, `mirnoorata/codexa`, workflow filename
+  `npm-publish.yml`, no environment name unless the workflow adds one, and
+  allowed action `npm publish`.
+
 ### Notifications
 
 - `https://github.com/settings/notifications` — this is account-wide:
@@ -199,8 +259,18 @@ Neither of these is failure. Both are normal open-source lifecycles.
 
 ## Quarterly (or whenever you remember)
 
-- Re-run `npm run security:check` locally. Dependabot is the continuous
-  version of this, but a local run confirms nothing is stuck.
+- Re-run `npm run security:check` locally from a clean committed tree.
+  Dependabot is the continuous version of this, but a local run confirms
+  nothing is stuck and the packed/plugin install path still works.
+- Refresh public proof before cutting a release:
+  `node dist/cli.js eval <repo> --suite all --seed codexa-v1-benchmark`, plus
+  `--centrality-experiment` when ranking changes are under consideration. Update
+  README metrics only from the latest reproducible run.
+- Verify npm and repository discoverability before announcing a package:
+  `npm view @mirnoorata/codexa version --json` after publish, package keywords
+  in `package.json`, and GitHub topics aligned with the actual scope (`codex`,
+  `mcp`, `code-intelligence`, `symbol-search`, `impact-analysis`,
+  `local-first`, `verification`).
 - Glance at open issues. Close anything you would not pick up in the next six
   months, with a short "out of scope / not planned" note. Issues that sit
   open for a year with no reply are worse for everyone than closed issues.

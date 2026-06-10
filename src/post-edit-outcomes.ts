@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { CURRENT_VERIFICATION_PROVENANCE } from "./types.js";
+import type { AutoVerifyReportRunner } from "./autoverify.js";
 import type {
   Confidence,
   FreshnessInfo,
@@ -18,6 +19,8 @@ import type {
 } from "./types.js";
 import { stableId } from "./util.js";
 
+type OutcomeCommandReport = VerificationCommandReport & { runner?: AutoVerifyReportRunner };
+
 const OUTCOME_DIR = ".codex/cache/codexa-outcomes";
 const LATEST_FILE = "latest.json";
 const LATEST_HOOK_REVIEW_FILE = "latest-hook-review.json";
@@ -28,6 +31,8 @@ const MAX_HOOK_EVENTS_BYTES = 512 * 1024;
 const MAX_HOOK_EVENT_LINES = 200;
 
 export type PostEditVerdict = "continue" | "run_tests" | "inspect" | "replan";
+export type PostEditInspectMode = "none" | "advisory" | "blocking";
+export type PostEditCompletionAuthority = "complete" | "tests_required" | "advisory_inspect" | "blocking_inspect" | "replan_required";
 export type CodexaHookName = "session-start" | "pre-edit" | "post-edit";
 export type CodexaHookEventStatus = "ok" | "skipped" | "failed";
 
@@ -37,6 +42,9 @@ export interface PostEditOutcomeInput {
   taskId?: string;
   snapshotPath?: string;
   verdict: PostEditVerdict;
+  inspectMode: PostEditInspectMode;
+  inspectReasons: string[];
+  completionAuthority: PostEditCompletionAuthority;
   freshness: FreshnessInfo;
   changedFiles: string[];
   plannedEditTargets: string[];
@@ -48,13 +56,14 @@ export interface PostEditOutcomeInput {
   affectedWorkflows: string[];
   workflowChecks: PostEditCheckResult[];
   dependencyChecks: PostEditCheckResult[];
-  driftReasons: string[];
-  tests: TestRecommendation[];
-  testsNotRun: TestRecommendation[];
+	  driftReasons: string[];
+	  tests: TestRecommendation[];
+	  degradedSnapshotTests?: TestRecommendation[];
+	  testsNotRun: TestRecommendation[];
   missedLikelyTests: TestRecommendation[];
   ranTests: string[];
   ranCommands: string[];
-  ranCommandReports: VerificationCommandReport[];
+  ranCommandReports: OutcomeCommandReport[];
   commandEnvelopes: VerificationCommandEnvelope[];
   waivedChecks: string[];
   waivers: VerificationWaiver[];
@@ -103,6 +112,9 @@ export interface PostEditOutcome {
   taskId?: string;
   snapshotPath?: string;
   verdict: PostEditVerdict;
+  inspectMode: PostEditInspectMode;
+  inspectReasons: string[];
+  completionAuthority: PostEditCompletionAuthority;
   headCommit: string | null;
   indexSnapshotId: string;
   changedFiles: string[];
@@ -115,13 +127,14 @@ export interface PostEditOutcome {
   affectedWorkflows: string[];
   workflowChecks: PostEditCheckResult[];
   dependencyChecks: PostEditCheckResult[];
-  driftReasons: string[];
-  recommendedTests: Array<Pick<TestRecommendation, "path" | "reason" | "rank" | "evidenceTier" | "command" | "commandSource" | "commandConfidence">>;
-  testsNotRun: Array<Pick<TestRecommendation, "path" | "reason" | "rank" | "evidenceTier" | "command" | "commandSource" | "commandConfidence">>;
-  missedLikelyTests: Array<Pick<TestRecommendation, "path" | "reason" | "rank" | "evidenceTier" | "command" | "commandSource" | "commandConfidence">>;
+	  driftReasons: string[];
+	  recommendedTests: Array<Pick<TestRecommendation, "path" | "reason" | "rank" | "evidenceTier" | "command" | "commandSource" | "commandConfidence" | "provenance">>;
+	  degradedSnapshotTests: Array<Pick<TestRecommendation, "path" | "reason" | "rank" | "evidenceTier" | "command" | "commandSource" | "commandConfidence" | "provenance">>;
+	  testsNotRun: Array<Pick<TestRecommendation, "path" | "reason" | "rank" | "evidenceTier" | "command" | "commandSource" | "commandConfidence" | "provenance">>;
+  missedLikelyTests: Array<Pick<TestRecommendation, "path" | "reason" | "rank" | "evidenceTier" | "command" | "commandSource" | "commandConfidence" | "provenance">>;
   ranTests: string[];
   ranCommands: string[];
-  ranCommandReports: VerificationCommandReport[];
+  ranCommandReports: OutcomeCommandReport[];
   commandEnvelopes: VerificationCommandEnvelope[];
   waivedChecks: string[];
   waivers: VerificationWaiver[];
@@ -143,6 +156,7 @@ export interface PostEditHookReviewState {
   outcomeId?: string;
   taskId?: string;
   verdict?: PostEditVerdict;
+  autoVerifyStatus?: "off" | "covered" | "skipped" | "failed" | "non_covering";
 }
 
 export interface CodexaHookEventInput {
@@ -175,6 +189,9 @@ export function buildPostEditOutcome(input: PostEditOutcomeInput, createdAt = ne
     taskId: input.taskId,
     snapshotPath: input.snapshotPath,
     verdict: input.verdict,
+    inspectMode: input.inspectMode,
+    inspectReasons: input.inspectReasons,
+    completionAuthority: input.completionAuthority,
     headCommit: input.freshness.headCommit,
     indexSnapshotId: input.freshness.snapshotId,
     changedFiles: input.changedFiles,
@@ -187,9 +204,10 @@ export function buildPostEditOutcome(input: PostEditOutcomeInput, createdAt = ne
     affectedWorkflows: input.affectedWorkflows,
     workflowChecks: input.workflowChecks,
     dependencyChecks: input.dependencyChecks,
-    driftReasons: input.driftReasons,
-    recommendedTests: compactTests(input.tests, repoRoot),
-    testsNotRun: compactTests(input.testsNotRun, repoRoot),
+	    driftReasons: input.driftReasons,
+	    recommendedTests: compactTests(input.tests, repoRoot),
+	    degradedSnapshotTests: compactTests(input.degradedSnapshotTests ?? [], repoRoot),
+	    testsNotRun: compactTests(input.testsNotRun, repoRoot),
     missedLikelyTests: compactTests(input.missedLikelyTests, repoRoot),
     ranTests: input.ranTests.map((test) => sanitizeText(test, repoRoot) ?? ""),
     ranCommands: input.ranCommands.map((command) => sanitizeText(command, repoRoot) ?? ""),
@@ -228,11 +246,12 @@ export async function savePostEditOutcome(input: PostEditOutcomeInput): Promise<
   return { outcome, path: outcomePath, relativePath: path.posix.join(OUTCOME_DIR, `${outcome.outcomeId}.json`) };
 }
 
-export function postEditHookReviewSignature(input: { freshness: FreshnessInfo; taskId?: string }): string {
+export function postEditHookReviewSignature(input: { freshness: FreshnessInfo; taskId?: string; autoVerifyMode?: string }): string {
   return createHash("sha1")
     .update(
       JSON.stringify({
         taskId: input.taskId ?? null,
+        autoVerifyMode: input.autoVerifyMode ?? "autoverify:off",
         snapshotId: input.freshness.snapshotId,
         indexedAt: input.freshness.indexedAt,
         headCommit: input.freshness.headCommit,
@@ -253,7 +272,8 @@ export async function loadPostEditHookReviewState(repoRoot: string): Promise<Pos
         createdAt: parsed.createdAt,
         outcomeId: typeof parsed.outcomeId === "string" ? parsed.outcomeId : undefined,
         taskId: typeof parsed.taskId === "string" ? parsed.taskId : undefined,
-        verdict: isPostEditVerdict(parsed.verdict) ? parsed.verdict : undefined
+        verdict: isPostEditVerdict(parsed.verdict) ? parsed.verdict : undefined,
+        autoVerifyStatus: isAutoVerifyStatus(parsed.autoVerifyStatus) ? parsed.autoVerifyStatus : undefined
       };
     }
   } catch {
@@ -262,7 +282,7 @@ export async function loadPostEditHookReviewState(repoRoot: string): Promise<Pos
   return null;
 }
 
-export async function savePostEditHookReviewState(repoRoot: string, input: { signature: string; outcome?: PostEditOutcome }): Promise<void> {
+export async function savePostEditHookReviewState(repoRoot: string, input: { signature: string; outcome?: PostEditOutcome; autoVerifyStatus?: PostEditHookReviewState["autoVerifyStatus"] }): Promise<void> {
   const repo = path.resolve(repoRoot);
   const dir = path.join(repo, OUTCOME_DIR);
   await fs.mkdir(dir, { recursive: true });
@@ -272,7 +292,8 @@ export async function savePostEditHookReviewState(repoRoot: string, input: { sig
     createdAt: new Date().toISOString(),
     outcomeId: input.outcome?.outcomeId,
     taskId: input.outcome?.taskId,
-    verdict: input.outcome?.verdict
+    verdict: input.outcome?.verdict,
+    autoVerifyStatus: input.autoVerifyStatus
   });
 }
 
@@ -345,6 +366,10 @@ function isHookEventStatus(value: unknown): value is CodexaHookEventStatus {
   return value === "ok" || value === "skipped" || value === "failed";
 }
 
+function isAutoVerifyStatus(value: unknown): value is NonNullable<PostEditHookReviewState["autoVerifyStatus"]> {
+  return value === "off" || value === "covered" || value === "skipped" || value === "failed" || value === "non_covering";
+}
+
 function compactHookEvent(repoRoot: string, input: CodexaHookEventInput): CodexaHookEvent {
   return {
     schemaVersion: 1,
@@ -393,7 +418,8 @@ function compactTests(tests: TestRecommendation[], repoRoot: string): PostEditOu
     evidenceTier: test.evidenceTier,
     command: test.command?.replaceAll(repoRoot, "<repo>"),
     commandSource: test.commandSource,
-    commandConfidence: test.commandConfidence
+    commandConfidence: test.commandConfidence,
+    provenance: test.provenance
   }));
 }
 
@@ -410,7 +436,7 @@ function compactCoverage(coverage: VerificationCoverage[], repoRoot: string): Ve
   }));
 }
 
-function compactCommandReports(reports: VerificationCommandReport[], repoRoot: string): VerificationCommandReport[] {
+function compactCommandReports(reports: OutcomeCommandReport[], repoRoot: string): OutcomeCommandReport[] {
   return reports.map((report) => ({
     ...report,
     command: sanitizeText(report.command, repoRoot) ?? "",
@@ -423,8 +449,22 @@ function compactCommandReports(reports: VerificationCommandReport[], repoRoot: s
     stdoutSummary: sanitizeText(report.stdoutSummary, repoRoot),
     stderrSummary: sanitizeText(report.stderrSummary, repoRoot),
     outputSummary: sanitizeText(report.outputSummary, repoRoot),
-    args: sanitizeArgs(report.args, repoRoot)
+    args: sanitizeArgs(report.args, repoRoot),
+    runner: compactRunner(report.runner, repoRoot)
   }));
+}
+
+function compactRunner(runner: AutoVerifyReportRunner | undefined, repoRoot: string): AutoVerifyReportRunner | undefined {
+  if (!runner) {
+    return undefined;
+  }
+  return {
+    ...runner,
+    cwdRealpath: sanitizePathField(runner.cwdRealpath, repoRoot) ?? runner.cwdRealpath,
+    targetRealpaths: runner.targetRealpaths.map((target) => sanitizePathField(target, repoRoot) ?? target),
+    allowedBy: runner.allowedBy.map((reason) => sanitizeText(reason, repoRoot) ?? reason),
+    skippedReason: sanitizeText(runner.skippedReason, repoRoot)
+  };
 }
 
 function compactCommandEnvelopes(envelopes: VerificationCommandEnvelope[], repoRoot: string): VerificationCommandEnvelope[] {
@@ -498,7 +538,8 @@ function sanitizeArgs(args: string[] | undefined, repoRoot: string): string[] | 
 
 function redactSecretText(value: string | undefined): string | undefined {
   return value
-    ?.replace(/((?:--?|[A-Z_]*)(?:token|secret|password|passwd|pwd|api[-_]?key|access[-_]?key|auth|credential|cookie)[A-Z0-9_-]*(?:=|\s+))([^\s;|)\]'",]+)/giu, "$1<redacted>")
+    ?.replace(/(^|[\s([,{])((?:--?[a-z0-9-]*(?:token|secret|password|passwd|pwd|api[-_]?key|access[-_]?key|auth|credential|cookie)[a-z0-9-]*)(?:=|\s+))([^\s;|)\]'",]+)/giu, "$1$2<redacted>")
+    .replace(/(\b[A-Z_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|PWD|API_?KEY|ACCESS_?KEY|AUTH|CREDENTIAL|COOKIE)[A-Z0-9_]*=)([^\s;|)\]'",]+)/gu, "$1<redacted>")
     .replace(/\b(Bearer)\s+[A-Za-z0-9._~+/-]+=*/giu, "$1 <redacted>");
 }
 
@@ -632,6 +673,7 @@ function calibrationLabels(input: PostEditOutcomeInput): string[] {
     labels.push("requires-replan");
   } else if (input.verdict === "inspect") {
     labels.push("requires-inspection");
+    labels.push(input.inspectMode === "blocking" ? "blocking-inspection" : "advisory-inspection");
   }
   return [...new Set(labels)].sort();
 }

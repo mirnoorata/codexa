@@ -1,12 +1,13 @@
 import { execFileSync } from "node:child_process";
 import path from "node:path";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { renderCodexUseContract } from "./codex-contract.js";
 import { buildIndexLocked } from "./indexer.js";
+import { PRIMARY_CODEX_LOOP } from "./mcp-tool-catalog.js";
 import { resolveMcpRepoRoot } from "./mcp-repo-root.js";
 import { statusQuery } from "./queries.js";
 
-const EDIT_HOOK_MATCHER = "Edit|MultiEdit|Write|apply_patch";
+const EDIT_HOOK_MATCHER = "Edit|MultiEdit|Write|NotebookEdit|apply_patch";
 
 export interface InitOptions {
   autoRefresh?: boolean;
@@ -38,12 +39,18 @@ export async function initializeProject(repoInput: string | undefined, options: 
   const writeHooks = options.hooks ?? true;
 
   await mkdir(codexDir, { recursive: true });
+  const keepHooksFeature = writeHooks
+    ? true
+    : await removeCodexaManagedHooksConfig(hooksPath, {
+        cliPath,
+        repoRoot
+      });
   await upsertCodexConfig(configPath, {
     autoRefresh: options.autoRefresh ?? true,
     cliPath,
     repoRoot,
     serverName,
-    hooks: writeHooks
+    hooks: keepHooksFeature
   });
 
   if (writeHooks) {
@@ -108,7 +115,7 @@ export async function sessionStartSummary(repoInput: string | undefined, include
   }
 
   lines.push("Codexa MCP is ready.");
-  lines.push("Automatic-use contract: broad task -> focus_brief/session_context; code task -> task_brief; resume/reuse working memory -> session_memory; concrete edit -> change_plan with saveSnapshot=true before editing; after edits -> post_edit_review; workflow/runtime change -> workflow_path; API/rename/delete -> callers/callees/dependency_path; finish with test_plan.");
+  lines.push(`Automatic-use contract: primary loop ${PRIMARY_CODEX_LOOP}; broad task -> session_context then search if actionability needs a target; resume/reuse working memory -> session_memory; workflow/runtime change -> workflow_path; API/rename/delete -> callers/callees/dependency_path.`);
   return lines.join("\n");
 }
 
@@ -155,8 +162,10 @@ async function upsertCodexConfig(
   next = removeCodexaMcpServerBlocks(next, options);
   next = removeMcpServerBlock(next, options.serverName);
   if (options.hooks) {
-    next = ensureCodexHooksFeature(next);
-  }
+    next = ensureHooksFeature(next);
+	  } else {
+	    next = removeHooksFeature(next);
+	  }
   next = trimTrailingBlankLines(next);
   if (next) {
     next += "\n\n";
@@ -223,7 +232,7 @@ async function upsertHooksConfig(hooksPath: string, options: { cliPath: string; 
         type: "command",
         command: `node ${shellQuote(options.cliPath)} hook-post-edit ${shellQuote(options.repoRoot)}`,
         statusMessage: "Running Codexa post-edit review",
-        timeout: 20
+        timeout: 90
       }
     ]
   });
@@ -238,6 +247,32 @@ async function upsertHooksConfig(hooksPath: string, options: { cliPath: string; 
     }
   };
   await writeFile(hooksPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
+}
+
+async function removeCodexaManagedHooksConfig(hooksPath: string, options: { cliPath: string; repoRoot: string }): Promise<boolean> {
+  const existing = await readTextIfExists(hooksPath);
+  if (!existing.trim()) {
+    await rm(hooksPath, { force: true });
+    return false;
+  }
+  const parsed = parseHooksJson(existing, hooksPath);
+  const hooks = isPlainObject(parsed.hooks) ? parsed.hooks : {};
+  const cleanedHooks: Record<string, unknown> = { ...hooks };
+  for (const key of ["SessionStart", "PreToolUse", "PostToolUse"]) {
+    const cleaned = cleanHookList(hooks[key], options);
+    if (cleaned.length > 0) {
+      cleanedHooks[key] = cleaned;
+    } else {
+      delete cleanedHooks[key];
+    }
+  }
+  const hasRemainingHooks = Object.values(cleanedHooks).some((value) => Array.isArray(value) && value.length > 0);
+  if (!hasRemainingHooks) {
+    await rm(hooksPath, { force: true });
+    return false;
+  }
+  await writeFile(hooksPath, `${JSON.stringify({ ...parsed, hooks: cleanedHooks }, null, 2)}\n`, "utf8");
+  return true;
 }
 
 function cleanHookList(value: unknown, options: { cliPath: string; repoRoot: string }): Record<string, unknown>[] {
@@ -275,18 +310,20 @@ function cleanHookEntry(entry: unknown, options: { cliPath: string; repoRoot: st
 }
 
 function isCodexaHookCommand(command: string, options: { cliPath: string; repoRoot: string }): boolean {
-  if (command.includes("codexa-sessionstart")) {
+  const trimmed = command.trim();
+  if (/^codexa-sessionstart(?:\s|$)/u.test(trimmed) || /(?:^|\/)codexa-sessionstart-[^/\s]+\.sh(?:\s|$)/u.test(trimmed)) {
     return true;
   }
-  if (!/\b(session-start|hook-pre-edit|hook-post-edit)\b/u.test(command)) {
-    return false;
+  for (const action of ["session-start", "hook-pre-edit", "hook-post-edit"]) {
+    const generated = `node ${shellQuote(options.cliPath)} ${action} ${shellQuote(options.repoRoot)}`;
+    const generatedUnquoted = `node ${options.cliPath} ${action} ${options.repoRoot}`;
+    const generatedPrefix = `node ${shellQuote(options.cliPath)} ${action} `;
+    const generatedUnquotedPrefix = `node ${options.cliPath} ${action} `;
+    if (trimmed === generated || trimmed === generatedUnquoted || trimmed.startsWith(generatedPrefix) || trimmed.startsWith(generatedUnquotedPrefix)) {
+      return true;
+    }
   }
-  return (
-    command.includes(shellQuote(options.cliPath)) ||
-    command.includes(options.cliPath) ||
-    command.includes(shellQuote(options.repoRoot)) ||
-    command.includes(options.repoRoot)
-  );
+  return false;
 }
 
 function parseHooksJson(value: string, hooksPath: string): Record<string, unknown> {
@@ -302,11 +339,11 @@ function parseHooksJson(value: string, hooksPath: string): Record<string, unknow
   }
 }
 
-function ensureCodexHooksFeature(config: string): string {
+function ensureHooksFeature(config: string): string {
   const lines = config.split(/\r?\n/);
   const featureStart = lines.findIndex((line) => line.trim() === "[features]");
   if (featureStart === -1) {
-    return ["[features]", "codex_hooks = true", "", ...lines].join("\n");
+    return ["[features]", "hooks = true", "", ...lines].join("\n");
   }
 
   let sectionEnd = lines.length;
@@ -318,14 +355,53 @@ function ensureCodexHooksFeature(config: string): string {
     }
   }
 
-  const hookLine = lines.findIndex((line, index) => index > featureStart && index < sectionEnd && line.trim().startsWith("codex_hooks"));
-  if (hookLine === -1) {
-    lines.splice(featureStart + 1, 0, "codex_hooks = true");
+  let hooksLine = -1;
+  let deprecatedLine = -1;
+  for (let index = featureStart + 1; index < sectionEnd; index += 1) {
+    const trimmed = lines[index].trim();
+    if (/^hooks\s*=/u.test(trimmed)) {
+      hooksLine = index;
+    } else if (/^codex_hooks\s*=/u.test(trimmed)) {
+      deprecatedLine = index;
+    }
+  }
+
+  if (deprecatedLine !== -1) {
+    lines.splice(deprecatedLine, 1);
+    if (hooksLine > deprecatedLine) {
+      hooksLine -= 1;
+    }
+  }
+
+  if (hooksLine === -1) {
+    const insertAt = deprecatedLine === -1 ? featureStart + 1 : deprecatedLine;
+    lines.splice(insertAt, 0, "hooks = true");
   } else {
-    lines[hookLine] = "codex_hooks = true";
+    lines[hooksLine] = "hooks = true";
   }
   return lines.join("\n");
 }
+
+function removeHooksFeature(config: string): string {
+  const lines = config.split(/\r?\n/);
+  const featureStart = lines.findIndex((line) => line.trim() === "[features]");
+  if (featureStart === -1) {
+    return config;
+  }
+
+  let sectionEnd = lines.length;
+  for (let index = featureStart + 1; index < lines.length; index += 1) {
+    const trimmed = lines[index].trim();
+    if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+      sectionEnd = index;
+      break;
+    }
+  }
+
+	  return lines
+	    .filter((line, index) => index <= featureStart || index >= sectionEnd || !/^(?:codex_)?hooks\s*=/u.test(line.trim()))
+	    .join("\n");
+	}
 
 function stripManagedBlocks(config: string): string {
   const lines = config.split(/\r?\n/);

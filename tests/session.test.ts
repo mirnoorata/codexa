@@ -1,10 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildIndex } from "../src/indexer.js";
-import { contextPackQuery, diffImpactQuery, testPlanQuery } from "../src/queries.js";
+import { changePlanQuery, contextPackQuery, diffImpactQuery, taskBriefQuery, testPlanQuery } from "../src/queries.js";
 import { createQuerySession } from "../src/query/session.js";
 import { getChangedFileEntries } from "../src/query/worktree.js";
 
@@ -163,6 +163,265 @@ describe("QuerySession", () => {
     expect(data.focusFiles?.every((entry) => entry.tier === "fallback")).toBe(false);
     expect(data.quality?.level).not.toBe("low");
     expect(result.text).toContain("natural task retrieval");
+  });
+
+  it("surfaces why context packet files were selected", async () => {
+    const repo = await createSessionFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+    await writeFile(path.join(repo, "src/main.ts"), "export function main() { return 3 }\n", "utf8");
+
+    const result = await contextPackQuery(
+      repo,
+      {
+        task: "Change main behavior without missing tests",
+        files: ["src/main.ts"],
+        diff: true,
+        includeSnippets: false,
+        limit: 6
+      },
+      { autoRefresh: false }
+    );
+    const data = result.data as {
+      contextSources?: Array<{
+        source: string;
+        fileCount: number;
+        evidenceTierCounts: Record<string, number>;
+        sampleFiles: string[];
+        sampleReasons: string[];
+      }>;
+    };
+
+    expect(result.text).toContain("Context sources:");
+    expect(data.contextSources?.map((entry) => entry.source)).toEqual(expect.arrayContaining(["explicit_target", "dirty_worktree"]));
+    const explicitTarget = data.contextSources?.find((entry) => entry.source === "explicit_target");
+    expect(explicitTarget?.fileCount).toBeGreaterThanOrEqual(1);
+    expect(explicitTarget?.evidenceTierCounts.authoritative).toBeGreaterThanOrEqual(1);
+    expect(explicitTarget?.sampleFiles).toContain("src/main.ts");
+    expect(explicitTarget?.sampleReasons.some((reason) => reason.includes("requested file"))).toBe(true);
+
+    const explicitOnlyResult = await contextPackQuery(
+      repo,
+      {
+        files: ["src/main.ts"],
+        diff: false,
+        includeSnippets: false,
+        limit: 6
+      },
+      { autoRefresh: false }
+    );
+    const explicitOnlySources = (explicitOnlyResult.data as typeof data).contextSources ?? [];
+    const explicitOnlyTarget = explicitOnlySources.find((entry) => entry.source === "explicit_target");
+    expect(explicitOnlyTarget?.fileCount).toBe(1);
+    expect(explicitOnlyTarget?.sampleFiles).toEqual(["src/main.ts"]);
+    const explicitOnlyGraph = explicitOnlySources.find((entry) => entry.source === "graph_impact");
+    expect(explicitOnlyGraph?.sampleFiles ?? []).not.toContain("src/main.ts");
+
+    const mixedResult = await contextPackQuery(
+      repo,
+      {
+        files: ["src/main.ts"],
+        query: "mai",
+        diff: false,
+        includeSnippets: false,
+        limit: 6
+      },
+      { autoRefresh: false }
+    );
+    const mixedSources = (mixedResult.data as typeof data).contextSources ?? [];
+    const lexical = mixedSources.find((entry) => entry.source === "lexical_query");
+    expect(lexical?.sampleFiles).toContain("src/main.ts");
+    expect(lexical?.evidenceTierCounts.heuristic).toBeGreaterThanOrEqual(1);
+    expect(lexical?.evidenceTierCounts.authoritative ?? 0).toBe(0);
+
+    const exactMixedResult = await contextPackQuery(
+      repo,
+      {
+        files: ["src/main.ts"],
+        query: "main",
+        diff: false,
+        includeSnippets: false,
+        limit: 6
+      },
+      { autoRefresh: false }
+    );
+    const exactMixedSources = (exactMixedResult.data as typeof data).contextSources ?? [];
+    const exactLexical = exactMixedSources.find((entry) => entry.source === "lexical_query");
+    expect(exactLexical?.sampleFiles).toContain("src/main.ts");
+    expect(exactLexical?.evidenceTierCounts.derived ?? 0).toBeGreaterThanOrEqual(1);
+    expect(exactLexical?.evidenceTierCounts.authoritative ?? 0).toBe(0);
+    expect(exactLexical?.evidenceTierCounts.heuristic ?? 0).toBe(0);
+  });
+
+  it("keeps current-diff orientation focus bounded to representatives", async () => {
+    const repo = await createSessionFixtureRepo();
+    await mkdir(path.join(repo, "tests"), { recursive: true });
+    await writeFile(path.join(repo, "src/api.ts"), "export function api() { return 1 }\n", "utf8");
+    await writeFile(path.join(repo, "src/util.ts"), "export function util() { return 1 }\n", "utf8");
+    await writeFile(path.join(repo, "src/extra.ts"), "export function extra() { return 1 }\n", "utf8");
+    await writeFile(path.join(repo, "tests/main.test.ts"), "import { main } from '../src/main'; main();\n", "utf8");
+    await writeFile(path.join(repo, "tests/api.test.ts"), "import { api } from '../src/api'; api();\n", "utf8");
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "extra-fixtures"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    await buildIndex({ repoRoot: repo });
+
+    await writeFile(path.join(repo, "src/main.ts"), "export function main() { return 2 }\n", "utf8");
+    await writeFile(path.join(repo, "src/api.ts"), "export function api() { return 2 }\n", "utf8");
+    await writeFile(path.join(repo, "src/util.ts"), "export function util() { return 2 }\n", "utf8");
+    await writeFile(path.join(repo, "src/extra.ts"), "export function extra() { return 2 }\n", "utf8");
+    await writeFile(path.join(repo, "tests/main.test.ts"), "import { main } from '../src/main'; main(); main();\n", "utf8");
+    await writeFile(path.join(repo, "tests/api.test.ts"), "import { api } from '../src/api'; api(); api();\n", "utf8");
+
+    const result = await contextPackQuery(
+      repo,
+      {
+        task: "Review the current dirty diff across src/main.ts src/api.ts src/util.ts src/extra.ts and choose focused verification.",
+        diff: true,
+        includeSnippets: false,
+        limit: 10
+      },
+      { autoRefresh: false }
+    );
+    const data = result.data as {
+      changedFiles?: string[];
+      contextSources?: Array<{ source: string }>;
+      focusFiles?: Array<{ file: { path: string }; reasons: string[] }>;
+      retrieval?: unknown;
+      tests?: Array<{ path: string }>;
+    };
+
+    expect(data.changedFiles?.length).toBe(6);
+    expect(data.focusFiles?.length).toBeLessThanOrEqual(2);
+    expect(data.tests?.length ?? 0).toBeLessThanOrEqual(data.focusFiles?.length ?? 0);
+    expect(data.contextSources?.map((entry) => entry.source)).toContain("dirty_worktree");
+    expect(data.contextSources?.map((entry) => entry.source)).not.toContain("lexical_query");
+    expect(data.retrieval).toBeUndefined();
+    expect(data.focusFiles?.flatMap((entry) => entry.reasons).join("\n")).not.toContain("natural task retrieval");
+
+    const noDiffResult = await contextPackQuery(
+      repo,
+      {
+        task: "make changes to main context provenance",
+        diff: false,
+        includeSnippets: false,
+        limit: 6
+      },
+      { autoRefresh: false }
+    );
+    const noDiffData = noDiffResult.data as { contextSources?: Array<{ source: string }>; focusFiles?: Array<{ tier: string }>; retrieval?: unknown };
+    expect(noDiffData.retrieval).toBeTruthy();
+    expect(noDiffData.contextSources?.map((entry) => entry.source)).toContain("natural_retrieval");
+    expect(noDiffData.contextSources?.map((entry) => entry.source)).not.toContain("dirty_worktree");
+    expect(noDiffData.focusFiles?.every((entry) => entry.tier === "fallback")).toBe(false);
+  });
+
+  it("plans explicitly requested dirty-worktree fixes without raw-search fallback", async () => {
+    const repo = await createSessionFixtureRepo();
+    await mkdir(path.join(repo, "tests"), { recursive: true });
+    await writeFile(path.join(repo, "src/api.ts"), "export function api() { return 1 }\n", "utf8");
+    await writeFile(path.join(repo, "src/util.ts"), "export function util() { return 1 }\n", "utf8");
+    await writeFile(path.join(repo, "src/extra.ts"), "export function extra() { return 1 }\n", "utf8");
+    await writeFile(path.join(repo, "tests/main.test.ts"), "import { main } from '../src/main'; main();\n", "utf8");
+    await writeFile(path.join(repo, "tests/api.test.ts"), "import { api } from '../src/api'; api();\n", "utf8");
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "extra-fixtures"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    await buildIndex({ repoRoot: repo });
+
+    await writeFile(path.join(repo, "src/main.ts"), "export function main() { return 2 }\n", "utf8");
+    await writeFile(path.join(repo, "src/api.ts"), "export function api() { return 2 }\n", "utf8");
+    await writeFile(path.join(repo, "src/util.ts"), "export function util() { return 2 }\n", "utf8");
+    await writeFile(path.join(repo, "src/extra.ts"), "export function extra() { return 2 }\n", "utf8");
+    await writeFile(path.join(repo, "tests/main.test.ts"), "import { main } from '../src/main'; main(); main();\n", "utf8");
+    await writeFile(path.join(repo, "tests/api.test.ts"), "import { api } from '../src/api'; api(); api();\n", "utf8");
+
+    const brief = await taskBriefQuery(
+      repo,
+      {
+        task: "Fix the current dirty worktree and choose focused verification.",
+        diff: true,
+        includeSnippets: false,
+        limit: 10
+      },
+      { autoRefresh: false }
+    );
+    const briefData = brief.data as {
+      packetVerdict?: string;
+      actionability?: string;
+      dirtyScope?: { requested?: boolean; canPlan?: boolean; changedFileCount?: number; plannedEditTargets?: string[] };
+      focusFiles?: Array<{ file: { path: string }; reasons: string[] }>;
+      contextSources?: Array<{ source: string }>;
+      nextTools?: Array<{ tool?: string; requiredInputs?: Record<string, unknown>; reason?: string }>;
+    };
+
+    expect(briefData.packetVerdict).toBe("edit-ready");
+    expect(briefData.actionability).toBe("edit_ready");
+    expect(brief.text).toContain("Recommended next MCP call: change_plan");
+    expect(brief.text).not.toContain("raw search likely gives a cleaner first pass");
+    expect(briefData.dirtyScope).toMatchObject({ requested: true, canPlan: true, changedFileCount: 6 });
+    expect(briefData.dirtyScope?.plannedEditTargets).toEqual(["src/api.ts", "src/extra.ts", "src/main.ts", "src/util.ts", "tests/api.test.ts", "tests/main.test.ts"]);
+    expect(briefData.focusFiles?.length).toBeLessThanOrEqual(2);
+    expect(briefData.contextSources?.map((entry) => entry.source)).toContain("dirty_worktree");
+    const guidedChangePlan = briefData.nextTools?.find((tool) => tool.tool === "change_plan");
+    expect(guidedChangePlan?.reason).toContain("full dirty-worktree edit plan");
+    expect(guidedChangePlan?.requiredInputs).toMatchObject({
+      task: "Fix the current dirty worktree and choose focused verification.",
+      diff: true,
+      saveSnapshot: true
+    });
+    expect(guidedChangePlan?.requiredInputs).not.toHaveProperty("files");
+
+    const guidedPlan = await changePlanQuery(repo, guidedChangePlan?.requiredInputs as Parameters<typeof changePlanQuery>[1], { autoRefresh: false });
+    const guidedPlanData = guidedPlan.data as {
+      editReadiness?: { editable: boolean; status: string; source: string };
+      plannedEditTargets?: string[];
+    };
+    expect(guidedPlanData.editReadiness).toMatchObject({ editable: true, status: "edit-ready", source: "dirty-worktree" });
+    expect(guidedPlanData.plannedEditTargets).toEqual(["src/api.ts", "src/extra.ts", "src/main.ts", "src/util.ts", "tests/api.test.ts", "tests/main.test.ts"]);
+
+    const plan = await changePlanQuery(
+      repo,
+      {
+        task: "Fix the current dirty worktree and choose focused verification.",
+        diff: true,
+        includeSnippets: false,
+        limit: 10,
+        saveSnapshot: true,
+        taskId: "dirty-worktree-plan"
+      },
+      { autoRefresh: false }
+    );
+    const planData = plan.data as {
+      editReadiness?: { editable: boolean; status: string; source: string; reason: string };
+      plannedEditTargets?: string[];
+      targetCandidates?: unknown[];
+      snapshot?: { taskId: string; plannedEditTargets: string[]; dirtyBaseline: { dirtyFiles: string[] } };
+      context?: { focusFiles?: unknown[]; dirtyScope?: { plannedEditTargets?: string[] } };
+    };
+
+    expect(planData.editReadiness).toMatchObject({ editable: true, status: "edit-ready", source: "dirty-worktree" });
+    expect(planData.editReadiness?.reason).toContain("current dirty worktree explicitly requested");
+    expect(planData.plannedEditTargets).toEqual(["src/api.ts", "src/extra.ts", "src/main.ts", "src/util.ts", "tests/api.test.ts", "tests/main.test.ts"]);
+    expect(planData.context?.focusFiles?.length).toBeLessThanOrEqual(2);
+    expect(planData.targetCandidates).toEqual([]);
+    expect(planData.snapshot).toMatchObject({
+      taskId: "dirty-worktree-plan",
+      plannedEditTargets: ["src/api.ts", "src/extra.ts", "src/main.ts", "src/util.ts", "tests/api.test.ts", "tests/main.test.ts"],
+      dirtyBaseline: {
+        dirtyFiles: ["src/api.ts", "src/extra.ts", "src/main.ts", "src/util.ts", "tests/api.test.ts", "tests/main.test.ts"]
+      }
+    });
+    expect(plan.text).toContain("Treat the current dirty worktree as the planned edit scope (6 files)");
+    const saved = JSON.parse(await readFile(path.join(repo, ".codex/cache/codexa-tasks/dirty-worktree-plan.json"), "utf8")) as {
+      plannedEditTargets: string[];
+      dirtyBaseline: { dirtyFiles: string[] };
+    };
+    expect(saved.plannedEditTargets).toEqual(planData.plannedEditTargets);
+    expect(saved.dirtyBaseline.dirtyFiles).toEqual(planData.plannedEditTargets);
   });
 });
 

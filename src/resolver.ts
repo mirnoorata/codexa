@@ -128,14 +128,33 @@ function resolveImportPath(imp: ImportEdgeFact, files: Set<string>, aliases: Imp
     }
     return undefined;
   }
+  if (imp.path.endsWith(".rs")) {
+    const rustCandidate = rustImportCandidate(imp.path, imp.specifier);
+    if (rustCandidate) {
+      const resolved = resolveCandidate(rustCandidate, files);
+      if (resolved) {
+        return resolved;
+      }
+    }
+  }
   const aliasCandidate = resolveAliasCandidate(imp.specifier, imp.path, aliases);
-  if (aliasCandidate) {
-    const resolved = resolveCandidate(aliasCandidate, files);
+  if (aliasCandidate !== undefined) {
+    const resolved = resolveCandidate(aliasCandidate, files) ?? (imp.path.endsWith(".go") ? resolvePackageDirectoryCandidate(aliasCandidate, files, ".go") : undefined);
     if (resolved) {
       return resolved;
     }
   }
+  if (imp.path.endsWith(".go")) {
+    if (!imp.specifier.includes("/")) {
+      return undefined;
+    }
+    return resolveCandidate(imp.specifier, files) ?? resolvePackageDirectoryCandidate(imp.specifier, files, ".go");
+  }
   const dottedCandidate = imp.specifier.replace(/\./g, "/");
+  const directResolved = resolveCandidate(imp.specifier, files);
+  if (directResolved) {
+    return directResolved;
+  }
   if (imp.importedName && imp.importedName !== "*") {
     const importedDottedResolved = resolveCandidate(path.posix.join(dottedCandidate, imp.importedName), files);
     if (importedDottedResolved) {
@@ -148,6 +167,35 @@ function resolveImportPath(imp: ImportEdgeFact, files: Set<string>, aliases: Imp
   }
   if (imp.specifier.startsWith("/")) {
     return resolveCandidate(imp.specifier.slice(1), files);
+  }
+  return undefined;
+}
+
+function rustImportCandidate(importerPath: string, specifier: string): string | undefined {
+  const normalized = specifier.replace(/::/gu, "/");
+  if (specifier === "crate") {
+    return "src";
+  }
+  if (specifier === "self") {
+    return normalizePath(path.posix.dirname(importerPath));
+  }
+  if (specifier === "super") {
+    return normalizePath(path.posix.dirname(path.posix.dirname(importerPath)));
+  }
+  if (specifier.startsWith("crate::")) {
+    return normalizePath(path.posix.join("src", normalized.slice("crate/".length)));
+  }
+  if (specifier.startsWith("self::")) {
+    return normalizePath(path.posix.join(path.posix.dirname(importerPath), normalized.slice("self/".length)));
+  }
+  if (specifier.startsWith("super::")) {
+    let anchor = path.posix.dirname(importerPath);
+    let rest = specifier;
+    while (rest.startsWith("super::")) {
+      anchor = path.posix.dirname(anchor);
+      rest = rest.slice("super::".length);
+    }
+    return normalizePath(path.posix.join(anchor, rest.replace(/::/gu, "/")));
   }
   return undefined;
 }
@@ -194,6 +242,11 @@ function resolveCandidate(candidate: string, files: Set<string>): string | undef
     `${candidate}.js`,
     `${candidate}.jsx`,
     `${candidate}.py`,
+    `${candidate}.rs`,
+    `${candidate}.go`,
+    `${candidate}.java`,
+    `src/main/java/${candidate}.java`,
+    `src/test/java/${candidate}.java`,
     `${candidate}.md`,
     `${candidate}.mdx`,
     `${candidate}.rst`,
@@ -201,9 +254,27 @@ function resolveCandidate(candidate: string, files: Set<string>): string | undef
     `${candidate}/index.ts`,
     `${candidate}/index.tsx`,
     `${candidate}/index.js`,
-    `${candidate}/__init__.py`
+    `${candidate}/__init__.py`,
+    `${candidate}/lib.rs`,
+    `${candidate}/mod.rs`
   ];
   return variants.find((variant) => files.has(variant));
+}
+
+function resolvePackageDirectoryCandidate(candidate: string, files: Set<string>, ext: ".go"): string | undefined {
+  const normalized = candidate.replace(/\/+$/u, "");
+  const prefix = normalized ? `${normalized}/` : "";
+  const matches = [...files]
+    .filter((file) => file.startsWith(prefix) && file.endsWith(ext) && !isTestPath(file) && (normalized || !file.includes("/")))
+    .sort((a, b) => {
+      const aDepth = a.slice(prefix.length).split("/").length;
+      const bDepth = b.slice(prefix.length).split("/").length;
+      if (aDepth !== bDepth) {
+        return aDepth - bDepth;
+      }
+      return a.localeCompare(b);
+    });
+  return matches[0];
 }
 
 interface ImportBindings {
@@ -258,6 +329,8 @@ function buildImportBindings(imports: ImportEdgeFact[], symbolsByPath: Map<strin
     const target = resolveImportedSymbol(imp, symbolsByPath, reExports);
     if (target) {
       addExact(imp.path, localName, target);
+    } else if (imp.localName && !imp.importedName) {
+      addNamespace(imp.path, imp.localName, imp.resolvedPath);
     } else if (imp.localName && importedNameLooksLikeResolvedModule(imp)) {
       addNamespace(imp.path, imp.localName, imp.resolvedPath);
     }
@@ -442,12 +515,30 @@ function resolveImportedUsage(usage: UsageSiteFact, bindings: ImportBindings): S
   if (!member) {
     return undefined;
   }
+  const candidates = namespaceSymbols(namespacePath, bindings);
   return (
-    exactSymbolInPath(bindings.symbolsByPath.get(namespacePath) ?? [], memberChain) ??
-    exactSymbolInPath(bindings.symbolsByPath.get(namespacePath) ?? [], member) ??
+    exactSymbolInPath(candidates, memberChain) ??
+    exactSymbolInPath(candidates, member) ??
     lookupReExport(bindings.reExports, namespacePath, memberChain) ??
     lookupReExport(bindings.reExports, namespacePath, member)
   );
+}
+
+function namespaceSymbols(namespacePath: string, bindings: ImportBindings): SymbolFact[] {
+  const direct = bindings.symbolsByPath.get(namespacePath) ?? [];
+  if (!namespacePath.endsWith(".go")) {
+    return direct;
+  }
+  const packageDir = path.posix.dirname(namespacePath);
+  const symbols = new Map<string, SymbolFact>();
+  for (const [filePath, fileSymbols] of bindings.symbolsByPath) {
+    if (filePath.endsWith(".go") && !isTestPath(filePath) && path.posix.dirname(filePath) === packageDir) {
+      for (const symbol of fileSymbols) {
+        symbols.set(symbol.id, symbol);
+      }
+    }
+  }
+  return [...symbols.values()];
 }
 
 function importedLocalMatches(usage: UsageSiteFact, localsByPath: Map<string, Set<string>>): boolean {

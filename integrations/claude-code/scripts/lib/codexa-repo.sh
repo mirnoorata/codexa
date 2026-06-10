@@ -42,6 +42,35 @@ claudio_log() {
   fi
 }
 
+claudio_is_wired_repo() {
+  local repo="${1:-}"
+  [[ -z "$repo" ]] && return 1
+  [[ ! -d "$repo" ]] && return 1
+  python3 - "$repo" <<'PY' 2>/dev/null
+import os
+import stat
+import sys
+
+repo = sys.argv[1]
+repo_fd = codex_fd = config_fd = None
+try:
+    repo_fd = os.open(repo, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY | os.O_CLOEXEC)
+    codex_fd = os.open(".codex", os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY | os.O_CLOEXEC, dir_fd=repo_fd)
+    config_fd = os.open("config.toml", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=codex_fd)
+    st = os.fstat(config_fd)
+    sys.exit(0 if stat.S_ISREG(st.st_mode) else 1)
+except OSError:
+    sys.exit(1)
+finally:
+    for fd in (config_fd, codex_fd, repo_fd):
+        if fd is not None:
+            try:
+                os.close(fd)
+            except OSError:
+                pass
+PY
+}
+
 # Print the nearest ancestor directory that contains a .codex/config.toml
 # (a codexa-wired repo), or empty if not found. Refuses to traverse above
 # the user's home directory or return "/".
@@ -54,7 +83,7 @@ claudio_find_codexa_repo() {
   local home_real
   home_real="$(cd "$HOME" 2>/dev/null && pwd -P)" || home_real=""
   while [[ -n "$dir" && "$dir" != "/" ]]; do
-    if [[ -f "$dir/.codex/config.toml" ]]; then
+    if claudio_is_wired_repo "$dir"; then
       printf '%s\n' "$dir"
       return 0
     fi
@@ -314,6 +343,10 @@ scanned = 0
 accepted = 0
 for name in entries:
     if name.startswith("."):
+        continue
+    # Parent-scan output is consumed by shell loops. Refuse control-character
+    # names instead of letting a newline or tab become a fake second repo.
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in name):
         continue
     if scanned >= MAX_ENTRIES_SCANNED:
         break
@@ -624,5 +657,30 @@ PY
 claudio_has_snapshot() {
   local repo="${1:-}"
   [[ -z "$repo" ]] && return 1
-  [[ -f "$repo/.codex/cache/codexa-tasks/latest.json" ]]
+  python3 - "$repo" <<'PY' 2>/dev/null
+import os
+import stat
+import sys
+
+repo = sys.argv[1]
+fds = []
+try:
+    fd = os.open(repo, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY | os.O_CLOEXEC)
+    fds.append(fd)
+    for component in (".codex", "cache", "codexa-tasks"):
+        fd = os.open(component, os.O_RDONLY | os.O_NOFOLLOW | os.O_DIRECTORY | os.O_CLOEXEC, dir_fd=fds[-1])
+        fds.append(fd)
+    latest_fd = os.open("latest.json", os.O_RDONLY | os.O_NOFOLLOW | os.O_CLOEXEC, dir_fd=fds[-1])
+    fds.append(latest_fd)
+    st = os.fstat(latest_fd)
+    sys.exit(0 if stat.S_ISREG(st.st_mode) else 1)
+except OSError:
+    sys.exit(1)
+finally:
+    for fd in reversed(fds):
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+PY
 }

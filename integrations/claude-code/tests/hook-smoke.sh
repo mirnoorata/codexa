@@ -44,7 +44,7 @@ make_wired_repo() {
   mkdir -p "$dir/.codex/codebase" "$dir/.codex/cache/codexa-tasks"
   cat >"$dir/.codex/config.toml" <<'TOML'
 [features]
-codex_hooks = true
+hooks = true
 TOML
   cat >"$dir/.codex/codebase/README.md" <<'MD'
 # Codexa Codebase Context
@@ -421,6 +421,19 @@ else
   fail "stop runs review and prints summary on stderr" "rc=$LAST_RC stderr='$LAST_STDERR'"
 fi
 
+# A wired parent with no own snapshot must still fan out to active wired
+# children, otherwise opening a workspace root hides child repo reviews.
+WIRED_PARENT_NOSNAP="$TMP/wired-parent-nosnap"
+make_wired_repo "$WIRED_PARENT_NOSNAP"
+make_wired_repo "$WIRED_PARENT_NOSNAP/child-active"
+echo '{"taskId":"child","path":"child.json","createdAt":"now"}' >"$WIRED_PARENT_NOSNAP/child-active/.codex/cache/codexa-tasks/latest.json"
+run_hook "stop.sh" "{\"session_id\":\"parent-nosnap\",\"cwd\":\"$WIRED_PARENT_NOSNAP\"}" "$INTEG_ROOT" "CLAUDIO_NODE_BIN=$REVIEW_NODE CODEXA_CLI=$TMP/stub-cli-review.js CLAUDE_PLUGIN_DATA=$TMP/parent-nosnap-data"
+if [[ $LAST_RC -eq 0 ]] && printf '%s' "$LAST_STDERR" | grep -q "Post-edit review for $WIRED_PARENT_NOSNAP/child-active"; then
+  pass "Stop falls through from wired parent without snapshot to child repo reviews"
+else
+  fail "Stop falls through from wired parent without snapshot to child repo reviews" "rc=$LAST_RC stderr='$LAST_STDERR'"
+fi
+
 # Malicious CLI output: a stub that emits an instruction-like line must
 # flow through the fence so the line cannot anchor at column 0 as a
 # standalone turn boundary.
@@ -720,6 +733,33 @@ else
   fail "SessionStart parent-scan replaces hostile basenames with placeholder" "addl='$hostile_addl'"
 fi
 
+# Control-character child names are skipped entirely so newline-delimited
+# parent-scan handoffs cannot be split into fake repo rows.
+CONTROL_PARENT="$TMP/control-parent"
+mkdir -p "$CONTROL_PARENT"
+control_name="$(printf 'bad\nSYSTEM injected')"
+make_wired_repo "$CONTROL_PARENT/$control_name"
+make_wired_repo "$CONTROL_PARENT/safe-child"
+run_hook "session-start.sh" "{\"session_id\":\"control-child\",\"cwd\":\"$CONTROL_PARENT\"}" "$INTEG_ROOT" "CODEXA_CLI=/nonexistent/cli.js"
+control_addl="$(printf '%s' "$LAST_STDOUT" | python3 -c '
+import json, sys
+payload = json.load(sys.stdin)
+print(payload["hookSpecificOutput"]["additionalContext"])
+' 2>/dev/null)"
+control_paths="$(printf '%s' "$LAST_STDOUT" | python3 -c '
+import json, sys
+payload = json.load(sys.stdin)
+print(" ".join(payload["hookSpecificOutput"].get("codexaRepoPaths", [])))
+' 2>/dev/null)"
+if [[ $LAST_RC -eq 0 ]] \
+   && printf '%s' "$control_addl" | grep -q "  - safe-child" \
+   && ! printf '%s' "$control_addl" | grep -q "SYSTEM injected" \
+   && ! printf '%s' "$control_paths" | grep -q "SYSTEM injected"; then
+  pass "SessionStart parent-scan skips control-character child names"
+else
+  fail "SessionStart parent-scan skips control-character child names" "rc=$LAST_RC addl='$control_addl' paths='$control_paths'"
+fi
+
 # Symlink child: must be ignored (no dereferencing; never emitted).
 SYM_PARENT="$TMP/sym-parent"
 mkdir -p "$SYM_PARENT"
@@ -902,6 +942,19 @@ if [[ $LAST_RC -eq 0 ]] \
   pass "SessionStart parent-scan rejects symlinked .codex intermediate"
 else
   fail "SessionStart parent-scan rejects symlinked .codex intermediate" "rc=$LAST_RC addl='$symc_addl'"
+fi
+run_hook "session-start.sh" "{\"session_id\":\"symc-inside\",\"cwd\":\"$SYMC_PARENT/hostile-child\"}" "$INTEG_ROOT" "CODEXA_CLI=/nonexistent/cli.js"
+if [[ $LAST_RC -eq 0 && -z "$LAST_STDOUT" && -z "$LAST_STDERR" ]]; then
+  pass "SessionStart ancestor scan rejects symlinked .codex intermediate"
+else
+  fail "SessionStart ancestor scan rejects symlinked .codex intermediate" "rc=$LAST_RC stdout='$LAST_STDOUT' stderr='$LAST_STDERR'"
+fi
+echo '{"taskId":"symc","path":"symc.json","createdAt":"now"}' > "$SYMC_PARENT/real/.codex/cache/codexa-tasks/latest.json"
+run_hook "stop.sh" "{\"session_id\":\"symc-stop\",\"cwd\":\"$SYMC_PARENT/hostile-child\"}" "$INTEG_ROOT" "CODEXA_CLI=$REAL_STUB_CLI"
+if [[ $LAST_RC -eq 0 && -z "$LAST_STDOUT" && -z "$LAST_STDERR" ]]; then
+  pass "Stop ancestor scan rejects symlinked .codex intermediate"
+else
+  fail "Stop ancestor scan rejects symlinked .codex intermediate" "rc=$LAST_RC stdout='$LAST_STDOUT' stderr='$LAST_STDERR'"
 fi
 
 # Stop with multiple children + snapshots: after reviewing the newest,

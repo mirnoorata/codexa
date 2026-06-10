@@ -49,7 +49,7 @@ make_wired_repo() {
   mkdir -p "$dir/.codex/cache/codexa-tasks"
   cat >"$dir/.codex/config.toml" <<'TOML'
 [features]
-codex_hooks = true
+hooks = true
 TOML
 }
 
@@ -234,11 +234,12 @@ fi
 echo '{"taskId":"t","path":"t.json","createdAt":"now"}' >"$REPO/.codex/cache/codexa-tasks/latest.json"
 
 run_cmd "review.sh" "--change-type style" "$REPO"
-if [[ $LAST_RC -eq 0 ]] && printf '%s' "$LAST_STDOUT" | grep -Fxq "ARG: --change-type" \
+if [[ $LAST_RC -eq 0 ]] && printf '%s' "$LAST_STDOUT" | grep -Fxq "ARG: post-edit-review" \
+   && printf '%s' "$LAST_STDOUT" | grep -Fxq "ARG: --change-type" \
    && printf '%s' "$LAST_STDOUT" | grep -Fxq "ARG: style"; then
-  pass "review passes allowlisted --change-type through"
+  pass "review uses canonical post-edit-review and passes allowlisted --change-type through"
 else
-  fail "review passes allowlisted --change-type through" "rc=$LAST_RC stdout='$LAST_STDOUT'"
+  fail "review uses canonical post-edit-review and passes allowlisted --change-type through" "rc=$LAST_RC stdout='$LAST_STDOUT'"
 fi
 
 run_cmd "review.sh" "--change-type behavior --ran-test tests/test_foo.py" "$REPO"

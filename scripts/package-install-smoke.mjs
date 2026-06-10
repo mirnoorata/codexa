@@ -20,7 +20,7 @@ try {
   mkdirSync(packDir, { recursive: true });
   mkdirSync(consumerRoot, { recursive: true });
 
-  const pack = run("npm", ["pack", "--json", "--pack-destination", packDir], {
+  const pack = run("npm", ["pack", "--dry-run=false", "--json", "--pack-destination", packDir], {
     cwd: repoRoot,
     label: "npm pack"
   });
@@ -42,7 +42,7 @@ try {
   rejectPackedPrefix(packageFiles, ".codex/");
 
   writeFileSync(path.join(consumerRoot, "package.json"), `${JSON.stringify({ name: "codexa-package-smoke", private: true, type: "module" }, null, 2)}\n`, "utf8");
-  run("npm", ["install", tarball, "--no-audit", "--fund=false"], {
+  run("npm", ["install", tarball, "--dry-run=false", "--no-audit", "--fund=false"], {
     cwd: consumerRoot,
     label: "install packed tarball",
     timeoutMs: 120_000
@@ -104,6 +104,16 @@ try {
   assertIncludes(hookPost.stdout, "Codexa", "post-edit hook should stay advisory and printable");
 
   await smokeMcp(codexa, targetRepo);
+  const installedPackageRoot = path.join(consumerRoot, "node_modules", "@mirnoorata", "codexa");
+  const installedPluginWrapper = path.join(installedPackageRoot, "plugins", "codexa", "scripts", "codexa-mcp.js");
+  if (!existsSync(installedPluginWrapper)) {
+    throw new Error("installed package is missing the Codexa plugin MCP wrapper");
+  }
+  await smokeMcp(process.execPath, targetRepo, {
+    args: [installedPluginWrapper],
+    env: { ...process.env, CODEXA_REPO: targetRepo, CODEXA_PLUGIN_AUTO_REFRESH: "0" },
+    label: "installed plugin wrapper MCP startup"
+  });
   createWorkspaceFocusedRepo(workspaceRoot, focusedRepo);
   const focusedInit = run(codexa, ["init", focusedRepo], {
     cwd: consumerRoot,
@@ -191,12 +201,14 @@ function createWorkspaceFocusedRepo(workspaceRoot, focusedRepo) {
   writeFileSync(path.join(workspaceRoot, ".codex", "WORKING.md"), `## Active Focus\n\n- Project: \`${focusedRepo}\`\n`, "utf8");
 }
 
-async function smokeMcp(codexa, mcpRoot, options = {}) {
+async function smokeMcp(command, mcpRoot, options = {}) {
   const expectedRepo = options.expectedRepo ?? mcpRoot;
   const label = options.label ?? "installed MCP startup";
+  const args = options.args ?? ["serve", mcpRoot, "--no-auto-refresh"];
   const transport = new StdioClientTransport({
-    command: codexa,
-    args: ["serve", mcpRoot, "--no-auto-refresh"],
+    command,
+    args,
+    env: options.env,
     stderr: "pipe"
   });
   const stderrChunks = [];
@@ -222,7 +234,7 @@ async function smokeMcp(codexa, mcpRoot, options = {}) {
     await client.close().catch(() => undefined);
     checks.push({
       label,
-      command: `${codexa} serve ${mcpRoot} --no-auto-refresh`,
+      command: [command, ...args].join(" "),
       durationMs: Math.round(Number(process.hrtime.bigint() - startedAt) / 1_000_000),
       exitCode: 0,
       signal: null,

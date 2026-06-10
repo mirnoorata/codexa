@@ -286,7 +286,10 @@ Auto-recorded entries:
   `verification` entries tied to the task snapshot.
 - `post_edit_review` records compact `verification`, `risk`, and `decision`
   entries from verdict, drift reasons, missed tests, and verification ledger.
-- `test_plan` records `verification` entries for recommended commands.
+- `test_plan` records preview-only `verification` entries for recommended
+  commands. Planned coverage is represented as `would_cover`; only
+  `post_edit_review` or explicit reported commands turn verification into
+  executed proof.
 
 Auto-recording must be bounded. Prefer one tool-call entry with compact refs to
 one entry per returned file. Compaction can aggregate by ref, task, and kind.

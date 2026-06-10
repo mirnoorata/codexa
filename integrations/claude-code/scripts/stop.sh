@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Stop hook. At the end of every assistant turn, if the session touched
-# (or is sitting above) a codexa-wired repo, run `codexa post-edit` for
+# (or is sitting above) a codexa-wired repo, run `codexa post-edit-review` for
 # each such repo whose change-plan snapshot is "interesting" (has edits
 # beyond the last review), and print a structured summary to stderr.
 #
@@ -229,7 +229,7 @@ PY
   fi
 
   local out rc
-  out="$(claudio_codexa_run 30 post-edit "$repo" --change-type unknown --budget 1600 --limit 8 2>&1)"
+  out="$(claudio_codexa_run 30 post-edit-review "$repo" --change-type unknown --budget 1600 --limit 8 2>&1)"
   rc=$?
 
   local safe_repo
@@ -238,7 +238,7 @@ PY
   if [[ $rc -ne 0 ]]; then
     cat >&2 <<EOF
 [codexa] Post-edit review failed: rc=$rc repo=$safe_repo; debounce marker unchanged, next turn retries.
-[codexa] Run the review by hand to see the full output: node $CODEXA_CLI post-edit $safe_repo
+[codexa] Run the review by hand to see the full output: /codexa-review
 EOF
     return 0
   fi
@@ -256,7 +256,7 @@ EOF
   cat >&2 <<EOF
 [codexa] Post-edit review for $safe_repo:
 $(printf '%s\n' "$summary_fields" | sed 's/^/  /')
-[codexa] Full review: run /codexa-review or node $CODEXA_CLI post-edit $safe_repo
+[codexa] Full review: run /codexa-review or codexa post-edit-review $safe_repo
 EOF
 
   return 0
@@ -289,9 +289,11 @@ default_state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/codexa-claude-code"
 data_dir="${CLAUDE_PLUGIN_DATA:-$default_state_dir}"
 mkdir -p "$data_dir" 2>/dev/null || true
 
-# Mode 1: cwd is inside a wired repo — review that single repo.
+# Mode 1: cwd is inside a wired repo with a snapshot — review that single repo.
+# If a wired workspace parent has no snapshot, fall through to the child scan
+# so a parent `.codex/config.toml` cannot mask active child repo reviews.
 repo="$(claudio_find_codexa_repo "$cwd")"
-if [[ -n "$repo" ]]; then
+if [[ -n "$repo" ]] && claudio_has_snapshot "$repo"; then
   # Defend against a configured state dir that resolves inside the repo —
   # a marker written there would invalidate its own debounce every turn.
   data_dir_real="$(claudio_realpath "$data_dir")"

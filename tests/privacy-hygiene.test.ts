@@ -76,6 +76,18 @@ describe("public hygiene scanner", () => {
     expect(result.stderr).not.toContain(token);
   });
 
+  it("blocks local absolute paths terminated by punctuation or whitespace", async () => {
+    const repo = await createGitRepo();
+    await writeFile(path.join(repo, "README.md"), `bad workspace ${"/"}${"srv"}, bad home ${"/"}home/q \n`, "utf8");
+    commitAll(repo, "add punctuated private paths");
+
+    const result = runHygiene(repo);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("workspace absolute path");
+    expect(result.stderr).toContain("local home path");
+  });
+
   it("scans generated package contents without leaking matches", async () => {
     const dir = await mkdtemp(path.join(os.tmpdir(), "codexa-package-hygiene-"));
     await mkdir(path.join(dir, "dist"), { recursive: true });
@@ -91,6 +103,21 @@ describe("public hygiene scanner", () => {
     expect(result.stderr).toContain("package-hygiene");
     expect(result.stderr).toContain("<redacted>");
     expect(result.stderr).not.toContain(token);
+  });
+
+  it("blocks punctuated local absolute paths in generated package contents", async () => {
+    const dir = await mkdtemp(path.join(os.tmpdir(), "codexa-package-path-hygiene-"));
+    await mkdir(path.join(dir, "dist"), { recursive: true });
+    await writeFile(path.join(dir, "dist", "cli.js"), `const workspace = "${"/"}${"srv"},"\nconst home = "${"/"}home/q "\n`, "utf8");
+
+    const result = spawnSync(process.execPath, [packageHygieneScript, dir], {
+      cwd: codexaRoot,
+      encoding: "utf8"
+    });
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("workspace absolute path");
+    expect(result.stderr).toContain("local home path");
   });
 
   it("keeps generated static analysis imports ignored", () => {

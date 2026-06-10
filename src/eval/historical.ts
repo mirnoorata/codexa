@@ -7,7 +7,7 @@ import path from "node:path";
 import { buildIndex } from "../indexer.js";
 import { changePlanQuery, contextPackQuery, focusBriefQuery, impactQuery, postEditReviewQuery, taskBriefQuery, workflowPathQuery } from "../queries.js";
 import type { QueryOptions, QueryResult } from "../types.js";
-import type { EvalScenario, EvalOracle } from "../eval.js";
+import type { EvalScenario, EvalOracle } from "./types.js";
 
 type HistoricalTool = "task_brief" | "context_pack" | "focus_brief" | "impact" | "workflow_path" | "change_plan" | "post_edit_review";
 
@@ -19,6 +19,7 @@ interface HistoricalTask {
   tool: HistoricalTool;
   repoFixture?: string;
   setupPatch?: HistoricalSetupPatch[];
+  dirtyPatch?: HistoricalSetupPatch[];
   files?: string[];
   symbols?: string[];
   expectedReadFirst: string[];
@@ -41,6 +42,12 @@ interface HistoricalSetupPatch {
   content?: string;
   append?: string;
   replace?: Array<{ from: string; to: string }>;
+}
+
+interface HistoricalDirtyBackup {
+  path: string;
+  existed: boolean;
+  content?: string;
 }
 
 interface HistoricalFixtureRepo {
@@ -103,65 +110,77 @@ async function historicalScenario(
 }
 
 async function runHistoricalTask(repoRoot: string, options: QueryOptions, task: HistoricalTask, expectedCalls: string[]): Promise<QueryResult> {
+  const dirtyBackups: HistoricalDirtyBackup[] = [];
   const calls: string[] = [];
   const call = async (name: HistoricalTool, run: () => Promise<QueryResult>) => {
     calls.push(name);
     return await run();
   };
-  let result: QueryResult;
-  if (task.tool === "impact") {
-    result = await call("impact", () => impactQuery(repoRoot, { file: task.files?.[0], symbol: task.symbols?.[0], changeType: "behavior" }, options));
-  } else if (task.tool === "workflow_path") {
-    result = await call("workflow_path", () => workflowPathQuery(repoRoot, { query: task.task, file: task.files?.[0], symbol: task.symbols?.[0], limit: 10 }, options));
-  } else if (task.tool === "context_pack") {
-    result = await call("context_pack", () => contextPackQuery(repoRoot, { task: task.task, files: task.files, symbols: task.symbols, diff: false, tokenBudget: 2200, limit: 10 }, options));
-  } else if (task.tool === "focus_brief") {
-    result = await call("focus_brief", () => focusBriefQuery(repoRoot, { task: task.task, diff: false, tokenBudget: 1600, limit: 8 }, options));
-  } else if (task.tool === "change_plan") {
-    result = await call("change_plan", () =>
-      changePlanQuery(repoRoot, { task: task.task, files: task.files, symbols: task.symbols, changeType: "api", diff: false, tokenBudget: 2200, limit: 8 }, options)
-    );
-  } else if (task.tool === "post_edit_review") {
-    result = await call("change_plan", () =>
-      changePlanQuery(repoRoot, {
-        task: task.task,
-        files: task.files,
-        symbols: task.symbols,
-        changeType: "api",
-        diff: false,
-        tokenBudget: 1800,
-        limit: 8,
-        saveSnapshot: true,
-        taskId: `historical-${task.id}-${randomUUID()}`
-      }, options)
-    );
-    const editFile = task.expectedChangedFiles?.[0] ?? task.files?.[0];
-    const editPath = editFile ? path.join(repoRoot, editFile) : undefined;
-    const originalContent = editPath ? readFileSync(editPath, "utf8") : undefined;
-    if (editPath && originalContent !== undefined) {
-      await writeFile(editPath, `${originalContent}\n// historical edit marker\n`, "utf8");
+  try {
+    if (task.dirtyPatch?.length) {
+      dirtyBackups.push(...backupHistoricalDirtyPaths(repoRoot, task.dirtyPatch));
+      await applyHistoricalSetupPatches(repoRoot, task.dirtyPatch);
     }
-    try {
-      result = await call("post_edit_review", () => postEditReviewQuery(repoRoot, { taskId: undefined, ranTests: [], tokenBudget: 1800, limit: 8 }, options));
-    } finally {
+    let result: QueryResult;
+    if (task.tool === "impact") {
+      result = await call("impact", () => impactQuery(repoRoot, { file: task.files?.[0], symbol: task.symbols?.[0], changeType: "behavior" }, options));
+    } else if (task.tool === "workflow_path") {
+      result = await call("workflow_path", () => workflowPathQuery(repoRoot, { query: task.task, file: task.files?.[0], symbol: task.symbols?.[0], limit: 10 }, options));
+    } else if (task.tool === "context_pack") {
+      result = await call("context_pack", () =>
+        contextPackQuery(repoRoot, { task: task.task, files: task.files, symbols: task.symbols, diff: Boolean(task.dirtyPatch?.length), tokenBudget: 2200, limit: 10 }, options)
+      );
+    } else if (task.tool === "focus_brief") {
+      result = await call("focus_brief", () => focusBriefQuery(repoRoot, { task: task.task, diff: false, tokenBudget: 1600, limit: 8 }, options));
+    } else if (task.tool === "change_plan") {
+      result = await call("change_plan", () =>
+        changePlanQuery(repoRoot, { task: task.task, files: task.files, symbols: task.symbols, changeType: "api", diff: false, tokenBudget: 2200, limit: 8 }, options)
+      );
+    } else if (task.tool === "post_edit_review") {
+      result = await call("change_plan", () =>
+        changePlanQuery(repoRoot, {
+          task: task.task,
+          files: task.files,
+          symbols: task.symbols,
+          changeType: "api",
+          diff: false,
+          tokenBudget: 1800,
+          limit: 8,
+          saveSnapshot: true,
+          taskId: `historical-${task.id}-${randomUUID()}`
+        }, options)
+      );
+      const editFile = task.expectedChangedFiles?.[0] ?? task.files?.[0];
+      const editPath = editFile ? path.join(repoRoot, editFile) : undefined;
+      const originalContent = editPath ? readFileSync(editPath, "utf8") : undefined;
       if (editPath && originalContent !== undefined) {
-        await writeFile(editPath, originalContent, "utf8");
+        await writeFile(editPath, `${originalContent}\n// historical edit marker\n`, "utf8");
       }
+      try {
+        result = await call("post_edit_review", () => postEditReviewQuery(repoRoot, { taskId: undefined, ranTests: [], tokenBudget: 1800, limit: 8 }, options));
+      } finally {
+        if (editPath && originalContent !== undefined) {
+          await writeFile(editPath, originalContent, "utf8");
+        }
+      }
+    } else {
+      result = await call("task_brief", () => taskBriefQuery(repoRoot, { task: task.task, files: task.files, symbols: task.symbols, diff: false, tokenBudget: 2200, limit: 10 }, options));
     }
-  } else {
-    result = await call("task_brief", () => taskBriefQuery(repoRoot, { task: task.task, files: task.files, symbols: task.symbols, diff: false, tokenBudget: 2200, limit: 10 }, options));
+    return {
+      ...result,
+      data: {
+        ...(result.data && typeof result.data === "object" ? (result.data as Record<string, unknown>) : {}),
+        historicalTaskSuite: task.suite,
+        repoFixture: task.repoFixture,
+        setupPatchFiles: task.setupPatch?.map((entry) => entry.path) ?? [],
+        dirtyPatchFiles: task.dirtyPatch?.map((entry) => entry.path) ?? [],
+        callTrace: calls,
+        expectedCallTrace: expectedCalls
+      }
+    };
+  } finally {
+    await restoreHistoricalDirtyPatches(repoRoot, dirtyBackups);
   }
-  return {
-    ...result,
-    data: {
-      ...(result.data && typeof result.data === "object" ? (result.data as Record<string, unknown>) : {}),
-      historicalTaskSuite: task.suite,
-      repoFixture: task.repoFixture,
-      setupPatchFiles: task.setupPatch?.map((entry) => entry.path) ?? [],
-      callTrace: calls,
-      expectedCallTrace: expectedCalls
-    }
-  };
 }
 
 async function prepareHistoricalScenarioRepo(baseRepoRoot: string, task: HistoricalTask, sharedCleanupRoot?: string): Promise<{ repoRoot: string; cleanupRepoRoots: string[] }> {
@@ -229,6 +248,36 @@ async function applyHistoricalSetupPatches(repoRoot: string, patches: Historical
   }
 }
 
+function backupHistoricalDirtyPaths(repoRoot: string, patches: HistoricalSetupPatch[]): HistoricalDirtyBackup[] {
+  const backups: HistoricalDirtyBackup[] = [];
+  const seen = new Set<string>();
+  for (const patch of patches) {
+    if (seen.has(patch.path)) {
+      continue;
+    }
+    seen.add(patch.path);
+    const absolute = path.join(repoRoot, patch.path);
+    try {
+      backups.push({ path: patch.path, existed: true, content: readFileSync(absolute, "utf8") });
+    } catch {
+      backups.push({ path: patch.path, existed: false });
+    }
+  }
+  return backups;
+}
+
+async function restoreHistoricalDirtyPatches(repoRoot: string, backups: HistoricalDirtyBackup[]): Promise<void> {
+  for (const backup of backups.reverse()) {
+    const absolute = path.join(repoRoot, backup.path);
+    if (backup.existed) {
+      await mkdir(path.dirname(absolute), { recursive: true });
+      await writeFile(absolute, backup.content ?? "", "utf8");
+    } else {
+      await rm(absolute, { force: true });
+    }
+  }
+}
+
 function loadExternalHistoricalTaskPack(repoRoot: string, taskPackPath: string): HistoricalTask[] {
   const resolved = path.resolve(taskPackPath);
   if (!existsSync(resolved)) {
@@ -278,6 +327,7 @@ function parseHistoricalTask(value: unknown, label: string): HistoricalTask {
     tool,
     repoFixture: optionalString(record.repoFixture),
     setupPatch: optionalSetupPatchList(record.setupPatch, `${label}.setupPatch`),
+    dirtyPatch: optionalSetupPatchList(record.dirtyPatch, `${label}.dirtyPatch`),
     files: optionalRepoPathList(record.files, `${label}.files`),
     symbols: optionalStringList(record.symbols, `${label}.symbols`),
     expectedReadFirst: requiredRepoPathList(record.expectedReadFirst, `${label}.expectedReadFirst`),
@@ -417,6 +467,37 @@ async function createHistoricalFixtureRepo(seed: string): Promise<HistoricalFixt
       expectedCodexaCalls: ["change_plan", "post_edit_review"],
       maxFalsePositiveFiles: 1,
       maxContextChars: 7200
+    },
+    {
+      id: "target-led-broad-dirty",
+      suite: "usage-derived",
+      repoFixture: "seeded-typescript-python-service",
+      task: `Change normalize${camel} while unrelated queue, route, and manifest edits are already dirty`,
+      tool: "context_pack",
+      files: ["src/shared.ts"],
+      dirtyPatch: [
+        { path: "src/backend/routes.py", append: `\n# dirty ${token} route note\n` },
+        { path: "src/backend/store.py", append: `\n# dirty ${token} store note\n` },
+        { path: "src/backend/helpers.py", append: `\n# dirty ${token} helper note\n` },
+        { path: "src/backend/app.py", append: `\n# dirty ${token} app note\n` },
+        { path: "src/backend/adapter.py", append: `\n# dirty ${token} adapter note\n` },
+        { path: "src/ui/use_polling.ts", append: `\n// dirty ${token} polling note\n` },
+        { path: "src/ui/api_client.ts", append: `\n// dirty ${token} api note\n` },
+        { path: "tests/test_backend.py", append: `\n# dirty ${token} backend test note\n` },
+        { path: "tests/test_queue.py", append: `\n# dirty ${token} queue test note\n` },
+        { path: "tests/test_adapter.py", append: `\n# dirty ${token} adapter test note\n` },
+        { path: `manifests/${token}.json`, replace: [{ from: `"adapter_key": "${token}.adapter"`, to: `"adapter_key": "${token}.adapter.dirty"` }] }
+      ],
+      expectedReadFirst: ["src/shared.ts", "src/feature.test.ts", "src/feature.ts"],
+      expectedTests: ["src/feature.test.ts"],
+      forbiddenFiles: ["src/shared_decoy.ts"],
+      knownTraps: ["broad unrelated dirty tree should stay diff context, not read-first focus"],
+      baselineCommands: [["rg", "-n", `normalize${camel}|dirty ${token}`, "."]],
+      expectedCodexaCalls: ["context_pack"],
+      maxFalsePositiveFiles: 2,
+      minFileRecall: 1,
+      minTestRecall: 1,
+      minFilePrecisionAtK: 0.6
     }
   ];
   return { repoRoot, tasks };

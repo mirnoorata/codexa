@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { renderCodexUseContract } from "./codex-contract.js";
+import { ADVANCED_MCP_TOOL_NAMES, NO_SOURCE_MUTATION_CONTRACT, PRIMARY_MCP_TOOL_NAMES } from "./mcp-tool-catalog.js";
 import { isPlaceholderRisk, placeholderCategory } from "./placeholder-signals.js";
 import type { CodexaIndex, FileFact, ModuleClusterFact, SymbolFact } from "./types.js";
 import { escapeMarkdown, formatPathLine, topBy } from "./util.js";
@@ -46,35 +47,25 @@ ${index.files.slice(0, 12).map((file, idx) => `${idx + 1}. \`${file.path}\` - ra
 
 ## Dynamic Queries
 
-Use the Codexa MCP tools for focused live questions:
+Use the primary Codexa MCP tools for the normal edit loop:
 
-- \`repo_map\`
-- \`find_context\`
-- \`symbol_context\`
-- \`placeholder_report\`
-- \`impact\`
-- \`diff_impact\`
-- \`test_plan\`
-- \`task_brief\`
-- \`context_pack\`
-- \`focus_brief\`
-- \`session_context\`
-- \`session_memory\`
-- \`callers\`
-- \`callees\`
-- \`dependency_path\`
-- \`workflow_path\`
-- \`change_plan\`
-- \`post_edit_review\`
-- \`freshness\`
+${PRIMARY_MCP_TOOL_NAMES.map((tool) => `- \`${tool}\``).join("\n")}
+
+Advanced MCP tools remain available for deeper inspection:
+
+${ADVANCED_MCP_TOOL_NAMES.map((tool) => `- \`${tool}\``).join("\n")}
 
 MCP resources expose this generated artifact set under \`codexa://repo/codebase/...\`.
 MCP prompts provide small workflows for snapshot-backed editing, impact-before-edit,
 dirty-diff review, and targeted test planning.
+Use \`search\` as the first-class target-discovery surface when a task is
+ambiguous; it combines raw hits, semantic retrieval when configured, Codexa
+ranking, likely tests, and gaps before \`task_brief\`.
 Read \`codex-contract.md\` first when a new Codex session needs the automatic-use
 rules without loading broader maps.
 
 Facts carry \`source\` and \`confidence\`. Treat Python dynamic/framework edges marked \`heuristic\` as leads, not proof.
+${NO_SOURCE_MUTATION_CONTRACT}
 `;
 }
 

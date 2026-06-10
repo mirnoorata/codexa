@@ -125,6 +125,6 @@ cmd_validate_path_token() {
       ;;
   esac
   # Allow relative .. under repo root (valid monorepo paths may include it)
-  # but disallow an absolute path outside /srv, /home, or the user's repo.
+  # but disallow an absolute path outside known workspace, home, or repo roots.
   return 0
 }

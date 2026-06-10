@@ -1,8 +1,8 @@
-import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import fsSync from "node:fs";
 import path from "node:path";
+import { runCommand } from "./command.js";
 import type { CodexaIndex, FileFact, QueryOptions } from "./types.js";
 import { stableId, uniqueSorted } from "./util.js";
 
@@ -20,6 +20,7 @@ const MAX_PREVIEW_CHARS = 280;
 const MAX_SEMANTIC_MANIFEST_BYTES = 128 * 1024;
 const MAX_SEMANTIC_VECTOR_BYTES = 64 * 1024 * 1024;
 const MAX_SEMANTIC_VECTOR_RECORDS = 100_000;
+const MAX_LOCAL_COMMAND_OUTPUT_BYTES = 16 * 1024 * 1024;
 
 export type SemanticProviderKind = "openai" | "local-command";
 
@@ -68,7 +69,7 @@ interface SemanticManifest {
   dimensions: number;
   chunkCount: number;
   builtAt: string;
-  vectorsFile: typeof VECTORS_FILE;
+  vectorsFile: string;
   sourceFingerprint: string;
 }
 
@@ -156,6 +157,7 @@ export async function buildSemanticIndex(repoRootInput: string, index: CodexaInd
 
   const cacheDir = path.join(repoRoot, SEMANTIC_CACHE_DIR);
   const builtAt = new Date().toISOString();
+  const sourceFingerprint = semanticSourceFingerprint(index, chunks);
   const manifest: SemanticManifest = {
     schemaVersion: SEMANTIC_CACHE_VERSION,
     snapshotId: index.snapshot.snapshotId,
@@ -165,15 +167,15 @@ export async function buildSemanticIndex(repoRootInput: string, index: CodexaInd
     dimensions,
     chunkCount: vectorRecords.length,
     builtAt,
-    vectorsFile: VECTORS_FILE,
-    sourceFingerprint: semanticSourceFingerprint(index, chunks)
+    vectorsFile: semanticVectorFileName({ sourceFingerprint, provider, model, dimensions }),
+    sourceFingerprint
   };
   await writeSemanticCache(cacheDir, manifest, vectorRecords);
   return {
     repoRoot,
     cacheDir,
     manifestPath: path.join(cacheDir, MANIFEST_FILE),
-    vectorPath: path.join(cacheDir, VECTORS_FILE),
+    vectorPath: path.join(cacheDir, manifest.vectorsFile),
     provider,
     model,
     dimensions,
@@ -448,31 +450,47 @@ async function embedWithLocalCommand(items: Array<{ id: string; text: string }>,
   return parseLocalEmbeddingOutput(stdout);
 }
 
-function runLocalEmbeddingCommand(command: string, args: string[], input: string, timeoutMs: number): Promise<string> {
-  return new Promise((resolve, reject) => {
-    const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] });
-    const stdout: Buffer[] = [];
-    const stderr: Buffer[] = [];
-    const timer = setTimeout(() => {
-      child.kill("SIGKILL");
-      reject(new Error(`semantic local-command timed out after ${timeoutMs}ms`));
-    }, timeoutMs);
-    child.stdout.on("data", (chunk) => stdout.push(Buffer.from(chunk)));
-    child.stderr.on("data", (chunk) => stderr.push(Buffer.from(chunk)));
-    child.on("error", (error) => {
-      clearTimeout(timer);
-      reject(error);
-    });
-    child.on("close", (code) => {
-      clearTimeout(timer);
-      if (code !== 0) {
-        reject(new Error(`semantic local-command exited ${code}: ${Buffer.concat(stderr).toString("utf8").slice(0, 600)}`));
-        return;
-      }
-      resolve(Buffer.concat(stdout).toString("utf8"));
-    });
-    child.stdin.end(input, "utf8");
+async function runLocalEmbeddingCommand(command: string, args: string[], input: string, timeoutMs: number): Promise<string> {
+  const result = await runCommand(command, args, {
+    env: localEmbeddingCommandEnv(),
+    input,
+    killProcessGroup: true,
+    maxBufferBytes: MAX_LOCAL_COMMAND_OUTPUT_BYTES,
+    timeoutMs
   });
+  if (!result.ok) {
+    if (result.timedOut) {
+      throw new Error(`semantic local-command timed out after ${timeoutMs}ms`);
+    }
+    if (result.truncated) {
+      throw new Error(`semantic local-command exceeded Codexa's ${MAX_LOCAL_COMMAND_OUTPUT_BYTES} byte output cap`);
+    }
+    const status = result.exitCode === null ? `signal ${result.signal ?? "unknown"}` : `exit ${result.exitCode}`;
+    throw new Error(`semantic local-command failed with ${status}: ${result.stderr.slice(0, 600)}`);
+  }
+  return result.stdout;
+}
+
+function localEmbeddingCommandEnv(): NodeJS.ProcessEnv {
+  const allowed = [
+    "PATH",
+    "TMPDIR",
+    "TMP",
+    "TEMP",
+    "LANG",
+    "LC_ALL",
+    "SystemRoot",
+    "WINDIR",
+    "ComSpec",
+    "PATHEXT"
+  ];
+  const env: NodeJS.ProcessEnv = {};
+  for (const key of allowed) {
+    if (process.env[key] !== undefined) {
+      env[key] = process.env[key];
+    }
+  }
+  return env;
 }
 
 function parseLocalEmbeddingOutput(output: string): Map<string, number[]> {
@@ -513,12 +531,12 @@ function parseLocalEmbeddingOutput(output: string): Map<string, number[]> {
 function loadSemanticCache(repoRoot: string): { ok: true; manifest: SemanticManifest; vectors: SemanticVectorRecord[] } | { ok: false; reason: string } {
   const cacheDir = path.join(repoRoot, SEMANTIC_CACHE_DIR);
   const manifestPath = path.join(cacheDir, MANIFEST_FILE);
-  const vectorPath = path.join(cacheDir, VECTORS_FILE);
   try {
     const manifest = JSON.parse(readSizedTextSync(manifestPath, MAX_SEMANTIC_MANIFEST_BYTES)) as SemanticManifest;
     if (!isManifest(manifest)) {
       return { ok: false, reason: "semantic cache manifest is invalid" };
     }
+    const vectorPath = path.join(cacheDir, manifest.vectorsFile);
     const vectorLines = readSizedTextSync(vectorPath, MAX_SEMANTIC_VECTOR_BYTES)
       .split(/\r?\n/u)
       .filter((line) => line.trim().length > 0);
@@ -558,12 +576,12 @@ function isVectorRecordForManifest(record: unknown, manifest: SemanticManifest):
 
 async function writeSemanticCache(cacheDir: string, manifest: SemanticManifest, vectors: SemanticVectorRecord[]): Promise<void> {
   await fs.mkdir(cacheDir, { recursive: true });
-  const tempSuffix = `.tmp-${process.pid}-${Date.now()}`;
+  const tempSuffix = `.tmp-${process.pid}-${Date.now()}-${randomUUID()}`;
   const manifestTemp = path.join(cacheDir, `${MANIFEST_FILE}${tempSuffix}`);
-  const vectorsTemp = path.join(cacheDir, `${VECTORS_FILE}${tempSuffix}`);
+  const vectorsTemp = path.join(cacheDir, `${manifest.vectorsFile}${tempSuffix}`);
   await fs.writeFile(vectorsTemp, vectors.map((record) => JSON.stringify(record)).join("\n") + "\n", "utf8");
   await fs.writeFile(manifestTemp, JSON.stringify(manifest, null, 2) + "\n", "utf8");
-  await fs.rename(vectorsTemp, path.join(cacheDir, VECTORS_FILE));
+  await fs.rename(vectorsTemp, path.join(cacheDir, manifest.vectorsFile));
   await fs.rename(manifestTemp, path.join(cacheDir, MANIFEST_FILE));
 }
 
@@ -673,6 +691,19 @@ function semanticSourceFingerprint(index: CodexaIndex, chunks: SemanticChunk[]):
     .digest("hex");
 }
 
+function semanticVectorFileName(input: { sourceFingerprint: string; provider: SemanticProviderKind; model: string; dimensions: number }): string {
+  const fingerprint = createHash("sha256")
+    .update(input.sourceFingerprint)
+    .update("\n")
+    .update(input.provider)
+    .update("\n")
+    .update(input.model)
+    .update("\n")
+    .update(String(input.dimensions))
+    .digest("hex");
+  return `vectors-${fingerprint.slice(0, 24)}.jsonl`;
+}
+
 function hashText(value: string): string {
   return createHash("sha256").update(value).digest("hex");
 }
@@ -736,9 +767,13 @@ function isManifest(value: unknown): value is SemanticManifest {
     typeof record.model === "string" &&
     typeof record.dimensions === "number" &&
     typeof record.chunkCount === "number" &&
-    record.vectorsFile === VECTORS_FILE &&
+    isSemanticVectorFileName(record.vectorsFile) &&
     typeof record.sourceFingerprint === "string"
   );
+}
+
+function isSemanticVectorFileName(value: unknown): value is string {
+  return value === VECTORS_FILE || (typeof value === "string" && /^vectors-[a-f0-9]{24}\.jsonl$/u.test(value));
 }
 
 function isVectorRecord(value: unknown): value is SemanticVectorRecord {
