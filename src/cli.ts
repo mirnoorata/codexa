@@ -63,6 +63,8 @@ program
   .option("--no-hooks", "do not write hooks.json")
   .option("--index", "index the repository immediately", true)
   .option("--no-index", "only write Codex config and hooks")
+  .option("--tools <profile>", "MCP tool exposure profile: core (primary loop only, cheaper per turn) or full", parseToolProfile, "full")
+  .option("--agents-md", "write a managed Codexa workflow block into the repo's AGENTS.md", false)
   .description("Initialize Codexa for a project so future Codex sessions discover it automatically.")
   .action(
     async (
@@ -73,6 +75,8 @@ program
         autoRefresh: boolean;
         hooks: boolean;
         index: boolean;
+        tools: "core" | "full";
+        agentsMd: boolean;
       }
     ) => {
       const result = await initializeProject(repo, {
@@ -80,12 +84,17 @@ program
         cliPath: opts.cliPath,
         hooks: opts.hooks,
         index: opts.index,
-        serverName: opts.serverName
+        serverName: opts.serverName,
+        toolProfile: opts.tools,
+        agentsMd: opts.agentsMd
       });
       console.log(`Codexa initialized for ${result.repoRoot}`);
       console.log(`Config: ${result.configPath}`);
       if (result.hooksPath) {
         console.log(`Hook: ${result.hooksPath}`);
+      }
+      if (result.agentsMdPath) {
+        console.log(`AGENTS.md: ${result.agentsMdPath}`);
       }
       console.log(`MCP server: ${result.serverName}`);
       if (result.indexed) {
@@ -1163,6 +1172,13 @@ function parseIntOption(value: string): number {
 
 function parseAutonomyOption(value: string) {
   return parseAutonomyMode(value);
+}
+
+function parseToolProfile(value: string): "core" | "full" {
+  if (value === "core" || value === "full") {
+    return value;
+  }
+  throw new Error(`Invalid tool profile: ${value} (expected core or full)`);
 }
 
 function parseChangeType(value: string): ChangeType {
