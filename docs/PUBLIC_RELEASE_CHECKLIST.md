@@ -55,6 +55,10 @@ has to come back clean against the *new* single commit before you push.
 - `.github/workflows/check.yml` (already exists — CI)
 - `.github/workflows/npm-publish.yml` (publishes npm only from a published
   GitHub Release)
+- `.github/workflows/release-please.yml` (opens or updates the automated
+  Release Please PR after pushes to `main`)
+- `release-please-config.json` and `.release-please-manifest.json` (tracks the
+  Release Please package strategy and current package version)
 - User-facing docs that match the current tool surface: proof-carrying
   `symbol_context`, `EdgeEvidenceV1`, planned-test provenance,
   `CodexaSymbolReportV1`, local outcome ranking, structured `nextTools`, eval
@@ -144,6 +148,12 @@ mean "I cannot merge my own PRs." It just makes the CI green light mandatory.
 
 ### npm package publishing
 
+- Add a repository secret named `RELEASE_PLEASE_TOKEN` at
+  `Settings → Secrets and variables → Actions → Repository secrets`. It should
+  be a personal access token that can create pull requests, tags, and releases
+  for `mirnoorata/codexa`. Release Please must not use the default
+  `GITHUB_TOKEN` when npm publishing depends on a later `release: published`
+  workflow event.
 - Before the first npm release, add a repository secret named `NPM_TOKEN` at
   `Settings → Secrets and variables → Actions → Repository secrets`.
 - The secret must be a granular npm access token with write access to the
@@ -170,6 +180,10 @@ mean "I cannot merge my own PRs." It just makes the CI green light mandatory.
   `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN`, so build,
   install, validation, and test commands cannot mint GitHub OIDC tokens; only the
   final publish step keeps OIDC available for provenance.
+- The automated release chain is: normal PRs merge to `main`, Release Please
+  opens or updates its release PR, the maintainer merges that release PR, GitHub
+  publishes the Release, and `.github/workflows/npm-publish.yml` publishes npm.
+  Release Please does not mean every merge to `main` immediately publishes npm.
 - After `@mirnoorata/codexa` exists on npm, replace token publishing with npm
   trusted publishing for the same repository and workflow filename. The trusted
   publisher should be GitHub Actions, `mirnoorata/codexa`, workflow filename
