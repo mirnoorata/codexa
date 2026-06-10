@@ -64,7 +64,8 @@ program
   .option("--index", "index the repository immediately", true)
   .option("--no-index", "only write Codex config and hooks")
   .option("--tools <profile>", "MCP tool exposure profile: core (primary loop only, cheaper per turn) or full", parseToolProfile, "full")
-  .option("--agents-md", "write a managed Codexa workflow block into the repo's AGENTS.md", false)
+  .option("--agents-md", "write a managed Codexa workflow block into the repo's AGENTS.md (Codex)", false)
+  .option("--claude-md", "write a managed Codexa workflow block into the repo's CLAUDE.md (Claude Code)", false)
   .description("Initialize Codexa for a project so future Codex sessions discover it automatically.")
   .action(
     async (
@@ -77,6 +78,7 @@ program
         index: boolean;
         tools: "core" | "full";
         agentsMd: boolean;
+        claudeMd: boolean;
       }
     ) => {
       const result = await initializeProject(repo, {
@@ -86,7 +88,8 @@ program
         index: opts.index,
         serverName: opts.serverName,
         toolProfile: opts.tools,
-        agentsMd: opts.agentsMd
+        agentsMd: opts.agentsMd,
+        claudeMd: opts.claudeMd
       });
       console.log(`Codexa initialized for ${result.repoRoot}`);
       console.log(`Config: ${result.configPath}`);
@@ -95,6 +98,9 @@ program
       }
       if (result.agentsMdPath) {
         console.log(`AGENTS.md: ${result.agentsMdPath}`);
+      }
+      if (result.claudeMdPath) {
+        console.log(`CLAUDE.md: ${result.claudeMdPath}`);
       }
       console.log(`MCP server: ${result.serverName}`);
       if (result.indexed) {

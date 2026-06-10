@@ -64,8 +64,10 @@ After `codexa init`, the target repository gets a repo-local `.codex/config.toml
 entry that lets Codex discover the Codexa MCP server automatically. Useful flags:
 `--tools core` exposes only the primary-loop tools (plus `impact`/`freshness`) via an
 `enabled_tools` allowlist to cut per-turn schema token cost (confirm your Codex CLI
-supports `enabled_tools` first), and `--agents-md` (opt-in) writes a managed Codexa
-workflow block into the repo's `AGENTS.md`.
+supports `enabled_tools` first), `--agents-md` (opt-in) writes a managed Codexa
+workflow block into the repo's `AGENTS.md` for Codex, and `--claude-md` (opt-in)
+writes the same managed block into `CLAUDE.md` for Claude Code. Both managed-doc
+writes fail closed on unbalanced markers rather than touching user content.
 
 The installed command is `codexa`, and the server can also run ad hoc:
 
@@ -76,11 +78,22 @@ npx -y @mirnoorata/codexa serve /path/to/project --auto-refresh
 Codexa is also listed in the official MCP registry as
 `io.github.mirnoorata/codexa` for MCP clients that discover servers there.
 
+## Works with any MCP host
+
+Codexa is deterministic and model-agnostic — it never calls an LLM, so it serves
+the same evidence-backed context to any agent host that speaks MCP: the OpenAI
+Codex CLI (repo-local `.codex/config.toml`), Claude Code (the bundled plugin under
+`integrations/claude-code/`, plus `--claude-md` steering), and any client that
+discovers it through the MCP registry. There is no per-model integration to do —
+the model lives in the host, and Codexa is the host's context server.
+
 Token discipline is built in: every tool description states its typical output
 cost, structured results are budget-compacted with truncation records naming
 dropped fields, hosts with small MCP result limits can set
 `CODEXA_MCP_STRUCTURED_BUDGET_BYTES`, and the big retrieval tools accept
-`responseFormat: "concise"` for a summary-tier packet.
+`responseFormat: "concise"` for a summary-tier packet. Because the budget caps
+tokens rather than dollars, the savings scale with the host model's price — they
+matter most on frontier-tier models.
 
 ## The Everyday Workflow
 

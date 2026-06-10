@@ -20,6 +20,7 @@ export interface InitOptions {
   serverName?: string;
   toolProfile?: InitToolProfile;
   agentsMd?: boolean;
+  claudeMd?: boolean;
 }
 
 export interface InitResult {
@@ -27,6 +28,7 @@ export interface InitResult {
   configPath: string;
   hooksPath: string | null;
   agentsMdPath: string | null;
+  claudeMdPath: string | null;
   serverName: string;
   indexed: {
     files: number;
@@ -67,7 +69,8 @@ export async function initializeProject(repoInput: string | undefined, options: 
     });
   }
 
-  const agentsMdPath = options.agentsMd ? await upsertAgentsMd(repoRoot, serverName) : null;
+  const agentsMdPath = options.agentsMd ? await upsertManagedDoc(repoRoot, "AGENTS.md", serverName) : null;
+  const claudeMdPath = options.claudeMd ? await upsertManagedDoc(repoRoot, "CLAUDE.md", serverName) : null;
 
   const indexed =
     options.index === false
@@ -79,6 +82,7 @@ export async function initializeProject(repoInput: string | undefined, options: 
     configPath,
     hooksPath: writeHooks ? hooksPath : null,
     agentsMdPath,
+    claudeMdPath,
     serverName,
     indexed
   };
@@ -210,15 +214,18 @@ function renderMcpServerBlock(options: { autoRefresh: boolean; cliPath: string; 
   ].join("\n");
 }
 
-const AGENTS_MD_START = "<!-- >>> codexa managed -->";
-const AGENTS_MD_END = "<!-- <<< codexa managed -->";
+const MANAGED_DOC_START = "<!-- >>> codexa managed -->";
+const MANAGED_DOC_END = "<!-- <<< codexa managed -->";
 
-async function upsertAgentsMd(repoRoot: string, serverName: string): Promise<string> {
-  const agentsMdPath = path.join(repoRoot, "AGENTS.md");
-  const existing = await readTextIfExists(agentsMdPath);
-  assertBalancedAgentsMdMarkers(existing, agentsMdPath);
+// AGENTS.md (Codex) and CLAUDE.md (Claude Code) are different agent-instruction
+// files read by different hosts, but the managed Codexa workflow block and its
+// marker handling are identical for both.
+async function upsertManagedDoc(repoRoot: string, fileName: string, serverName: string): Promise<string> {
+  const docPath = path.join(repoRoot, fileName);
+  const existing = await readTextIfExists(docPath);
+  assertBalancedManagedDocMarkers(existing, docPath);
   const block = [
-    AGENTS_MD_START,
+    MANAGED_DOC_START,
     `## Codexa (\`${serverName}\` MCP server)`,
     "",
     "Codexa serves evidence-backed repository context. Prefer it over raw grep for cross-file questions.",
@@ -229,24 +236,24 @@ async function upsertAgentsMd(repoRoot: string, serverName: string): Promise<str
     "- Inspect: `impact` before API/rename/delete changes; `callers`/`callees` for graph evidence.",
     "",
     "Each tool description states its output cost; prefer the cheapest sufficient tool.",
-    AGENTS_MD_END
+    MANAGED_DOC_END
   ].join("\n");
-  const stripped = stripAgentsMdManagedBlock(existing).replace(/\s+$/u, "");
+  const stripped = stripManagedDocBlock(existing).replace(/\s+$/u, "");
   const next = stripped ? `${stripped}\n\n${block}\n` : `${block}\n`;
-  await writeFile(agentsMdPath, next, "utf8");
-  return agentsMdPath;
+  await writeFile(docPath, next, "utf8");
+  return docPath;
 }
 
-function stripAgentsMdManagedBlock(content: string): string {
+function stripManagedDocBlock(content: string): string {
   const lines = content.split(/\r?\n/);
   const kept: string[] = [];
   let skipping = false;
   for (const line of lines) {
-    if (line.trim() === AGENTS_MD_START) {
+    if (line.trim() === MANAGED_DOC_START) {
       skipping = true;
       continue;
     }
-    if (line.trim() === AGENTS_MD_END) {
+    if (line.trim() === MANAGED_DOC_END) {
       skipping = false;
       continue;
     }
@@ -257,25 +264,25 @@ function stripAgentsMdManagedBlock(content: string): string {
   return kept.join("\n");
 }
 
-// AGENTS.md is hand-authored user content; a stray or unbalanced marker must
-// abort instead of silently deleting everything after it.
-function assertBalancedAgentsMdMarkers(content: string, agentsMdPath: string): void {
+// AGENTS.md / CLAUDE.md are hand-authored user content; a stray or unbalanced
+// marker must abort instead of silently deleting everything after it.
+function assertBalancedManagedDocMarkers(content: string, docPath: string): void {
   let skipping = false;
   for (const line of content.split(/\r?\n/)) {
-    if (line.trim() === AGENTS_MD_START) {
+    if (line.trim() === MANAGED_DOC_START) {
       if (skipping) {
-        throw new Error(`Cannot update ${agentsMdPath}: nested '${AGENTS_MD_START}' marker found; fix the file manually and re-run.`);
+        throw new Error(`Cannot update ${docPath}: nested '${MANAGED_DOC_START}' marker found; fix the file manually and re-run.`);
       }
       skipping = true;
-    } else if (line.trim() === AGENTS_MD_END) {
+    } else if (line.trim() === MANAGED_DOC_END) {
       if (!skipping) {
-        throw new Error(`Cannot update ${agentsMdPath}: orphan '${AGENTS_MD_END}' marker found; fix the file manually and re-run.`);
+        throw new Error(`Cannot update ${docPath}: orphan '${MANAGED_DOC_END}' marker found; fix the file manually and re-run.`);
       }
       skipping = false;
     }
   }
   if (skipping) {
-    throw new Error(`Cannot update ${agentsMdPath}: unterminated '${AGENTS_MD_START}' marker found; fix the file manually and re-run.`);
+    throw new Error(`Cannot update ${docPath}: unterminated '${MANAGED_DOC_START}' marker found; fix the file manually and re-run.`);
   }
 }
 

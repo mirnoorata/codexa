@@ -113,6 +113,31 @@ describe("Codexa project init", () => {
     expect(await readFile(path.join(repo, "AGENTS.md"), "utf8")).toBe(original);
   });
 
+  it("writes a managed CLAUDE.md block for Claude Code independently of AGENTS.md", async () => {
+    const repo = await createInitRepo();
+    await writeFile(path.join(repo, "CLAUDE.md"), "# Project memory\n\nKeep this.\n", "utf8");
+
+    const result = await initializeProject(repo, {
+      cliPath: "/opt/codexa/dist/cli.js",
+      index: false,
+      claudeMd: true
+    });
+
+    expect(result.claudeMdPath).toBe(path.join(repo, "CLAUDE.md"));
+    expect(result.agentsMdPath).toBeNull();
+    const claudeMd = await readFile(path.join(repo, "CLAUDE.md"), "utf8");
+    expect(claudeMd).toContain("Keep this.");
+    expect(claudeMd).toContain("<!-- >>> codexa managed -->");
+    expect(claudeMd).toContain("change_plan");
+    // CLAUDE.md must not have triggered an AGENTS.md write.
+    await expect(readFile(path.join(repo, "AGENTS.md"), "utf8")).rejects.toThrow();
+
+    // Re-run: managed block replaced, not duplicated.
+    await initializeProject(repo, { cliPath: "/opt/codexa/dist/cli.js", index: false, claudeMd: true });
+    const rerun = await readFile(path.join(repo, "CLAUDE.md"), "utf8");
+    expect(rerun.match(/<!-- >>> codexa managed -->/gu)).toHaveLength(1);
+  });
+
   it("updates existing config and hooks idempotently without clobbering unrelated entries", async () => {
     const repo = await createInitRepo();
     const codexDir = path.join(repo, ".codex");
