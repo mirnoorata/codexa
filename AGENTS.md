@@ -32,6 +32,16 @@ npm run release:github -- --tag vX.Y.Z
   GitHub Release entry with a changelog-style summary, changed-area summary,
   GitHub restore commands, branch/worktree continuation commands, and a
   forward-only rollback recipe.
+- Release Please is the preferred automated path after normal changes merge to
+  `main`. It runs from `.github/workflows/release-please.yml`, reads
+  `release-please-config.json` and `.release-please-manifest.json`, opens or
+  updates a release PR, and creates the GitHub Release after that release PR is
+  merged.
+- The Release Please workflow must use the `RELEASE_PLEASE_TOKEN` repository
+  secret, not the default `GITHUB_TOKEN`, because the downstream npm workflow
+  depends on the separate `release: published` event. If a user-visible package
+  release should happen, use a conventional commit subject such as `fix:` for a
+  patch release or `feat:` for a minor release so Release Please can version it.
 - npm publishing is downstream of the GitHub Release entry. The
   `.github/workflows/npm-publish.yml` workflow listens for `release: published`,
   checks that the release tag is exactly `v${package.json.version}`, requires

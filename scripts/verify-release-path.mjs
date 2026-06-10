@@ -4,6 +4,7 @@ import { readFileSync } from "node:fs";
 const failures = [];
 
 const packageJson = JSON.parse(read("package.json"));
+const releasePleaseManifest = JSON.parse(read(".release-please-manifest.json"));
 const scripts = packageJson.scripts ?? {};
 
 requirePackageValue("name", packageJson.name, "@mirnoorata/codexa");
@@ -18,6 +19,8 @@ requireScriptContains("lint", ["verify-codexa-publish.sh"]);
 requireText("AGENTS.md", [
   "## GitHub Change and Release Path",
   "push that branch to GitHub",
+  "Release Please",
+  "RELEASE_PLEASE_TOKEN",
   "npm run release:github",
   "gh release view"
 ]);
@@ -25,6 +28,10 @@ requireText("README.md", [
   "## GitHub Release Timeline",
   "visible source timeline for the current project",
   "npm run release:github",
+  "## Release Automation",
+  "Release Please",
+  "RELEASE_PLEASE_TOKEN",
+  "does not publish npm on every main merge",
   "## npm Package Publishing",
   "release: published",
   "npm publish --registry https://registry.npmjs.org --access public --tag latest --provenance --ignore-scripts",
@@ -35,6 +42,10 @@ requireText("README.md", [
 requireText("docs/PUBLIC_RELEASE_CHECKLIST.md", [
   "npm run release:github",
   ".github/workflows/npm-publish.yml",
+  ".github/workflows/release-please.yml",
+  "release-please-config.json",
+  ".release-please-manifest.json",
+  "RELEASE_PLEASE_TOKEN",
   "NPM_TOKEN",
   "npm publish --registry https://registry.npmjs.org --access public --tag latest --provenance --ignore-scripts",
   "GitHub Release timeline entry",
@@ -68,9 +79,30 @@ requireText(".github/workflows/npm-publish.yml", [
   "was published after the security gate; skipping npm publish.",
   "npm publish --registry \"${NPM_REGISTRY}\" --access public --tag latest --provenance --ignore-scripts"
 ]);
+requireText(".github/workflows/release-please.yml", [
+  "name: Release Please",
+  "branches: [\"main\"]",
+  "contents: write",
+  "issues: write",
+  "pull-requests: write",
+  "github.repository == 'mirnoorata/codexa'",
+  "secrets.RELEASE_PLEASE_TOKEN",
+  "release: published",
+  "googleapis/release-please-action@v4",
+  "config-file: release-please-config.json",
+  "manifest-file: .release-please-manifest.json"
+]);
 requireTextCount(".github/workflows/npm-publish.yml", "id-token: write", 1);
 requireTextCount(".github/workflows/npm-publish.yml", "ACTIONS_ID_TOKEN_REQUEST_URL: \"\"", 4);
 requireTextCount(".github/workflows/npm-publish.yml", "ACTIONS_ID_TOKEN_REQUEST_TOKEN: \"\"", 4);
+requireText("release-please-config.json", [
+  "\"bootstrap-sha\": \"a37a0f78771a26350239ccd30819d2adf4d67c08\"",
+  "\"release-type\": \"node\"",
+  "\"include-v-in-tag\": true",
+  "\"include-component-in-tag\": false",
+  "\"package-name\": \"@mirnoorata/codexa\""
+]);
+requirePackageValue(".release-please-manifest.json[\".\"]", releasePleaseManifest["."], packageJson.version);
 requireText("scripts/codexa-publish.sh", [
   "npm run release:github",
   "commit_current_source_if_dirty",
