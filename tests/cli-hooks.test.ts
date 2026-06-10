@@ -1,13 +1,26 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, readdir, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it, vi } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import { runAutoVerifyForPostEdit, sanitizeAutoVerifyText } from "../src/autoverify.js";
+
+// Wired fixture repos left in the shared os.tmpdir() are picked up by the
+// claude-code hook-smoke parent-scan suite, so no fixture dir may outlive this run.
+const fixtureDirs: string[] = [];
+afterAll(async () => {
+  await Promise.all(fixtureDirs.map((dir) => rm(dir, { recursive: true, force: true })));
+});
+
+async function trackedTmpDir(prefix: string): Promise<string> {
+  const dir = await mkdtemp(path.join(os.tmpdir(), prefix));
+  fixtureDirs.push(dir);
+  return dir;
+}
 
 describe("Codexa hook CLI", () => {
   it("rejects malformed integer options instead of truncating them", async () => {
-    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-cli-integer-"));
+    const repo = await trackedTmpDir("codexa-cli-integer-");
     const result = spawnSync(process.execPath, [path.resolve(process.cwd(), "dist/cli.js"), "repo-map", repo, "--limit", "12abc"], {
       cwd: process.cwd(),
       encoding: "utf8"
@@ -18,8 +31,8 @@ describe("Codexa hook CLI", () => {
   });
 
   it("reports the global autonomy policy when setting --global inside a repo", async () => {
-    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-autonomy-global-"));
-    const codexaHome = await mkdtemp(path.join(os.tmpdir(), "codexa-autonomy-home-"));
+    const repo = await trackedTmpDir("codexa-autonomy-global-");
+    const codexaHome = await trackedTmpDir("codexa-autonomy-home-");
     const cli = path.resolve(process.cwd(), "dist/cli.js");
     const env = testEnv({ CODEXA_HOME: codexaHome });
     execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
@@ -53,7 +66,7 @@ describe("Codexa hook CLI", () => {
   });
 
   it("keeps hook-post-edit advisory when query setup fails", async () => {
-    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-hook-missing-git-"));
+    const repo = await trackedTmpDir("codexa-hook-missing-git-");
     const result = spawnSync(process.execPath, [path.resolve(process.cwd(), "dist/cli.js"), "hook-post-edit", repo], {
       cwd: process.cwd(),
       encoding: "utf8"
@@ -67,7 +80,7 @@ describe("Codexa hook CLI", () => {
   });
 
   it("keeps session-start advisory when query setup fails", async () => {
-    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-session-start-missing-git-"));
+    const repo = await trackedTmpDir("codexa-session-start-missing-git-");
     const result = spawnSync(process.execPath, [path.resolve(process.cwd(), "dist/cli.js"), "session-start", repo], {
       cwd: process.cwd(),
       encoding: "utf8"
@@ -80,7 +93,7 @@ describe("Codexa hook CLI", () => {
   });
 
   it("routes workspace-root session-start hooks through the focused repository", async () => {
-    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-session-start-focused-"));
+    const workspace = await trackedTmpDir("codexa-session-start-focused-");
     const repo = path.join(workspace, "repo");
     await mkdir(repo, { recursive: true });
     execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
@@ -109,7 +122,7 @@ describe("Codexa hook CLI", () => {
   });
 
   it("routes workspace-root session-start hooks through the default repository", async () => {
-    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-session-start-default-"));
+    const workspace = await trackedTmpDir("codexa-session-start-default-");
     execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
     const repo = path.join(workspace, "repo");
     await mkdir(repo, { recursive: true });
@@ -139,7 +152,7 @@ describe("Codexa hook CLI", () => {
   });
 
   it("routes workspace-root query CLI commands through the default repository", async () => {
-    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-query-default-"));
+    const workspace = await trackedTmpDir("codexa-query-default-");
     execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
     const repo = path.join(workspace, "repo");
     await mkdir(path.join(repo, "src"), { recursive: true });
@@ -173,7 +186,7 @@ describe("Codexa hook CLI", () => {
   });
 
   it("routes workspace-root edit hooks through the focused repository", async () => {
-    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-edit-hooks-focused-"));
+    const workspace = await trackedTmpDir("codexa-edit-hooks-focused-");
     const repo = path.join(workspace, "repo");
     await mkdir(repo, { recursive: true });
     execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
@@ -215,7 +228,7 @@ describe("Codexa hook CLI", () => {
   });
 
   it("keeps explicit wired hook repos authoritative when ambient workspace env is stale", async () => {
-    const parent = await mkdtemp(path.join(os.tmpdir(), "codexa-hook-explicit-env-"));
+    const parent = await trackedTmpDir("codexa-hook-explicit-env-");
     const repo = path.join(parent, "repo");
     await mkdir(path.join(repo, ".codex"), { recursive: true });
     await writeFile(path.join(repo, ".codex", "config.toml"), "[features]\nhooks = true\n", "utf8");
@@ -252,7 +265,7 @@ describe("Codexa hook CLI", () => {
   });
 
   it("keeps explicit wired doctor repos authoritative when ambient workspace env is stale", async () => {
-    const parent = await mkdtemp(path.join(os.tmpdir(), "codexa-doctor-explicit-env-"));
+    const parent = await trackedTmpDir("codexa-doctor-explicit-env-");
     const repo = path.join(parent, "repo");
     await mkdir(path.join(repo, ".codex"), { recursive: true });
     await writeFile(path.join(repo, ".codex", "config.toml"), "[features]\nhooks = true\n", "utf8");
@@ -290,7 +303,7 @@ describe("Codexa hook CLI", () => {
   });
 
   it("does not fall back to the workspace root when hook focus routing is ambiguous", async () => {
-    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-hook-ambiguous-"));
+    const workspace = await trackedTmpDir("codexa-hook-ambiguous-");
     execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
     const repoA = path.join(workspace, "repo-a");
     const repoB = path.join(workspace, "repo-b");
@@ -342,7 +355,7 @@ describe("Codexa hook CLI", () => {
     const postEdit = spawnSync(process.execPath, [cli, "hook-post-edit", repo], {
       cwd: process.cwd(),
       encoding: "utf8",
-      env: testEnv({ CODEXA_HOME: await mkdtemp(path.join(os.tmpdir(), "codexa-autonomy-off-")) })
+      env: testEnv({ CODEXA_HOME: await trackedTmpDir("codexa-autonomy-off-") })
     });
     expect(postEdit.status).toBe(0);
     expect(postEdit.stdout).toContain("Codexa AutoVerify: skipped 1 unsafe or unsupported command(s).");
@@ -352,7 +365,7 @@ describe("Codexa hook CLI", () => {
 
   it("does not suppress AutoVerify when a later hook run enables it for the same dirty tree", async () => {
     const repo = await createAutoVerifyFixtureRepo({ test: "node --test" });
-    const codexaHome = await mkdtemp(path.join(os.tmpdir(), "codexa-autonomy-toggle-"));
+    const codexaHome = await trackedTmpDir("codexa-autonomy-toggle-");
     const cli = path.resolve(process.cwd(), "dist/cli.js");
 
     const plan = spawnSync(
@@ -443,7 +456,7 @@ describe("Codexa hook CLI", () => {
     const postEdit = spawnSync(process.execPath, [cli, "hook-post-edit", repo], {
       cwd: process.cwd(),
       encoding: "utf8",
-      env: testEnv({ CODEXA_HOME: await mkdtemp(path.join(os.tmpdir(), "codexa-autonomy-off-")) })
+      env: testEnv({ CODEXA_HOME: await trackedTmpDir("codexa-autonomy-off-") })
     });
     expect(postEdit.status).toBe(0);
     expect(postEdit.stdout).toContain("Codexa AutoVerify: skipped 1 unsafe or unsupported command(s).");
@@ -453,7 +466,7 @@ describe("Codexa hook CLI", () => {
 
   it("auto-runs trusted verification from user-owned full-access autonomy without per-run AutoVerify env", async () => {
     const repo = await createAutoVerifyFixtureRepo({ test: "node --test" });
-    const codexaHome = await mkdtemp(path.join(os.tmpdir(), "codexa-autonomy-full-"));
+    const codexaHome = await trackedTmpDir("codexa-autonomy-full-");
     const cli = path.resolve(process.cwd(), "dist/cli.js");
     const setPolicy = spawnSync(process.execPath, [cli, "autonomy", repo, "--mode", "full-access"], {
       cwd: process.cwd(),
@@ -487,7 +500,7 @@ describe("Codexa hook CLI", () => {
 
   it("lets a repo-specific read-only policy override global full-access autonomy", async () => {
     const repo = await createAutoVerifyFixtureRepo({ test: "node --test" });
-    const codexaHome = await mkdtemp(path.join(os.tmpdir(), "codexa-autonomy-global-"));
+    const codexaHome = await trackedTmpDir("codexa-autonomy-global-");
     const cli = path.resolve(process.cwd(), "dist/cli.js");
     const setGlobal = spawnSync(process.execPath, [cli, "autonomy", "--global", "--mode", "full-access"], {
       cwd: process.cwd(),
@@ -1046,7 +1059,7 @@ describe("Codexa hook CLI", () => {
   });
 
   it("reports MCP readiness routing for workspace sessions and ambiguous fallbacks", async () => {
-    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-doctor-workspace-"));
+    const workspace = await trackedTmpDir("codexa-doctor-workspace-");
     execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
     const defaultRepo = await createWorkspaceGitRepo(workspace, "default-repo", "alpha");
     const selectedRepo = await createWorkspaceGitRepo(workspace, "selected-repo", "beta");
@@ -1128,7 +1141,7 @@ describe("Codexa hook CLI", () => {
   });
 
   it("reports MCP readiness for configured workspace roots through the active project focus line", async () => {
-    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-doctor-configured-workspace-"));
+    const workspace = await trackedTmpDir("codexa-doctor-configured-workspace-");
     execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
     const focusedRepo = await createWorkspaceGitRepo(workspace, "focused-repo", "focused");
     const otherRepo = await createWorkspaceGitRepo(workspace, "other-repo", "other");
@@ -1185,7 +1198,7 @@ function testEnv(extra: NodeJS.ProcessEnv = {}): NodeJS.ProcessEnv {
 }
 
 async function createHookFixtureRepo(): Promise<string> {
-  const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-hook-dedupe-"));
+  const repo = await trackedTmpDir("codexa-hook-dedupe-");
   execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
   await mkdir(path.join(repo, "src"), { recursive: true });
   await writeFile(path.join(repo, "package.json"), JSON.stringify({ scripts: { test: "vitest run" } }, null, 2), "utf8");
@@ -1217,7 +1230,8 @@ async function createAutoVerifyFixtureRepo(
   testSource?: string,
   extraFiles: Record<string, string> = {}
 ): Promise<string> {
-  const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-hook-autoverify-"));
+  const repo = await trackedTmpDir("codexa-hook-autoverify-");
+
   execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
   await mkdir(path.join(repo, "src"), { recursive: true });
   await mkdir(path.join(repo, "tests"), { recursive: true });
@@ -1277,7 +1291,7 @@ async function addFakeWindowsVitestCmdBin(repo: string): Promise<void> {
 }
 
 async function createFakeCmdExe(): Promise<{ cmdExe: string; marker: string }> {
-  const cmdDir = await mkdtemp(path.join(os.tmpdir(), "codexa-fake-cmd-"));
+  const cmdDir = await trackedTmpDir("codexa-fake-cmd-");
   const marker = path.join(cmdDir, "cmd-args.json");
   const cmdExe = path.join(cmdDir, "cmd.exe");
   await writeFile(
@@ -1296,7 +1310,8 @@ async function createFakeCmdExe(): Promise<{ cmdExe: string; marker: string }> {
 }
 
 async function createNestedAutoVerifyFixtureRepo(testSource?: string): Promise<string> {
-  const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-hook-autoverify-nested-"));
+  const workspace = await trackedTmpDir("codexa-hook-autoverify-nested-");
+
   const repo = path.join(workspace, "packages", "app");
   execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
   await mkdir(path.join(repo, "src"), { recursive: true });
