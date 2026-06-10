@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import type { Confidence } from "../types.js";
+import { shellQuote } from "./verification/shell.js";
 
 export interface CandidateTestCommand {
   command: string;
@@ -121,11 +122,4 @@ function pythonTestCommand(repoRoot: string, testPath: string): CandidateTestCom
 
 function shellJoin(parts: string[]): string {
   return parts.map(shellQuote).join(" ");
-}
-
-function shellQuote(value: string): string {
-  if (/^[A-Za-z0-9_@%+=:,./-]+$/.test(value)) {
-    return value;
-  }
-  return `'${value.replace(/'/g, "'\\''")}'`;
 }
