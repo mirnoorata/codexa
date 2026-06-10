@@ -46,6 +46,73 @@ describe("Codexa project init", () => {
     expect(summary).not.toContain("broad task -> focus_brief/session_context");
   });
 
+  it("writes the core tool profile and managed AGENTS.md block when requested", async () => {
+    const repo = await createInitRepo();
+    await writeFile(path.join(repo, "AGENTS.md"), "# Existing runbook\n\nKeep this content.\n", "utf8");
+
+    const result = await initializeProject(repo, {
+      cliPath: "/opt/codexa/dist/cli.js",
+      index: false,
+      toolProfile: "core",
+      agentsMd: true
+    });
+
+    const config = await readFile(path.join(repo, ".codex/config.toml"), "utf8");
+    expect(config).toContain("enabled_tools = [");
+    expect(config).toContain('"session_context"');
+    expect(config).toContain('"post_edit_review"');
+    expect(config).toContain('"impact"');
+    expect(config).toContain("startup_timeout_sec = 20");
+
+    expect(result.agentsMdPath).toBe(path.join(repo, "AGENTS.md"));
+    const agentsMd = await readFile(path.join(repo, "AGENTS.md"), "utf8");
+    expect(agentsMd).toContain("Keep this content.");
+    expect(agentsMd).toContain("<!-- >>> codexa managed -->");
+    expect(agentsMd).toContain("change_plan");
+
+    // Re-run init: managed block must be replaced, not duplicated.
+    await initializeProject(repo, {
+      cliPath: "/opt/codexa/dist/cli.js",
+      index: false,
+      toolProfile: "full",
+      agentsMd: true
+    });
+    const rerunAgentsMd = await readFile(path.join(repo, "AGENTS.md"), "utf8");
+    expect(rerunAgentsMd.match(/<!-- >>> codexa managed -->/gu)).toHaveLength(1);
+    const rerunConfig = await readFile(path.join(repo, ".codex/config.toml"), "utf8");
+    expect(rerunConfig).not.toContain("enabled_tools = [");
+  });
+
+  it("refuses to rewrite AGENTS.md when managed markers are unbalanced", async () => {
+    const repo = await createInitRepo();
+    const original = "# Runbook\n\n<!-- >>> codexa managed -->\nimportant user content with no end marker\n";
+    await writeFile(path.join(repo, "AGENTS.md"), original, "utf8");
+
+    await expect(
+      initializeProject(repo, {
+        cliPath: "/opt/codexa/dist/cli.js",
+        index: false,
+        agentsMd: true
+      })
+    ).rejects.toThrow(/unterminated/u);
+    expect(await readFile(path.join(repo, "AGENTS.md"), "utf8")).toBe(original);
+  });
+
+  it("refuses to rewrite AGENTS.md when an orphan end marker is present", async () => {
+    const repo = await createInitRepo();
+    const original = "# Runbook\n\n<!-- <<< codexa managed -->\nuser content\n";
+    await writeFile(path.join(repo, "AGENTS.md"), original, "utf8");
+
+    await expect(
+      initializeProject(repo, {
+        cliPath: "/opt/codexa/dist/cli.js",
+        index: false,
+        agentsMd: true
+      })
+    ).rejects.toThrow(/orphan/u);
+    expect(await readFile(path.join(repo, "AGENTS.md"), "utf8")).toBe(original);
+  });
+
   it("updates existing config and hooks idempotently without clobbering unrelated entries", async () => {
     const repo = await createInitRepo();
     const codexDir = path.join(repo, ".codex");

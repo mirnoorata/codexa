@@ -3,11 +3,14 @@ import path from "node:path";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { renderCodexUseContract } from "./codex-contract.js";
 import { buildIndexLocked } from "./indexer.js";
-import { PRIMARY_CODEX_LOOP } from "./mcp-tool-catalog.js";
+import { PRIMARY_CODEX_LOOP, PRIMARY_MCP_TOOL_NAMES } from "./mcp-tool-catalog.js";
 import { resolveMcpRepoRoot } from "./mcp-repo-root.js";
 import { statusQuery } from "./queries.js";
 
 const EDIT_HOOK_MATCHER = "Edit|MultiEdit|Write|NotebookEdit|apply_patch";
+const CORE_PROFILE_TOOL_NAMES = [...PRIMARY_MCP_TOOL_NAMES, "impact", "freshness"];
+
+export type InitToolProfile = "core" | "full";
 
 export interface InitOptions {
   autoRefresh?: boolean;
@@ -15,12 +18,15 @@ export interface InitOptions {
   hooks?: boolean;
   index?: boolean;
   serverName?: string;
+  toolProfile?: InitToolProfile;
+  agentsMd?: boolean;
 }
 
 export interface InitResult {
   repoRoot: string;
   configPath: string;
   hooksPath: string | null;
+  agentsMdPath: string | null;
   serverName: string;
   indexed: {
     files: number;
@@ -50,7 +56,8 @@ export async function initializeProject(repoInput: string | undefined, options: 
     cliPath,
     repoRoot,
     serverName,
-    hooks: keepHooksFeature
+    hooks: keepHooksFeature,
+    toolProfile: options.toolProfile ?? "full"
   });
 
   if (writeHooks) {
@@ -59,6 +66,8 @@ export async function initializeProject(repoInput: string | undefined, options: 
       repoRoot
     });
   }
+
+  const agentsMdPath = options.agentsMd ? await upsertAgentsMd(repoRoot, serverName) : null;
 
   const indexed =
     options.index === false
@@ -69,6 +78,7 @@ export async function initializeProject(repoInput: string | undefined, options: 
     repoRoot,
     configPath,
     hooksPath: writeHooks ? hooksPath : null,
+    agentsMdPath,
     serverName,
     indexed
   };
@@ -155,6 +165,7 @@ async function upsertCodexConfig(
     repoRoot: string;
     serverName: string;
     hooks: boolean;
+    toolProfile: InitToolProfile;
   }
 ): Promise<void> {
   const existing = await readTextIfExists(configPath);
@@ -174,19 +185,98 @@ async function upsertCodexConfig(
   await writeFile(configPath, `${next}\n`, "utf8");
 }
 
-function renderMcpServerBlock(options: { autoRefresh: boolean; cliPath: string; repoRoot: string; serverName: string }): string {
+function renderMcpServerBlock(options: { autoRefresh: boolean; cliPath: string; repoRoot: string; serverName: string; toolProfile: InitToolProfile }): string {
   const args = [options.cliPath, "serve", options.repoRoot];
   args.push(options.autoRefresh ? "--auto-refresh" : "--no-auto-refresh");
+  const toolProfileLines =
+    options.toolProfile === "core"
+      ? [
+          "# Core profile: fewer exposed tools means less per-turn schema cost and better routing.",
+          `# Re-run \`codexa init --tools full\` to expose every tool.`,
+          `enabled_tools = [${CORE_PROFILE_TOOL_NAMES.map(tomlString).join(", ")}]`
+        ]
+      : [`# Tip: \`codexa init --tools core\` exposes only the primary loop tools (${CORE_PROFILE_TOOL_NAMES.join(", ")}) to cut per-turn token cost.`];
+  const refreshCommand = options.toolProfile === "core" ? "codexa init --tools core" : "codexa init";
   return [
     "# >>> codexa managed",
-    `# Re-run \`codexa init\` from this repository to refresh this block.`,
+    `# Re-run \`${refreshCommand}\` from this repository to refresh this block.`,
     `[mcp_servers.${options.serverName}]`,
     `command = "node"`,
     `args = [${args.map(tomlString).join(", ")}]`,
-    "startup_timeout_sec = 10",
+    "startup_timeout_sec = 20",
     "tool_timeout_sec = 60",
+    ...toolProfileLines,
     "# <<< codexa managed"
   ].join("\n");
+}
+
+const AGENTS_MD_START = "<!-- >>> codexa managed -->";
+const AGENTS_MD_END = "<!-- <<< codexa managed -->";
+
+async function upsertAgentsMd(repoRoot: string, serverName: string): Promise<string> {
+  const agentsMdPath = path.join(repoRoot, "AGENTS.md");
+  const existing = await readTextIfExists(agentsMdPath);
+  assertBalancedAgentsMdMarkers(existing, agentsMdPath);
+  const block = [
+    AGENTS_MD_START,
+    `## Codexa (\`${serverName}\` MCP server)`,
+    "",
+    "Codexa serves evidence-backed repository context. Prefer it over raw grep for cross-file questions.",
+    "",
+    "- Orient: call `session_context` at session start; `search` when the target is unclear.",
+    "- Before non-trivial edits: `task_brief`, then `change_plan` with `saveSnapshot=true`.",
+    "- After edits: `post_edit_review` with the commands that actually ran; finish with `test_plan`.",
+    "- Inspect: `impact` before API/rename/delete changes; `callers`/`callees` for graph evidence.",
+    "",
+    "Each tool description states its output cost; prefer the cheapest sufficient tool.",
+    AGENTS_MD_END
+  ].join("\n");
+  const stripped = stripAgentsMdManagedBlock(existing).replace(/\s+$/u, "");
+  const next = stripped ? `${stripped}\n\n${block}\n` : `${block}\n`;
+  await writeFile(agentsMdPath, next, "utf8");
+  return agentsMdPath;
+}
+
+function stripAgentsMdManagedBlock(content: string): string {
+  const lines = content.split(/\r?\n/);
+  const kept: string[] = [];
+  let skipping = false;
+  for (const line of lines) {
+    if (line.trim() === AGENTS_MD_START) {
+      skipping = true;
+      continue;
+    }
+    if (line.trim() === AGENTS_MD_END) {
+      skipping = false;
+      continue;
+    }
+    if (!skipping) {
+      kept.push(line);
+    }
+  }
+  return kept.join("\n");
+}
+
+// AGENTS.md is hand-authored user content; a stray or unbalanced marker must
+// abort instead of silently deleting everything after it.
+function assertBalancedAgentsMdMarkers(content: string, agentsMdPath: string): void {
+  let skipping = false;
+  for (const line of content.split(/\r?\n/)) {
+    if (line.trim() === AGENTS_MD_START) {
+      if (skipping) {
+        throw new Error(`Cannot update ${agentsMdPath}: nested '${AGENTS_MD_START}' marker found; fix the file manually and re-run.`);
+      }
+      skipping = true;
+    } else if (line.trim() === AGENTS_MD_END) {
+      if (!skipping) {
+        throw new Error(`Cannot update ${agentsMdPath}: orphan '${AGENTS_MD_END}' marker found; fix the file manually and re-run.`);
+      }
+      skipping = false;
+    }
+  }
+  if (skipping) {
+    throw new Error(`Cannot update ${agentsMdPath}: unterminated '${AGENTS_MD_START}' marker found; fix the file manually and re-run.`);
+  }
 }
 
 async function upsertHooksConfig(hooksPath: string, options: { cliPath: string; repoRoot: string }): Promise<void> {
