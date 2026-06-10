@@ -119,8 +119,9 @@ async function hashDirtyFiles(repoRoot: string, dirtyFiles: string[]): Promise<R
       }
       const content = await fs.readFile(absolutePath);
       return [file, createHash("sha1").update(content).digest("hex")];
-    } catch {
-      return [file, "missing"];
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code;
+      return [file, code === "ENOENT" ? "missing" : `unreadable:${typeof code === "string" ? code : "unknown"}`];
     }
   });
   return Object.fromEntries(entries.sort(([a], [b]) => a.localeCompare(b)));

@@ -10,6 +10,7 @@ import { effectiveAutonomyMode } from "./autonomy.js";
 import { isSourcePath, isTestPath, shouldSkipPath } from "./language.js";
 import { AUTO_VERIFY_POLICY_DIGEST, AUTO_VERIFY_POLICY_ID, autoVerifyPolicySignature as policySignature, isTrustedAutoVerifyReport, markTrustedAutoVerifyReport } from "./autoverify/policy.js";
 import type { AutoVerifyCandidate, VerificationCommandReport } from "./types.js";
+import { shellWords } from "./query/verification/shell.js";
 import { isSubpath, stableId, uniqueSorted } from "./util.js";
 
 const execFileAsync = promisify(execFile);
@@ -1151,8 +1152,9 @@ async function hashFile(repoRoot: string, file: string, options: { metadataForNo
     }
     const content = await fs.readFile(absolute);
     return createHash("sha1").update(content).digest("hex");
-  } catch {
-    return "missing";
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    return code === "ENOENT" ? "missing" : `unreadable:${typeof code === "string" ? code : "unknown"}`;
   }
 }
 
@@ -1224,14 +1226,6 @@ function boundedAppend(current: string, chunk: string): string {
 
 function safeExecutableName(value: string): boolean {
   return /^(npm|pnpm|yarn|node|vitest|jest|pytest|uv|python|python3)$/u.test(value);
-}
-
-function shellWords(value: string): string[] {
-  return [...value.matchAll(/'([^']*)'|"([^"]*)"|(\S+)/gu)].map((match) => stripQuotes(match[1] ?? match[2] ?? match[3] ?? ""));
-}
-
-function stripQuotes(value: string): string {
-  return value.replace(/^['"]|['"]$/gu, "");
 }
 
 function normalizePathLike(value: string): string {
