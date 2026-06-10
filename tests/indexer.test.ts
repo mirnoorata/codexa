@@ -34,6 +34,32 @@ import {
 } from "../src/queries.js";
 
 describe("Codexa indexer", () => {
+  it("ranks transitive import hubs above leaf consumers when the experiment flag is set", async () => {
+    const repo = await createFixtureRepo();
+    process.env.CODEXA_EXPERIMENTAL_TRANSITIVE_RANK = "1";
+    try {
+      const index = await buildIndex({ repoRoot: repo, writeArtifacts: false });
+      const util = index.files.find((file) => file.path === "src/util.ts");
+      const consumer = index.files.find((file) => file.path === "src/barrel-consumer.ts");
+      expect(util?.rankReasons.transitiveCentrality).toBeGreaterThan(0);
+      expect(util?.rankReasons.transitiveCentrality).toBeGreaterThan(consumer?.rankReasons.transitiveCentrality ?? 0);
+      for (const file of index.files) {
+        expect(file.rankReasons.transitiveCentrality).toBeGreaterThanOrEqual(0);
+        expect(file.rankReasons.transitiveCentrality).toBeLessThanOrEqual(2);
+      }
+    } finally {
+      delete process.env.CODEXA_EXPERIMENTAL_TRANSITIVE_RANK;
+    }
+  });
+
+  it("keeps default ranking free of transitive centrality without the experiment flag", async () => {
+    const repo = await createFixtureRepo();
+    const index = await buildIndex({ repoRoot: repo, writeArtifacts: false });
+    for (const file of index.files) {
+      expect(file.rankReasons.transitiveCentrality).toBe(0);
+    }
+  });
+
   it("indexes TypeScript and Python symbols, imports, decorators, tests, and usage sites", async () => {
     const repo = await createFixtureRepo();
     const index = await buildIndex({ repoRoot: repo });
@@ -3543,6 +3569,7 @@ describe("Codexa indexer", () => {
     expect(review.text).toContain("Planned renames: src/util.ts -> src/util_renamed.ts");
     expect((review.data as { unplannedEditedFiles: string[]; plannedRenames: Array<{ path: string; oldPath?: string }> }).unplannedEditedFiles).not.toContain("src/util_renamed.ts");
     expect((review.data as { unplannedEditedFiles: string[]; plannedRenames: Array<{ path: string; oldPath?: string }> }).plannedRenames[0].oldPath).toBe("src/util.ts");
+    expect((review.data as { plannedButUntouchedFiles: string[] }).plannedButUntouchedFiles).not.toContain("src/util.ts");
   });
 
   it("recovers from malformed cache, stale locks, backup bundles, relocated bundles, and nested control paths", async () => {
