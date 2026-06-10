@@ -2,8 +2,10 @@ import { isTestPath } from "../language.js";
 import type { CodexaIndex, GraphEdgeFact, GraphEdgeKind, QueryOptions, QueryResult, WorkflowTraceFact } from "../types.js";
 import { limitText, uniqueSorted } from "../util.js";
 import { formatGaps, indexGaps } from "./diff.js";
+import { edgeEvidenceForGraphEdges } from "./edge-evidence.js";
 import { confidenceTier } from "./formatting.js";
 import { formatGraphEdge, graphEdgeSort } from "./graph.js";
+import { nextTool } from "./next-tools.js";
 import { assessContextQuality, formatContextQuality, type ContextQuality } from "./quality.js";
 import { freshnessBanner } from "./runtime.js";
 import { ensureQuerySession, type QuerySessionInput } from "./session.js";
@@ -40,7 +42,8 @@ export async function callersQuery(input: QuerySessionInput, graphInput: { file?
     "Caller files:",
     ...(files.length > 0 ? files.map((file) => `- ${file}`) : ["- none"])
   ].join("\n");
-  return { freshness, refresh, text: limitText(text, 6000), data: { target, edges: incoming, files, quality } };
+  const nextTools = [nextTool("impact", "inspect blast radius and verification for this caller set", target.symbol ? { symbol: target.symbol.id } : { file: target.file?.path ?? [...target.paths][0] })];
+  return { freshness, refresh, text: limitText(text, 6000), data: { mode: "callers", target, edges: incoming, edgeEvidence: edgeEvidenceForGraphEdges(incoming, freshness), files, quality, nextTools, systemMessage: nextTools[0]?.reason } };
 }
 
 export async function calleesQuery(input: QuerySessionInput, graphInput: { file?: string; symbol?: string; limit?: number }, options: QueryOptions = {}): Promise<QueryResult> {
@@ -74,7 +77,8 @@ export async function calleesQuery(input: QuerySessionInput, graphInput: { file?
     "Dependency files:",
     ...(files.length > 0 ? files.map((file) => `- ${file}`) : ["- none"])
   ].join("\n");
-  return { freshness, refresh, text: limitText(text, 6000), data: { target, edges: outgoing, files, quality } };
+  const nextTools = [nextTool("impact", "inspect downstream dependency risk and verification", target.symbol ? { symbol: target.symbol.id } : { file: target.file?.path ?? [...target.paths][0] })];
+  return { freshness, refresh, text: limitText(text, 6000), data: { mode: "callees", target, edges: outgoing, edgeEvidence: edgeEvidenceForGraphEdges(outgoing, freshness), files, quality, nextTools, systemMessage: nextTools[0]?.reason } };
 }
 
 export async function dependencyPathQuery(

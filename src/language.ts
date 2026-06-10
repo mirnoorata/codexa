@@ -36,6 +36,30 @@ export function languageForPath(filePath: string): LanguageId {
   if (ext === ".py") {
     return "python";
   }
+  if (ext === ".rs") {
+    return "rust";
+  }
+  if (ext === ".go") {
+    return "go";
+  }
+  if (ext === ".java") {
+    return "java";
+  }
+  if (ext === ".cs") {
+    return "csharp";
+  }
+  if ([".cc", ".cpp", ".cxx", ".hpp", ".hh", ".hxx"].includes(ext)) {
+    return "cpp";
+  }
+  if (ext === ".c" || ext === ".h") {
+    return "c";
+  }
+  if (ext === ".rb") {
+    return "ruby";
+  }
+  if (ext === ".php") {
+    return "php";
+  }
   if (ext === ".json") {
     return "json";
   }
@@ -47,7 +71,7 @@ export function languageForPath(filePath: string): LanguageId {
 
 export function isSourcePath(filePath: string): boolean {
   return (
-    ["typescript", "javascript", "python", "json", "markdown"].includes(languageForPath(filePath)) ||
+    ["typescript", "javascript", "python", "rust", "go", "java", "json", "markdown"].includes(languageForPath(filePath)) ||
     /^scripts\/[^/]+\.sh$/.test(filePath) ||
     filePath.endsWith(".service")
   );
@@ -84,7 +108,8 @@ export function isTestPath(filePath: string): boolean {
     /(^|\/)(tests?|__tests__)\//.test(normalized) ||
     /\.(test|spec)\.[cm]?[jt]sx?$/.test(normalized) ||
     /(^|\/)test_[^/]+\.py$/.test(normalized) ||
-    /(^|\/)[^/]+_test\.py$/.test(normalized)
+    /(^|\/)[^/]+_test\.py$/.test(normalized) ||
+    /(^|\/)[^/]+_test\.go$/.test(normalized)
   );
 }
 

@@ -10,12 +10,14 @@ const MAX_FAILURES = 250;
 
 const forbiddenRunbookBasenames = new Set(["CLAUDE.md", "GEMINI.md", "MEMORY.md", "WORKING.md"]);
 const forbiddenPathSegments = new Set([`.${"claude"}`, `.${"Codex"}`]);
-const workspaceRootPattern = new RegExp(`/${"srv"}(?:/|$)`, "u");
+const localPathTerminator = String.raw`(?=$|[/\s,.;:)\]}])`;
+const workspaceRootPattern = new RegExp(`/${"srv"}${localPathTerminator}`, "u");
+const localHomePathPattern = new RegExp(String.raw`/home/(?!runner/|node/|app/)[a-z][\w-]*${localPathTerminator}`, "iu");
 const legacySessionStartPathPattern = new RegExp(`(?:^|/)codexa-${"sessionstart"}-[^/\\s]+\\.sh$`, "iu");
 
 const forbiddenPatterns = [
   { label: "workspace absolute path", pattern: workspaceRootPattern },
-  { label: "local home path", pattern: /\/home\/(?!runner\/|node\/|app\/)[a-z][\w-]*(?:\/|$)/iu },
+  { label: "local home path", pattern: localHomePathPattern },
   { label: "non-example GitHub owner in Codexa remote", pattern: /(?:github\.com[:/])(?!example-owner\/|OWNER\/|mirnoorata\/)[A-Za-z0-9_.-]+\/codexa(?:\.git)?/iu },
   { label: "GitHub token", pattern: /\b(?:gh[opsu]_|github_pat_)[A-Za-z0-9_]{20,}\b/u },
   { label: "OpenAI-style API key", pattern: /\bsk-(?:proj-|live-|test-)?[A-Za-z0-9_-]{20,}\b/u },

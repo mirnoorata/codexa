@@ -1,7 +1,16 @@
 {
   "name": "@mirnoorata/codexa",
-  "version": "0.1.0",
+  "version": "0.1.3",
   "description": "Codex-native codebase intelligence context compiler and query-only MCP server.",
+  "keywords": [
+    "codex",
+    "mcp",
+    "code-intelligence",
+    "symbol-search",
+    "impact-analysis",
+    "local-first",
+    "verification"
+  ],
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -16,7 +25,7 @@
     "access": "public"
   },
   "bin": {
-    "codexa": "./dist/cli.js"
+    "codexa": "dist/cli.js"
   },
   "files": [
     "dist",
@@ -25,7 +34,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit",
-    "lint": "node scripts/verify-source-hygiene.mjs && node scripts/verify-release-path.mjs",
+    "lint": "node scripts/verify-source-hygiene.mjs && node scripts/verify-release-path.mjs && bash scripts/verify-codexa-publish.sh",
     "audit": "npm audit --audit-level=moderate",
     "privacy": "node scripts/verify-public-hygiene.mjs",
     "privacy:history": "node scripts/verify-public-hygiene.mjs --history",
@@ -48,7 +57,7 @@
     "test:schema": "vitest run tests/schema.test.ts",
     "test:claude-code": "bash integrations/claude-code/tests/cmd-smoke.sh && bash integrations/claude-code/tests/hook-smoke.sh",
     "check": "npm run typecheck && npm run lint && npm run privacy && npm run test:claude-code && npm test",
-    "security:check": "npm run check && npm run audit && npm run public:snapshot-check && npm run package:hygiene",
+    "security:check": "npm run check && npm run audit && npm run public:snapshot-check && npm run package:hygiene && npm run smoke:package",
     "dev": "tsx src/cli.ts"
   },
   "dependencies": {

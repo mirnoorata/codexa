@@ -2,18 +2,18 @@
 import { Command } from "commander";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildIndexLocked, getFreshness } from "./indexer.js";
+import { buildIndexLocked } from "./indexer.js";
+import { defaultAutonomyMode, effectiveAutonomyMode, parseAutonomyMode, setAutonomyMode } from "./autonomy.js";
 import { checkGithubSync } from "./github-sync.js";
 import { publishProjectGithubRelease } from "./github-release.js";
 import { runDoctor } from "./doctor.js";
 import { initializeProject, sessionStartSummary } from "./init.js";
 import { runLiveIndexer, type LiveIndexEvent } from "./live-index.js";
-import { serveMcp } from "./mcp.js";
+import { serveMcp, serveMcpHttp, type McpTransportKind } from "./mcp.js";
 import { resolveMcpRepoRoot } from "./mcp-repo-root.js";
 import { buildSemanticIndex, semanticProviderFromValue, type SemanticProviderKind } from "./semantic-retrieval.js";
 import { updateStaticAnalysisReports } from "./static-analysis.js";
-import { loadTaskSnapshot } from "./task-snapshots.js";
-import { runAutoVerifyForPostEdit } from "./autoverify.js";
+import { recordAdvisoryHookEvent, runPostEditHook, runPreEditHook } from "./cli/hooks.js";
 import {
   contextPackQuery,
   callersQuery,
@@ -37,17 +37,9 @@ import {
   workflowPathQuery
 } from "./queries.js";
 import { RAW_SEARCH_EXPLICIT_PATTERN_LIMIT } from "./query/raw-search.js";
-import {
-  loadPostEditHookReviewState,
-  postEditHookReviewSignature,
-  recordCodexaHookEvent,
-  savePostEditHookReviewState,
-  type CodexaHookEventInput,
-  type CodexaHookName,
-  type PostEditOutcome
-} from "./post-edit-outcomes.js";
 import type { ChangeType, QueryOptions, SessionMemoryInput, VerificationCommandReport, VerificationWaiver } from "./types.js";
 import { runEval } from "./eval.js";
+import { CODEXA_VERSION } from "./version.js";
 
 const program = new Command();
 const cliModulePath = fileURLToPath(import.meta.url);
@@ -58,7 +50,7 @@ const defaultCliPath = cliModulePath.endsWith(`${path.sep}src${path.sep}cli.ts`)
 program
   .name(invokedCliName())
   .description("Codex-native codebase intelligence context compiler and MCP context server.")
-  .version("0.1.0");
+  .version(CODEXA_VERSION);
 
 program
   .command("init")
@@ -106,20 +98,37 @@ program
   );
 
 program
+  .command("autonomy")
+  .argument("[repo]", "repository root for a repo-specific user policy; omitted with --global sets the user default")
+  .option("--mode <mode>", "set user-owned autonomy mode: read-only or full-access", parseAutonomyOption)
+  .option("--global", "set the user default instead of a repo-specific policy", false)
+  .option("--json", "print JSON")
+  .description("Inspect or set Codexa's user-owned autonomy policy. Repo config cannot enable execution.")
+  .action(async (repo: string | undefined, opts: { mode?: ReturnType<typeof parseAutonomyOption>; global: boolean; json?: boolean }) => {
+    const repoRoot = repo ? path.resolve(repo) : process.cwd();
+    const status = opts.mode
+      ? await setAutonomyMode({ repoRoot: opts.global ? undefined : repoRoot, global: opts.global || !repo, mode: opts.mode })
+      : opts.global
+        ? await defaultAutonomyMode()
+        : await effectiveAutonomyMode(repoRoot);
+    if (opts.json) {
+      console.log(JSON.stringify(status, null, 2));
+      return;
+    }
+    console.log(`Codexa autonomy: ${status.mode}`);
+    console.log(`Source: ${status.source}`);
+    console.log(`Config: ${status.configPath}`);
+    if (status.repoRoot) {
+      console.log(`Repo: ${status.repoRoot}`);
+    }
+  });
+
+program
   .command("hook-pre-edit")
   .argument("<repo>", "repository root")
   .description("Cheap hook helper that reminds Codex when no change-plan snapshot exists before an edit.")
   .action(async (repo: string) => {
-    const { configuredRoot, activeRepoRoot } = await resolveHookRepoRoots(repo);
-    await runAdvisoryHook(configuredRoot, "pre-edit", "change-plan snapshot check", async () => {
-      const snapshot = await loadTaskSnapshot(activeRepoRoot);
-      if (!snapshot.snapshot) {
-        console.log("Codexa: no change-plan snapshot is available. For code edits, call change_plan with saveSnapshot=true before editing when the task is non-trivial.");
-        return { status: "skipped", reason: "missing-change-plan-snapshot", taskId: snapshot.latestTaskId };
-      }
-      console.log(`Codexa: change-plan snapshot ready (${snapshot.snapshot.taskId}). After edits, post_edit_review will compare planned vs actual work.`);
-      return { status: "ok", reason: "snapshot-ready", taskId: snapshot.snapshot.taskId };
-    });
+    await runPreEditHook(repo);
   });
 
 program
@@ -127,62 +136,7 @@ program
   .argument("<repo>", "repository root")
   .description("Bounded hook helper that runs the post-edit review packet after edit tools.")
   .action(async (repo: string) => {
-    const { configuredRoot, activeRepoRoot } = await resolveHookRepoRoots(repo);
-    await runAdvisoryHook(configuredRoot, "post-edit", "post-edit review", async () => {
-      const snapshot = await loadTaskSnapshot(activeRepoRoot);
-      const freshness = await getFreshness(activeRepoRoot, undefined, { recover: false });
-      const signature = postEditHookReviewSignature({ freshness, taskId: snapshot.snapshot?.taskId ?? snapshot.latestTaskId });
-      const previous = await loadPostEditHookReviewState(activeRepoRoot);
-      if (previous?.signature === signature) {
-        const verdict = previous.verdict ? `; last verdict ${previous.verdict}` : "";
-        console.log(`Codexa: post-edit review unchanged since last hook run${verdict}.`);
-        return { status: "skipped", reason: "duplicate-dirty-tree", signature, taskId: snapshot.snapshot?.taskId ?? snapshot.latestTaskId, verdict: previous.verdict, outcomeId: previous.outcomeId };
-      }
-      const reviewInput = {
-        tokenBudget: 1200,
-        limit: 5,
-        includeSnippets: false
-      };
-      const initialResult = await postEditReviewQuery(
-        activeRepoRoot,
-        {
-          ...reviewInput,
-          persistOutcome: false
-        },
-        { autoRefresh: true, commandBudgetMs: 15_000, maxResults: 6 }
-      );
-      const autoVerify = await runAutoVerifyForPostEdit(activeRepoRoot, initialResult.data);
-      if (autoVerify.attempted.length > 0) {
-        console.log(`Codexa AutoVerify: ran ${autoVerify.attempted.length} targeted command(s).`);
-        for (const report of autoVerify.reports) {
-          const status = report.exitCode === 0 ? "passed" : `failed exit ${report.exitCode ?? "unknown"}`;
-          const duration = report.durationMs === undefined ? "" : ` in ${report.durationMs}ms`;
-          console.log(`- ${status}${duration}: ${report.command}`);
-        }
-      }
-      if (autoVerify.skipped.length > 0 && autoVerify.attempted.length === 0) {
-        console.log(`Codexa AutoVerify: skipped ${autoVerify.skipped.length} unsafe or unsupported command(s).`);
-        for (const skipped of autoVerify.skipped.slice(0, 4)) {
-          console.log(`- ${skipped}`);
-        }
-      }
-      const result = await postEditReviewQuery(
-        activeRepoRoot,
-        {
-          ...reviewInput,
-          ranCommandReports: autoVerify.reports.length > 0 ? autoVerify.reports : undefined
-        },
-        { autoRefresh: true, commandBudgetMs: 15_000, maxResults: 6 }
-      );
-      console.log(compactHookOutput(result.text));
-      const outcome = postEditOutcomeFromQueryResult(result.data);
-      const reviewedSignature = postEditHookReviewSignature({ freshness: result.freshness, taskId: snapshot.snapshot?.taskId ?? snapshot.latestTaskId });
-      await savePostEditHookReviewState(activeRepoRoot, {
-        signature: reviewedSignature,
-        outcome
-      });
-      return { status: "ok", reason: "reviewed", signature: reviewedSignature, taskId: snapshot.snapshot?.taskId ?? snapshot.latestTaskId, verdict: outcome?.verdict, outcomeId: outcome?.outcomeId };
-    });
+    await runPostEditHook(repo);
   });
 
 program
@@ -197,7 +151,7 @@ program
 
 program
   .command("semantic-index")
-  .argument("<repo>", "repository root to embed for optional semantic retrieval")
+  .argument("<repo>", "repository root to embed for first-class hybrid semantic retrieval")
   .requiredOption("--provider <provider>", "embedding provider: openai or local-command", parseSemanticProvider)
   .option("--model <model>", "embedding model name; defaults to provider-specific default")
   .option("--dimensions <n>", "embedding dimensions when the provider supports it", parseIntOption)
@@ -206,7 +160,7 @@ program
   .option("--timeout-ms <n>", "embedding provider timeout in milliseconds", parseIntOption, 60_000)
   .option("--batch-size <n>", "number of chunks to send per provider request", parseIntOption, 64)
   .option("--max-files <n>", "maximum indexed files to embed", parseIntOption, 750)
-  .description("Build the opt-in semantic retrieval cache under .codex/cache/codexa-semantic-v1.")
+  .description("Build the semantic retrieval cache used by first-class hybrid Codexa search and task context.")
   .action(
     async (
       repo: string,
@@ -273,11 +227,13 @@ program
   .option("--codeql-report <path...>", "existing CodeQL SARIF report to copy into .codex/static-analysis")
   .option("--sarif <path...>", "generic SARIF report to copy into .codex/static-analysis")
   .option("--generic-report <path...>", "generic Codexa risk JSON report to copy into .codex/static-analysis")
+  .option("--symbol-report <path...>", "CodexaSymbolReportV1 JSON report to copy into .codex/static-analysis")
   .option("--run-semgrep", "run an installed Semgrep CLI and ingest JSON output", false)
   .option("--semgrep-config <config...>", "Semgrep config value; repeat or pass multiple values", ["p/default"])
   .option("--run-codeql", "run an installed CodeQL CLI for JavaScript/TypeScript and Python and ingest SARIF output", false)
   .option("--codeql-language <language...>", "CodeQL language ids; supported in Codexa helper: javascript-typescript, python", ["javascript-typescript", "python"])
   .option("--codeql-suite <suite>", "CodeQL suite suffix to use with bundled query packs", "code-scanning")
+  .option("--run-shellcheck", "run an installed ShellCheck CLI for tracked shell scripts and ingest findings", false)
   .option("--timeout-ms <n>", "scanner command timeout in milliseconds", parseIntOption, 600_000)
   .option("--index", "reindex after reports are copied or generated", true)
   .option("--no-index", "only copy/generate reports")
@@ -290,11 +246,13 @@ program
         codeqlReport?: string[];
         sarif?: string[];
         genericReport?: string[];
+        symbolReport?: string[];
         runSemgrep: boolean;
         semgrepConfig: string[];
         runCodeql: boolean;
         codeqlLanguage: string[];
         codeqlSuite: string;
+        runShellcheck: boolean;
         timeoutMs: number;
         index: boolean;
       }
@@ -304,11 +262,13 @@ program
         codeqlReports: opts.codeqlReport,
         sarifReports: opts.sarif,
         genericReports: opts.genericReport,
+        symbolReports: opts.symbolReport,
         runSemgrep: opts.runSemgrep,
         semgrepConfigs: opts.semgrepConfig,
         runCodeql: opts.runCodeql,
         codeqlLanguages: opts.codeqlLanguage,
         codeqlSuite: opts.codeqlSuite,
+        runShellcheck: opts.runShellcheck,
         timeoutMs: opts.timeoutMs,
         index: opts.index
       });
@@ -415,9 +375,16 @@ program
   .argument("[repo]", "repository root; defaults to the current directory", process.cwd())
   .option("--json", "emit structured JSON")
   .option("--mcp-readiness", "include Codex MCP readiness checks")
+  .option("--workspace-focus-file <path>", "workspace focus file to consult when diagnosing a workspace launch root")
+  .option("--workspace-session <id>", "active WORKING.md session row to prefer when diagnosing a workspace launch root")
   .description("Diagnose local Codexa wiring, index freshness, hooks, and generated state.")
-  .action(async (repo: string, opts: { json?: boolean; mcpReadiness?: boolean }) => {
-    const result = await runDoctor(path.resolve(repo), { json: opts.json, mcpReadiness: opts.mcpReadiness });
+  .action(async (repo: string, opts: { json?: boolean; mcpReadiness?: boolean; workspaceFocusFile?: string; workspaceSession?: string }) => {
+    const result = await runDoctor(path.resolve(repo), {
+      json: opts.json,
+      mcpReadiness: opts.mcpReadiness,
+      workspaceFocusFile: opts.workspaceFocusFile ? path.resolve(opts.workspaceFocusFile) : undefined,
+      workspaceSessionId: opts.workspaceSession
+    });
     console.log(result.text);
     if (!result.ok) {
       process.exitCode = 1;
@@ -482,7 +449,7 @@ program
   .option("--semantic-batch-size <n>", "semantic query batch size", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
-  .description("Compare raw search with Codexa-ranked targets, tests, and known gaps.")
+  .description("Run first-class hybrid semantic search over raw hits, Codexa ranking, tests, and known gaps.")
   .action(async (repo: string, opts: { query: string; pattern?: string[]; limit: number; raw: boolean } & CliQueryOptions) =>
     printQuery(
       await searchQuery(
@@ -525,17 +492,20 @@ program
   .argument("<repo>", "repository root")
   .option("--file <path>", "file to explain")
   .option("--symbol <symbol>", "symbol id or name to explain")
+  .option("--depth <n>", "symbol neighborhood depth, 1-3", parseIntOption)
+  .option("--language <language>", "optional symbol language filter")
+  .option("--no-evidence", "omit compact edge evidence from symbol_context output")
   .option("--lsp", "include optional read-only LSP assist for TypeScript, JavaScript, or Python")
   .option("--lsp-timeout-ms <n>", "LSP request timeout in milliseconds", parseIntOption)
   .option("--lsp-max-files <n>", "maximum files to inspect with LSP assist", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Return compact evidence for a file or symbol.")
-  .action(async (repo: string, opts: { file?: string; symbol?: string } & CliQueryOptions) => {
+  .action(async (repo: string, opts: { file?: string; symbol?: string; depth?: number; language?: string; evidence?: boolean } & CliQueryOptions) => {
     const queryOptions = queryOptionsFromCli(opts);
     const repoRoot = await resolveQueryRepoRoot(repo);
     if (opts.symbol) {
-      printQuery(await symbolContextQuery(repoRoot, opts.symbol, queryOptions));
+      printQuery(await symbolContextQuery(repoRoot, opts.symbol, queryOptions, { depth: opts.depth, language: opts.language, includeEvidence: opts.evidence }));
       return;
     }
     if (opts.file) {
@@ -972,6 +942,15 @@ program
   .option("--ran-command-report <json...>", "structured command report JSON with command, cwd, packageManager, workspace/packageRoot/packageName, scriptName, args, exitCode, durationMs, and output summaries")
   .option("--waive-check <target...>", "legacy test-target waiver shortcut; use --waiver for workflow/dependency checks")
   .option("--waiver <json...>", "structured verification waiver JSON: {\"kind\":\"test\",\"target\":\"tests/foo.test.ts\",\"reason\":\"manual check\"}")
+  .option("--semantic", "force the semantic retrieval lane even when auto-detection would skip it")
+  .option("--no-semantic", "disable automatic semantic retrieval for this review")
+  .option("--semantic-provider <provider>", "semantic query provider: openai or local-command", parseSemanticProvider)
+  .option("--semantic-model <model>", "semantic embedding model name")
+  .option("--semantic-dimensions <n>", "semantic embedding dimensions", parseIntOption)
+  .option("--semantic-command <command>", "local semantic embedding command for --semantic-provider local-command")
+  .option("--semantic-arg <arg...>", "argument for the local semantic embedding command")
+  .option("--semantic-timeout-ms <n>", "semantic query timeout in milliseconds", parseIntOption)
+  .option("--semantic-batch-size <n>", "semantic query batch size", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Compare the current dirty tree against a saved Codexa change-plan snapshot.")
@@ -993,7 +972,7 @@ program
         waiveCheck?: string[];
         waiver?: string[];
         autoRefresh: boolean;
-      }
+      } & CliQueryOptions
     ) =>
       printQuery(
         await postEditReviewQuery(
@@ -1013,7 +992,7 @@ program
             waivedChecks: opts.waiveCheck,
             waivers: parseWaiverOptions(opts.waiver)
           },
-          { autoRefresh: opts.autoRefresh }
+          queryOptionsFromCli(opts)
         )
       )
   );
@@ -1029,12 +1008,13 @@ program
   .option("--no-auto-refresh", "keep eval queries frozen against the existing index")
   .option("--fail-on-refresh", "fail a scenario if a query auto-refreshes during scoring", true)
   .option("--no-fail-on-refresh", "record refreshes without failing the scenario")
+  .option("--centrality-experiment", "run eval-only transitive centrality/PageRank experiment without changing default rank", false)
   .description("Run a structured Codexa quality benchmark with randomized anti-cheat holdouts.")
-  .action(async (repo: string, opts: { suite: "all" | "project" | "synthetic" | "historical-fixture" | "task-pack"; seed?: string; taskPack?: string; json?: boolean; autoRefresh: boolean; failOnRefresh: boolean }) => {
+  .action(async (repo: string, opts: { suite: "all" | "project" | "synthetic" | "historical-fixture" | "task-pack"; seed?: string; taskPack?: string; json?: boolean; autoRefresh: boolean; failOnRefresh: boolean; centralityExperiment: boolean }) => {
     const result = await runEval(
       await resolveQueryRepoRoot(repo),
       { autoRefresh: opts.autoRefresh },
-      { suite: opts.suite, seed: opts.seed, json: opts.json, failOnRefresh: opts.failOnRefresh, taskPackPath: opts.taskPack ? path.resolve(opts.taskPack) : undefined }
+      { suite: opts.suite, seed: opts.seed, json: opts.json, failOnRefresh: opts.failOnRefresh, taskPackPath: opts.taskPack ? path.resolve(opts.taskPack) : undefined, centralityExperiment: opts.centralityExperiment }
     );
     console.log(result.text);
     if (!result.passed) {
@@ -1055,7 +1035,7 @@ program
     const summary = await sessionStartSummary(repo, opts.context || process.env.CODEXA_SESSIONSTART_CONTEXT === "1", opts.autoRefresh);
     console.log(summary);
     const unavailable = summary.includes("Codexa status unavailable:");
-    await safeRecordHookEvent(resolved, {
+    await recordAdvisoryHookEvent(resolved, {
       hook: "session-start",
       status: unavailable ? "failed" : "ok",
       durationMs: Date.now() - startedAt,
@@ -1083,9 +1063,20 @@ program
   .option("--no-auto-refresh", "do not refresh a stale or missing index before answering MCP context tools")
   .option("--session-memory <mode>", "auto-record MCP session memory: auto or off", parseSessionMemoryMode, "auto")
   .option("--workspace-focus-file <path>", "workspace focus file to consult when <repo> is a workspace launch root")
-  .description("Start the stdio MCP server.")
-  .action(async (repo: string, opts: CliQueryOptions) => {
-    await serveMcp(path.resolve(repo), queryOptionsFromCli(opts));
+  .option("--workspace-session <id>", "active WORKING.md session row to prefer when <repo> is a workspace launch root")
+  .option("--transport <transport>", "MCP transport: stdio or http", parseMcpTransport, "stdio")
+  .option("--host <host>", "HTTP host for --transport http; must be loopback", "127.0.0.1")
+  .option("--port <n>", "HTTP port for --transport http", parseIntOption, 8729)
+  .option("--endpoint <path>", "HTTP MCP endpoint path for --transport http", "/mcp")
+  .description("Start the MCP server over stdio by default, or Streamable HTTP with --transport http.")
+  .action(async (repo: string, opts: CliQueryOptions & { transport: McpTransportKind; host: string; port: number; endpoint: string }) => {
+    const resolved = path.resolve(repo);
+    const queryOptions = queryOptionsFromCli(opts);
+    if (opts.transport === "http") {
+      await serveMcpHttp(resolved, queryOptions, { host: opts.host, port: opts.port, endpoint: opts.endpoint });
+      return;
+    }
+    await serveMcp(resolved, queryOptions);
   });
 
 program.parseAsync(process.argv).catch((error) => {
@@ -1121,6 +1112,7 @@ type CliQueryOptions = {
   lspMaxFiles?: number;
   sessionMemory?: "auto" | "off";
   workspaceFocusFile?: string;
+  workspaceSession?: string;
 };
 
 function queryOptionsFromCli(opts: CliQueryOptions): QueryOptions {
@@ -1138,7 +1130,8 @@ function queryOptionsFromCli(opts: CliQueryOptions): QueryOptions {
     lspTimeoutMs: opts.lspTimeoutMs,
     lspMaxFiles: opts.lspMaxFiles,
     sessionMemory: opts.sessionMemory,
-    workspaceFocusFile: opts.workspaceFocusFile ? path.resolve(opts.workspaceFocusFile) : undefined
+    workspaceFocusFile: opts.workspaceFocusFile ? path.resolve(opts.workspaceFocusFile) : undefined,
+    workspaceSessionId: opts.workspaceSession
   };
 }
 
@@ -1149,107 +1142,11 @@ function parseSessionMemoryMode(value: string): "auto" | "off" {
   throw new Error("session memory mode must be auto or off");
 }
 
-function compactHookOutput(text: string): string {
-  const lines = text.split(/\r?\n/);
-  const keep: string[] = [];
-  let keepNextActions = false;
-  let nextActionCount = 0;
-  for (const line of lines) {
-    if (
-      line.startsWith("Codexa post-edit review") ||
-      line.startsWith("Task:") ||
-      line.startsWith("Snapshot:") ||
-      line.startsWith("Verdict:") ||
-      line.startsWith("Outcome record:") ||
-      line.startsWith("Tests still unaccounted for:")
-    ) {
-      keep.push(line);
-      continue;
-    }
-    if (line === "Next actions:") {
-      keep.push(line);
-      keepNextActions = true;
-      nextActionCount = 0;
-      continue;
-    }
-    if (keepNextActions && line.startsWith("- ")) {
-      keep.push(line);
-      nextActionCount += 1;
-      if (nextActionCount >= 4) {
-        keepNextActions = false;
-      }
-      continue;
-    }
-    if (line.trim() === "") {
-      keepNextActions = false;
-    }
+function parseMcpTransport(value: string): McpTransportKind {
+  if (value === "stdio" || value === "http") {
+    return value;
   }
-  return keep.length > 0 ? keep.join("\n") : lines.slice(0, 16).join("\n");
-}
-
-type HookActionResult = Omit<CodexaHookEventInput, "hook" | "durationMs"> | void;
-
-async function resolveHookRepoRoots(repo: string): Promise<{ configuredRoot: string; activeRepoRoot: string }> {
-  const configuredRoot = path.resolve(repo);
-  try {
-    const resolution = await resolveMcpRepoRoot(configuredRoot);
-    return { configuredRoot, activeRepoRoot: resolution.repoRoot };
-  } catch {
-    return { configuredRoot, activeRepoRoot: configuredRoot };
-  }
-}
-
-function postEditOutcomeFromQueryResult(data: unknown): PostEditOutcome | undefined {
-  if (!data || typeof data !== "object") {
-    return undefined;
-  }
-  const outcome = (data as { outcome?: unknown }).outcome;
-  if (!outcome || typeof outcome !== "object") {
-    return undefined;
-  }
-  const record = outcome as Partial<PostEditOutcome>;
-  return record.schemaVersion === 1 && typeof record.outcomeId === "string" ? (record as PostEditOutcome) : undefined;
-}
-
-async function runAdvisoryHook(repoRoot: string, hook: CodexaHookName, label: string, action: () => Promise<HookActionResult>): Promise<void> {
-  const startedAt = Date.now();
-  try {
-    const result = await action();
-    await safeRecordHookEvent(repoRoot, {
-      hook,
-      status: result?.status ?? "ok",
-      durationMs: Date.now() - startedAt,
-      reason: result?.reason,
-      taskId: result?.taskId,
-      verdict: result?.verdict,
-      outcomeId: result?.outcomeId,
-      signature: result?.signature
-    });
-  } catch (error) {
-    const message = hookErrorMessage(error);
-    console.log(`Codexa: ${label} unavailable: ${message}`);
-    console.log("Codexa: hook is advisory; continuing without blocking the edit.");
-    await safeRecordHookEvent(repoRoot, {
-      hook,
-      status: "failed",
-      durationMs: Date.now() - startedAt,
-      reason: "unavailable",
-      error: message
-    });
-  }
-}
-
-async function safeRecordHookEvent(repoRoot: string, event: CodexaHookEventInput): Promise<void> {
-  try {
-    await recordCodexaHookEvent(repoRoot, event);
-  } catch {
-    // Hook telemetry is local diagnostics only; it must never make advisory hooks block.
-  }
-}
-
-function hookErrorMessage(error: unknown): string {
-  const message = error instanceof Error ? error.message : String(error);
-  return message.replace(/\s+/gu, " ").trim() || "unknown error";
+  throw new Error("MCP transport must be stdio or http");
 }
 
 function parseIntOption(value: string): number {
@@ -1262,6 +1159,10 @@ function parseIntOption(value: string): number {
     throw new Error(`Invalid integer: ${value}`);
   }
   return parsed;
+}
+
+function parseAutonomyOption(value: string) {
+  return parseAutonomyMode(value);
 }
 
 function parseChangeType(value: string): ChangeType {

@@ -37,7 +37,7 @@ is_allowed() {
 }
 
 i=0
-cli_args=(post-edit "$repo")
+cli_args=(post-edit-review "$repo")
 while [[ $i -lt ${#tokens[@]} ]]; do
   tok="${tokens[$i]}"
   if [[ "$tok" == --* ]]; then

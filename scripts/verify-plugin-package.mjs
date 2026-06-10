@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { execFileSync } from "node:child_process";
 import { accessSync, constants, readFileSync, statSync } from "node:fs";
 import path from "node:path";
 
@@ -12,6 +13,7 @@ const requiredFiles = [
   "skills/codexa/SKILL.md"
 ];
 const failures = [];
+const packedFileSet = npmPackFileSet();
 
 for (const file of requiredFiles) {
   const fullPath = path.join(pluginRoot, file);
@@ -23,6 +25,7 @@ for (const file of requiredFiles) {
   } catch {
     failures.push(`${file} is missing`);
   }
+  requireField(packedFileSet?.has(`plugins/codexa/${file}`) === true, `${file} is missing from npm pack output`);
 }
 
 const manifest = parseJson(path.join(pluginRoot, ".codex-plugin/plugin.json"), "plugin manifest");
@@ -61,7 +64,9 @@ try {
 for (const file of requiredFiles) {
   scanText(file, readFileSync(path.join(pluginRoot, file), "utf8"));
 }
-validateSkillFrontmatter("skills/codexa/SKILL.md", readFileSync(path.join(pluginRoot, "skills/codexa/SKILL.md"), "utf8"));
+const skillText = readFileSync(path.join(pluginRoot, "skills/codexa/SKILL.md"), "utf8");
+validateSkillFrontmatter("skills/codexa/SKILL.md", skillText);
+validateCodexaSkillContract("skills/codexa/SKILL.md", skillText);
 scanText(".agents/plugins/marketplace.json", readFileSync(marketplacePath, "utf8"));
 
 if (failures.length > 0) {
@@ -89,12 +94,28 @@ function requireField(condition, message) {
   }
 }
 
+function npmPackFileSet() {
+  try {
+    const output = execFileSync("npm", ["pack", "--dry-run", "--json", "--ignore-scripts"], {
+      cwd: root,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    const parsed = JSON.parse(output);
+    const files = Array.isArray(parsed?.[0]?.files) ? parsed[0].files : [];
+    return new Set(files.map((entry) => entry?.path).filter((entry) => typeof entry === "string"));
+  } catch (error) {
+    failures.push(`npm pack dry-run failed: ${error instanceof Error ? error.message : String(error)}`);
+    return undefined;
+  }
+}
+
 function scanText(file, text) {
   const blocked = [
     /\[TODO[^\]]*\]/iu,
     /\bTODO\b/u,
-    /\/srv(?:\/|$)/u,
-    /\/home\/[a-z][\w-]*(?:\/|$)/iu
+    new RegExp(`/${"srv"}(?=$|[/\\s,.;:)\\]}])`, "u"),
+    /\/home\/[a-z][\w-]*(?=$|[\/\s,.;:)\]}])/iu
   ];
   for (const pattern of blocked) {
     if (pattern.test(text)) {
@@ -128,5 +149,17 @@ function validateSkillFrontmatter(file, text) {
     if (typeof value !== "string" || value.trim().length === 0) {
       failures.push(`${file} skill frontmatter must include ${field}`);
     }
+  }
+}
+
+function validateCodexaSkillContract(file, text) {
+  const requiredSnippets = [
+    "session_context -> search(if target unclear) -> task_brief -> change_plan(saveSnapshot) -> post_edit_review -> test_plan",
+    "Keep host adapters thin",
+    "no source-mutating MCP tool path",
+    "codexa search . --query"
+  ];
+  for (const snippet of requiredSnippets) {
+    requireField(text.includes(snippet), `${file} must include Codexa thin-adapter contract text: ${snippet}`);
   }
 }

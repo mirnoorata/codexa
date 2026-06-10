@@ -6,47 +6,12 @@ import os from "node:os";
 import path from "node:path";
 import { buildIndex } from "./indexer.js";
 import { isTestPath } from "./language.js";
+import { MCP_TOOL_CATALOG } from "./mcp-tool-catalog.js";
 import { changePlanQuery, contextPackQuery, diffImpactQuery, focusBriefQuery, impactQuery, postEditReviewQuery, searchQuery, taskBriefQuery, testPlanQuery, workflowPathQuery } from "./queries.js";
-import type { QueryOptions, QueryResult, TestRecommendation } from "./types.js";
+import type { BaseQueryData, PostEditReviewData, QueryOptions, QueryResult, TestRecommendation } from "./types.js";
 import { externalHistoricalTaskPackScenarios, historicalFixtureScenarios } from "./eval/historical.js";
-
-export type EvalSuite = "all" | "project" | "synthetic" | "historical-fixture" | "task-pack";
-export type EvalScenarioSuite = Exclude<EvalSuite, "all"> | "historical-task-pack";
-
-export interface EvalScenario {
-  id: string;
-  suite: EvalScenarioSuite;
-  description: string;
-  repoRoot: string;
-  scored?: boolean;
-  baselineCommand?: string[];
-  baselineCommands?: string[][];
-  baselineCwd?: string;
-  codexa: () => Promise<QueryResult>;
-  oracle: EvalOracle;
-  privatePack?: boolean;
-  taskPackPath?: string;
-  cleanupRepoRoot?: string;
-  cleanupRepoRoots?: string[];
-}
-
-export interface EvalOracle {
-  expectedFiles?: string[];
-  expectedChangedFiles?: string[];
-  expectedTests?: string[];
-  forbiddenFiles?: string[];
-  topFiles?: string[];
-  knownTraps?: string[];
-  expectedCodexaCalls?: string[];
-  maxTextChars?: number;
-  maxDataBytes?: number;
-  maxFalsePositiveFiles?: number;
-  minFileRecall?: number;
-  minChangedFileRecall?: number;
-  minTestRecall?: number;
-  minFilePrecisionAtK?: number;
-  maxSelectedToBaselineRatio?: number;
-}
+import type { EvalOracle, EvalScenario, EvalSuite } from "./eval/types.js";
+export type { EvalOracle, EvalScenario, EvalScenarioSuite, EvalSuite } from "./eval/types.js";
 
 interface EvalVerificationProvenance {
   schemaVersion?: number;
@@ -149,6 +114,7 @@ export interface EvalOptions {
   json?: boolean;
   failOnRefresh?: boolean;
   taskPackPath?: string;
+  centralityExperiment?: boolean;
 }
 
 const DEFAULT_SEED = "codexa-v1-benchmark";
@@ -180,9 +146,15 @@ export interface EvalResult {
       postEditVerdicts: Record<string, number>;
       outcomeRecords: string[];
     };
-    scenarios: ScoredEvalScenario[];
-  };
-}
+	    scenarios: ScoredEvalScenario[];
+	    centralityExperiment?: {
+	      enabled: boolean;
+	      topFiles: Array<{ path: string; score: number; currentRank: number }>;
+	      overlapWithCurrentTop10: number;
+	      note: string;
+	    };
+	  };
+	}
 
 export async function runEval(
   repoRoot: string,
@@ -231,7 +203,8 @@ export async function runEval(
   const passed = scored.every((scenario) => scenario.passed);
   const scoredOnly = scored.filter((scenario) => scenario.scored);
   const score = scoredOnly.length > 0 ? scoredOnly.reduce((sum, scenario) => sum + scenario.score, 0) / scoredOnly.length : 0;
-  const data = { seed, suite, passed, score, antiCheat, calibrationSummary: calibrationSummary(scored), scenarios: scored };
+  const centralityExperiment = evalOptions.centralityExperiment ? await runTransitiveCentralityExperiment(repo) : undefined;
+  const data = { seed, suite, passed, score, antiCheat, calibrationSummary: calibrationSummary(scored), scenarios: scored, centralityExperiment };
   await saveEvalData(repo, seed, data);
   return {
     passed,
@@ -887,8 +860,22 @@ async function saveEvalData(repoRoot: string, seed: string, data: EvalResult["da
     passed: data.passed,
     score: data.score,
     path: path.basename(filePath),
+    repoRoot,
+    headCommit: gitHeadCommit(repoRoot),
+    mcpCatalogTools: MCP_TOOL_CATALOG.map((tool) => tool.name),
     createdAt: new Date().toISOString()
   });
+}
+
+function gitHeadCommit(repoRoot: string): string | null {
+  try {
+    return execFileSync("git", ["-C", repoRoot, "rev-parse", "HEAD"], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"]
+    }).trim();
+  } catch {
+    return null;
+  }
 }
 
 async function atomicJsonWrite(filePath: string, value: unknown): Promise<void> {
@@ -956,11 +943,85 @@ export function scoreStructuredOutputForTest(result: QueryResult, oracle: EvalOr
   );
 }
 
+async function runTransitiveCentralityExperiment(repoRoot: string): Promise<NonNullable<EvalResult["data"]["centralityExperiment"]>> {
+  const index = await buildIndex({ repoRoot, writeArtifacts: false });
+  const scores = new Map(index.files.map((file) => [file.path, 1]));
+  for (let iteration = 0; iteration < 8; iteration += 1) {
+    const next = new Map(index.files.map((file) => [file.path, 0.15]));
+    for (const edge of index.graphEdges) {
+      if (!edge.fromPath || !edge.toPath) {
+        continue;
+      }
+      const contribution = (scores.get(edge.fromPath) ?? 1) * Math.max(0.1, Math.min(edge.weight, 4)) * 0.12;
+      next.set(edge.toPath, (next.get(edge.toPath) ?? 0.15) + contribution);
+      if (edge.edgeKind === "IMPORTS" || edge.edgeKind === "CALLS" || edge.edgeKind === "REFERENCES") {
+        next.set(edge.fromPath, (next.get(edge.fromPath) ?? 0.15) + (scores.get(edge.toPath) ?? 1) * 0.04);
+      }
+    }
+    for (const [filePath, value] of next) {
+      scores.set(filePath, Math.min(50, value));
+    }
+  }
+  const currentTop = new Set(index.files.slice(0, 10).map((file) => file.path));
+  const byFile = new Map(index.files.map((file) => [file.path, file]));
+  const topFiles = [...scores.entries()]
+    .sort(([pathA, scoreA], [pathB, scoreB]) => scoreB - scoreA || pathA.localeCompare(pathB))
+    .slice(0, 20)
+    .map(([filePath, scoreValue]) => ({ path: filePath, score: Number(scoreValue.toFixed(4)), currentRank: Number((byFile.get(filePath)?.rank ?? 0).toFixed(4)) }));
+  return {
+    enabled: true,
+    topFiles,
+    overlapWithCurrentTop10: topFiles.slice(0, 10).filter((entry) => currentTop.has(entry.path)).length,
+    note: "Eval-only transitive centrality experiment; default file.rank is unchanged unless future benchmark metrics justify enabling it."
+  };
+}
+
+type EvalNestedDataKey = "diff" | "plan" | "focus" | "context" | "review" | "postEdit" | "post_edit" | "data";
+
+type EvalScoringData = BaseQueryData & {
+  actionability?: string;
+  selectedFiles?: unknown[];
+  readFirstFiles?: unknown[];
+  files?: unknown[];
+  fanout?: { readFirst?: unknown };
+  affectedFiles?: unknown[];
+  focusFiles?: unknown[];
+  nextReads?: unknown[];
+  changedFiles?: unknown[];
+  plannedEditTargets?: unknown[];
+  reviewTargets?: unknown[];
+  snapshot?: { plannedEditTargets?: unknown[] };
+  callTrace?: unknown[];
+  tests?: unknown[];
+  workflows?: unknown[];
+  quality?: { level?: unknown; counts?: { authoritative?: unknown; derived?: unknown; heuristic?: unknown; fallback?: unknown } };
+  outcome?: PostEditReviewData["outcome"];
+  testsNotRun?: unknown;
+  missedLikelyTests?: unknown;
+  modifiedPublicSymbols?: unknown;
+  workflowChecks?: unknown;
+  dependencyChecks?: unknown;
+  ranCommands?: unknown;
+  commandEnvelopes?: unknown;
+  verificationLedger?: unknown;
+  verdict?: unknown;
+  outcomeId?: unknown;
+  path?: unknown;
+  driftReasons?: unknown;
+  calibrationLabels?: unknown;
+  packetVerdict?: unknown;
+  editReadiness?: { editable?: unknown };
+} & Partial<Record<EvalNestedDataKey, unknown>>;
+
+function evalScoringData(data: unknown): EvalScoringData | undefined {
+  return data && typeof data === "object" && !Array.isArray(data) ? (data as EvalScoringData) : undefined;
+}
+
 function filesFromData(data: unknown): string[] {
-  if (!data || typeof data !== "object") {
+  const record = evalScoringData(data);
+  if (!record) {
     return [];
   }
-  const record = data as Record<string, unknown>;
   if (Array.isArray(record.selectedFiles)) {
     return uniqueInOrder(record.selectedFiles.flatMap(filePathFromUnknown));
   }
@@ -971,7 +1032,7 @@ function filesFromData(data: unknown): string[] {
     return uniqueInOrder(record.files.flatMap(filePathFromUnknown));
   }
   if (record.fanout && typeof record.fanout === "object") {
-    const readFirst = (record.fanout as Record<string, unknown>).readFirst;
+    const readFirst = record.fanout.readFirst;
     if (Array.isArray(readFirst)) {
       return uniqueInOrder(readFirst.flatMap((entry: unknown) => filePathFromUnknown((entry as Record<string, unknown>).file ?? entry)));
     }
@@ -988,36 +1049,35 @@ function filesFromData(data: unknown): string[] {
   if (Array.isArray(record.changedFiles)) {
     return uniqueInOrder(record.changedFiles.flatMap(filePathFromUnknown));
   }
-  const nested = ["diff", "plan"].flatMap((key) => filesFromData(record[key]));
+  const nested = (["diff", "plan"] as const).flatMap((key) => filesFromData(record[key]));
   return uniqueInOrder(nested);
 }
 
 function plannedFilesFromData(data: unknown): string[] {
-  if (!data || typeof data !== "object") {
+  const record = evalScoringData(data);
+  if (!record) {
     return [];
   }
-  const record = data as Record<string, unknown>;
   if (Array.isArray(record.plannedEditTargets)) {
     return uniqueInOrder(record.plannedEditTargets.flatMap(filePathFromUnknown));
   }
   if (record.snapshot && typeof record.snapshot === "object") {
-    const snapshot = record.snapshot as Record<string, unknown>;
-    if (Array.isArray(snapshot.plannedEditTargets)) {
-      return uniqueInOrder(snapshot.plannedEditTargets.flatMap(filePathFromUnknown));
+    if (Array.isArray(record.snapshot.plannedEditTargets)) {
+      return uniqueInOrder(record.snapshot.plannedEditTargets.flatMap(filePathFromUnknown));
     }
   }
   if (Array.isArray(record.reviewTargets)) {
     return uniqueInOrder(record.reviewTargets.flatMap(filePathFromUnknown));
   }
-  const nested = ["focus", "context", "diff", "plan"].flatMap((key) => plannedFilesFromData(record[key]));
+  const nested = (["focus", "context", "diff", "plan"] as const).flatMap((key) => plannedFilesFromData(record[key]));
   return uniqueInOrder(nested);
 }
 
 function callTraceFromData(data: unknown): string[] {
-  if (!data || typeof data !== "object") {
+  const record = evalScoringData(data);
+  if (!record) {
     return [];
   }
-  const record = data as Record<string, unknown>;
   if (Array.isArray(record.callTrace)) {
     return record.callTrace.filter((entry): entry is string => typeof entry === "string");
   }
@@ -1025,10 +1085,10 @@ function callTraceFromData(data: unknown): string[] {
 }
 
 function testsFromData(data: unknown): string[] {
-  if (!data || typeof data !== "object") {
+  const record = evalScoringData(data);
+  if (!record) {
     return [];
   }
-  const record = data as Record<string, unknown>;
   const direct = Array.isArray(record.tests)
     ? record.tests.flatMap((entry) => {
         if (typeof entry === "string") {
@@ -1049,21 +1109,20 @@ function testsFromData(data: unknown): string[] {
         return Array.isArray(tests) ? tests.filter((entry): entry is string => typeof entry === "string") : [];
       })
     : [];
-  const nested = ["diff", "plan"].flatMap((key) => testsFromData(record[key]));
+  const nested = (["diff", "plan"] as const).flatMap((key) => testsFromData(record[key]));
   return uniqueInOrder([...direct, ...workflowTests, ...nested]);
 }
 
 function qualityFromData(data: unknown): { level: string; counts: { authoritative: number; derived: number; heuristic: number; fallback: number } } | null {
-  if (!data || typeof data !== "object") {
+  const record = evalScoringData(data);
+  if (!record) {
     return null;
   }
-  const record = data as Record<string, unknown>;
   const quality = record.quality;
-  if (quality && typeof quality === "object") {
-    const q = quality as Record<string, unknown>;
-    const counts = q.counts && typeof q.counts === "object" ? (q.counts as Record<string, unknown>) : {};
+  if (quality) {
+    const counts = quality.counts ?? {};
     return {
-      level: typeof q.level === "string" ? q.level : "unknown",
+      level: typeof quality.level === "string" ? quality.level : "unknown",
       counts: {
         authoritative: numericCount(counts.authoritative),
         derived: numericCount(counts.derived),
@@ -1072,7 +1131,7 @@ function qualityFromData(data: unknown): { level: string; counts: { authoritativ
       }
     };
   }
-  for (const key of ["focus", "context", "diff", "plan"]) {
+  for (const key of ["focus", "context", "diff", "plan"] as const) {
     const nested = qualityFromData(record[key]);
     if (nested) {
       return nested;
@@ -1082,11 +1141,11 @@ function qualityFromData(data: unknown): { level: string; counts: { authoritativ
 }
 
 function postEditOutcomeFromData(data: unknown): ScoredEvalScenario["calibration"]["postEditOutcome"] {
-  if (!data || typeof data !== "object") {
+  const record = evalScoringData(data);
+  if (!record) {
     return undefined;
   }
-  const record = data as Record<string, unknown>;
-  const candidate = record.outcome && typeof record.outcome === "object" ? (record.outcome as Record<string, unknown>) : record;
+  const candidate = evalScoringData(record.outcome) ?? record;
   const testsNotRun = extractPaths(candidate.testsNotRun ?? record.testsNotRun);
   const missedLikelyTests = extractPaths(candidate.missedLikelyTests ?? record.missedLikelyTests);
   const modifiedPublicSymbols = extractStringArray(candidate.modifiedPublicSymbols ?? record.modifiedPublicSymbols);
@@ -1135,7 +1194,7 @@ function postEditOutcomeFromData(data: unknown): ScoredEvalScenario["calibration
       verificationNotApplicable: verificationStatusCount("not_applicable")
     };
   }
-  for (const key of ["review", "postEdit", "post_edit", "plan"]) {
+  for (const key of ["review", "postEdit", "post_edit", "plan"] as const) {
     const nested = postEditOutcomeFromData(record[key]);
     if (nested) {
       return nested;
@@ -1145,10 +1204,10 @@ function postEditOutcomeFromData(data: unknown): ScoredEvalScenario["calibration
 }
 
 function toolHopsToEditReadyFromData(data: unknown): number | null {
-  if (!data || typeof data !== "object" || Array.isArray(data)) {
+  const record = evalScoringData(data);
+  if (!record) {
     return null;
   }
-  const record = data as Record<string, unknown>;
   const mode = typeof record.mode === "string" ? record.mode : undefined;
   const actionability = typeof record.actionability === "string" ? record.actionability : undefined;
   const editReady = actionability === "edit_ready" || record.packetVerdict === "edit-ready" || (record.editReadiness && typeof record.editReadiness === "object" && (record.editReadiness as { editable?: unknown }).editable === true);
@@ -1157,7 +1216,7 @@ function toolHopsToEditReadyFromData(data: unknown): number | null {
     if (mode === "task_brief" || mode === "context_pack") return 1;
     return 0;
   }
-  for (const key of ["focus", "context", "diff", "plan", "data"]) {
+  for (const key of ["focus", "context", "diff", "plan", "data"] as const) {
     const nested = toolHopsToEditReadyFromData(record[key]);
     if (nested !== null) {
       return nested;
@@ -1167,10 +1226,10 @@ function toolHopsToEditReadyFromData(data: unknown): number | null {
 }
 
 function verificationProvenanceFromData(data: unknown): EvalVerificationProvenance | undefined {
-  if (!data || typeof data !== "object" || Array.isArray(data)) {
+  const record = evalScoringData(data);
+  if (!record) {
     return undefined;
   }
-  const record = data as Record<string, unknown>;
   return extractVerificationProvenance(record.verificationProvenance) ?? verificationProvenanceFromData(record.data);
 }
 
@@ -1298,6 +1357,19 @@ function uniqueInOrder(values: string[]): string[] {
 }
 
 function renderEval(data: EvalResult["data"]): string {
+  const qualityObservations = [
+    ...data.calibrationSummary.rawRgBetterScenarios.map((id) => `- raw baseline better: ${id}`),
+    ...(data.calibrationSummary.missingExpectedTests.length > 0 ? [`- missing expected tests: ${data.calibrationSummary.missingExpectedTests.join(", ")}`] : []),
+    ...(data.calibrationSummary.missingExpectedChangedFiles.length > 0 ? [`- missing planned changed files: ${data.calibrationSummary.missingExpectedChangedFiles.join(", ")}`] : []),
+    ...(data.calibrationSummary.heuristicHeavyScenarios.length > 0 ? [`- heuristic-heavy scenarios: ${data.calibrationSummary.heuristicHeavyScenarios.join(", ")}`] : []),
+    ...(data.calibrationSummary.overBudgetedOutputScenarios.length > 0 ? [`- over-budgeted output: ${data.calibrationSummary.overBudgetedOutputScenarios.join(", ")}`] : []),
+    ...(data.calibrationSummary.overBudgetedStructuredDataScenarios.length > 0 ? [`- over-budgeted structured data: ${data.calibrationSummary.overBudgetedStructuredDataScenarios.join(", ")}`] : []),
+    ...(data.calibrationSummary.postEditMissedTests.length > 0 ? [`- post-edit missed tests: ${data.calibrationSummary.postEditMissedTests.join(", ")}`] : []),
+    ...(data.calibrationSummary.postEditRequiredChecksMissingScenarios.length > 0 ? [`- post-edit missing required checks: ${data.calibrationSummary.postEditRequiredChecksMissingScenarios.join(", ")}`] : []),
+    ...(data.calibrationSummary.postEditAggregateCoverageScenarios.length > 0 ? [`- post-edit aggregate command coverage: ${data.calibrationSummary.postEditAggregateCoverageScenarios.join(", ")}`] : []),
+    ...(data.calibrationSummary.postEditVerificationMissingScenarios.length > 0 ? [`- post-edit verification still missing: ${data.calibrationSummary.postEditVerificationMissingScenarios.join(", ")}`] : []),
+    ...(data.calibrationSummary.postEditCalibrationLabels.length > 0 ? [`- post-edit labels: ${data.calibrationSummary.postEditCalibrationLabels.join(", ")}`] : [])
+  ];
   const lines = [
     "Codexa eval benchmark",
     `Suite: ${data.suite}`,
@@ -1308,20 +1380,14 @@ function renderEval(data: EvalResult["data"]): string {
     "Anti-cheat controls:",
     ...data.antiCheat.map((item) => `- ${item}`),
     "",
-    "Codexa made it worse signals:",
-    ...(data.calibrationSummary.rawRgBetterScenarios.length > 0 ? data.calibrationSummary.rawRgBetterScenarios.map((id) => `- raw baseline better: ${id}`) : ["- none"]),
-    ...(data.calibrationSummary.missingExpectedTests.length > 0 ? [`- missing expected tests: ${data.calibrationSummary.missingExpectedTests.join(", ")}`] : []),
-    ...(data.calibrationSummary.missingExpectedChangedFiles.length > 0 ? [`- missing planned changed files: ${data.calibrationSummary.missingExpectedChangedFiles.join(", ")}`] : []),
-    ...(data.calibrationSummary.heuristicHeavyScenarios.length > 0 ? [`- heuristic-heavy scenarios: ${data.calibrationSummary.heuristicHeavyScenarios.join(", ")}`] : []),
-    ...(data.calibrationSummary.overBudgetedOutputScenarios.length > 0 ? [`- over-budgeted output: ${data.calibrationSummary.overBudgetedOutputScenarios.join(", ")}`] : []),
-    ...(data.calibrationSummary.overBudgetedStructuredDataScenarios.length > 0 ? [`- over-budgeted structured data: ${data.calibrationSummary.overBudgetedStructuredDataScenarios.join(", ")}`] : []),
-    ...(data.calibrationSummary.postEditMissedTests.length > 0 ? [`- post-edit missed tests: ${data.calibrationSummary.postEditMissedTests.join(", ")}`] : []),
-    ...(data.calibrationSummary.postEditRequiredChecksMissingScenarios.length > 0 ? [`- post-edit missing required checks: ${data.calibrationSummary.postEditRequiredChecksMissingScenarios.join(", ")}`] : []),
-    ...(data.calibrationSummary.postEditAggregateCoverageScenarios.length > 0 ? [`- post-edit aggregate command coverage: ${data.calibrationSummary.postEditAggregateCoverageScenarios.join(", ")}`] : []),
-    ...(data.calibrationSummary.postEditVerificationMissingScenarios.length > 0 ? [`- post-edit verification still missing: ${data.calibrationSummary.postEditVerificationMissingScenarios.join(", ")}`] : []),
-    ...(data.calibrationSummary.postEditCalibrationLabels.length > 0 ? [`- post-edit labels: ${data.calibrationSummary.postEditCalibrationLabels.join(", ")}`] : []),
-    ""
-  ];
+	    "Codexa quality observations:",
+	    ...(qualityObservations.length > 0 ? qualityObservations : ["- none"]),
+	    data.centralityExperiment ? "" : undefined,
+	    data.centralityExperiment ? "Transitive centrality experiment:" : undefined,
+	    data.centralityExperiment ? `- overlap with current top 10: ${data.centralityExperiment.overlapWithCurrentTop10}/10` : undefined,
+	    ...(data.centralityExperiment?.topFiles.slice(0, 8).map((entry) => `- ${entry.path}: centrality ${entry.score.toFixed(4)}, current rank ${entry.currentRank.toFixed(2)}`) ?? []),
+	    ""
+	  ];
   for (const scenario of data.scenarios) {
     lines.push(
       `Scenario: ${scenario.id}`,

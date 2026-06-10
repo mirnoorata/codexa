@@ -9,7 +9,7 @@
 
 1. **Fix repo routing and execution trust first**
    - Change MCP repo resolution so active session repo beats workspace default; if multiple writable candidates remain, fail closed with an ambiguity message.
-   - Make AutoVerify execution opt-in per trusted repo via `.codex/config.toml` or `CODEXA_AUTOVERIFY=1`; default behavior records recommended commands without spawning repo code.
+   - Make AutoVerify execution opt-in through user-controlled environment such as `CODEXA_AUTOVERIFY=1`; repo-local `.codex/config.toml` is not execution consent. Default behavior records recommended commands without spawning repo code.
    - Add `--session-memory auto|off`; with `--no-auto-refresh --session-memory off`, mark core context tools read-only and avoid session-memory cache writes.
 
 2. **Add a typed MCP envelope**

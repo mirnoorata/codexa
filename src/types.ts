@@ -1,4 +1,18 @@
-export type LanguageId = "typescript" | "javascript" | "python" | "json" | "markdown" | "unknown";
+export type LanguageId =
+  | "typescript"
+  | "javascript"
+  | "python"
+  | "json"
+  | "markdown"
+  | "rust"
+  | "go"
+  | "java"
+  | "csharp"
+  | "cpp"
+  | "c"
+  | "ruby"
+  | "php"
+  | "unknown";
 
 export type FactSource =
   | "tree-sitter"
@@ -162,6 +176,58 @@ export interface GraphEdgeFact extends BaseFact {
   toSymbolId?: string;
   reason: string;
   weight: number;
+}
+
+export interface EdgeEvidenceV1 {
+  schemaVersion: 1;
+  id: string;
+  edgeKind: GraphEdgeKind;
+  fromId: string;
+  toId: string;
+  fromPath?: string;
+  toPath?: string;
+  fromSymbolId?: string;
+  toSymbolId?: string;
+  source: FactSource;
+  confidence: Confidence;
+  reason: string;
+  range?: Range;
+  degraded: boolean;
+  stale: boolean;
+}
+
+export interface CodexaSymbolReportSymbolV1 {
+  id?: string;
+  name: string;
+  qualifiedName?: string;
+  kind?: SymbolFact["kind"];
+  path: string;
+  line?: number;
+  endLine?: number;
+  exported?: boolean;
+  parentId?: string;
+  confidence?: Confidence;
+  reason?: string;
+}
+
+export interface CodexaSymbolReportRelationshipV1 {
+  kind: Extract<GraphEdgeKind, "DEFINES" | "CALLS" | "REFERENCES" | "IMPORTS" | "IMPLEMENTS" | "EXTENDS" | "EXPORTS" | "TYPE_EXPORTS">;
+  fromSymbol?: string;
+  fromPath?: string;
+  toSymbol?: string;
+  toPath?: string;
+  line?: number;
+  endLine?: number;
+  confidence?: Confidence;
+  reason?: string;
+}
+
+export interface CodexaSymbolReportV1 {
+  schemaVersion: 1;
+  tool: string;
+  language: string;
+  symbols: CodexaSymbolReportSymbolV1[];
+  relationships?: CodexaSymbolReportRelationshipV1[];
 }
 
 export interface WorkflowStep {
@@ -331,6 +397,9 @@ export interface FreshnessInfo {
   stale: boolean;
   reason: string;
   parserErrorCount: number;
+  externalRiskReportHashes?: Record<string, string>;
+  indexedExternalRiskReportHashes?: Record<string, string>;
+  externalRiskReportDiagnostics?: Array<{ path: string; reason: string; sizeBytes?: number; limitBytes?: number }>;
 }
 
 export interface CodexaIndex {
@@ -398,7 +467,260 @@ export interface QueryOptions {
   semanticBatchSize?: number;
   semanticMaxFiles?: number;
   workspaceFocusFile?: string;
+  workspaceSessionId?: string;
 }
+
+export interface GuidedNextToolV1 {
+  schemaVersion: 1;
+  tool: string;
+  reason: string;
+  requiredInputs?: Record<string, unknown>;
+  readOnly: boolean;
+  writes: string[];
+}
+
+export type QueryPrimitive = string | number | boolean | null;
+export type QueryValue = QueryPrimitive | VerificationProvenance | QueryValue[] | { [key: string]: QueryValue | undefined };
+export type QueryObject = { [key: string]: QueryValue | undefined };
+
+export type CompactFileFact = Pick<FileFact, "path" | "language" | "dirty" | "generated" | "test" | "rank" | "symbolCount" | "usageCount" | "importCount" | "riskScore">;
+export type CompactSymbolFact = Pick<SymbolFact, "path" | "name" | "qualifiedName" | "kind" | "language" | "range" | "confidence">;
+
+export interface CompactChangedSymbol {
+  symbol: CompactSymbolFact;
+  changedLines: string[];
+}
+
+export interface CompactDiffImpactGroup extends Omit<DiffImpactGroup, "changedSymbols"> {
+  changedSymbols: CompactChangedSymbol[];
+}
+
+export type ContextSourceKind = "explicit_target" | "natural_retrieval" | "lexical_query" | "dirty_worktree" | "graph_impact" | "workflow_trace" | "test_evidence" | "rank_fallback";
+
+export interface ContextSourceSummaryData {
+  source: ContextSourceKind;
+  fileCount: number;
+  evidenceTierCounts: Record<EvidenceTier, number>;
+  sampleFiles: string[];
+  sampleReasons: string[];
+}
+
+export interface ContextPacketFocusFile {
+  file: CompactFileFact;
+  reasons: string[];
+  rank: number;
+  tier: EvidenceTier;
+}
+
+export interface RetrievalSummaryData extends QueryObject {
+  query?: string;
+  intents?: string[];
+  terms?: string[];
+  broad?: boolean;
+  matches?: QueryObject[];
+  workflows?: QueryObject[];
+  modules?: QueryObject[];
+  diagnostics?: string[];
+}
+
+export interface NextCallData extends QueryObject {
+  tool?: string;
+  reason?: string;
+}
+
+export interface SnapshotLoadData extends QueryObject {
+  latestTaskId?: string;
+  missingReason?: string;
+  error?: string;
+  ambiguousLatest?: boolean;
+  ambiguityReason?: string;
+}
+
+export interface PostEditOutcomeData extends QueryObject {
+  schemaVersion?: 1;
+  outcomeId?: string;
+  persisted?: boolean;
+  verdict?: string;
+  inspectMode?: "none" | "advisory" | "blocking";
+  inspectReasons?: string[];
+  completionAuthority?: "complete" | "tests_required" | "advisory_inspect" | "blocking_inspect" | "replan_required";
+  path?: string;
+  driftReasons?: string[];
+  ranTests?: string[];
+  ranCommands?: string[];
+  verificationProvenance?: VerificationProvenance;
+}
+
+export type QueryResultMode =
+  | "context_pack"
+  | "task_brief"
+  | "focus_brief"
+  | "session_context"
+  | "change_plan"
+  | "post_edit_review"
+  | "test_plan"
+  | "repo_map"
+  | "search"
+  | "find_context"
+  | "symbol_context"
+  | "impact"
+  | "diff_impact"
+  | "callers"
+  | "callees"
+  | "dependency_path"
+  | "workflow_path"
+  | "placeholder_report"
+  | "session_memory"
+  | "freshness";
+
+export interface BaseQueryData {
+  mode: QueryResultMode;
+  task?: string;
+  quality?: QueryObject;
+  worktree?: QueryObject;
+  worktreeDegradationReasons?: string[];
+  gaps?: string[];
+  warnings?: string[];
+  diagnostics?: string[];
+  nextTools?: Array<GuidedNextToolV1 | string>;
+  systemMessage?: string;
+  sessionMemory?: QueryObject;
+  workspaceGuidance?: QueryObject;
+  priorSessionMemory?: QueryObject;
+  runtime?: QueryObject;
+  session?: QueryObject;
+  truncation?: Record<string, { total: number; returned: number }>;
+  verificationProvenance?: VerificationProvenance;
+}
+
+export interface ContextPacketData extends BaseQueryData {
+  mode: "context_pack" | "task_brief";
+  changeType?: ChangeType;
+  actionability?: string;
+  tokenBudget?: number;
+  packetVerdict?: string;
+  focusFiles?: ContextPacketFocusFile[];
+  changedFiles?: string[];
+  changedEntries?: ChangedFileEntry[];
+  changedSymbols?: CompactChangedSymbol[];
+  unindexedChanged?: string[];
+  groups?: CompactDiffImpactGroup[];
+  tests?: TestRecommendation[];
+  snippets?: string[];
+  contextSources?: ContextSourceSummaryData[];
+  nextReads?: string[];
+  baseline?: QueryObject;
+  retrieval?: RetrievalSummaryData;
+  recipes?: string[];
+  verificationCommands?: string[];
+  verificationCoverage?: VerificationCoverage[];
+  verificationCommandPlan?: VerificationCommandPlanEntry[];
+  value?: QueryObject;
+}
+
+export interface FocusBriefData extends BaseQueryData {
+  mode: "focus_brief" | "session_context";
+  actionability?: string;
+  retrieval?: RetrievalSummaryData;
+  packetVerdict?: string;
+  focusFiles?: CompactFileFact[];
+  workflows?: QueryObject[];
+  modules?: QueryObject[];
+  groups?: CompactDiffImpactGroup[];
+  tests?: TestRecommendation[];
+  nextCall?: NextCallData;
+}
+
+export interface ChangePlanData extends BaseQueryData {
+  mode: "change_plan";
+  editReadiness?: QueryObject;
+  followCandidate?: QueryObject;
+  snapshotBlock?: QueryObject;
+  targetCandidates?: QueryObject[];
+  steps?: string[];
+  focus?: FocusBriefData | QueryObject;
+  context?: ContextPacketData | QueryObject;
+  files?: string[];
+  plannedEditTargets?: string[];
+  tests?: TestRecommendation[];
+  recipes?: string[];
+  requiredWorkflowChecks?: TaskSnapshotRequiredCheck[];
+  requiredDependencyChecks?: TaskSnapshotRequiredCheck[];
+  snapshot?: TaskSnapshot | QueryObject;
+}
+
+export interface PostEditReviewData extends BaseQueryData {
+  mode: "post_edit_review";
+  verdict?: string;
+  inspectMode?: "none" | "advisory" | "blocking";
+  inspectReasons?: string[];
+  completionAuthority?: "complete" | "tests_required" | "advisory_inspect" | "blocking_inspect" | "replan_required";
+  files?: string[];
+  reviewTargets?: string[];
+  changedSinceSnapshot?: string[];
+  changedGroups?: CompactDiffImpactGroup[];
+  resolvedBaselineFiles?: string[];
+  unplannedEditedFiles?: string[];
+  plannedRenames?: QueryObject[];
+  unplannedChangedSymbols?: CompactChangedSymbol[];
+  plannedButUntouchedFiles?: string[];
+  headChanged?: boolean;
+  symbolDeltas?: QueryObject[];
+  modifiedSymbols?: string[];
+  modifiedPublicSymbols?: string[];
+  riskDeltas?: QueryObject[];
+  affectedEdges?: GraphEdgeFact[];
+  affectedTests?: TestRecommendation[];
+  tests?: TestRecommendation[];
+  degradedSnapshotTests?: TestRecommendation[];
+  supersededDegradedSnapshotTests?: TestRecommendation[];
+  testsNotRun?: TestRecommendation[];
+  missedLikelyTests?: TestRecommendation[];
+  ranTests?: string[];
+  ranCommands?: string[];
+  ranCommandReports?: VerificationCommandReport[];
+  commandEnvelopes?: VerificationCommandEnvelope[];
+  waivedChecks?: string[];
+  waivers?: VerificationWaiver[];
+  verificationCoverage?: VerificationCoverage[];
+  verificationLedger?: VerificationLedgerEntry[];
+  waivedVerification?: VerificationLedgerEntry[];
+  unindexedEditedFiles?: string[];
+  riskEscalations?: QueryObject[];
+  riskEscalationsCoveredByVerification?: boolean;
+  riskEscalationsNeedInspection?: boolean;
+  workflows?: WorkflowTraceFact[];
+  workflowChecks?: TaskSnapshotRequiredCheck[];
+  dependencyChecks?: TaskSnapshotRequiredCheck[];
+  driftReasons?: string[];
+  nextActions?: string[];
+  snapshotLoad?: SnapshotLoadData;
+  snapshot?: TaskSnapshot | QueryObject;
+  outcome?: PostEditOutcomeData;
+  context?: ContextPacketData | QueryObject;
+  autoVerifyCandidates?: QueryObject[];
+  autoVerifyRunnerEvidence?: QueryObject[];
+}
+
+export interface TestPlanData extends BaseQueryData {
+  mode: "test_plan";
+  changedFiles?: string[];
+  changedEntries?: ChangedFileEntry[];
+  changedSymbols?: CompactChangedSymbol[];
+  unindexedChanged?: string[];
+  groups?: CompactDiffImpactGroup[];
+  tests?: TestRecommendation[];
+  outcomeLearning?: QueryObject[];
+  verificationCommands?: string[];
+  verificationCoverage?: VerificationCoverage[];
+  verificationCommandPlan?: VerificationCommandPlanEntry[];
+  commandEnvelopes?: VerificationCommandEnvelope[];
+  verificationLedgerPreview?: VerificationLedgerEntry[];
+  verificationLedger?: VerificationLedgerEntry[];
+  testsNotRun?: TestRecommendation[];
+}
+
+export type CodexaQueryData = ContextPacketData | FocusBriefData | ChangePlanData | PostEditReviewData | TestPlanData;
 
 export type ChangeType = "style" | "api" | "behavior" | "rename" | "delete" | "unknown";
 
@@ -465,6 +787,20 @@ export interface PostEditReviewInput {
   persistOutcome?: boolean;
 }
 
+export interface AutoVerifyCandidate {
+  schemaVersion: 1;
+  taskId: string;
+  snapshotDigest: string;
+  commandId: string;
+  command: string;
+  commandExecutable: string;
+  commandArgs: string[];
+  commandCwd: string;
+  targetPaths: string[];
+  source: "explicit" | "authoritative-test-edge" | "derived-impact" | "heuristic" | "legacy";
+  rank: number;
+}
+
 export interface FocusBriefInput {
   task?: string;
   tokenBudget?: number;
@@ -477,12 +813,36 @@ export interface TestRecommendation {
   reason: string;
   rank: number;
   evidenceTier?: EvidenceTier;
+  provenance?: TestRecommendationProvenance;
   command?: string;
   commandCwd?: string;
   commandExecutable?: string;
   commandArgs?: string[];
   commandSource?: string;
   commandConfidence?: Confidence;
+}
+
+export type TestRecommendationProvenanceSource =
+  | "explicit_target"
+  | "authoritative_test_edge"
+  | "derived_import"
+  | "derived_impact_expansion"
+  | "heuristic_match"
+  | "package_import"
+  | "natural_retrieval"
+  | "snapshot_legacy"
+  | "outcome_history";
+
+export type TestRecommendationProvenanceOrigin = "current" | "context" | "snapshot" | "outcome";
+
+export interface TestRecommendationProvenance {
+  schemaVersion: 1;
+  origin: TestRecommendationProvenanceOrigin;
+  sources: TestRecommendationProvenanceSource[];
+  targetPaths: string[];
+  evidence: string[];
+  degraded?: boolean;
+  degradedReason?: string;
 }
 
 export type VerificationCoverageKind =
@@ -496,7 +856,7 @@ export type VerificationCoverageKind =
   | "targeted-test"
   | "unknown";
 
-export type VerificationLedgerStatus = "covered" | "missing" | "waived" | "not_applicable";
+export type VerificationLedgerStatus = "covered" | "missing" | "waived" | "not_applicable" | "would_cover";
 
 export const VERIFICATION_PROVENANCE_SCHEMA_VERSION = 1 as const;
 export const VERIFICATION_COMMAND_COVERAGE_CLASSIFIER_VERSION = "command-coverage-v3";

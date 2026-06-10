@@ -51,15 +51,16 @@ export function getGitState(repoRoot: string, options: GitStateOptions = {}): Gi
   const headCommit = runGit(resolvedRoot, ["rev-parse", "HEAD"]);
   const includeFiles = options.includeFiles ?? true;
   const includeChurn = options.includeChurn ?? true;
-  const fileOutput = includeFiles ? runGit(resolvedRoot, ["ls-files", "-co", "--exclude-standard", "-z"], false) : "";
+  const pathspec = repoRootPathspec();
+  const fileOutput = includeFiles ? runGit(resolvedRoot, ["ls-files", "-co", "--exclude-standard", "-z", ...pathspec], false) : "";
   if (includeFiles && fileOutput === null) {
     throw new Error(`Failed to list git-visible files in ${resolvedRoot}`);
   }
-  const statusOutput = runGit(resolvedRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], false);
+  const statusOutput = runGit(resolvedRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all", ...pathspec], false);
   if (statusOutput === null) {
     throw new Error(`Failed to read git status in ${resolvedRoot}`);
   }
-  const churnOutput = includeChurn ? (runGit(resolvedRoot, ["log", "--since=180 days ago", "--name-only", "--pretty=format:", "--"]) ?? "") : "";
+  const churnOutput = includeChurn ? (runGit(resolvedRoot, ["log", "--since=180 days ago", "--name-only", "--pretty=format:", ...pathspec]) ?? "") : "";
 
   const relativePrefix = gitRoot ? normalizePath(path.relative(gitRoot, resolvedRoot)) : "";
   const files = splitNul(fileOutput ?? "")
@@ -115,15 +116,16 @@ async function readGitStateAsync(repoRoot: string, options: GitStateOptions = {}
   const headCommit = await runGitAsync(resolvedRoot, ["rev-parse", "HEAD"]);
   const includeFiles = options.includeFiles ?? true;
   const includeChurn = options.includeChurn ?? true;
-  const fileOutput = includeFiles ? await runGitAsync(resolvedRoot, ["ls-files", "-co", "--exclude-standard", "-z"], false) : "";
+  const pathspec = repoRootPathspec();
+  const fileOutput = includeFiles ? await runGitAsync(resolvedRoot, ["ls-files", "-co", "--exclude-standard", "-z", ...pathspec], false) : "";
   if (includeFiles && fileOutput === null) {
     throw new Error(`Failed to list git-visible files in ${resolvedRoot}`);
   }
-  const statusOutput = await runGitAsync(resolvedRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all"], false);
+  const statusOutput = await runGitAsync(resolvedRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all", ...pathspec], false);
   if (statusOutput === null) {
     throw new Error(`Failed to read git status in ${resolvedRoot}`);
   }
-  const churnOutput = includeChurn ? ((await runGitAsync(resolvedRoot, ["log", "--since=180 days ago", "--name-only", "--pretty=format:", "--"])) ?? "") : "";
+  const churnOutput = includeChurn ? ((await runGitAsync(resolvedRoot, ["log", "--since=180 days ago", "--name-only", "--pretty=format:", ...pathspec])) ?? "") : "";
 
   const relativePrefix = gitRoot ? normalizePath(path.relative(gitRoot, resolvedRoot)) : "";
   const files = splitNul(fileOutput ?? "")
@@ -163,6 +165,10 @@ function gitStateCacheKey(repoRoot: string, options: GitStateOptions): string {
     includeFiles: options.includeFiles ?? true,
     includeChurn: options.includeChurn ?? true
   });
+}
+
+function repoRootPathspec(): string[] {
+  return ["--", "."];
 }
 
 export function isCodexaGenerated(file: string): boolean {

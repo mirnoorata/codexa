@@ -35,6 +35,12 @@ try {
     cwd: snapshotRoot,
     stdio: "pipe"
   });
+  // npm publish --dry-run propagates dry-run config into nested npm commands.
+  // This verifier needs a real temp install so source hygiene can import dev deps.
+  execFileSync("npm", ["ci", "--dry-run=false", "--include=dev", "--ignore-scripts", "--no-audit", "--fund=false"], {
+    cwd: snapshotRoot,
+    stdio: "pipe"
+  });
   execFileSync(process.execPath, ["scripts/verify-source-hygiene.mjs"], {
     cwd: snapshotRoot,
     stdio: "pipe"

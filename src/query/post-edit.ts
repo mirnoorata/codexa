@@ -13,11 +13,20 @@ import { formatTestRecommendations, narrowTestRecommendationsByChangeType, recom
 import { findFile, normalizeInputPaths, resolveFileTarget, resolveSymbolTarget } from "./targets.js";
 import { formatVerificationCoverage, formatVerificationLedger, verificationEvidenceForCommandReports, verificationLedgerForPostEdit } from "./verification.js";
 import { isCodexaControlPath, formatChangedEntry } from "./worktree.js";
+import { postEditDecision } from "./post-edit/decision.js";
+import { postEditDirtyScope } from "./post-edit/dirty-scope.js";
+import { postEditNextActions, postEditStructuredNextTools } from "./post-edit/next-actions.js";
+import { compactSnapshotTests, reconcileSnapshotTests, snapshotRiskBaseline, snapshotSymbolBaseline } from "./post-edit/snapshot-contract.js";
 import { buildPostEditOutcome, savePostEditOutcome, type PostEditCheckResult, type PostEditOutcomeInput } from "../post-edit-outcomes.js";
 import { pointerForSessionMemory, readSessionMemory } from "../session-memory.js";
 import { loadTaskSnapshot, saveBlockedTaskSnapshot, saveTaskSnapshot, type TaskSnapshotLoadResult } from "../task-snapshots.js";
 import { CURRENT_VERIFICATION_PROVENANCE } from "../types.js";
+import { isTrustedAutoVerifyCommandReport } from "../autoverify.js";
+import { AUTO_VERIFY_POLICY_DIGEST, AUTO_VERIFY_POLICY_ID } from "../autoverify/policy.js";
+import type { SemanticRetrievalSummary } from "../semantic-retrieval.js";
+import type { AutoVerifyCommandReport, AutoVerifyReportRunner } from "../autoverify.js";
 import type {
+  AutoVerifyCandidate,
   ChangedFileEntry,
   ChangePlanInput,
   ChangeType,
@@ -35,6 +44,7 @@ import type {
   TaskSnapshotRiskFile,
   TaskSnapshotSymbol,
   TestRecommendation,
+  TestRecommendationProvenance,
   VerificationCommandEnvelope,
   VerificationCoverage,
   VerificationCommandReport,
@@ -43,1023 +53,34 @@ import type {
 } from "../types.js";
 import { limitText, stableId, uniqueSorted } from "../util.js";
 
-export async function changePlanQuery(
-  sessionInput: QuerySessionInput,
-  input: ChangePlanInput = {},
-  options: QueryOptions = {}
-): Promise<QueryResult> {
-  const session = await ensureQuerySession(sessionInput, options);
-  const repoRoot = session.repoRoot;
-  const requestedFollowCandidate = normalizeTargetCandidateSelector(input.followCandidate);
-  const followBase = requestedFollowCandidate ? await resolveChangePlanFollowBaseInput(repoRoot, input) : undefined;
-  if (requestedFollowCandidate && !followBase?.input) {
-    return changePlanFollowCandidateRejectedResult({
-      session,
-      requestedCandidate: requestedFollowCandidate,
-      reason: followBase?.reason ?? "followCandidate requires a task, query, or blocked change-plan taskId to replay",
-      snapshotLoad: followBase?.snapshotLoad
-    });
-  }
-  const effectiveInput = followBase?.input ?? input;
-  const focus = await focusBriefQuery(session, { task: effectiveInput.task, tokenBudget: Math.min(effectiveInput.tokenBudget ?? 2600, 3000), limit: effectiveInput.limit ?? 8, diff: effectiveInput.diff }, options);
-  const pack = await contextPackQuery(session, { ...effectiveInput, tokenBudget: Math.min(effectiveInput.tokenBudget ?? 3200, 4000), limit: effectiveInput.limit ?? 10, includeSnippets: effectiveInput.includeSnippets ?? false }, options);
-  const packData = pack.data as {
-    focusFiles?: Array<{ file: FileFact; reasons: string[]; tier: EvidenceTier }>;
-    changedEntries?: ChangedFileEntry[];
-    changedFiles?: string[];
-    tests?: TestRecommendation[];
-    recipes?: string[];
-    packetVerdict?: string;
-    intentConfidence?: { editReady?: boolean; confidence?: number; verdict?: string; recommendedNextTool?: string; missingAnchors?: string[] };
-    quality?: ContextQuality;
-    gaps?: string[];
-    warnings?: string[];
-  };
-  const focusData = focus.data as { nextCall?: { tool: string; reason: string; arguments?: Record<string, unknown> }; workflows?: WorkflowTraceFact[]; modules?: unknown[] };
-  const focusFiles = packData.focusFiles ?? [];
-  const tests = packData.tests ?? [];
-  const recipes = packData.recipes ?? [];
-  const quality = packData.quality ?? (focus.data as { quality?: ContextQuality }).quality;
-  const files = focusFiles.map((entry) => entry.file.path);
-  const explicitFiles = normalizeInputPaths(effectiveInput.files ?? [], repoRoot);
-  const explicitSymbolFiles = focusFiles
-    .filter((entry) => entry.reasons.some((reason) => reason.startsWith("requested symbol ")))
-    .map((entry) => entry.file.path);
-  const editReadiness = changePlanEditReadiness({
-    input: effectiveInput,
-    focusFiles,
-    explicitTargetProvided: explicitFiles.length > 0 || explicitSymbolFiles.length > 0,
-    quality,
-    packetVerdict: packData.packetVerdict,
-    intentConfidence: packData.intentConfidence
-  });
-  const plannedEditTargets = editReadiness.editable ? uniqueSorted(explicitFiles.length > 0 || explicitSymbolFiles.length > 0 ? [...explicitFiles, ...explicitSymbolFiles] : files.slice(0, 6)) : [];
-  const focusPathSet = new Set(files);
-  const explicitWorkflowPaths = new Set(normalizeInputPaths(effectiveInput.files ?? [], repoRoot));
-  const workflowMatchPaths = explicitWorkflowPaths.size > 0 ? explicitWorkflowPaths : focusPathSet;
-  const relatedWorkflow = focusData.workflows?.find((workflow) => workflow.relatedFiles.some((file) => workflowMatchPaths.has(file)));
-  const requiredWorkflowChecks = requiredWorkflowChecksForPlan(focusData.workflows ?? [], workflowMatchPaths, effectiveInput.changeType ?? "unknown").slice(0, 8);
-  const requiredDependencyChecks = requiredDependencyChecksForPlan(session.index, plannedEditTargets, effectiveInput.changeType ?? "unknown").slice(0, 12);
-  const plannedTests = editReadiness.editable ? tests : [];
-  const plannedRecipes = editReadiness.editable ? recipes : [];
-  const blockedSnapshot = effectiveInput.saveSnapshot && !editReadiness.editable && !requestedFollowCandidate
-    ? await saveBlockedTaskSnapshot({
-        repoRoot,
-        input: effectiveInput,
-        reason: editReadiness.reason,
-        details: editReadiness
-      })
-    : undefined;
-  const targetCandidates = editReadiness.editable
-    ? []
-    : changePlanTargetCandidates({
-        input: effectiveInput,
-        taskId: blockedSnapshot?.taskId ?? effectiveInput.taskId,
-        index: session.index,
-        repoRoot,
-        focusFiles,
-        workflows: focusData.workflows ?? [],
-        tests,
-        changedEntries: packData.changedEntries ?? [],
-        missingAnchors: editReadiness.missingAnchors
-      });
-  if (requestedFollowCandidate) {
-    return changePlanFollowCandidateResult({
-      session,
-      options,
-      originalInput: input,
-      baseInput: effectiveInput,
-      requestedCandidate: requestedFollowCandidate,
-      targetCandidates,
-      editReadiness,
-      quality,
-      snapshotLoad: followBase?.snapshotLoad
-    });
-  }
-  const planSteps = editReadiness.editable
-    ? [
-        `1. Read ${files.slice(0, 6).join(", ") || "the focus files returned by Codexa"} before editing.`,
-        relatedWorkflow
-          ? `2. Inspect workflow_path for ${relatedWorkflow.title} if the change touches runtime flow.`
-          : effectiveInput.files?.length || effectiveInput.symbols?.length
-            ? "2. Use callers, callees, or dependency_path if this focused edit changes an exported API or runtime contract."
-            : `2. Use ${focusData.nextCall?.tool ?? "task_brief"} next if the edit target is still ambiguous.`,
-        plannedTests.length > 0
-          ? `3. Keep these tests in scope: ${plannedTests.slice(0, 5).map((test) => test.path).join(", ")}.`
-          : "3. No targeted tests were proven; inspect repo test metadata before inventing a command.",
-        plannedRecipes.length > 0 ? `4. Verification: ${plannedRecipes.slice(0, 3).join(" ")}` : "4. Run the narrowest verified test or type check that covers the touched files.",
-        "5. Re-run Codexa task_brief after edits if freshness reports dirty-files-changed."
-      ]
-    : [
-        `1. Do not edit yet: ${editReadiness.reason}.`,
-        `2. Read ${files.slice(0, 6).join(", ") || "the orientation files returned by Codexa"} only to choose a concrete target.`,
-        targetCandidates.length > 0
-          ? "3. Pick one target candidate below, then re-run change_plan with followCandidate set to its candidateId."
-          : `3. Use ${editReadiness.recommendedNextTool ?? focusData.nextCall?.tool ?? "search"} or raw search to identify the exact file or symbol.`,
-        "4. Re-run change_plan with an explicit file or symbol target and saveSnapshot=true before editing.",
-        "5. Treat any tests below as deferred until the edit target is explicit."
-      ];
-  const snapshotIndex = effectiveInput.saveSnapshot && editReadiness.editable ? session.index : undefined;
-  const snapshotScope = uniqueSorted([...plannedEditTargets, ...files]);
-  const sessionMemoryPointer = effectiveInput.saveSnapshot && editReadiness.editable
-    ? await pointerForSessionMemory({
-        repoRoot,
-        taskId: effectiveInput.taskId,
-        files: snapshotScope,
-        freshness: pack.freshness,
-        limit: 8
-      }).catch(() => undefined)
-    : undefined;
-  const savedSnapshot = effectiveInput.saveSnapshot && editReadiness.editable
-    ? await saveTaskSnapshot({
-        repoRoot,
-        input: effectiveInput,
-        snapshot: {
-          task: effectiveInput.task,
-          changeType: effectiveInput.changeType ?? "unknown",
-          snapshotFreshness: pack.freshness,
-          plannedEditTargets,
-          plannedFiles: files,
-          focusFiles: focusFiles.map((entry) => ({
-            path: entry.file.path,
-            tier: entry.tier,
-            reasons: uniqueSorted(entry.reasons),
-            rank: entry.file.rank,
-            riskScore: entry.file.riskScore
-          })),
-          plannedTests: compactSnapshotTests(plannedTests, repoRoot),
-          sessionMemory: sessionMemoryPointer,
-          requiredWorkflowChecks,
-          requiredDependencyChecks,
-          symbolBaseline: snapshotIndex ? snapshotSymbolBaseline(snapshotIndex, snapshotScope) : undefined,
-          riskBaseline: snapshotIndex ? snapshotRiskBaseline(snapshotIndex, snapshotScope) : undefined,
-          recipes: plannedRecipes,
-          dirtyBaseline: {
-            changedEntries: packData.changedEntries ?? [],
-            dirtyFiles: pack.freshness.dirtyFiles,
-            dirtyFileHashes: pack.freshness.dirtyFileHashes,
-            headCommit: pack.freshness.headCommit,
-            indexedAt: pack.freshness.indexedAt
-          },
-          quality,
-          gaps: packData.gaps ?? [],
-          warnings: packData.warnings ?? []
-        }
-      })
-    : undefined;
-  const text = [
-    freshnessBanner(pack.freshness, pack.refresh),
-    quality ? formatContextQuality(quality) : undefined,
-    "Codexa change plan",
-    effectiveInput.task ? `Task: ${effectiveInput.task}` : undefined,
-    `Edit readiness: ${editReadiness.status}; ${editReadiness.reason}`,
-    savedSnapshot ? `Task snapshot: ${savedSnapshot.snapshot.taskId}` : undefined,
-    effectiveInput.saveSnapshot && !editReadiness.editable ? "Task snapshot: not saved because this packet is orientation-only." : undefined,
-    "",
-    ...planSteps,
-    "",
-    "Read first:",
-    ...focusFiles.slice(0, 10).map((entry) => `- ${entry.file.path}: ${entry.tier}; ${entry.reasons.join("; ")}`),
-    "",
-    "Tests:",
-    ...(editReadiness.editable ? formatTestRecommendations(plannedTests.slice(0, 12)) : ["- deferred until Codexa has an explicit file, symbol, or edit-ready packet."]),
-    !editReadiness.editable ? "" : undefined,
-    !editReadiness.editable ? "Target candidates:" : undefined,
-    ...(!editReadiness.editable ? formatTargetCandidates(targetCandidates) : []),
-    "",
-    "Required workflow checks:",
-    ...formatRequiredChecks(editReadiness.editable ? requiredWorkflowChecks : []),
-    "",
-    "Required dependency checks:",
-    ...formatRequiredChecks(editReadiness.editable ? requiredDependencyChecks : []),
-    "",
-    "Known gaps:",
-    ...formatGaps(packData.gaps ?? [])
-  ]
-    .filter((line): line is string => line !== undefined)
-    .join("\n");
-  return {
-    freshness: pack.freshness,
-    refresh: pack.refresh,
-    text: limitText(text, 7000),
-    data: {
-      mode: "change_plan",
-      editReadiness,
-      steps: planSteps,
-      focus: focus.data,
-      context: pack.data,
-      files,
-      plannedEditTargets,
-      tests: plannedTests,
-      recipes: plannedRecipes,
-      targetCandidates,
-      quality,
-      requiredWorkflowChecks: editReadiness.editable ? requiredWorkflowChecks : [],
-      requiredDependencyChecks: editReadiness.editable ? requiredDependencyChecks : [],
-      snapshot: savedSnapshot?.snapshot,
-      snapshotBlock: blockedSnapshot
-        ? {
-            taskId: blockedSnapshot.taskId,
-            path: path.relative(repoRoot, blockedSnapshot.path).split(path.sep).join("/"),
-            reason: editReadiness.reason
-          }
-        : undefined
-    }
-  };
+interface PostEditReviewInternalInput {
+  trustedRunnerReports?: AutoVerifyCommandReport[];
 }
 
-function changePlanEditReadiness(input: {
-  input: ChangePlanInput;
-  focusFiles: Array<{ file: FileFact; reasons: string[]; tier: EvidenceTier }>;
-  explicitTargetProvided: boolean;
-  quality?: ContextQuality;
-  packetVerdict?: string;
-  intentConfidence?: { editReady?: boolean; confidence?: number; verdict?: string; recommendedNextTool?: string; missingAnchors?: string[] };
-}): {
-  editable: boolean;
-  status: "edit-ready" | "orientation-only";
-  reason: string;
-  source: "explicit-target" | "high-confidence-context" | "insufficient-context";
-  explicitTargetProvided: boolean;
-  packetVerdict?: string;
-  qualityLevel?: ContextQuality["level"];
-  confidence?: number;
-  recommendedNextTool?: string;
-  missingAnchors: string[];
-  snapshotBlocked: boolean;
-} {
-  const packetVerdict = input.packetVerdict ?? input.intentConfidence?.verdict;
-  const qualityLevel = input.quality?.level;
-  const hasEvidenceBackedFocus = input.focusFiles.some((entry) => entry.tier === "authoritative" || entry.tier === "derived");
-  const highConfidenceContext = qualityLevel === "high" && hasEvidenceBackedFocus && (packetVerdict === undefined || packetVerdict === "edit-ready");
-  const editable = input.explicitTargetProvided || highConfidenceContext;
-  const missingAnchors = uniqueSorted([
-    ...(input.intentConfidence?.missingAnchors ?? []),
-    ...(input.explicitTargetProvided ? [] : ["file-or-symbol-target"]),
-    ...(highConfidenceContext || input.explicitTargetProvided ? [] : ["edit-ready-context"])
-  ]);
-  const reason = input.explicitTargetProvided
-    ? "explicit file or symbol target provided"
-    : highConfidenceContext
-      ? "high-confidence evidence-backed packet"
-      : packetVerdict === "raw-search-better"
-        ? "raw search is likely a cleaner first pass than this broad packet"
-        : packetVerdict === "needs-target"
-          ? "broad change plan needs an explicit file or symbol target"
-          : qualityLevel === "low"
-            ? "context quality is low"
-            : "packet is not edit-ready without an explicit file or symbol target";
-  return {
-    editable,
-    status: editable ? "edit-ready" : "orientation-only",
-    reason,
-    source: input.explicitTargetProvided ? "explicit-target" : highConfidenceContext ? "high-confidence-context" : "insufficient-context",
-    explicitTargetProvided: input.explicitTargetProvided,
-    packetVerdict,
-    qualityLevel,
-    confidence: input.intentConfidence?.confidence,
-    recommendedNextTool: editable ? undefined : input.intentConfidence?.recommendedNextTool ?? (packetVerdict === "raw-search-better" || packetVerdict === "needs-target" ? "search" : "task_brief"),
-    missingAnchors,
-    snapshotBlocked: Boolean(input.input.saveSnapshot && !editable)
-  };
-}
-
-async function resolveChangePlanFollowBaseInput(
-  repoRoot: string,
-  input: ChangePlanInput
-): Promise<{ input?: ChangePlanInput; snapshotLoad?: TaskSnapshotLoadResult; reason?: string }> {
-  const directInput = withoutFollowCandidate(input);
-  if (!input.taskId && hasChangePlanReplaySeed(directInput)) {
-    return { input: directInput };
-  }
-  const snapshotLoad = await loadTaskSnapshot(repoRoot, input.taskId);
-  if (snapshotLoad.missingReason === "blocked-plan" && snapshotLoad.blockedSnapshot?.input) {
-    return {
-      input: {
-        ...withoutFollowCandidate(snapshotLoad.blockedSnapshot.input),
-        taskId: snapshotLoad.blockedSnapshot.taskId,
-        saveSnapshot: true
-      },
-      snapshotLoad
-    };
-  }
-  if (hasChangePlanReplaySeed(directInput)) {
-    return { input: directInput, snapshotLoad };
-  }
-  if (snapshotLoad.missingReason === "blocked-plan") {
-    return { snapshotLoad, reason: "blocked change-plan marker does not include replayable input" };
-  }
-  if (snapshotLoad.snapshot) {
-    return { snapshotLoad, reason: "requested task already has an edit-ready snapshot; followCandidate only applies to blocked orientation plans" };
-  }
-  return {
-    snapshotLoad,
-    reason: snapshotLoad.missingReason ? `no blocked change-plan input available (${snapshotLoad.missingReason})` : "no blocked change-plan input available"
-  };
-}
-
-function withoutFollowCandidate(input: ChangePlanInput): ChangePlanInput {
-  const rest = { ...input };
-  delete rest.followCandidate;
-  return rest;
-}
-
-function hasChangePlanReplaySeed(input: ChangePlanInput): boolean {
-  return Boolean(input.task?.trim() || input.query?.trim() || input.files?.length || input.symbols?.length);
-}
-
-function normalizeTargetCandidateSelector(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed || undefined;
-}
-
-async function changePlanFollowCandidateResult(input: {
-  session: QuerySession;
-  options: QueryOptions;
-  originalInput: ChangePlanInput;
-  baseInput: ChangePlanInput;
-  requestedCandidate: string;
-  targetCandidates: ChangePlanTargetCandidate[];
-  editReadiness: ReturnType<typeof changePlanEditReadiness>;
-  quality?: ContextQuality;
-  snapshotLoad?: TaskSnapshotLoadResult;
-}): Promise<QueryResult> {
-  const selected = input.targetCandidates.find((candidate) => candidate.candidateId === input.requestedCandidate);
-  if (!selected) {
-    return changePlanFollowCandidateRejectedResult({
-      session: input.session,
-      requestedCandidate: input.requestedCandidate,
-      reason: "target candidate id was not found when replayed against the current index",
-      targetCandidates: input.targetCandidates,
-      editReadiness: input.editReadiness,
-      quality: input.quality,
-      snapshotLoad: input.snapshotLoad
-    });
-  }
-
-  const revalidation = validateChangePlanTargetCandidate(selected, { index: input.session.index, repoRoot: input.session.repoRoot });
-  const revalidatedCandidate = { ...selected, ...revalidation };
-  if (revalidation.validationStatus !== "edit-ready") {
-    return changePlanFollowCandidateRejectedResult({
-      session: input.session,
-      requestedCandidate: input.requestedCandidate,
-      reason: `target candidate revalidated as ${revalidation.validationStatus}: ${revalidation.validationReasons.join("; ")}`,
-      targetCandidates: [revalidatedCandidate, ...input.targetCandidates.filter((candidate) => candidate.candidateId !== selected.candidateId)],
-      editReadiness: input.editReadiness,
-      quality: input.quality,
-      snapshotLoad: input.snapshotLoad
-    });
-  }
-
-  const allowRequestOverrides = !input.snapshotLoad?.blockedSnapshot;
-  const followedInput: ChangePlanInput = {
-    ...selected.nextChangePlanArgs,
-    taskId: input.originalInput.taskId ?? selected.nextChangePlanArgs.taskId ?? input.baseInput.taskId,
-    changeType: allowRequestOverrides ? input.originalInput.changeType ?? selected.nextChangePlanArgs.changeType : selected.nextChangePlanArgs.changeType,
-    diff: allowRequestOverrides ? input.originalInput.diff ?? selected.nextChangePlanArgs.diff : selected.nextChangePlanArgs.diff,
-    saveSnapshot: true
-  };
-  const result = await changePlanQuery(input.session, followedInput, { ...input.options, autoRefresh: false });
-  const resultData = result.data && typeof result.data === "object" ? (result.data as Record<string, unknown>) : {};
-  return {
-    ...result,
-    text: limitText(`Follow candidate: accepted ${selected.candidateId}; revalidated edit-ready.\n\n${result.text}`, 7000),
-    data: {
-      ...resultData,
-      followCandidate: {
-        status: "accepted",
-        requested: input.requestedCandidate,
-        candidateId: selected.candidateId,
-        rank: selected.rank,
-        kind: selected.kind,
-        path: selected.path,
-        plannedEditTargets: revalidation.wouldPlanEditTargets,
-        validationReasons: revalidation.validationReasons
-      }
-    }
-  };
-}
-
-function changePlanFollowCandidateRejectedResult(input: {
-  session: QuerySession;
-  requestedCandidate: string;
-  reason: string;
-  targetCandidates?: ChangePlanTargetCandidate[];
-  editReadiness?: ReturnType<typeof changePlanEditReadiness>;
-  quality?: ContextQuality;
-  snapshotLoad?: TaskSnapshotLoadResult;
-}): QueryResult {
-  const editReadiness =
-    input.editReadiness ??
-    ({
-      editable: false,
-      status: "orientation-only",
-      reason: input.reason,
-      source: "insufficient-context",
-      explicitTargetProvided: false,
-      recommendedNextTool: "change_plan",
-      missingAnchors: ["valid-target-candidate"],
-      snapshotBlocked: false
-    } satisfies ReturnType<typeof changePlanEditReadiness>);
-  const steps = [
-    `1. Do not edit yet: ${input.reason}.`,
-    "2. Re-run the orientation change_plan if the target candidates are stale.",
-    "3. Use an edit-ready candidateId from the current Target candidates list, then retry followCandidate.",
-    "4. If no candidate is edit-ready, use search/task_brief to identify an explicit file or symbol target."
-  ];
-  const text = [
-    freshnessBanner(input.session.freshness, input.session.refresh),
-    input.quality ? formatContextQuality(input.quality) : undefined,
-    "Codexa change plan",
-    `Follow candidate: rejected; ${input.reason}`,
-    "",
-    ...steps,
-    "",
-    input.targetCandidates?.length ? "Target candidates:" : undefined,
-    ...(input.targetCandidates?.length ? formatTargetCandidates(input.targetCandidates) : [])
-  ]
-    .filter((line): line is string => line !== undefined)
-    .join("\n");
-  return {
-    freshness: input.session.freshness,
-    refresh: input.session.refresh,
-    text: limitText(text, 7000),
-    data: {
-      mode: "change_plan",
-      editReadiness,
-      steps,
-      files: [],
-      plannedEditTargets: [],
-      tests: [],
-      recipes: [],
-      targetCandidates: input.targetCandidates ?? [],
-      quality: input.quality,
-      requiredWorkflowChecks: [],
-      requiredDependencyChecks: [],
-      followCandidate: {
-        status: "rejected",
-        requested: input.requestedCandidate,
-        reason: input.reason,
-        snapshotLoad: input.snapshotLoad
-          ? {
-              latestTaskId: input.snapshotLoad.latestTaskId,
-              missingReason: input.snapshotLoad.missingReason,
-              error: input.snapshotLoad.error
-            }
-          : undefined
-      }
-    }
-  };
-}
-
-export type TargetCandidateValidationStatus = "edit-ready" | "needs-more-context" | "weak";
-
-export interface TargetCandidateRisk {
-  score: number;
-  reasons: string[];
-}
-
-export interface ChangePlanTargetCandidateValidation {
-  validationStatus: TargetCandidateValidationStatus;
-  validationReasons: string[];
-  wouldPlanEditTargets: string[];
-  wouldRecommendTests: string[];
-  candidateRisk: TargetCandidateRisk;
-}
-
-export interface ChangePlanTargetCandidateBase {
-  candidateId: string;
-  rank: number;
-  kind: "file" | "symbol";
-  path: string;
-  symbol?: {
-    id: string;
-    name: string;
-    qualifiedName: string;
-    kind: SymbolFact["kind"];
-  };
-  score: number;
-  confidence: EvidenceTier;
-  evidence: string[];
-  missingAnchors: string[];
-  nextChangePlanArgs: {
-    task?: string;
-    files?: string[];
-    symbols?: string[];
-    query?: string;
-    taskId?: string;
-    changeType: ChangeType;
-    diff?: boolean;
-    saveSnapshot: true;
-  };
-  rawSearchQueries: string[];
-}
-
-export interface ChangePlanTargetCandidate extends ChangePlanTargetCandidateBase, ChangePlanTargetCandidateValidation {}
-
-type ChangePlanTargetCandidateDraft = Omit<ChangePlanTargetCandidateBase, "candidateId">;
-
-function changePlanTargetCandidates(input: {
-  input: ChangePlanInput;
-  taskId?: string;
-  index: CodexaIndex;
-  repoRoot: string;
-  focusFiles: Array<{ file: FileFact; reasons: string[]; tier: EvidenceTier }>;
-  workflows: WorkflowTraceFact[];
-  tests: TestRecommendation[];
-  changedEntries: ChangedFileEntry[];
-  missingAnchors: string[];
-}): ChangePlanTargetCandidate[] {
-  const taskTokens = meaningfulTaskTokens(input.input.task ?? input.input.query ?? "");
-  const changedPaths = new Set(input.changedEntries.map((entry) => entry.path));
-  const testPaths = new Set(input.tests.map((test) => test.path));
-  const symbolsByPath = new Map<string, SymbolFact[]>();
-  for (const symbol of input.index.symbols) {
-    if (["module", "unknown"].includes(symbol.kind)) {
-      continue;
-    }
-    const entries = symbolsByPath.get(symbol.path) ?? [];
-    entries.push(symbol);
-    symbolsByPath.set(symbol.path, entries);
-  }
-  const candidates: ChangePlanTargetCandidateDraft[] = [];
-  for (const entry of input.focusFiles.slice(0, 10)) {
-    const file = entry.file;
-    if (file.test && input.focusFiles.some((candidate) => !candidate.file.test)) {
-      continue;
-    }
-    const workflowHits = input.workflows.filter((workflow) => workflow.entryPath === file.path || workflow.relatedFiles.includes(file.path));
-    const graphHits = input.index.graphEdges.filter((edge) => edge.fromPath === file.path || edge.toPath === file.path).slice(0, 6);
-    const fileEvidence = candidateEvidence({
-      file,
-      reasons: entry.reasons,
-      workflowHits,
-      graphHits,
-      testPaths,
-      changedPaths,
-      taskTokens,
-      symbol: undefined
-    });
-    candidates.push({
-      rank: 0,
-      kind: "file",
-      path: file.path,
-      score: candidateScore(file, entry.tier, fileEvidence, undefined),
-      confidence: entry.tier,
-      evidence: fileEvidence.slice(0, 8),
-      missingAnchors: input.missingAnchors,
-      nextChangePlanArgs: {
-        task: input.input.task,
-        files: [file.path],
-        query: input.input.query,
-        taskId: input.taskId,
-        changeType: input.input.changeType ?? "unknown",
-        diff: input.input.diff,
-        saveSnapshot: true
-      },
-      rawSearchQueries: rawSearchQueries(input.input.task ?? input.input.query, file.path)
-    });
-    for (const symbol of candidateSymbols(symbolsByPath.get(file.path) ?? [], taskTokens).slice(0, 2)) {
-      const symbolEvidence = candidateEvidence({
-        file,
-        reasons: entry.reasons,
-        workflowHits,
-        graphHits: graphHits.filter((edge) => edge.fromSymbolId === symbol.id || edge.toSymbolId === symbol.id || edge.fromPath === symbol.path || edge.toPath === symbol.path),
-        testPaths,
-        changedPaths,
-        taskTokens,
-        symbol
-      });
-      candidates.push({
-        rank: 0,
-        kind: "symbol",
-        path: file.path,
-        symbol: {
-          id: symbol.id,
-          name: symbol.name,
-          qualifiedName: symbol.qualifiedName,
-          kind: symbol.kind
-        },
-        score: candidateScore(file, entry.tier, symbolEvidence, symbol),
-        confidence: entry.tier,
-        evidence: symbolEvidence.slice(0, 8),
-        missingAnchors: input.missingAnchors,
-        nextChangePlanArgs: {
-          task: input.input.task,
-          symbols: [symbol.id],
-          query: input.input.query,
-          taskId: input.taskId,
-          changeType: input.input.changeType ?? "unknown",
-          diff: input.input.diff,
-          saveSnapshot: true
-        },
-        rawSearchQueries: rawSearchQueries(input.input.task ?? input.input.query, symbol.qualifiedName)
-      });
-    }
-  }
-  return dedupeTargetCandidates(candidates)
-    .map(withTargetCandidateId)
-    .map((candidate) => ({
-      ...candidate,
-      ...validateChangePlanTargetCandidate(candidate, { index: input.index, repoRoot: input.repoRoot })
-    }))
-    .sort(compareTargetCandidates)
-    .slice(0, 8)
-    .map((candidate, index) => ({ ...candidate, rank: index + 1 }));
-}
-
-export function validateChangePlanTargetCandidate(
-  candidate: ChangePlanTargetCandidateBase,
-  context: { index: CodexaIndex; repoRoot: string }
-): ChangePlanTargetCandidateValidation {
-  const validationReasons: string[] = [];
-  const wouldPlanEditTargets = new Set<string>();
-  let unresolvedTarget = false;
-  let ambiguousTarget = false;
-  const requestedFiles = candidate.nextChangePlanArgs.files ?? [];
-  const requestedSymbols = candidate.nextChangePlanArgs.symbols ?? [];
-
-  if (requestedFiles.length === 0 && requestedSymbols.length === 0) {
-    validationReasons.push("no explicit file or symbol target in nextChangePlanArgs");
-    unresolvedTarget = true;
-  }
-
-  for (const requestedFile of requestedFiles) {
-    const resolved = resolveFileTarget(context.index, requestedFile, context.repoRoot);
-    if (resolved.file) {
-      wouldPlanEditTargets.add(resolved.file.path);
-      validationReasons.push(`file target resolves: ${resolved.file.path}`);
-    } else if (resolved.ambiguous.length > 0) {
-      ambiguousTarget = true;
-      validationReasons.push(`file target is ambiguous: ${requestedFile}`);
-    } else {
-      unresolvedTarget = true;
-      validationReasons.push(`file target not indexed: ${requestedFile}`);
-    }
-  }
-
-  for (const requestedSymbol of requestedSymbols) {
-    const resolved = resolveSymbolTarget(context.index, requestedSymbol);
-    if (resolved.symbol) {
-      wouldPlanEditTargets.add(resolved.symbol.path);
-      validationReasons.push(`symbol target resolves: ${resolved.symbol.qualifiedName} in ${resolved.symbol.path}`);
-    } else if (resolved.ambiguous.length > 0) {
-      ambiguousTarget = true;
-      validationReasons.push(`symbol target is ambiguous: ${requestedSymbol}`);
-    } else {
-      unresolvedTarget = true;
-      validationReasons.push(`symbol target not indexed: ${requestedSymbol}`);
-    }
-  }
-
-  const plannedTargets = uniqueSorted(wouldPlanEditTargets);
-  if (candidate.confidence === "fallback") {
-    validationReasons.push("candidate evidence is fallback");
-  } else if (candidate.evidence.length > 0) {
-    validationReasons.push(`candidate has ${candidate.confidence} evidence`);
-  }
-  if (candidate.evidence.length === 0) {
-    validationReasons.push("candidate has no supporting evidence");
-  }
-
-  const wouldRecommendTests = plannedTargets.length > 0
-    ? recommendTests(context.index, plannedTargets, context.repoRoot, candidate.nextChangePlanArgs.changeType).map((test) => test.path).slice(0, 8)
-    : [];
-  if (wouldRecommendTests.length > 0) {
-    validationReasons.push(`would recommend ${wouldRecommendTests.length} targeted test(s)`);
-  } else {
-    validationReasons.push("no targeted test recommendation proven");
-  }
-
-  const candidateRisk = candidateRiskForTargets(context.index, plannedTargets);
-  if (candidateRisk.score > 0) {
-    validationReasons.push(`candidate risk score ${candidateRisk.score.toFixed(1)}`);
-  }
-
-  const hasStrongEvidence = (candidate.confidence === "authoritative" || candidate.confidence === "derived") && candidate.evidence.length > 0;
-  const validationStatus: TargetCandidateValidationStatus =
-    plannedTargets.length === 0 || unresolvedTarget || ambiguousTarget
-      ? "needs-more-context"
-      : hasStrongEvidence
-        ? "edit-ready"
-        : "weak";
-
-  return {
-    validationStatus,
-    validationReasons: uniqueInOrder(validationReasons).slice(0, 8),
-    wouldPlanEditTargets: plannedTargets,
-    wouldRecommendTests,
-    candidateRisk
-  };
-}
-
-function candidateRiskForTargets(index: CodexaIndex, paths: string[]): TargetCandidateRisk {
-  const pathSet = new Set(paths);
-  const fileReasons = paths
-    .map((filePath) => findFile(index, filePath))
-    .filter((file): file is FileFact => Boolean(file))
-    .filter((file) => file.riskScore > 0)
-    .map((file) => ({ score: file.riskScore, reason: `${file.path}: indexed risk ${file.riskScore.toFixed(1)}` }));
-  const signalReasons = index.risks
-    .filter((risk) => pathSet.has(risk.path))
-    .map((risk) => ({ score: risk.score, reason: `${risk.path}: ${risk.signal} - ${risk.reason}` }));
-  const scoredReasons = [...fileReasons, ...signalReasons].sort((left, right) => right.score - left.score || left.reason.localeCompare(right.reason));
-  return {
-    score: Math.max(0, ...scoredReasons.map((entry) => entry.score)),
-    reasons: uniqueInOrder(scoredReasons.map((entry) => entry.reason)).slice(0, 6)
-  };
-}
-
-function compareTargetCandidates(left: ChangePlanTargetCandidate, right: ChangePlanTargetCandidate): number {
-  return (
-    targetCandidateStatusRank(left.validationStatus) - targetCandidateStatusRank(right.validationStatus) ||
-    right.score - left.score ||
-    left.path.localeCompare(right.path) ||
-    left.kind.localeCompare(right.kind) ||
-    left.candidateId.localeCompare(right.candidateId)
-  );
-}
-
-function targetCandidateStatusRank(status: TargetCandidateValidationStatus): number {
-  return status === "edit-ready" ? 0 : status === "weak" ? 1 : 2;
-}
-
-function candidateEvidence(input: {
-  file: FileFact;
-  reasons: string[];
-  workflowHits: WorkflowTraceFact[];
-  graphHits: GraphEdgeFact[];
-  testPaths: Set<string>;
-  changedPaths: Set<string>;
-  taskTokens: string[];
-  symbol?: SymbolFact;
-}): string[] {
-  const evidence = new Set<string>();
-  for (const reason of input.reasons.slice(0, 4)) {
-    evidence.add(reason);
-  }
-  if (input.symbol) {
-    evidence.add(`symbol ${input.symbol.qualifiedName} (${input.symbol.kind})`);
-    const normalizedSymbol = normalizeSearchText(`${input.symbol.name} ${input.symbol.qualifiedName}`);
-    if (input.taskTokens.some((token) => normalizedSymbol.includes(token))) {
-      evidence.add("keyword match on symbol name");
-    }
-  }
-  const normalizedPath = normalizeSearchText(input.file.path);
-  if (input.taskTokens.some((token) => normalizedPath.includes(token))) {
-    evidence.add("keyword match on file path");
-  }
-  if (input.workflowHits.length > 0) {
-    evidence.add(`workflow evidence: ${input.workflowHits.slice(0, 2).map((workflow) => workflow.title).join(", ")}`);
-  }
-  if (input.graphHits.length > 0) {
-    evidence.add(`graph evidence: ${uniqueSorted(input.graphHits.map((edge) => edge.edgeKind)).slice(0, 4).join(", ")}`);
-  }
-  if (input.testPaths.has(input.file.path) || input.file.test) {
-    evidence.add("test evidence: candidate is a known test path");
-  } else if (input.graphHits.some((edge) => edge.edgeKind === "TESTS" || edge.edgeKind === "TEST_COVERS_WORKFLOW")) {
-    evidence.add("test evidence: graph links tests to this target");
-  }
-  if (input.changedPaths.has(input.file.path)) {
-    evidence.add("recent diff evidence: file is currently changed");
-  }
-  if (input.file.riskScore > 0) {
-    evidence.add(`risk evidence: score ${input.file.riskScore.toFixed(1)}`);
-  }
-  return [...evidence];
-}
-
-function candidateScore(file: FileFact, tier: EvidenceTier, evidence: string[], symbol: SymbolFact | undefined): number {
-  const tierScore: Record<EvidenceTier, number> = {
-    authoritative: 100,
-    derived: 70,
-    heuristic: 35,
-    fallback: 10
-  };
-  const symbolScore = symbol ? (symbol.exported || ["route", "node"].includes(symbol.kind) ? 18 : 10) : 0;
-  const sourceScore = file.test ? -12 : 12;
-  return tierScore[tier] + file.rank * 2 + file.riskScore + evidence.length * 4 + symbolScore + sourceScore;
-}
-
-function candidateSymbols(symbols: SymbolFact[], taskTokens: string[]): SymbolFact[] {
-  return symbols
-    .slice()
-    .sort(
-      (left, right) =>
-        symbolTargetScore(right, taskTokens) - symbolTargetScore(left, taskTokens) ||
-        (left.range?.startLine ?? 0) - (right.range?.startLine ?? 0) ||
-        left.qualifiedName.localeCompare(right.qualifiedName)
-    );
-}
-
-function symbolTargetScore(symbol: SymbolFact, taskTokens: string[]): number {
-  const normalized = normalizeSearchText(`${symbol.name} ${symbol.qualifiedName}`);
-  const tokenScore = taskTokens.filter((token) => normalized.includes(token)).length * 20;
-  const kindScore = symbol.kind === "route" ? 18 : symbol.exported ? 14 : ["function", "method", "class"].includes(symbol.kind) ? 10 : 4;
-  return tokenScore + kindScore;
-}
-
-function dedupeTargetCandidates(candidates: ChangePlanTargetCandidateDraft[]): ChangePlanTargetCandidateDraft[] {
-  const seen = new Set<string>();
-  const result: ChangePlanTargetCandidateDraft[] = [];
-  for (const candidate of candidates) {
-    const key = targetCandidateStableTarget(candidate);
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    result.push(candidate);
-  }
-  return result;
-}
-
-function withTargetCandidateId(candidate: ChangePlanTargetCandidateDraft): ChangePlanTargetCandidateBase {
-  return {
-    ...candidate,
-    candidateId: targetCandidateStableId(candidate)
-  };
-}
-
-function targetCandidateStableId(candidate: ChangePlanTargetCandidateDraft): string {
-  return `candidate-${stableId("change-plan-target-candidate", targetCandidateStableTarget(candidate)).slice(0, 12)}`;
-}
-
-function targetCandidateStableTarget(candidate: ChangePlanTargetCandidateDraft): string {
-  const target = candidate.symbol
-    ? `${candidate.symbol.kind}:${candidate.symbol.qualifiedName || candidate.symbol.name || candidate.symbol.id}`
-    : candidate.nextChangePlanArgs.files?.join("\n") ?? candidate.path;
-  return `${candidate.kind}:${candidate.path}:${target}`;
-}
-
-function uniqueInOrder(values: Iterable<string>): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-  for (const value of values) {
-    if (seen.has(value)) {
-      continue;
-    }
-    seen.add(value);
-    result.push(value);
-  }
-  return result;
-}
-
-function meaningfulTaskTokens(value: string): string[] {
-  const stop = new Set(["a", "an", "and", "as", "for", "how", "in", "of", "on", "or", "safely", "the", "to", "with"]);
-  return uniqueSorted(
-    normalizeSearchText(value)
-      .split(/\s+/u)
-      .map((token) => token.trim())
-      .filter((token) => token.length >= 3 && !stop.has(token))
-  ).slice(0, 8);
-}
-
-function rawSearchQueries(task: string | undefined, target: string): string[] {
-  const taskPart = meaningfulTaskTokens(task ?? "").slice(0, 4).join(" ");
-  const targetPart = target.split(/[/.]/u).filter(Boolean).slice(-2).join(" ");
-  return uniqueSorted([taskPart, targetPart, `${taskPart} ${targetPart}`].map((entry) => entry.trim()).filter(Boolean)).slice(0, 3);
-}
-
-function formatTargetCandidates(candidates: ChangePlanTargetCandidate[]): string[] {
-  if (candidates.length === 0) {
-    return ["- none ranked from current packet; run search/raw search to find a file or symbol target."];
-  }
-  return candidates.slice(0, 6).map((candidate) => {
-    const target = candidate.kind === "symbol" && candidate.symbol ? `${candidate.symbol.qualifiedName} in ${candidate.path}` : candidate.path;
-    const nextArg = candidate.nextChangePlanArgs.files?.[0] ?? candidate.nextChangePlanArgs.symbols?.[0] ?? target;
-    return `- #${candidate.rank} ${candidate.candidateId} ${candidate.kind} ${target}: ${candidate.validationStatus}; score ${candidate.score.toFixed(1)}; risk ${candidate.candidateRisk.score.toFixed(1)}; followCandidate ${candidate.candidateId}; next change_plan target ${nextArg}; ${candidate.evidence.slice(0, 3).join("; ")}`;
-  });
-}
-
-function snapshotSymbolBaseline(index: CodexaIndex, paths: string[]): Record<string, TaskSnapshotSymbol[]> {
-  const pathSet = new Set(paths);
-  const result: Record<string, TaskSnapshotSymbol[]> = {};
-  for (const filePath of pathSet) {
-    result[filePath] = index.symbols
-      .filter((symbol) => symbol.path === filePath)
-      .map((symbol) => ({
-        id: symbol.id,
-        path: symbol.path,
-        name: symbol.name,
-        qualifiedName: symbol.qualifiedName,
-        kind: symbol.kind,
-        range: symbol.range
-      }))
-      .sort((a, b) => (a.range?.startLine ?? 0) - (b.range?.startLine ?? 0) || a.qualifiedName.localeCompare(b.qualifiedName));
-  }
-  return result;
-}
-
-function snapshotRiskBaseline(index: CodexaIndex, paths: string[]): Record<string, TaskSnapshotRiskFile> {
-  const pathSet = new Set(paths);
-  const result: Record<string, TaskSnapshotRiskFile> = {};
-  for (const filePath of pathSet) {
-    const file = findFile(index, filePath);
-    const signals = index.risks.filter((risk) => risk.path === filePath).map((risk) => `${risk.signal}: ${risk.reason}`).sort();
-    result[filePath] = {
-      riskScore: file?.riskScore ?? signals.length,
-      signals
-    };
-  }
-  return result;
-}
-
-function compactSnapshotTests(tests: TestRecommendation[], repoRoot: string): TestRecommendation[] {
-  return tests.map((test) => ({
-    ...test,
-    command: test.command?.replaceAll(repoRoot, "<repo>")
-  }));
-}
-
-function requiredWorkflowChecksForPlan(
-  workflows: WorkflowTraceFact[],
-  pathScope: Set<string>,
-  changeType: ChangeType
-): TaskSnapshotRequiredCheck[] {
-  return workflows
-    .filter((workflow) => workflow.relatedFiles.some((filePath) => pathScope.has(filePath)) || pathScope.has(workflow.entryPath))
-    .sort((a, b) => b.rank - a.rank || a.title.localeCompare(b.title))
-    .map((workflow) => ({
-      kind: "workflow" as const,
-      target: workflow.title,
-      reason:
-        changeType === "style"
-          ? "workflow is adjacent to the planned edit; spot-check only if behavior changed"
-          : `planned edit intersects ${workflow.workflowKind} workflow evidence`,
-      evidenceTier: workflow.confidence === "authoritative" ? "authoritative" : workflow.confidence === "derived" ? "derived" : "heuristic",
-      confidence: workflow.confidence,
-      paths: uniqueSorted([workflow.entryPath, ...workflow.relatedFiles, ...workflow.tests]).slice(0, 20)
-    }));
-}
-
-function requiredDependencyChecksForPlan(index: CodexaIndex, paths: string[], changeType: ChangeType): TaskSnapshotRequiredCheck[] {
-  if (paths.length === 0) {
-    return [];
-  }
-  const pathSet = new Set(paths);
-  const edgeChecks = index.graphEdges
-    .filter((edge) => pathSet.has(edge.fromPath ?? "") || pathSet.has(edge.toPath ?? ""))
-    .filter((edge) => ["IMPORTS", "CALLS", "REFERENCES", "TESTS", "EXTENDS", "IMPLEMENTS", "EXPORTS", "TYPE_EXPORTS"].includes(edge.edgeKind))
-    .sort((a, b) => b.weight - a.weight || a.edgeKind.localeCompare(b.edgeKind) || (a.fromPath ?? "").localeCompare(b.fromPath ?? "") || (a.toPath ?? "").localeCompare(b.toPath ?? ""))
-    .slice(0, 10)
-    .map((edge) => ({
-      kind: "dependency" as const,
-      target: `${edge.edgeKind}: ${edge.fromPath ?? edge.fromId} -> ${edge.toPath ?? edge.toId}`,
-      reason:
-        changeType === "style"
-          ? "dependency edge is adjacent to the planned edit; verify if public behavior changed"
-          : `planned edit has typed ${edge.edgeKind} dependency evidence`,
-      evidenceTier: (edge.confidence === "authoritative" ? "authoritative" : edge.confidence === "derived" ? "derived" : "heuristic") as EvidenceTier,
-      confidence: edge.confidence,
-      paths: uniqueSorted([edge.fromPath, edge.toPath].filter((filePath): filePath is string => Boolean(filePath)))
-    }));
-  const publicFiles = index.files
-    .filter((file) => pathSet.has(file.path))
-    .filter((file) => file.rank >= 4 || file.riskScore >= 2)
-    .sort((a, b) => b.rank - a.rank || b.riskScore - a.riskScore || a.path.localeCompare(b.path))
-    .slice(0, 4)
-    .map((file) => ({
-      kind: "dependency" as const,
-      target: `public-surface: ${file.path}`,
-      reason: `planned target is ranked ${file.rank.toFixed(2)} with risk ${file.riskScore.toFixed(1)}; check callers/tests before completion`,
-      evidenceTier: "derived" as const,
-      confidence: "derived" as const,
-      paths: uniqueSorted([
-        file.path,
-        ...index.graphEdges
-          .filter((edge) => edge.fromPath === file.path || edge.toPath === file.path)
-          .flatMap((edge) => [edge.fromPath, edge.toPath])
-          .filter((filePath): filePath is string => Boolean(filePath) && filePath !== file.path)
-      ]).slice(0, 12)
-    }));
-  return dedupeRequiredChecks([...edgeChecks, ...publicFiles]);
-}
-
-function dedupeRequiredChecks(checks: TaskSnapshotRequiredCheck[]): TaskSnapshotRequiredCheck[] {
-  const seen = new Set<string>();
-  const result: TaskSnapshotRequiredCheck[] = [];
-  for (const check of checks) {
-    const key = `${check.kind}\0${check.target}`;
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    result.push(check);
-  }
-  return result;
-}
-
-function formatRequiredChecks(checks: TaskSnapshotRequiredCheck[]): string[] {
-  if (checks.length === 0) {
-    return ["- none proven from current graph evidence"];
-  }
-  return checks.slice(0, 10).map((check) => `- ${check.target}: ${check.confidence}; ${check.reason}`);
-}
+type DisplayCommandReport = VerificationCommandReport & { runner?: AutoVerifyReportRunner };
 
 export async function postEditReviewQuery(
   sessionInput: QuerySessionInput,
   input: PostEditReviewInput = {},
   options: QueryOptions = {}
+): Promise<QueryResult> {
+  return postEditReviewQueryInternal(sessionInput, input, options, {});
+}
+
+export async function postEditReviewWithTrustedRunnerReports(
+  sessionInput: QuerySessionInput,
+  input: PostEditReviewInput = {},
+  trustedRunnerReports: AutoVerifyCommandReport[] = [],
+  options: QueryOptions = {}
+): Promise<QueryResult> {
+  return postEditReviewQueryInternal(sessionInput, input, options, { trustedRunnerReports });
+}
+
+async function postEditReviewQueryInternal(
+  sessionInput: QuerySessionInput,
+  input: PostEditReviewInput,
+  options: QueryOptions,
+  internal: PostEditReviewInternalInput
 ): Promise<QueryResult> {
   const session = await ensureQuerySession(sessionInput, options);
   const { index, freshness, refresh, repoRoot } = session;
@@ -1069,17 +90,8 @@ export async function postEditReviewQuery(
   const snapshot = loadedSnapshot.snapshot;
   const snapshotAmbiguity = !input.taskId && snapshot ? await latestSnapshotAmbiguity(repoRoot, snapshot.taskId) : undefined;
   const currentEntries = await session.getChangedFileEntries();
-  const currentDirtyPaths = currentEntries.map((entry) => entry.path);
-  const baselinePaths = new Set(snapshot?.dirtyBaseline.dirtyFiles ?? snapshot?.dirtyBaseline.changedEntries.map((entry) => entry.path) ?? []);
-  const baselineHashes = snapshot?.dirtyBaseline.dirtyFileHashes ?? {};
-  const currentHashes = freshness.dirtyFileHashes;
-  const changedSinceSnapshot = snapshot
-    ? currentEntries.filter((entry) => !baselinePaths.has(entry.path) || baselineHashes[entry.path] !== currentHashes[entry.path])
-    : currentEntries;
-  const resolvedBaselineFiles = snapshot ? uniqueSorted([...baselinePaths].filter((filePath) => !currentDirtyPaths.includes(filePath))) : [];
-  const editPaths = uniqueSorted(changedSinceSnapshot.map((entry) => entry.path).filter((filePath) => !isCodexaControlPath(filePath)));
-  const indexedPaths = new Set(index.files.map((file) => file.path));
-  const unindexedEditedFiles = editPaths.filter((filePath) => !indexedPaths.has(filePath));
+  const dirtyScope = postEditDirtyScope({ snapshot, currentEntries, freshness, index });
+  const { currentDirtyPaths, changedSinceSnapshot, resolvedBaselineFiles, editPaths, unindexedEditedFiles } = dirtyScope;
   const changedSymbols = (await session.getChangedSymbols()).filter((entry) => editPaths.includes(entry.symbol.path));
   const requestedSymbolNames = new Set([...(snapshot?.input.symbols ?? []), ...(input.symbols ?? [])].map(normalizeSearchText));
   const plannedSymbolIds = requestedSymbolIds(snapshot, requestedSymbolNames);
@@ -1130,7 +142,7 @@ export async function postEditReviewQuery(
       limit,
       includeSnippets: input.includeSnippets ?? false
     },
-    { autoRefresh: false }
+    { ...options, autoRefresh: false }
   );
   const contextData = context.data as {
     focusFiles?: Array<{ file: FileFact; reasons: string[]; tier: EvidenceTier }>;
@@ -1142,7 +154,9 @@ export async function postEditReviewQuery(
     quality?: ContextQuality;
     gaps?: string[];
     warnings?: string[];
+    retrieval?: { semantic?: SemanticRetrievalSummary };
   };
+  const semanticReviewContext = contextData.retrieval?.semantic;
   const priorSessionMemory = await readSessionMemory({
     repoRoot,
     taskId: effectiveTaskId,
@@ -1167,39 +181,37 @@ export async function postEditReviewQuery(
     ...testsFromGraphEdges(affectedEdges),
     ...index.testEdges.filter((edge) => edge.targetPath && reviewTargets.includes(edge.targetPath)).map((edge) => edge.path)
   ]);
-  const plannedSnapshotTests = snapshot?.plannedTests ?? [];
-  // The snapshot's plannedTests and the context pack's tests were
-  // collected without the current `changeType` override, so stale
-  // heuristic cross-language recommendations (e.g. a Python pytest
-  // surfaced only via package-scope naming) can leak through to
-  // post-edit output. Re-narrow the merged list against the current
-  // change-type so `--change-type style` gives the same quiet result
-  // whether the snapshot was saved before or after the user decided
-  // the edit was cosmetic.
-  //
-  // Known limitation: stale authoritative/derived entries from a
-  // broader-scope snapshot (e.g. user ran `/codexa-plan` with many
-  // files, then later runs `/codexa-review --change-type style`
-  // against a narrower edit) will still survive the narrowing — the
-  // filter deliberately preserves graph-proven coverage, and without
-  // provenance tracking we can't tell "this authoritative entry was
-  // proven against the OLD plan, not the current dirty tree." The
-  // recommended workflow mitigates this: re-run `/codexa-plan` against
-  // the narrower scope before `/codexa-review` so the snapshot's
-  // plannedTests reflect the same targets as the review.
+  const reviewScope = reviewTargets.length > 0 ? reviewTargets : currentDirtyPaths;
+  const snapshotTestScope = snapshot ? (snapshot.plannedEditTargets.length > 0 ? snapshot.plannedEditTargets : snapshot.plannedFiles) : [];
+  const freshReviewTests = recommendTests(index, reviewScope, repoRoot, changeType);
+  const freshReviewTestPaths = new Set(
+    [...(contextData.tests ?? []), ...freshReviewTests]
+      .filter((test) => test.provenance?.degraded !== true)
+      .map((test) => test.path)
+  );
+  const reconciledSnapshotTests = reconcileSnapshotTests(snapshot?.plannedTests ?? [], reviewScope, snapshotTestScope);
+  const degradedSnapshotTests = reconciledSnapshotTests.degraded.filter((test) => !freshReviewTestPaths.has(test.path));
+  const supersededDegradedSnapshotTests = reconciledSnapshotTests.degraded.filter((test) => freshReviewTestPaths.has(test.path));
   const mergedTests = uniqueTests([
-    ...plannedSnapshotTests,
+    ...reconciledSnapshotTests.trusted,
     ...(contextData.tests ?? []),
-    ...recommendTests(index, reviewTargets.length > 0 ? reviewTargets : currentDirtyPaths, repoRoot, changeType)
+    ...freshReviewTests
   ]);
   const tests = narrowTestRecommendationsByChangeType(
     mergedTests,
-    reviewTargets.length > 0 ? reviewTargets : currentDirtyPaths,
+    reviewScope,
     changeType
   ).slice(0, 12);
   const ranTests = input.ranTests ?? [];
   const ranCommands = input.ranCommands ?? [];
-  const ranCommandReports = input.ranCommandReports ?? [];
+  const manualRanCommandReports = (input.ranCommandReports ?? []).map(stripRunnerMetadata);
+  const runnerReview = await reviewTrustedRunnerReports(internal.trustedRunnerReports ?? [], {
+    freshness,
+    snapshot,
+    repoRoot
+  });
+  const ranCommandReports = [...manualRanCommandReports, ...runnerReview.coveringReports];
+  const displayedRanCommandReports = [...manualRanCommandReports, ...runnerReview.displayReports];
   const waivedChecks = input.waivedChecks ?? [];
   const waivers = input.waivers ?? [];
   const preliminaryVerificationCoverage = verificationEvidenceForCommandReports(index, ranCommands, ranCommandReports, repoRoot).coverage;
@@ -1253,58 +265,63 @@ export async function postEditReviewQuery(
   const verificationLedger = verification.ledger;
   const testsNotRun = verification.testsNotRun;
   const waivedVerification = verificationLedger.filter((entry) => entry.status === "waived");
-  const dataRanCommandReports = ranCommandReports.map((report) => sanitizeCommandReportForDisplay(report, repoRoot));
+  const dataRanCommandReports = displayedRanCommandReports.map((report) => sanitizeCommandReportForDisplay(report, repoRoot));
   const dataRanCommands = ranCommands.map((command) => sanitizeCommandText(command, repoRoot));
   const dataCommandEnvelopes = commandEnvelopes.map((envelope) => sanitizeCommandEnvelopeForDisplay(envelope, repoRoot));
   const dataVerificationCoverage = verificationCoverage.map((entry) => sanitizeCoverageForDisplay(entry, repoRoot));
   const dataVerificationLedger = verificationLedger.map((entry) => sanitizeLedgerForDisplay(entry, repoRoot));
   const dataWaivedVerification = dataVerificationLedger.filter((entry) => entry.status === "waived");
   const missedLikelyTests = testsNotRun;
-  const hasTestVerificationAccounting =
-    verificationLedger.some((entry) => entry.kind === "test" && (entry.status === "covered" || entry.status === "waived"));
-  const driftReasons = [
-    !snapshot ? `missing task snapshot${loadedSnapshot.missingReason ? `: ${loadedSnapshot.missingReason}` : ""}` : undefined,
-    snapshotAmbiguity ? snapshotAmbiguity : undefined,
-    loadedSnapshot.missingReason === "invalid-json" ? loadedSnapshot.error : undefined,
-    session.worktreeDegradationReasons.length > 0
-      ? `worktree state unavailable (${session.worktreeDegradationReasons.join("; ")}); treat empty change set as unknown, not clean`
-      : undefined,
-    headChanged ? "git head changed since snapshot" : undefined,
-    unplannedEditedFiles.length > 0 ? `${unplannedEditedFiles.length} edited file(s) outside planned scope` : undefined,
-    unplannedChangedSymbols.length > 0 ? `${unplannedChangedSymbols.length} changed symbol(s) outside requested symbol target` : undefined,
-    unindexedEditedFiles.length > 0 ? `${unindexedEditedFiles.length} changed-since-snapshot file(s) are not indexed` : undefined,
-    symbolDeltas.some((delta) => delta.newSymbols.length > 0 || delta.removedSymbols.length > 0)
-      ? `${symbolDeltas.reduce((sum, delta) => sum + delta.newSymbols.length + delta.removedSymbols.length, 0)} symbol delta(s) detected`
-      : undefined,
-    riskDeltas.some((delta) => delta.delta > 0) ? `${riskDeltas.filter((delta) => delta.delta > 0).length} file(s) increased risk` : undefined,
-    workflowChecks.some((check) => check.status === "missing") ? `${workflowChecks.filter((check) => check.status === "missing").length} required workflow check(s) missing` : undefined,
-    dependencyChecks.some((check) => check.status === "missing") ? `${dependencyChecks.filter((check) => check.status === "missing").length} required dependency check(s) missing` : undefined,
-    contextData.quality?.level === "low" ? "low context quality after edit" : undefined,
-    hasActualEditedFiles && riskEscalations.length > 0 ? `${riskEscalations.length} high-risk or unplanned target(s)` : undefined,
-    waivedVerification.length > 0 ? `${waivedVerification.length} verification item(s) explicitly waived` : undefined,
-    hasActualEditedFiles && testsNotRun.length > 0 && !hasTestVerificationAccounting
-      ? "recommended tests have not been accounted for"
-      : undefined,
-    hasActualEditedFiles && testsNotRun.length > 0 && hasTestVerificationAccounting
-      ? `${testsNotRun.length} recommended test(s) remain unaccounted for`
-      : undefined
-  ].filter((reason): reason is string => Boolean(reason));
-  const verdict: "continue" | "run_tests" | "inspect" | "replan" =
-    headChanged || unplannedEditedFiles.length >= 3 || contextData.quality?.level === "low"
-      ? "replan"
-      : !snapshot ||
-          session.worktreeDegradationReasons.length > 0 ||
-          unplannedEditedFiles.length > 0 ||
-          unplannedChangedSymbols.length > 0 ||
-          workflowChecks.some((check) => check.status === "missing") ||
-          dependencyChecks.some((check) => check.status === "missing") ||
-          waivedVerification.length > 0 ||
-          (hasActualEditedFiles && riskEscalations.length > 0) ||
-          contextData.quality?.level === "medium"
-        ? "inspect"
-        : hasActualEditedFiles && testsNotRun.length > 0
-          ? "run_tests"
-          : "continue";
+  const autoVerifyCandidates = buildAutoVerifyCandidates({
+    snapshot,
+    testsNotRun,
+    reviewTargets,
+    repoRoot
+  });
+  const hasTestVerificationAccounting = verificationLedger.some((entry) => entry.kind === "test" && (entry.status === "covered" || entry.status === "waived"));
+  const hasCredibleVerificationEvidence = hasRelevantVerificationEvidence({
+    verificationLedger,
+    verificationCoverage,
+    ranTests,
+    tests,
+    workflowChecks,
+    dependencyChecks,
+    reviewTargets,
+    editPaths
+  });
+  const noVerificationProofForEditedFiles =
+    hasActualEditedFiles && !hasCredibleVerificationEvidence && tests.length === 0 && workflowChecks.length === 0 && dependencyChecks.length === 0;
+  const decision = postEditDecision({
+    snapshot,
+    loadedSnapshot,
+    snapshotAmbiguity,
+    worktreeDegradationReasons: session.worktreeDegradationReasons,
+    headChanged,
+    unplannedEditedFiles,
+    unplannedChangedSymbols,
+    unindexedEditedFiles,
+    symbolDeltas,
+    riskDeltas,
+    workflowChecks,
+    dependencyChecks,
+    degradedSnapshotTests,
+    quality: contextData.quality,
+    riskEscalations,
+    waivedVerification,
+    hasActualEditedFiles,
+    testsNotRun,
+    hasTestVerificationAccounting,
+    noVerificationProofForEditedFiles
+  });
+  const {
+    driftReasons,
+    verdict,
+    missingWorkflowCheckCount,
+    missingDependencyCheckCount,
+    riskEscalationsCoveredByVerification,
+    riskEscalationsNeedInspection
+  } = decision;
+  const { inspectMode, inspectReasons, completionAuthority } = decision;
   const nextActions = postEditNextActions(verdict, {
     snapshot,
     unplannedEditedFiles,
@@ -1312,7 +329,17 @@ export async function postEditReviewQuery(
     riskEscalations,
     reviewTargets,
     workflows,
-    missingChecks: [...workflowChecks, ...dependencyChecks].filter((check) => check.status === "missing")
+    missingChecks: [...workflowChecks, ...dependencyChecks].filter((check) => check.status === "missing"),
+    noVerificationProofForEditedFiles,
+    degradedSnapshotTests
+  });
+  const structuredNextTools = postEditStructuredNextTools(verdict, {
+    reviewScope,
+    changeType,
+    testsNotRun,
+    degradedSnapshotTests,
+    riskEscalationsNeedInspection,
+    riskEscalations
   });
   const quality = contextData.quality;
   const sessionMemoryPointer = priorSessionMemory
@@ -1329,6 +356,9 @@ export async function postEditReviewQuery(
     taskId: effectiveTaskId,
     snapshotPath: loadedSnapshot.path ? path.relative(repoRoot, loadedSnapshot.path).split(path.sep).join("/") : undefined,
     verdict,
+    inspectMode,
+    inspectReasons,
+    completionAuthority,
     freshness,
     changedFiles: editPaths,
     plannedEditTargets: plannedScope,
@@ -1340,13 +370,14 @@ export async function postEditReviewQuery(
     affectedWorkflows: workflows.map((workflow) => workflow.title),
     workflowChecks,
     dependencyChecks,
-    driftReasons,
-    tests,
-    testsNotRun,
+	    driftReasons,
+	    tests,
+	    degradedSnapshotTests,
+	    testsNotRun,
     missedLikelyTests,
     ranTests,
     ranCommands,
-    ranCommandReports,
+    ranCommandReports: displayedRanCommandReports,
     commandEnvelopes,
     waivedChecks,
     waivers,
@@ -1371,9 +402,12 @@ export async function postEditReviewQuery(
     freshnessBanner(freshness, refresh),
     quality ? formatContextQuality(quality) : undefined,
     "Codexa post-edit review",
+    "Review gate: first-class post-edit review; reconcile snapshot, dirty diff, semantic context, and verification before finalizing.",
     `Task: ${task}`,
     snapshot ? `Snapshot: ${snapshot.taskId} (${snapshot.createdAt})` : `Snapshot: unavailable${loadedSnapshot.missingReason ? ` (${loadedSnapshot.missingReason})` : ""}; using current dirty tree only`,
     `Verdict: ${verdict}`,
+    `Inspect classification: ${inspectMode}; authority ${completionAuthority}`,
+    semanticReviewContext ? formatPostEditSemanticReviewContext(semanticReviewContext) : undefined,
     `Outcome record: ${outcomePath ?? "not persisted"}`,
     "",
     "Changed since snapshot:",
@@ -1417,16 +451,20 @@ export async function postEditReviewQuery(
     "",
     "Required workflow checks:",
     ...formatCheckResults(workflowChecks),
-    "",
-    "Required dependency checks:",
-    ...formatCheckResults(dependencyChecks),
-    "",
-    "Recommended tests:",
-    ...formatTestRecommendations(tests),
-    ranTests.length > 0 ? `Reported ran tests: ${ranTests.join(", ")}` : "Reported ran tests: none",
+	    "",
+	    "Required dependency checks:",
+	    ...formatCheckResults(dependencyChecks),
+	    "",
+	    "Recommended tests:",
+	    ...formatTestRecommendations(tests),
+	    degradedSnapshotTests.length > 0 ? "" : undefined,
+	    degradedSnapshotTests.length > 0 ? "Degraded planned snapshot tests:" : undefined,
+	    ...degradedSnapshotTests.map((test) => `- ${test.path}: ${test.provenance?.degradedReason ?? "provenance does not match current review scope"}`),
+	    ranTests.length > 0 ? `Reported ran tests: ${ranTests.join(", ")}` : "Reported ran tests: none",
     dataRanCommands.length > 0 ? `Reported ran commands: ${dataRanCommands.join(" | ")}` : "Reported ran commands: none",
-    dataRanCommandReports.length > 0 ? `Reported command reports: ${dataRanCommandReports.map(formatCommandReport).join(" | ")}` : "Reported command reports: none",
-    dataCommandEnvelopes.length > 0 ? `Command envelopes: ${dataCommandEnvelopes.map(formatCommandEnvelope).join(" | ")}` : "Command envelopes: none",
+	    dataRanCommandReports.length > 0 ? `Reported command reports: ${dataRanCommandReports.map(formatCommandReport).join(" | ")}` : "Reported command reports: none",
+	    runnerReview.reviewEntries.length > 0 ? `AutoVerify runner evidence: ${runnerReview.reviewEntries.map(formatRunnerReviewEntry).join(" | ")}` : undefined,
+	    dataCommandEnvelopes.length > 0 ? `Command envelopes: ${dataCommandEnvelopes.map(formatCommandEnvelope).join(" | ")}` : "Command envelopes: none",
     waivedChecks.length > 0 ? `Explicit waivers: ${waivedChecks.join(" | ")}` : "Explicit waivers: none",
     waivers.length > 0 ? `Structured waivers: ${waivers.map((waiver) => `${waiver.kind}:${waiver.target} (${waiver.reason})`).join(" | ")}` : "Structured waivers: none",
     "",
@@ -1439,6 +477,9 @@ export async function postEditReviewQuery(
     "",
     "Drift reasons:",
     ...(driftReasons.length > 0 ? driftReasons.map((reason) => `- ${reason}`) : ["- none"]),
+    inspectReasons.length > 0 ? "" : undefined,
+    inspectReasons.length > 0 ? "Inspect reasons:" : undefined,
+    ...inspectReasons.map((reason) => `- ${reason}`),
     "",
     "Next actions:",
     ...nextActions.map((action) => `- ${action}`),
@@ -1457,6 +498,9 @@ export async function postEditReviewQuery(
       mode: "post_edit_review",
       task,
       verdict,
+      inspectMode,
+      inspectReasons,
+      completionAuthority,
       snapshot: compactSnapshotForData(snapshot),
       snapshotLoad: {
         taskId: loadedSnapshot.latestTaskId,
@@ -1489,14 +533,25 @@ export async function postEditReviewQuery(
       modifiedSymbols: limitArray(modifiedSymbols, 40),
       modifiedPublicSymbols: limitArray(modifiedPublicSymbols, 40),
       riskDeltas: limitArray(riskDeltas, 20),
-      affectedEdges: limitArray(affectedEdges, 30),
-      affectedTests: limitArray(affectedTests, 30),
-      tests: limitArray(tests, 30),
-      testsNotRun: limitArray(testsNotRun, 30),
+	      affectedEdges: limitArray(affectedEdges, 30),
+	      affectedTests: limitArray(affectedTests, 30),
+	      tests: limitArray(tests, 30),
+	      degradedSnapshotTests: limitArray(degradedSnapshotTests, 30),
+	      supersededDegradedSnapshotTests: limitArray(supersededDegradedSnapshotTests, 30),
+	      testsNotRun: limitArray(testsNotRun, 30),
       missedLikelyTests: limitArray(missedLikelyTests, 30),
       ranTests,
       ranCommands: dataRanCommands,
-      ranCommandReports: dataRanCommandReports,
+	      ranCommandReports: dataRanCommandReports,
+	      autoVerifyCandidates: limitArray(autoVerifyCandidates, 30),
+	      autoVerifyRunnerEvidence: runnerReview.reviewEntries.map((entry) => ({
+	        command: sanitizeCommandText(entry.command, repoRoot),
+	        covering: entry.covering,
+	        reason: sanitizeSummary(entry.reason, repoRoot) ?? entry.reason,
+	        policyId: entry.policyId,
+	        sourceMutationDetected: entry.sourceMutationDetected,
+	        timedOut: entry.timedOut
+	      })),
       commandEnvelopes: dataCommandEnvelopes,
       waivedChecks,
       waivers,
@@ -1515,13 +570,18 @@ export async function postEditReviewQuery(
       waivedVerification: limitArray(dataWaivedVerification, 30),
       unindexedEditedFiles,
       riskEscalations: limitArray(riskEscalations, 20),
+      riskEscalationsCoveredByVerification,
+      riskEscalationsNeedInspection,
       workflows: limitArray(workflows, 12),
       workflowChecks: limitArray(workflowChecks, 20),
       dependencyChecks: limitArray(dependencyChecks, 30),
       context: compactContextData(context.data),
       quality,
+      semanticReviewContext,
       driftReasons,
       nextActions,
+      nextTools: structuredNextTools,
+      systemMessage: structuredNextTools[0]?.reason,
       outcome: {
         ...outcome,
         persisted: Boolean(savedOutcome),
@@ -1529,6 +589,16 @@ export async function postEditReviewQuery(
       }
     }
   };
+}
+
+function formatPostEditSemanticReviewContext(summary: SemanticRetrievalSummary): string {
+  if (summary.status === "ok") {
+    return `Semantic review context: ok (${summary.provider ?? "provider"} ${summary.model ?? "model"}; ${summary.chunkCount ?? 0} chunks)`;
+  }
+  if (summary.status === "unavailable") {
+    return `Semantic review context: unavailable${summary.diagnostics.length > 0 ? ` (${summary.diagnostics.join("; ")})` : ""}`;
+  }
+  return "Semantic review context: disabled";
 }
 
 function compareSnapshotSymbols(
@@ -1717,16 +787,24 @@ function dependencyCheckCoveredByVerification(
   ) {
     return true;
   }
-  const sourcePaths = check.paths.filter((filePath) => !isTestPath(filePath));
-  return input.verificationCoverage.some((coverage) => {
-    if (!["build", "typescript-syntax", "javascript-tests", "python-tests"].includes(coverage.kind)) {
-      return false;
-    }
-    if (coverage.targetPath) {
-      return checkPaths.includes(normalizePathLike(coverage.targetPath));
-    }
-    return sourcePaths.some((filePath) => coverageCoversPath(coverage, filePath));
-  });
+    const sourcePaths = check.paths.filter((filePath) => !isTestPath(filePath));
+    return input.verificationCoverage.some((coverage) => {
+      if (coverage.targetPath) {
+        return checkPaths.includes(normalizePathLike(coverage.targetPath)) && coverageKindCompatibleWithSourcePath(coverage.kind, coverage.targetPath);
+      }
+      return sourcePaths.some((filePath) => coverageKindCompatibleWithSourcePath(coverage.kind, filePath) && coverageCoversPath(coverage, filePath));
+    });
+  }
+
+function coverageKindCompatibleWithSourcePath(kind: VerificationCoverage["kind"], filePath: string): boolean {
+  const normalized = normalizePathLike(filePath).toLowerCase();
+  if (normalized.endsWith(".py")) {
+    return kind === "python-tests";
+  }
+  if (/\.(?:cjs|cts|js|jsx|mjs|mts|ts|tsx)$/u.test(normalized)) {
+    return kind === "build" || kind === "typescript-syntax" || kind === "javascript-tests";
+  }
+  return kind === "build";
 }
 
 function coverageCoversPath(coverage: VerificationCoverage, filePath: string): boolean {
@@ -1749,7 +827,145 @@ function formatCheckResults(checks: PostEditCheckResult[]): string[] {
   return checks.slice(0, 12).map((check) => `- ${check.status}: ${check.target}; ${check.confidence}; ${check.reason}`);
 }
 
-function sanitizeCommandReportForDisplay(report: VerificationCommandReport, repoRoot: string): VerificationCommandReport {
+interface AutoVerifyRunnerReviewEntry {
+  command: string;
+  covering: boolean;
+  reason: string;
+  policyId?: string;
+  sourceMutationDetected?: boolean;
+  timedOut?: boolean;
+}
+
+async function reviewTrustedRunnerReports(
+  reports: AutoVerifyCommandReport[],
+  ctx: { freshness: { headCommit: string | null; dirtyFiles: string[]; dirtyFileHashes: Record<string, string> }; snapshot: TaskSnapshot | undefined; repoRoot: string }
+): Promise<{ coveringReports: AutoVerifyCommandReport[]; displayReports: AutoVerifyCommandReport[]; reviewEntries: AutoVerifyRunnerReviewEntry[] }> {
+  const repoRealRoot = await fs.realpath(ctx.repoRoot).catch(() => path.resolve(ctx.repoRoot));
+  const currentDirtyHash = dirtyHashFromFreshness(ctx.freshness);
+  const snapshotDigest = ctx.snapshot ? autoVerifySnapshotDigest(ctx.snapshot) : undefined;
+  const coveringReports: AutoVerifyCommandReport[] = [];
+  const displayReports: AutoVerifyCommandReport[] = [];
+  const reviewEntries: AutoVerifyRunnerReviewEntry[] = [];
+  for (const report of reports) {
+    const reasons = runnerReportRejectionReasons(report, {
+      currentDirtyHash,
+      snapshotDigest,
+      taskId: ctx.snapshot?.taskId,
+      repoRealRoot
+    });
+    displayReports.push(report);
+    const covering = reasons.length === 0;
+    if (covering) {
+      coveringReports.push(report);
+    }
+    reviewEntries.push({
+      command: sanitizeCommandText(report.command, ctx.repoRoot),
+      covering,
+      reason: sanitizeSummary(covering ? "fresh trusted AutoVerify report" : reasons.join("; "), ctx.repoRoot) ?? "runner evidence unavailable",
+      policyId: report.runner?.policyId,
+      sourceMutationDetected: report.runner?.sourceMutationDetected,
+      timedOut: report.runner?.timedOut
+    });
+  }
+  return { coveringReports, displayReports, reviewEntries };
+}
+
+function runnerReportRejectionReasons(
+  report: AutoVerifyCommandReport,
+  ctx: { currentDirtyHash: string; snapshotDigest?: string; taskId?: string; repoRealRoot: string }
+): string[] {
+  const runner = report.runner;
+  const reasons: string[] = [];
+  if (!isTrustedAutoVerifyCommandReport(report)) {
+    return ["missing internal AutoVerify trust marker"];
+  }
+  if (!runner || runner.schemaVersion !== 1 || runner.reportKind !== "codexa-autoverify-report" || runner.runnerName !== "codexa") {
+    return ["missing trusted AutoVerify runner metadata"];
+  }
+  if (runner.policyId !== AUTO_VERIFY_POLICY_ID) reasons.push("unexpected runner policy");
+  if (runner.policyDigest !== AUTO_VERIFY_POLICY_DIGEST) reasons.push("unexpected runner policy digest");
+  if (runner.envMode !== "minimal") reasons.push("unexpected runner environment");
+  if (!runner.outputRedacted) reasons.push("runner output was not redacted");
+  if (report.exitCode !== 0) reasons.push(report.exitCode === undefined ? "missing exit code" : `exit code ${report.exitCode}`);
+  if (!report.cwd) reasons.push("missing cwd");
+  if (runner.timedOut) reasons.push("runner timed out");
+  if (runner.sourceMutationDetected) reasons.push("source mutation detected");
+  if (runner.skippedReason) reasons.push(runner.skippedReason);
+  if (ctx.taskId && runner.taskId !== ctx.taskId) reasons.push("task id mismatch");
+  if (ctx.snapshotDigest && runner.snapshotDigest !== ctx.snapshotDigest) reasons.push("snapshot digest mismatch");
+  if (runner.dirtyHashAfter !== ctx.currentDirtyHash) reasons.push("stale dirty tree");
+  if (!absoluteSubpath(runner.cwdRealpath, ctx.repoRealRoot)) reasons.push("runner cwd outside repo");
+  if (runner.targetRealpaths.length === 0) reasons.push("missing runner targets");
+  if (runner.targetRealpaths.some((target) => !absoluteSubpath(target, ctx.repoRealRoot))) reasons.push("runner target outside repo");
+  if (runner.canonicalDigest !== runnerReportDigest(report, runner)) reasons.push("runner digest mismatch");
+  return reasons;
+}
+
+function runnerReportDigest(report: AutoVerifyCommandReport, runner: AutoVerifyReportRunner): string {
+  return stableId(
+    "codexa-autoverify-report",
+    report.command,
+    report.exitCode,
+    runner.policyId,
+    runner.policyDigest,
+    runner.taskId,
+    runner.snapshotDigest,
+    runner.commandId,
+    runner.candidateDigest,
+    runner.headCommit ?? "null",
+    runner.dirtyHashBefore,
+    runner.dirtyHashAfter,
+    runner.cwdRealpath,
+    JSON.stringify(runner.targetRealpaths),
+    runner.envMode,
+    JSON.stringify(runner.allowedBy),
+    runner.sourceMutationDetected ? "mutated" : "clean",
+    runner.timedOut ? "timed-out" : "not-timed-out",
+    runner.outputRedacted ? "redacted" : "not-redacted",
+    runner.signal ?? "",
+    runner.skippedReason ?? ""
+  );
+}
+
+function stripRunnerMetadata(report: VerificationCommandReport): VerificationCommandReport {
+  return {
+    command: report.command,
+    cwd: report.cwd,
+    packageManager: report.packageManager,
+    workspace: report.workspace,
+    packageRoot: report.packageRoot,
+    packageName: report.packageName,
+    scriptName: report.scriptName,
+    args: report.args,
+    exitCode: report.exitCode,
+    durationMs: report.durationMs,
+    stdoutSummary: report.stdoutSummary,
+    stderrSummary: report.stderrSummary,
+    outputSummary: report.outputSummary
+  };
+}
+
+function dirtyHashFromFreshness(freshness: { headCommit: string | null; dirtyFiles: string[]; dirtyFileHashes: Record<string, string> }): string {
+  return stableId(
+    "autoverify-dirty-tree",
+    freshness.headCommit ?? "null",
+    JSON.stringify({
+      dirtyFiles: [...freshness.dirtyFiles].sort(),
+      dirtyFileHashes: Object.fromEntries(Object.entries(freshness.dirtyFileHashes).sort(([a], [b]) => a.localeCompare(b)))
+    })
+  );
+}
+
+function autoVerifySnapshotDigest(snapshot: TaskSnapshot): string {
+  return stableId("autoverify-snapshot", snapshot.taskId, snapshot.createdAt, JSON.stringify(snapshot.plannedEditTargets), JSON.stringify(snapshot.plannedTests.map((test) => test.path)));
+}
+
+function absoluteSubpath(candidate: string, parent: string): boolean {
+  const relative = path.relative(path.resolve(parent), path.resolve(candidate));
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function sanitizeCommandReportForDisplay(report: DisplayCommandReport, repoRoot: string): DisplayCommandReport {
   return {
     ...report,
     command: sanitizeCommandText(report.command, repoRoot),
@@ -1762,7 +978,21 @@ function sanitizeCommandReportForDisplay(report: VerificationCommandReport, repo
     stdoutSummary: sanitizeSummary(report.stdoutSummary, repoRoot),
     stderrSummary: sanitizeSummary(report.stderrSummary, repoRoot),
     outputSummary: sanitizeSummary(report.outputSummary, repoRoot),
-    args: sanitizeCommandArgs(report.args, repoRoot)
+    args: sanitizeCommandArgs(report.args, repoRoot),
+    runner: sanitizeRunnerForDisplay(report.runner, repoRoot)
+  };
+}
+
+function sanitizeRunnerForDisplay(runner: AutoVerifyReportRunner | undefined, repoRoot: string): AutoVerifyReportRunner | undefined {
+  if (!runner) {
+    return undefined;
+  }
+  return {
+    ...runner,
+    cwdRealpath: sanitizePathField(runner.cwdRealpath, repoRoot) ?? runner.cwdRealpath,
+    targetRealpaths: runner.targetRealpaths.map((target) => sanitizePathField(target, repoRoot) ?? target),
+    allowedBy: runner.allowedBy.map((reason) => sanitizeSummary(reason, repoRoot) ?? reason),
+    skippedReason: sanitizeSummary(runner.skippedReason, repoRoot)
   };
 }
 
@@ -1842,7 +1072,8 @@ function sanitizeCommandArgs(args: string[] | undefined, repoRoot: string): stri
 
 function redactSecretText(value: string | undefined): string | undefined {
   return value
-    ?.replace(/((?:--?|[A-Z_]*)(?:token|secret|password|passwd|pwd|api[-_]?key|access[-_]?key|auth|credential|cookie)[A-Z0-9_-]*(?:=|\s+))([^\s;|)\]'",]+)/giu, "$1<redacted>")
+    ?.replace(/(^|[\s([,{])((?:--?[a-z0-9-]*(?:token|secret|password|passwd|pwd|api[-_]?key|access[-_]?key|auth|credential|cookie)[a-z0-9-]*)(?:=|\s+))([^\s;|)\]'",]+)/giu, "$1$2<redacted>")
+    .replace(/(\b[A-Z_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|PWD|API_?KEY|ACCESS_?KEY|AUTH|CREDENTIAL|COOKIE)[A-Z0-9_]*=)([^\s;|)\]'",]+)/gu, "$1<redacted>")
     .replace(/\b(Bearer)\s+[A-Za-z0-9._~+/-]+=*/giu, "$1 <redacted>");
 }
 
@@ -1898,6 +1129,10 @@ function formatCommandReport(report: VerificationCommandReport): string {
   return `${report.command} (${status}${cwd}${duration}${summary ? `; ${summary}` : ""})`;
 }
 
+function formatRunnerReviewEntry(entry: AutoVerifyRunnerReviewEntry): string {
+  return `${entry.covering ? "trusted" : "non-covering"} ${entry.command} (${entry.reason})`;
+}
+
 function formatCommandEnvelope(envelope: VerificationCommandEnvelope): string {
   const manager = envelope.packageManager ? `${envelope.packageManager}` : "unknown manager";
   const script = envelope.scriptName ? ` ${envelope.scriptName}` : "";
@@ -1940,6 +1175,44 @@ function compactSnapshotForData(snapshot: TaskSnapshot | undefined): unknown {
   };
 }
 
+function buildAutoVerifyCandidates(input: { snapshot: TaskSnapshot | undefined; testsNotRun: TestRecommendation[]; reviewTargets: string[]; repoRoot: string }): AutoVerifyCandidate[] {
+  const snapshot = input.snapshot;
+  if (!snapshot) {
+    return [];
+  }
+  const snapshotDigest = autoVerifySnapshotDigest(snapshot);
+  return input.testsNotRun
+    .filter((test) => test.command && test.commandCwd && test.commandExecutable && test.commandArgs)
+    .map((test, index) => {
+      const command = test.command!;
+      const commandCwd = test.commandCwd!;
+      const commandExecutable = test.commandExecutable!;
+      const commandArgs = test.commandArgs!;
+      return {
+        schemaVersion: 1,
+        taskId: snapshot.taskId,
+        snapshotDigest,
+        commandId: stableId("autoverify-command", snapshot.taskId, command, commandCwd, JSON.stringify(commandArgs)),
+        command,
+        commandExecutable,
+        commandArgs,
+        commandCwd,
+        targetPaths: uniqueSorted([test.path, ...(test.provenance?.targetPaths ?? input.reviewTargets)]),
+        source: autoVerifyCandidateSource(test.provenance),
+        rank: test.rank - index / 100
+      } satisfies AutoVerifyCandidate;
+    });
+}
+
+function autoVerifyCandidateSource(provenance: TestRecommendationProvenance | undefined): AutoVerifyCandidate["source"] {
+  const sources = provenance?.sources ?? [];
+  if (sources.includes("explicit_target")) return "explicit";
+  if (sources.includes("authoritative_test_edge")) return "authoritative-test-edge";
+  if (sources.includes("derived_import") || sources.includes("derived_impact_expansion") || sources.includes("package_import") || sources.includes("outcome_history")) return "derived-impact";
+  if (sources.length > 0) return "heuristic";
+  return "legacy";
+}
+
 function stableSessionMemoryHash(value: string): string {
   return stableId("session-memory-summary", value);
 }
@@ -1961,39 +1234,77 @@ function compactContextData(data: unknown): unknown {
   };
 }
 
-function postEditNextActions(
-  verdict: "continue" | "run_tests" | "inspect" | "replan",
-  input: {
-    snapshot?: TaskSnapshot;
-    unplannedEditedFiles: string[];
-    testsNotRun: TestRecommendation[];
-    riskEscalations: FileFact[];
-    reviewTargets: string[];
-    workflows: WorkflowTraceFact[];
-    missingChecks: PostEditCheckResult[];
+function hasRelevantVerificationEvidence(input: {
+  verificationLedger: VerificationLedgerEntry[];
+  verificationCoverage: VerificationCoverage[];
+  ranTests: string[];
+  tests: TestRecommendation[];
+  workflowChecks: PostEditCheckResult[];
+  dependencyChecks: PostEditCheckResult[];
+  reviewTargets: string[];
+  editPaths: string[];
+}): boolean {
+  const checkedTargets = new Set([
+    ...input.tests.map((test) => normalizeReviewPath(test.path)),
+    ...input.workflowChecks.map((check) => normalizeReviewPath(check.target)),
+    ...input.dependencyChecks.map((check) => normalizeReviewPath(check.target))
+  ]);
+  if (
+    input.verificationLedger.some(
+      (entry) => (entry.status === "covered" || entry.status === "waived") && (checkedTargets.size === 0 || checkedTargets.has(normalizeReviewPath(entry.target)))
+    )
+  ) {
+    return true;
   }
-): string[] {
-  if (verdict === "replan") {
-    return [
-      "Call change_plan again with saveSnapshot=true before making more edits.",
-      input.unplannedEditedFiles.length > 0 ? `Inspect unplanned edits first: ${input.unplannedEditedFiles.slice(0, 6).join(", ")}` : "Inspect the low-quality or stale evidence before continuing.",
-      input.testsNotRun.length > 0 ? `Run or justify the top targeted tests: ${input.testsNotRun.slice(0, 4).map((test) => test.path).join(", ")}` : "Rebuild a narrow test plan after re-planning."
-    ];
+
+  const recommendedTests = new Set(input.tests.map((test) => normalizeReviewPath(test.path)));
+  if (input.ranTests.some((test) => recommendedTests.has(normalizeReviewPath(test)))) {
+    return true;
   }
-  if (verdict === "inspect") {
-    return [
-      input.snapshot ? "Read the unplanned or high-risk files before treating the edit as complete." : "No saved task snapshot was available; treat this as a dirty-diff review, not a drift proof.",
-      input.riskEscalations.length > 0 ? `Check risk targets: ${input.riskEscalations.slice(0, 5).map((file) => file.path).join(", ")}` : `Check review targets: ${input.reviewTargets.slice(0, 6).join(", ") || "none"}`,
-      input.missingChecks.length > 0 ? `Resolve required checks: ${input.missingChecks.slice(0, 4).map((check) => check.target).join(", ")}` : "Required snapshot checks are covered.",
-      input.testsNotRun.length > 0 ? `Run or explicitly account for: ${input.testsNotRun.slice(0, 6).map((test) => test.path).join(", ")}` : "Targeted tests are accounted for.",
-      input.workflows.length > 0 ? `Call workflow_path for ${input.workflows[0].title} if behavior changed.` : "Call callers or dependency_path if the touched file changes a public contract."
-    ];
+
+  const changedTargets = uniqueSorted([...input.editPaths, ...input.reviewTargets].map(normalizeReviewPath).filter(Boolean));
+  return input.verificationCoverage.some((coverage) => coverageIsRelevantProof(coverage, changedTargets, recommendedTests));
+}
+
+function coverageIsRelevantProof(coverage: VerificationCoverage, changedTargets: string[], recommendedTests: Set<string>): boolean {
+  if (coverage.kind === "unknown" || coverage.kind === "audit" || coverage.kind === "privacy" || coverage.kind === "lint") {
+    return false;
   }
-  if (verdict === "run_tests") {
-    return [
-      `Run or account for: ${input.testsNotRun.slice(0, 6).map((test) => test.path).join(", ")}`,
-      "After checks pass, call post_edit_review again with ranCommands for commands you ran, or ranTests only for direct file/test accounting."
-    ];
+  const target = coverage.targetPath ? normalizeReviewPath(coverage.targetPath) : undefined;
+  if (target) {
+    return changedTargets.includes(target) || recommendedTests.has(target) || changedTargets.some((changed) => pathIntersects(target, changed));
   }
-  return ["No drift detected against the saved snapshot. Finish with the normal source diff review and targeted tests already reported."];
+  if (coverage.kind === "javascript-tests" || coverage.kind === "python-tests" || coverage.kind === "targeted-test") {
+    return recommendedTests.size === 0 && changedTargets.some((changed) => scopeCoversReviewPath(coverage.scope ?? ".", changed));
+  }
+  if (coverage.kind === "build" || coverage.kind === "typescript-syntax") {
+    return changedTargets.some((changed) => sourcePathFitsCoverageKind(changed, coverage.kind) && scopeCoversReviewPath(coverage.scope ?? ".", changed));
+  }
+  return false;
+}
+
+function sourcePathFitsCoverageKind(filePath: string, kind: VerificationCoverage["kind"]): boolean {
+  if (kind === "typescript-syntax") {
+    return /\.(?:[cm]?[jt]sx?)$/iu.test(filePath);
+  }
+  if (kind === "build") {
+    return !isTestPath(filePath);
+  }
+  return false;
+}
+
+function scopeCoversReviewPath(scope: string, filePath: string): boolean {
+  const normalizedScope = normalizeReviewPath(scope);
+  const normalizedPath = normalizeReviewPath(filePath);
+  return normalizedScope === "." || normalizedScope === "" || normalizedPath === normalizedScope || normalizedPath.startsWith(`${normalizedScope}/`);
+}
+
+function pathIntersects(left: string, right: string): boolean {
+  return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
+}
+
+function normalizeReviewPath(value: string): string {
+  const normalized = value.replace(/\\/gu, "/").replace(/^\.\/+/u, "");
+  const collapsed = path.posix.normalize(normalized);
+  return collapsed === "." ? "." : collapsed.replace(/^\/+/u, "");
 }
