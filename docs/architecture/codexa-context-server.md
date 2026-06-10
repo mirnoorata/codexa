@@ -34,7 +34,7 @@ The first milestone used a private application repository as the acceptance proj
 - Every relationship carries an explicit source and confidence label.
 - Freshness is a gate. Stale or dirty state must be visible in artifacts and MCP responses.
 - Relationship claims returned to agents should carry compact evidence, not just prose. `symbol_context`, `impact`, `callers`, `callees`, and task-shaped packets expose `EdgeEvidenceV1` or evidence ids where they make nontrivial graph claims.
-- Transitive centrality/PageRank is allowed as an eval-only experiment. It must not change default ranking until the eval harness shows material wins without precision loss or opaque explanations.
+- Transitive centrality/PageRank is allowed as an eval-only experiment. It must not change default ranking until the eval harness shows material wins without precision loss or opaque explanations. The indexer implements a damped power-iteration pass behind `CODEXA_EXPERIMENTAL_TRANSITIVE_RANK=1` (off by default; default ranking is unchanged without the flag).
 
 ## Implementation
 
@@ -123,8 +123,12 @@ they do not override an explicit git repository argument.
 
 `init` is the user-facing setup command. It writes the repo-local `.codex/config.toml`
 MCP entry, writes/updates the SessionStart and edit-loop hooks, and indexes the repo unless
-`--no-index` is passed. After `codexa init`, future Codex sessions should only
-need `focus on <repo>`; Codexa is discovered from the project `.codex` config.
+`--no-index` is passed. `--tools core` writes an `enabled_tools` allowlist exposing only the
+primary-loop tools (plus `impact` and `freshness`) to cut per-turn schema token cost; confirm
+your Codex CLI version supports `enabled_tools` before relying on the core profile. `--agents-md`
+(opt-in) writes a managed Codexa workflow block into the repo's `AGENTS.md`. After `codexa init`,
+future Codex sessions should only need `focus on <repo>`; Codexa is discovered from the project
+`.codex` config.
 `index` writes `.codex/codebase/*` inside the target repo. `watch` keeps those
 artifacts live during active edit sessions with debounced filesystem events plus
 a fallback git freshness poll. `serve` starts a stdio MCP server by default and
@@ -482,7 +486,7 @@ Codexa generates only this minimal artifact set:
 .codex/codebase/playbooks/<module-id>.md
 ```
 
-Artifacts include ranked read-first lists, Python route/job/test hints where detected, provenance paths/line references where possible, and stale/dirty warnings. Codexa does not overwrite `AGENTS.md`.
+Artifacts include ranked read-first lists, Python route/job/test hints where detected, provenance paths/line references where possible, and stale/dirty warnings. Codexa does not write to `AGENTS.md` unless `codexa init --agents-md` is explicitly requested, and then only inside its clearly-marked managed block (init aborts if the markers are unbalanced).
 
 Playbooks are generated from facts, not hand-written wiki content. Each module
 playbook stays short and includes invariants, read-first files, risky boundaries,
@@ -540,8 +544,13 @@ The MCP handshake reports the `package.json` version and server-level
 instructions. Those instructions surface the primary Codexa loop
 (`session_context -> search(if target unclear) -> task_brief ->
 change_plan(saveSnapshot) -> post_edit_review -> test_plan`), the source
-mutation prohibition, semantic-search conditions, and the expectation that
-heuristic-heavy packets are verified against source before editing.
+mutation prohibition, semantic-search conditions, per-tool output-cost hints
+(each tool description states compact/medium/large), and the expectation that
+heuristic-heavy packets are verified against source before editing. Structured
+results are budget-compacted with truncation records naming dropped fields;
+hosts with small MCP result limits can set `CODEXA_MCP_STRUCTURED_BUDGET_BYTES`
+(bytes, clamped), and the big retrieval tools accept `responseFormat: "concise"`
+for a summary-tier packet.
 
 Stdio remains the default transport for local Codex CLI use. Codexa also supports
 explicit Streamable HTTP with `codexa serve <repo> --transport http`, defaulting
