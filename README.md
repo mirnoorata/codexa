@@ -66,8 +66,11 @@ entry that lets Codex discover the Codexa MCP server automatically. Useful flags
 `enabled_tools` allowlist to cut per-turn schema token cost (confirm your Codex CLI
 supports `enabled_tools` first), `--agents-md` (opt-in) writes a managed Codexa
 workflow block into the repo's `AGENTS.md` for Codex, and `--claude-md` (opt-in)
-writes the same managed block into `CLAUDE.md` for Claude Code. Both managed-doc
-writes fail closed on unbalanced markers rather than touching user content.
+writes the same managed block into `CLAUDE.md` for Claude Code. The region between
+the `<!-- >>> codexa managed -->` / `<!-- <<< codexa managed -->` markers is
+reserved: Codexa replaces it in place on every re-run (so the block stays current)
+and never edits anything outside it. Unbalanced or malformed markers abort the
+write instead of silently truncating the file.
 
 The installed command is `codexa`, and the server can also run ad hoc:
 
@@ -80,12 +83,15 @@ Codexa is also listed in the official MCP registry as
 
 ## Works with any MCP host
 
-Codexa is deterministic and model-agnostic — it never calls an LLM, so it serves
-the same evidence-backed context to any agent host that speaks MCP: the OpenAI
-Codex CLI (repo-local `.codex/config.toml`), Claude Code (the bundled plugin under
+Codexa is deterministic and model-agnostic — its core indexing, ranking, and
+query paths call no model and need no API keys, so it serves the same
+evidence-backed context to any agent host that speaks MCP: the OpenAI Codex CLI
+(repo-local `.codex/config.toml`), Claude Code (the bundled plugin under
 `integrations/claude-code/`, plus `--claude-md` steering), and any client that
 discovers it through the MCP registry. There is no per-model integration to do —
-the model lives in the host, and Codexa is the host's context server.
+the model lives in the host, and Codexa is the host's context server. (The one
+exception is the opt-in, off-by-default semantic lane, which can call a configured
+embedding provider such as OpenAI — see [Optional Lanes](#optional-lanes).)
 
 Token discipline is built in: every tool description states its typical output
 cost, structured results are budget-compacted with truncation records naming
@@ -94,6 +100,26 @@ dropped fields, hosts with small MCP result limits can set
 `responseFormat: "concise"` for a summary-tier packet. Because the budget caps
 tokens rather than dollars, the savings scale with the host model's price — they
 matter most on frontier-tier models.
+
+### Managed cloud agents
+
+Codexa's stdio transport is for a host running on the same machine as the
+repository (Codex CLI, Claude Code). Its HTTP transport is **loopback-only by
+design** — non-loopback bind addresses and non-loopback `Origin` headers are
+rejected — so a hosted agent whose container runs in someone else's cloud (for
+example a Claude Managed Agents session) cannot reach a local Codexa server over
+the public network.
+
+The supported way to give a managed cloud agent Codexa context is a
+**self-hosted sandbox**: run the agent's tool-execution container in your own
+infrastructure, alongside a Codexa server, and point the agent's MCP config at
+Codexa on `127.0.0.1`. The agent loop stays on the provider's orchestration
+layer; tool execution — and the Codexa connection — stay inside your trust
+boundary, where loopback HTTP is safe. An authenticated remote HTTP mode that
+would let a provider-hosted container dial into Codexa directly is intentionally
+**not** shipped: exposing a codebase context server to the network needs an
+auth/origin policy Codexa does not yet have, so it is deferred rather than
+shipped insecure.
 
 ## The Everyday Workflow
 
