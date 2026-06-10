@@ -178,3 +178,40 @@ jobs:
           fi
 
           npm publish --registry "${NPM_REGISTRY}" --access public --tag latest --provenance --ignore-scripts
+
+  mcp-registry:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write
+    timeout-minutes: 10
+    steps:
+      - name: Check out release tag
+        uses: actions/checkout@v6
+        with:
+          ref: ${{ github.event.release.tag_name }}
+          persist-credentials: false
+
+      - name: Verify server.json matches the release
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          server_version="$(node -p "require('./server.json').version")"
+          package_version="$(node -p "require('./package.json').version")"
+          if [[ "${RELEASE_TAG}" != "v${server_version}" || "${server_version}" != "${package_version}" ]]; then
+            echo "::error::server.json version ${server_version} does not match release ${RELEASE_TAG} / package ${package_version}."
+            exit 1
+          fi
+
+      - name: Install mcp-publisher
+        run: |
+          set -euo pipefail
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      - name: Authenticate to MCP Registry
+        run: ./mcp-publisher login github-oidc
+
+      - name: Publish server to MCP Registry
+        run: ./mcp-publisher publish
