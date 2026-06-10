@@ -560,7 +560,12 @@ to `127.0.0.1` and `/mcp`. The HTTP mode is loopback-only in V1: non-loopback
 bind addresses are rejected, and requests with non-loopback `Origin` headers are
 rejected before the MCP SDK sees them. Authenticated remote-server mode is
 deferred until Codexa can add explicit auth and origin policy instead of
-accidentally exposing an unauthenticated context server.
+accidentally exposing an unauthenticated context server. This is why a managed
+cloud agent (e.g. a Claude Managed Agents session whose container runs in the
+provider's cloud) cannot reach a local Codexa over the public network; the
+supported path is a self-hosted sandbox that runs the agent's tool container in
+your own infrastructure beside a loopback Codexa server (see the README's
+"Managed cloud agents" note).
 `doctor --mcp-readiness` compares the declared MCP tool catalog with the server
 registrations and reports drift before release. It also checks that the latest
 passing eval was recorded against the current repo `HEAD` and MCP catalog tool
