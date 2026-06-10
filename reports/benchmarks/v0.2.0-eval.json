@@ -1,0 +1,414 @@
+{
+  "seed": "codexa-v020-release",
+  "suite": "all",
+  "passed": true,
+  "score": 1,
+  "calibrationSummary": {
+    "falsePositiveFiles": [
+      "src/vevpezvg_consumer_b.ts",
+      "src/vevpezvg_consumer_a.ts"
+    ],
+    "missingExpectedChangedFiles": [],
+    "missingExpectedTests": [],
+    "heuristicHeavyScenarios": [],
+    "broadRetrievalFailures": [
+      "synthetic-session-context-seedless"
+    ],
+    "rawRgBetterScenarios": [],
+    "overBudgetedOutputScenarios": [],
+    "overBudgetedStructuredDataScenarios": [],
+    "postEditMissedTests": [
+      "src/feature.test.ts"
+    ],
+    "postEditModifiedPublicSymbols": [
+      "formatVevpezvgLabel (function) in src/vevpezvg_shared.ts"
+    ],
+    "postEditCalibrationLabels": [
+      "aggregate-command-coverage",
+      "blocking-inspection",
+      "false-missing-test-warning-avoided",
+      "modified-public-symbols",
+      "requires-inspection",
+      "missing-recommended-tests",
+      "real-missed-tests"
+    ],
+    "postEditRequiredChecksMissingScenarios": [],
+    "postEditAggregateCoverageScenarios": [
+      "synthetic-patch-task-post-edit-review"
+    ],
+    "postEditVerificationMissingScenarios": [
+      "historical-fixture-post-edit-drift"
+    ],
+    "postEditVerdicts": {
+      "inspect": 2
+    },
+    "outcomeRecords": [
+      ".codex/cache/codexa-outcomes/eval-post-edit-shared-20260610133644-10a5f7e9d58e0420.json",
+      ".codex/cache/codexa-outcomes/historical-post-edit-drift-a8971858-bd31-20260610133644-18685cf12af11e4b.json"
+    ]
+  },
+  "scenarioResults": [
+    {
+      "id": "project-dirty-context-pack",
+      "suite": "project",
+      "passed": true,
+      "metrics": {
+        "fileRecall": null,
+        "changedFileRecall": null,
+        "testRecall": null,
+        "precisionAtK": null,
+        "selectedToBaselineRatio": null,
+        "textChars": 9998,
+        "dataBytes": 100278,
+        "refreshed": false,
+        "structuredBytes": 100278,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": false
+      }
+    },
+    {
+      "id": "project-diff-test-plan",
+      "suite": "project",
+      "passed": true,
+      "metrics": {
+        "fileRecall": null,
+        "changedFileRecall": null,
+        "testRecall": null,
+        "precisionAtK": null,
+        "selectedToBaselineRatio": null,
+        "textChars": 6267,
+        "dataBytes": 29221,
+        "refreshed": false,
+        "structuredBytes": 29221,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": false
+      }
+    },
+    {
+      "id": "synthetic-search-exact-raw-sufficient",
+      "suite": "synthetic",
+      "passed": true,
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": null,
+        "testRecall": null,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 1,
+        "textChars": 1157,
+        "dataBytes": 22604,
+        "refreshed": false,
+        "structuredBytes": 22604,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": false
+      }
+    },
+    {
+      "id": "synthetic-shared-style-fanout",
+      "suite": "synthetic",
+      "passed": true,
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": null,
+        "testRecall": 1,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 0.5,
+        "textChars": 2475,
+        "dataBytes": 20361,
+        "refreshed": false,
+        "structuredBytes": 20361,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": false
+      }
+    },
+    {
+      "id": "synthetic-shared-api-fanout",
+      "suite": "synthetic",
+      "passed": true,
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": null,
+        "testRecall": 1,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 0.5,
+        "textChars": 2463,
+        "dataBytes": 20347,
+        "refreshed": false,
+        "structuredBytes": 20347,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": false
+      }
+    },
+    {
+      "id": "synthetic-task-brief-impact-expansion",
+      "suite": "synthetic",
+      "passed": true,
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": null,
+        "testRecall": 1,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 0.5,
+        "textChars": 4673,
+        "dataBytes": 13429,
+        "refreshed": false,
+        "structuredBytes": 13429,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": false
+      }
+    },
+    {
+      "id": "synthetic-ts-impact-decoy-control",
+      "suite": "synthetic",
+      "passed": true,
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": null,
+        "testRecall": 1,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 0.5,
+        "textChars": 2022,
+        "dataBytes": 15892,
+        "refreshed": false,
+        "structuredBytes": 15892,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": false
+      }
+    },
+    {
+      "id": "synthetic-python-impact-decoy-control",
+      "suite": "synthetic",
+      "passed": true,
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": null,
+        "testRecall": 1,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 0.75,
+        "textChars": 2379,
+        "dataBytes": 14123,
+        "refreshed": false,
+        "structuredBytes": 14123,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": false
+      }
+    },
+    {
+      "id": "synthetic-manifest-impact",
+      "suite": "synthetic",
+      "passed": true,
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": null,
+        "testRecall": null,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 0.6666666666666666,
+        "textChars": 1396,
+        "dataBytes": 6907,
+        "refreshed": false,
+        "structuredBytes": 6907,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": false
+      }
+    },
+    {
+      "id": "synthetic-dirty-diff-context-pack",
+      "suite": "synthetic",
+      "passed": true,
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": null,
+        "testRecall": 1,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 1.5,
+        "textChars": 4152,
+        "dataBytes": 13812,
+        "refreshed": false,
+        "structuredBytes": 13812,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": false
+      }
+    },
+    {
+      "id": "synthetic-broad-focus-brief",
+      "suite": "synthetic",
+      "passed": true,
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": null,
+        "testRecall": 1,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": null,
+        "textChars": 3359,
+        "dataBytes": 19953,
+        "refreshed": false,
+        "structuredBytes": 19953,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": false
+      }
+    },
+    {
+      "id": "synthetic-session-context-seedless",
+      "suite": "synthetic",
+      "passed": true,
+      "metrics": {
+        "fileRecall": null,
+        "changedFileRecall": null,
+        "testRecall": null,
+        "precisionAtK": null,
+        "selectedToBaselineRatio": null,
+        "textChars": 3096,
+        "dataBytes": 5641,
+        "refreshed": false,
+        "structuredBytes": 5641,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": false
+      }
+    },
+    {
+      "id": "synthetic-patch-task-change-plan",
+      "suite": "synthetic",
+      "passed": true,
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": null,
+        "testRecall": 1,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 0.5,
+        "textChars": 3793,
+        "dataBytes": 37181,
+        "refreshed": false,
+        "structuredBytes": 37181,
+        "toolHopsToEditReady": 0,
+        "verificationProvenancePresent": false
+      }
+    },
+    {
+      "id": "synthetic-patch-task-post-edit-review",
+      "suite": "synthetic",
+      "passed": true,
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": null,
+        "testRecall": 1,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 0.5,
+        "textChars": 6246,
+        "dataBytes": 32886,
+        "refreshed": false,
+        "structuredBytes": 32886,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": true
+      }
+    },
+    {
+      "id": "historical-fixture-exact-shared-api",
+      "suite": "historical-fixture",
+      "passed": true,
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": 1,
+        "testRecall": 1,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 0.5,
+        "textChars": 3107,
+        "dataBytes": 42086,
+        "refreshed": false,
+        "structuredBytes": 42086,
+        "toolHopsToEditReady": 0,
+        "verificationProvenancePresent": false
+      }
+    },
+    {
+      "id": "historical-fixture-broad-workflow",
+      "suite": "historical-fixture",
+      "passed": true,
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": null,
+        "testRecall": 1,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 0.18181818181818182,
+        "textChars": 2912,
+        "dataBytes": 27076,
+        "refreshed": false,
+        "structuredBytes": 27076,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": false
+      }
+    },
+    {
+      "id": "historical-fixture-python-route-helper",
+      "suite": "historical-fixture",
+      "passed": true,
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": null,
+        "testRecall": 1,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 1,
+        "textChars": 1968,
+        "dataBytes": 13170,
+        "refreshed": false,
+        "structuredBytes": 13170,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": false
+      }
+    },
+    {
+      "id": "historical-fixture-manifest-adapter",
+      "suite": "historical-fixture",
+      "passed": true,
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": null,
+        "testRecall": 1,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 1,
+        "textChars": 5154,
+        "dataBytes": 31823,
+        "refreshed": false,
+        "structuredBytes": 31823,
+        "toolHopsToEditReady": 1,
+        "verificationProvenancePresent": false
+      }
+    },
+    {
+      "id": "historical-fixture-post-edit-drift",
+      "suite": "historical-fixture",
+      "passed": true,
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": 1,
+        "testRecall": 1,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 0.5,
+        "textChars": 6265,
+        "dataBytes": 29817,
+        "refreshed": false,
+        "structuredBytes": 29817,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": true
+      }
+    },
+    {
+      "id": "historical-fixture-target-led-broad-dirty",
+      "suite": "historical-fixture",
+      "passed": true,
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": null,
+        "testRecall": 1,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 0.5,
+        "textChars": 4146,
+        "dataBytes": 12311,
+        "refreshed": false,
+        "structuredBytes": 12311,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": false
+      }
+    }
+  ],
+  "generatedAt": "2026-06-10",
+  "codexaVersion": "0.2.0"
+}

@@ -37,7 +37,13 @@ scope. That shapes how this repo works:
 
 Codexa requires Node.js 22 or newer.
 
-Current checkout setup:
+Install from npm:
+
+```bash
+npm install -g @mirnoorata/codexa
+```
+
+Or work from a checkout:
 
 ```bash
 git clone https://github.com/mirnoorata/codexa.git
@@ -61,15 +67,20 @@ entry that lets Codex discover the Codexa MCP server automatically. Useful flags
 supports `enabled_tools` first), and `--agents-md` (opt-in) writes a managed Codexa
 workflow block into the repo's `AGENTS.md`.
 
-The package metadata targets `@mirnoorata/codexa` and the installed command is
-`codexa`. If the npm registry does not have the package yet, use the checkout
-setup above. After publication, the intended install path is:
+The installed command is `codexa`, and the server can also run ad hoc:
 
 ```bash
-npm install -g @mirnoorata/codexa
-codexa init /path/to/project
 npx -y @mirnoorata/codexa serve /path/to/project --auto-refresh
 ```
+
+Codexa is also listed in the official MCP registry as
+`io.github.mirnoorata/codexa` for MCP clients that discover servers there.
+
+Token discipline is built in: every tool description states its typical output
+cost, structured results are budget-compacted with truncation records naming
+dropped fields, hosts with small MCP result limits can set
+`CODEXA_MCP_STRUCTURED_BUDGET_BYTES`, and the big retrieval tools accept
+`responseFormat: "concise"` for a summary-tier packet.
 
 ## The Everyday Workflow
 
@@ -519,7 +530,21 @@ node dist/cli.js eval /path/to/project --suite all --seed codexa-v1-benchmark
 The eval scores structured query data, not prose. It compares Codexa packets
 against raw `rg`/`git status` baselines, tracks recall/precision/test
 recommendations/context size, and can run ranking experiments without changing
-production ranking.
+production ranking. A scenario fails outright if the raw-grep baseline does the
+job better.
+
+Measured results for v0.2.0 (seed `codexa-v020-release`, full suite, archived
+in [`reports/benchmarks/v0.2.0-eval.json`](reports/benchmarks/v0.2.0-eval.json)):
+
+| Metric | Result |
+| --- | --- |
+| Scenarios passed | 20/20 (2 project, 12 synthetic anti-cheat, 6 historical fixture) |
+| File recall (mean) | 1.00 |
+| Precision@k (mean) | 1.00 |
+| Test recall (mean) | 1.00 |
+| Scenarios where raw `rg`/`git` beat Codexa | 0 |
+| Packet size vs. raw baseline output (mean) | 0.66x |
+| Over-budget packets | 0 |
 
 Do not update public benchmark claims without rerunning the eval on the current
 checkout and current target.
