@@ -126,7 +126,9 @@ MCP entry, writes/updates the SessionStart and edit-loop hooks, and indexes the 
 `--no-index` is passed. `--tools core` writes an `enabled_tools` allowlist exposing only the
 primary-loop tools (plus `impact` and `freshness`) to cut per-turn schema token cost; confirm
 your Codex CLI version supports `enabled_tools` before relying on the core profile. `--agents-md`
-(opt-in) writes a managed Codexa workflow block into the repo's `AGENTS.md`. After `codexa init`,
+(opt-in) writes a managed Codexa workflow block into the repo's `AGENTS.md` for Codex, and
+`--claude-md` (opt-in) writes the same managed block into `CLAUDE.md` for Claude Code; both share
+one fail-closed managed-doc writer that aborts on unbalanced markers. After `codexa init`,
 future Codex sessions should only need `focus on <repo>`; Codexa is discovered from the project
 `.codex` config.
 `index` writes `.codex/codebase/*` inside the target repo. `watch` keeps those
@@ -486,7 +488,7 @@ Codexa generates only this minimal artifact set:
 .codex/codebase/playbooks/<module-id>.md
 ```
 
-Artifacts include ranked read-first lists, Python route/job/test hints where detected, provenance paths/line references where possible, and stale/dirty warnings. Codexa does not write to `AGENTS.md` unless `codexa init --agents-md` is explicitly requested, and then only inside its clearly-marked managed block (init aborts if the markers are unbalanced).
+Artifacts include ranked read-first lists, Python route/job/test hints where detected, provenance paths/line references where possible, and stale/dirty warnings. Codexa does not write to `AGENTS.md` or `CLAUDE.md` unless `codexa init --agents-md` / `--claude-md` is explicitly requested, and then only inside its clearly-marked managed block (init aborts if the markers are unbalanced).
 
 Playbooks are generated from facts, not hand-written wiki content. Each module
 playbook stays short and includes invariants, read-first files, risky boundaries,
