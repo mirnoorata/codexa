@@ -43,6 +43,13 @@ export type McpOptionalQueryInput = Record<string, unknown> & {
 type McpToolContext = string | { toolName: string; input?: Record<string, unknown>; autoRecord?: boolean };
 type ChangeType = "style" | "api" | "behavior" | "rename" | "delete" | "unknown";
 
+const responseFormatSchema = {
+  responseFormat: z
+    .enum(["concise", "detailed"])
+    .optional()
+    .describe("concise compacts the packet to the summary tier under a small byte budget; detailed (default) returns the full packet")
+} satisfies z.ZodRawShape;
+
 interface McpToolDefinition<InputSchema extends ZodRawShapeCompat> {
   name: McpToolName;
   inputSchema: InputSchema;
@@ -205,13 +212,18 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
         patterns: z.array(z.string().min(1)).max(RAW_SEARCH_EXPLICIT_PATTERN_LIMIT).optional(),
         limit: z.number().int().positive().max(50).optional(),
         includeRaw: z.boolean().optional(),
+        ...responseFormatSchema,
         ...semanticQuerySchema
       },
       outputSchema,
       annotations: sourceContext
     },
     async (input) =>
-      runTool((session) => searchQuery(session, { query: input.query, patterns: input.patterns, limit: input.limit ?? 12, includeRaw: input.includeRaw ?? true }, toolQueryOptions(input)), "search")
+      runTool((session) => searchQuery(session, { query: input.query, patterns: input.patterns, limit: input.limit ?? 12, includeRaw: input.includeRaw ?? true }, toolQueryOptions(input)), {
+        toolName: "search",
+        input,
+        autoRecord: false
+      })
   );
 
   defineTool(
@@ -262,7 +274,8 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
         file: z.string().optional(),
         symbol: z.string().optional(),
         changeType: changeTypeSchema.optional(),
-        depth: z.number().int().min(1).max(3).optional()
+        depth: z.number().int().min(1).max(3).optional(),
+        ...responseFormatSchema
       },
       outputSchema,
       annotations: memoryWrite
@@ -273,11 +286,11 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
   defineTool(
     "diff_impact",
     {
-      inputSchema: {},
+      inputSchema: { ...responseFormatSchema },
       outputSchema,
       annotations: sourceContext
     },
-    async () => runTool((session) => diffImpactQuery(session, queryOptions), "diff_impact")
+    async (input) => runTool((session) => diffImpactQuery(session, queryOptions), { toolName: "diff_impact", input, autoRecord: false })
   );
 
   defineTool(
@@ -311,6 +324,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
         tokenBudget: z.number().int().min(500).max(12000).optional(),
         limit: z.number().int().positive().max(40).optional(),
         includeSnippets: z.boolean().optional(),
+        ...responseFormatSchema,
         ...semanticQuerySchema,
         ...lspQuerySchema
       },
@@ -333,6 +347,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
         tokenBudget: z.number().int().min(500).max(12000).optional(),
         limit: z.number().int().positive().max(40).optional(),
         includeSnippets: z.boolean().optional(),
+        ...responseFormatSchema,
         ...semanticQuerySchema,
         ...lspQuerySchema
       },
@@ -492,6 +507,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
         saveSnapshot: z.boolean().optional(),
         taskId: z.string().optional(),
         followCandidate: z.string().min(1).max(160).optional(),
+        ...responseFormatSchema,
         ...semanticQuerySchema,
         ...lspQuerySchema
       },
