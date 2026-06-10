@@ -91,7 +91,7 @@ jobs:
 
       - name: Upload benchmark data
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: codexa-hot-path-benchmark
           path: .codex/cache/codexa-benchmarks/latest.json
