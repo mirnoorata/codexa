@@ -119,7 +119,10 @@ async function postEditReviewQueryInternal(
           .filter((entry) => !plannedScopeSet.has(entry.path) && !(entry.oldPath && plannedScopeSet.has(entry.oldPath)))
           .map((entry) => entry.path)
       : [];
-  const plannedButUntouchedFiles = snapshot ? plannedScope.filter((filePath) => !editPaths.includes(filePath) && !currentDirtyPaths.includes(filePath)) : [];
+  const renamedAwayPaths = new Set(changedSinceSnapshot.flatMap((entry) => (entry.oldPath ? [entry.oldPath] : [])));
+  const plannedButUntouchedFiles = snapshot
+    ? plannedScope.filter((filePath) => !editPaths.includes(filePath) && !currentDirtyPaths.includes(filePath) && !renamedAwayPaths.has(filePath))
+    : [];
   const headChanged = Boolean(snapshot && snapshot.dirtyBaseline.headCommit !== freshness.headCommit);
   const task = input.task ?? snapshot?.task ?? "Post-edit review";
   const effectiveTaskId = snapshot?.taskId ?? loadedSnapshot.latestTaskId ?? input.taskId;

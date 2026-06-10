@@ -1233,6 +1233,7 @@ async function contextSnippets(
 ): Promise<string[]> {
   const snippets: string[] = [];
   const used = new Set<string>();
+  const unreadableFiles = new Set<string>();
   const add = async (filePath: string, line: number, reason: string) => {
     if (snippets.length >= Math.min(10, limit)) {
       return;
@@ -1243,8 +1244,15 @@ async function contextSnippets(
     }
     used.add(key);
     const snippet = await readSnippet(repoRoot, filePath, line, 3);
-    if (snippet) {
-      snippets.push(`- ${filePath}:${line} ${reason}\n${snippet}`);
+    if ("unreadable" in snippet) {
+      if (!unreadableFiles.has(filePath)) {
+        unreadableFiles.add(filePath);
+        snippets.push(`- ${filePath}:${line} ${reason}\n  <snippet unavailable: ${snippet.unreadable}>`);
+      }
+      return;
+    }
+    if (snippet.text) {
+      snippets.push(`- ${filePath}:${line} ${reason}\n${snippet.text}`);
     }
   };
 
@@ -1330,17 +1338,24 @@ async function sessionMemoryPreview(input: {
   }
 }
 
-async function readSnippet(repoRoot: string, filePath: string, centerLine: number, radius: number): Promise<string> {
+async function readSnippet(
+  repoRoot: string,
+  filePath: string,
+  centerLine: number,
+  radius: number
+): Promise<{ text: string } | { unreadable: string }> {
   try {
     const source = await fs.readFile(path.join(repoRoot, filePath), "utf8");
     const lines = source.split(/\r?\n/);
     const start = Math.max(1, centerLine - radius);
     const end = Math.min(lines.length, centerLine + radius);
-    return lines
+    const text = lines
       .slice(start - 1, end)
       .map((line, index) => `  ${String(start + index).padStart(4, " ")} | ${line.slice(0, 180)}`)
       .join("\n");
-  } catch {
-    return "";
+    return { text };
+  } catch (error) {
+    const code = (error as NodeJS.ErrnoException)?.code;
+    return { unreadable: typeof code === "string" ? code : "ERR" };
   }
 }
