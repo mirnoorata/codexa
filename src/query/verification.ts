@@ -17,6 +17,7 @@ import type {
 import { uniqueSorted } from "../util.js";
 import { wasTestRun } from "./tests.js";
 import {
+  hasBalancedQuotes,
   hasNonRunningCommandArg,
   hasNonRunningJavaScriptTestArg,
   hasNonRunningPythonTestArg,
@@ -25,8 +26,10 @@ import {
   segmentTruthiness,
   shellQuote,
   shellWrappedCommand,
+  shellWrapperBodyIsAmbiguous,
   shellWords,
   splitShellSequence,
+  stripCommandSubstitutions,
   stripLeadingEnvironment,
   stripPackageManagerFlags,
   stripQuotes,
@@ -34,6 +37,15 @@ import {
   type ShellControlOperator,
   type ShellTruthiness
 } from "./verification/shell.js";
+import { commandNeedsFullMaskingAnalysis, segmentMasksExit, stripFlowPrefix } from "./verification/masking.js";
+import {
+  isNonCompilingTscCommand,
+  NON_COMPILING_TSC_FLAG,
+  scriptBodyIsNonCompilingTsc,
+  scriptNameCreditUnsafe,
+  scriptNameTrustUnsafe,
+  scriptToolEvidence
+} from "./verification/script-credit.js";
 
 interface PackageScript {
   packageRoot: string;
@@ -46,6 +58,10 @@ interface ParsedSegment {
   cwd: string;
   text: string;
   operator: ShellControlOperator;
+  // A `cd` segment: consumed for cwd tracking and never analyzed as a runner,
+  // but kept in the list because `cd` exits 0 and so can mask a preceding
+  // runner's failure (`pytest ; cd foo`) — segmentMasksExit must see it.
+  cd?: boolean;
 }
 
 interface CoverageAddInput {
@@ -420,6 +436,9 @@ function isRepoPackageRoot(value: string | undefined): value is string {
 
 function deriveCommandEnvelope(command: string, initialCwd: string, ctx: CommandEnvelopeContext): Partial<VerificationCommandEnvelope> {
   for (const segment of splitSimpleCommand(command, initialCwd, ctx.repoRoot)) {
+    if (segment.cd) {
+      continue;
+    }
     const derived = deriveSegmentEnvelope(segment.text, segment.cwd, ctx);
     if (derived.packageManager || derived.scriptName || (derived.args?.length ?? 0) > 0 || derived.workspace) {
       return derived;
@@ -515,6 +534,14 @@ function analyzeCommandEnvelope(
   if (envelope.source !== "reported" || envelope.scopeStatus !== "repo" || !envelope.packageManager) {
     return false;
   }
+  // The reported-envelope shortcut derives coverage from the matched runner
+  // segment and would miss a trailing `|| true` / `| tee` / `&` that masks it,
+  // or a masking operator hidden inside a shell wrapper's quoted body that a
+  // top-level scan cannot see. Defer to analyzeCommand, which unwraps and
+  // applies precise per-segment masking plus a fail-closed quote-balance check.
+  if (commandNeedsFullMaskingAnalysis(commandText)) {
+    return false;
+  }
   if (!reportedEnvelopeMatchesCommand(envelope, commandText, ctx)) {
     ctx.addCoverage({
       kind: "unknown",
@@ -547,6 +574,10 @@ function analyzeCommandEnvelope(
     return true;
   }
   if (manager === "tsc" || scriptName === "tsc") {
+    if (args.some((arg) => NON_COMPILING_TSC_FLAG.test(arg))) {
+      ctx.addCoverage({ kind: "unknown", command: commandText, source: "reported tsc envelope is a non-compiling invocation", confidence: "heuristic", scope: cwd, details: args });
+      return true;
+    }
     ctx.addCoverage({ kind: "typescript-syntax", command: commandText, source: "reported command envelope tsc", scope: cwd, details: args });
     return true;
   }
@@ -854,22 +885,101 @@ function analyzeCommand(
 ): void {
   let cwd = initialCwd;
   let chainTruthiness: ShellTruthiness = "unknown";
-  let skipUntilFi = false;
-  for (const segment of splitSimpleCommand(command, cwd, ctx.repoRoot)) {
+  // Statically-dead `if false` bodies are skipped entirely. The counter tracks
+  // nested `if`s inside the dead branch so an inner `fi` cannot end the skip.
+  let deadIfDepth = 0;
+  // Compounds whose exit decouples from the commands inside them: a runner in
+  // the body of `if <unknown-cond>; then ...; fi`, `while ...; done`, or
+  // `case ...; esac` may never run while the construct still exits 0, so
+  // coverage inside one is downgraded to unknown. EVERY compound pushes an
+  // entry (an `if true` pushes a non-masking one) so each terminator pops its
+  // own opener and an inner `fi` can never drain an outer compound's entry.
+  // Openers are detected after stripping leading flow keywords, so a nested
+  // opener glued behind `then`/`do`/`else` (`then if b`) still pushes.
+  // Each entry restores chainTruthiness at its pop: segments inside a masked or
+  // dead compound body may never run, so a truthiness they set must not govern
+  // `&&`/`||` short-circuits after the compound closes.
+  const compoundStack: Array<{ terminator: string; masks: boolean; restoreTruthiness: ShellTruthiness }> = [];
+  const insideMaskingCompound = () => compoundStack.some((entry) => entry.masks);
+  const segments = splitSimpleCommand(command, cwd, ctx.repoRoot);
+  for (let i = 0; i < segments.length; i += 1) {
+    const segment = segments[i];
     cwd = segment.cwd;
     const words = stripLeadingEnvironment(shellWords(segment.text));
-    if (skipUntilFi) {
-      if (words.includes("fi")) {
-        skipUntilFi = false;
+    const openerWords = stripFlowPrefix(words);
+    // A glued group-closer (`done)`, `fi; }`) must still match its terminator,
+    // or a subshell-wrapped compound would never pop and over-mask what follows.
+    // A glued closer only counts when it stands alone (`fi)` from a wrapped
+    // `(if ...; fi)`); with trailing words it is a case-pattern label, not a
+    // terminator.
+    const terminatorWord = words.length === 1 ? words[0]?.replace(/[)}]+$/u, "") : words[0];
+    if (deadIfDepth > 0) {
+      if (openerWords[0] === "if") {
+        deadIfDepth += 1;
+      } else if (terminatorWord === "fi") {
+        deadIfDepth -= 1;
+        if (deadIfDepth === 0) {
+          // `if false; then ...; fi` completes with exit 0 (no branch taken).
+          chainTruthiness = "true";
+        }
       }
       continue;
     }
-    const ifTruthiness = ifConditionTruthiness(words);
-    if (ifTruthiness) {
-      if (ifTruthiness === "false") {
-        skipUntilFi = true;
+    if (segment.cd) {
+      // A cd in a dead chain position never runs — keep the known truthiness so
+      // the short-circuit still skips what follows (`false && cd x && npm test`).
+      if ((segment.operator === "&&" && chainTruthiness === "false") || (segment.operator === "||" && chainTruthiness === "true")) {
+        continue;
       }
-      chainTruthiness = ifTruthiness;
+      chainTruthiness = "unknown";
+      continue;
+    }
+    const top = compoundStack[compoundStack.length - 1];
+    if (top && terminatorWord === top.terminator) {
+      compoundStack.pop();
+      chainTruthiness = top.restoreTruthiness;
+      continue;
+    }
+    // An `elif` marks the rest of its `if` as conditionally-reached even when
+    // the original condition was statically true, so the enclosing entry must
+    // mask from here on.
+    if (words[0] === "elif" && top?.terminator === "fi") {
+      top.masks = true;
+      continue;
+    }
+    // A compound opener in a dead chain position (`true || if ...`) never runs
+    // at all, and one in a SPECULATIVE `||` position (`git fetch || if true;
+    // then pytest; fi`) may never run — either way its whole body must mask
+    // regardless of condition truthiness, and the chain state after it is the
+    // saved dead value or unknown respectively. A LIVE compound that completes
+    // restores "true": in a report whose overall exit is 0, a completed
+    // if/while/case either exited 0 or the report would be nonzero — so
+    // `if x; then echo; fi || pytest` provably never ran pytest.
+    const deadChainPosition = (segment.operator === "&&" && chainTruthiness === "false") || (segment.operator === "||" && chainTruthiness === "true");
+    const speculativePosition = !deadChainPosition && segment.operator === "||" && chainTruthiness !== "false";
+    const conditionallyReached = deadChainPosition || speculativePosition;
+    const restoreTruthiness: ShellTruthiness = deadChainPosition ? chainTruthiness : speculativePosition ? "unknown" : "true";
+    const ifTruthiness = ifConditionTruthiness(openerWords);
+    if (ifTruthiness) {
+      if (conditionallyReached) {
+        compoundStack.push({ terminator: "fi", masks: true, restoreTruthiness });
+      } else if (ifTruthiness === "false") {
+        deadIfDepth = 1;
+      } else {
+        compoundStack.push({ terminator: "fi", masks: ifTruthiness === "unknown", restoreTruthiness });
+      }
+      if (!conditionallyReached) {
+        chainTruthiness = ifTruthiness;
+      }
+      continue;
+    }
+    const opener = openerWords[0];
+    if (opener === "while" || opener === "until" || opener === "for" || opener === "select") {
+      compoundStack.push({ terminator: "done", masks: true, restoreTruthiness });
+      continue;
+    }
+    if (opener === "case") {
+      compoundStack.push({ terminator: "esac", masks: true, restoreTruthiness });
       continue;
     }
     if (segment.operator === "&&" && chainTruthiness === "false") {
@@ -878,8 +988,23 @@ function analyzeCommand(
     if (segment.operator === "||" && chainTruthiness === "true") {
       continue;
     }
-    analyzeSegment(segment.text, cwd, chain, ctx);
-    chainTruthiness = segmentTruthiness(segment.text);
+    // This segment's exit code is masked if a later segment runs on its failure
+    // and overrides the aggregate exit (`|| X`, `; X`, `| X`, `& X`), or if it
+    // sits inside an open exit-decoupling compound. `&&` is safe (a failure
+    // short-circuits and stays the exit). A `||` FALLBACK only provably ran
+    // when the left side provably failed — `git fetch || pytest` with exit 0
+    // most plausibly means git fetch succeeded and pytest never executed, so an
+    // unknown-truthiness left side downgrades the fallback's coverage. When
+    // masked, downgrade any coverage the segment (and its recursive expansion)
+    // would claim to unknown — the reported exit 0 does not prove this runner
+    // passed.
+    const speculativeFallback: boolean = segment.operator === "||" && chainTruthiness !== "false";
+    const exitMasked = speculativeFallback || insideMaskingCompound() || segments.slice(i + 1).some(segmentMasksExit);
+    analyzeSegment(segment.text, cwd, chain, exitMasked ? maskedCoverageCtx(ctx) : ctx);
+    // A speculative fallback may never have executed, so its literal truthiness
+    // (`|| false`) cannot govern later short-circuits — `cmd || false || pytest`
+    // must not treat the chain as provably failed.
+    chainTruthiness = speculativeFallback ? "unknown" : segmentTruthiness(segment.text);
   }
 }
 
@@ -911,6 +1036,17 @@ function analyzeSegment(
   const commandText = [...chain, segment].join(" -> ");
   const shellWrapped = shellWrappedCommand(words);
   if (shellWrapped) {
+    // The word tokenizer cannot represent nested or escaped quoting, so a
+    // doubly-wrapped command (`sh -c "sh -c '... || true'"`) or an escaped-quote
+    // body (`bash -lc "npm test --grep \"x\" || true"`) unwraps to a mangled,
+    // truncated string whose masking operators are silently lost on
+    // re-tokenization. Fail closed when the unwrap is unbalanced OR the wrapper
+    // body could not be cleanly isolated — we cannot prove the exit was unmasked,
+    // so record unknown rather than crediting a hidden runner.
+    if (!hasBalancedQuotes(shellWrapped) || shellWrapperBodyIsAmbiguous(words)) {
+      ctx.addCoverage({ kind: "unknown", command: commandText, source: "shell-wrapped command with unbalanced quotes (cannot verify exit was unmasked)", confidence: "heuristic", scope: cwd, details: chain });
+      return;
+    }
     analyzeCommand(shellWrapped, cwd, chain, ctx);
     return;
   }
@@ -962,6 +1098,12 @@ function analyzeSegment(
     return;
   }
   if (first === "tsc" || (first === "npx" && effectiveWords[1] === "tsc")) {
+    if (isNonCompilingTscCommand(effectiveWords)) {
+      // tsc --help / --version / --init / --showConfig / --listFilesOnly do not
+      // typecheck; they must not satisfy a TypeScript verification check.
+      ctx.addCoverage({ kind: "unknown", command: commandText, source: "tsc invoked with a non-compiling flag", confidence: "heuristic", scope: cwd, details: chain });
+      return;
+    }
     ctx.addCoverage({ kind: "typescript-syntax", command: commandText, source: "direct tsc command", scope: cwd, details: chain });
     return;
   }
@@ -1000,7 +1142,19 @@ function expandPackageScript(
     return;
   }
   ctx.visitedScripts.add(key);
-  addScriptNameCoverage(script, commandText, ctx);
+  // Name-based coverage (a script named "typecheck"/"build" credits that check)
+  // is only sound when the script body's exit faithfully reflects it. When the
+  // body masks its own exit (`tsc --noEmit || true`, a trailing newline command,
+  // a masked wrapper body), suppress the pre-credit entirely and let the body's
+  // per-segment analysis below be authoritative. When only the NAME cannot be
+  // trusted (a carrier-discarded substitution decides nothing while a carrier
+  // ends the chain, e.g. `export X=$(tsc) && echo passed`), keep the pre-credit
+  // but restrict it to regex evidence on the substitution-stripped body — a
+  // runner the regexes can still see runs outside any substitution and stays
+  // exit-faithful via && short-circuit.
+  if (!scriptNameCreditUnsafe(script.command)) {
+    addScriptNameCoverage(script, commandText, ctx, !scriptNameTrustUnsafe(script.command));
+  }
   const forwardedArgs = forwardedScriptArgs(args);
   const expanded = forwardedArgs.length > 0 ? `${script.command} ${forwardedArgs.map(shellQuote).join(" ")}` : script.command;
   analyzeCommand(expanded, script.packageRoot, [...commandText.split(" -> "), script.source], ctx);
@@ -1010,24 +1164,35 @@ function expandPackageScript(
 function addScriptNameCoverage(
   script: PackageScript,
   commandText: string,
-  ctx: { addCoverage: (coverage: CoverageAddInput) => void }
+  ctx: { addCoverage: (coverage: CoverageAddInput) => void },
+  // When the body's exit cannot vouch for its NAME (scriptNameTrustUnsafe),
+  // only regex evidence on the stripped body may credit — never the name alone.
+  allowNameOnly: boolean
 ): void {
   const lowerName = script.scriptName.toLowerCase();
-  const lowerCommand = script.command.toLowerCase();
-  const hasNoEmit = /(^|\s)--noEmit(\s|$)/u.test(script.command);
-  if ((lowerName === "build" && !hasNoEmit) || /\b(vite\s+build|next\s+build)\b/u.test(lowerCommand) || (/\btsc\b/u.test(lowerCommand) && !hasNoEmit)) {
+  // Tool evidence comes from command-position tokens of the substitution-
+  // stripped body — never a substring scan, so paths (`scripts/run-tsc.mjs`),
+  // env-var names (`TSC=1`), and prose cannot masquerade as invocations, while
+  // `./node_modules/.bin/tsc` still counts via its basename.
+  const evidence = scriptToolEvidence(stripCommandSubstitutions(script.command));
+  // A "typecheck"/"build" script whose body is actually `tsc --help`/`--version`
+  // (etc.) cannot vouch for its NAME. Tool evidence is already per-invocation
+  // (recordToolEvidence skips informational flags), so an unrelated `tsc
+  // --version` in the body does not veto a real `vite build` next to it.
+  const nonCompilingTsc = scriptBodyIsNonCompilingTsc(script.command);
+  if ((allowNameOnly && lowerName === "build" && !nonCompilingTsc && !evidence.tscNoEmit) || evidence.bundlerBuild || evidence.tscCompile) {
     ctx.addCoverage({ kind: "build", command: commandText, source: script.source, scope: script.packageRoot, details: [script.command] });
   }
-  if (lowerName.includes("type") || /\btsc\b/u.test(lowerCommand)) {
+  if ((allowNameOnly && lowerName.includes("type") && !nonCompilingTsc) || evidence.tscCompile || evidence.tscNoEmit) {
     ctx.addCoverage({ kind: "typescript-syntax", command: commandText, source: script.source, scope: script.packageRoot, details: [script.command] });
   }
-  if (lowerName.includes("lint") || /\b(eslint|biome|verify-source-hygiene)\b/u.test(lowerCommand)) {
+  if ((allowNameOnly && lowerName.includes("lint")) || evidence.lint) {
     ctx.addCoverage({ kind: "lint", command: commandText, source: script.source, scope: script.packageRoot, details: [script.command] });
   }
-  if (lowerName.includes("privacy") || /\bverify-public-hygiene\b/u.test(lowerCommand)) {
+  if ((allowNameOnly && lowerName.includes("privacy")) || evidence.privacy) {
     ctx.addCoverage({ kind: "privacy", command: commandText, source: script.source, scope: script.packageRoot, details: [script.command] });
   }
-  if (lowerName.includes("audit") || /\bnpm\s+audit\b/u.test(lowerCommand)) {
+  if ((allowNameOnly && lowerName.includes("audit")) || evidence.audit) {
     ctx.addCoverage({ kind: "audit", command: commandText, source: script.source, scope: script.packageRoot, details: [script.command] });
   }
 }
@@ -1075,6 +1240,31 @@ function addPythonTestCoverage(
   }
 }
 
+type CoverageAnalysisCtx = {
+  index: CodexaIndex;
+  repoRoot: string;
+  scripts: Map<string, PackageScript>;
+  packageRoots: string[];
+  packageNamesByRoot: Map<string, string | undefined>;
+  visitedScripts: Set<string>;
+  addCoverage: (coverage: CoverageAddInput) => void;
+};
+
+// Wrap a ctx so every coverage it would emit is downgraded to `unknown`. Used
+// for a runner segment whose exit is masked; the downgrade propagates through
+// recursive shell-unwrap and package-script expansion because they thread ctx.
+function maskedCoverageCtx(ctx: CoverageAnalysisCtx): CoverageAnalysisCtx {
+  return {
+    ...ctx,
+    addCoverage: (coverage) =>
+      ctx.addCoverage(
+        coverage.kind === "unknown"
+          ? coverage
+          : { kind: "unknown", command: coverage.command, source: `${coverage.source} (exit code masked by a trailing shell operator)`, confidence: "derived", scope: coverage.scope, details: coverage.details }
+      )
+  };
+}
+
 function splitSimpleCommand(command: string, initialCwd: string, repoRoot: string): ParsedSegment[] {
   const segments = splitShellSequence(command);
   const result: ParsedSegment[] = [];
@@ -1083,6 +1273,7 @@ function splitSimpleCommand(command: string, initialCwd: string, repoRoot: strin
     const words = stripLeadingEnvironment(shellWords(segment.text));
     if (words[0] === "cd" && words[1]) {
       cwd = normalizeCwd(words[1], repoRoot);
+      result.push({ cwd, text: segment.text, operator: segment.operator, cd: true });
       continue;
     }
     result.push({ cwd, text: segment.text, operator: segment.operator });
