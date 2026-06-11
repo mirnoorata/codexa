@@ -22,6 +22,11 @@ export interface CacheLockOptions {
 
 const DEFAULT_LOCK_STALE_MS = 120_000;
 const DEFAULT_LOCK_TIMEOUT_MS = 30_000;
+// A live-looking owner is never stolen for a transient stall, but if its
+// heartbeat freezes for this multiple of staleMs it is treated as unrecoverable
+// (wedged holder, or a recycled PID whose new owner does not update this lock's
+// heartbeat) and reclaimed. Far longer than any plausible GC/swap/SIGSTOP pause.
+const HARD_RECLAIM_HEARTBEAT_MULTIPLIER = 8;
 
 export async function acquireCacheLock(options: CacheLockOptions): Promise<() => Promise<void>> {
   const repoRoot = path.resolve(options.repoRoot);
@@ -46,8 +51,7 @@ export async function acquireCacheLock(options: CacheLockOptions): Promise<() =>
       await fs.mkdir(lockDir, { recursive: false });
       await writeLockOwner(ownerPath, owner);
       const heartbeat = setInterval(() => {
-        owner.heartbeatAt = new Date().toISOString();
-        void writeLockOwner(ownerPath, owner).catch(() => undefined);
+        void renewLockOwner(ownerPath, owner).catch(() => undefined);
       }, Math.max(10_000, Math.floor(staleMs / 3)));
       heartbeat.unref?.();
       return async () => {
@@ -75,13 +79,33 @@ async function removeStaleLock(lockDir: string, staleMs: number): Promise<boolea
     const stat = await fs.stat(lockDir);
     const owner = await readLockOwner(ownerPath);
     if (owner) {
+      // Reclaim a lock whose owning process is provably gone. A live process
+      // with a briefly stale heartbeat may merely be stalled (GC, swap,
+      // SIGSTOP, blocked event loop) and resume into its critical section;
+      // stealing it would let two processes hold the lock — the corruption
+      // this lock exists to prevent — so do not reclaim it for a short stall.
       if (!(await lockOwnerStillRunning(owner))) {
-        return claimAndRemoveOwnerLock(lockDir, owner, () => true);
+        return claimAndRemoveOwnerLock(lockDir, owner);
       }
-      if (lockOwnerHeartbeatFresh(owner, staleMs)) {
-        return false;
+      // ...but a lock whose owner.json has not been rewritten far beyond any
+      // plausible pause means the holder is wedged, or the PID was recycled by an
+      // unrelated process not updating this lock. Freshness is measured by the
+      // owner.json file mtime, which every heartbeat bumps (write-temp + rename):
+      // the filesystem sets it on actual write activity, independent of the
+      // holder's clock or heartbeat *content*, so a live, actively-heart-beating
+      // holder is never stolen while a frozen one is reclaimed even if its content
+      // timestamp is future-dated or corrupt. Double-check at claim time so a
+      // holder that refreshed just before our rename keeps the lock.
+      const ceilingMs = staleMs * HARD_RECLAIM_HEARTBEAT_MULTIPLIER;
+      const ownerMtimeMs = await fileMtimeMs(ownerPath);
+      if (ownerMtimeMs !== undefined && Date.now() - ownerMtimeMs > ceilingMs) {
+        const reclaimed = await claimAndRemoveOwnerLock(lockDir, owner, ceilingMs);
+        if (reclaimed) {
+          console.error(`codexa: reclaimed a stuck cache lock (owner pid ${owner.pid}, not refreshed > ${Math.round(ceilingMs / 1000)}s): ${lockDir}`);
+        }
+        return reclaimed;
       }
-      return claimAndRemoveOwnerLock(lockDir, owner, (claimed) => !lockOwnerHeartbeatFresh(claimed, staleMs));
+      return false;
     }
     if (Date.now() - stat.mtimeMs <= staleMs) {
       return false;
@@ -96,7 +120,7 @@ async function removeStaleLock(lockDir: string, staleMs: number): Promise<boolea
   }
 }
 
-async function claimAndRemoveOwnerLock(lockDir: string, expectedOwner: CacheLockOwner, shouldRemove: (owner: CacheLockOwner) => boolean): Promise<boolean> {
+async function claimAndRemoveOwnerLock(lockDir: string, expectedOwner: CacheLockOwner, ceilingMs?: number): Promise<boolean> {
   const ownerPath = path.join(lockDir, "owner.json");
   const claimedOwnerPath = path.join(lockDir, `owner.json.claimed-${process.pid}-${randomUUID()}`);
   try {
@@ -109,8 +133,27 @@ async function claimAndRemoveOwnerLock(lockDir: string, expectedOwner: CacheLock
     await restoreClaimedOwner(ownerPath, claimedOwnerPath);
     return false;
   }
-  if (!shouldRemove(claimed)) {
-    await restoreClaimedOwner(ownerPath, claimedOwnerPath);
+  // For a ceiling reclaim, re-confirm against the claimed file's preserved mtime
+  // (rename keeps it) that the holder really did not refresh within the ceiling.
+  // A holder that rewrote owner.json just before our rename shows a fresh mtime
+  // and must be left alone. The dead-process path passes no ceiling and removes
+  // unconditionally after the token check.
+  if (ceilingMs !== undefined) {
+    const claimedMtimeMs = await fileMtimeMs(claimedOwnerPath);
+    if (claimedMtimeMs === undefined || Date.now() - claimedMtimeMs <= ceilingMs) {
+      await restoreClaimedOwner(ownerPath, claimedOwnerPath);
+      return false;
+    }
+  }
+  // TOCTOU guard: the claim renamed owner.json aside, so ownerPath is now absent.
+  // A holder we mean to reclaim is wedged/dead and writes no heartbeats, so it
+  // stays absent. If a fresh owner.json has reappeared, the holder resumed and
+  // recreated it between the claim and now — abort rather than fs.rm the live
+  // holder's lock dir (which would let two processes hold the lock). The atomic
+  // rename of owner.json is the only thing acting as the claim token; a heartbeat
+  // written after it is reliably observed here because rename is atomic.
+  if (await readLockOwner(ownerPath)) {
+    await fs.rm(claimedOwnerPath, { force: true }).catch(() => undefined);
     return false;
   }
   await fs.rm(lockDir, { recursive: true, force: true });
@@ -129,15 +172,32 @@ async function restoreClaimedOwner(ownerPath: string, claimedOwnerPath: string):
   await fs.rm(claimedOwnerPath, { force: true }).catch(() => undefined);
 }
 
-function lockOwnerHeartbeatFresh(owner: CacheLockOwner, staleMs: number): boolean {
-  const heartbeatMs = Date.parse(owner.heartbeatAt || owner.startedAt);
-  return Number.isFinite(heartbeatMs) && Date.now() - heartbeatMs <= staleMs;
+async function fileMtimeMs(filePath: string): Promise<number | undefined> {
+  try {
+    return (await fs.stat(filePath)).mtimeMs;
+  } catch {
+    return undefined;
+  }
 }
 
 async function writeLockOwner(ownerPath: string, owner: CacheLockOwner): Promise<void> {
   const temp = `${ownerPath}.${process.pid}.${owner.token}.tmp`;
   await fs.writeFile(temp, `${JSON.stringify(owner)}\n`, "utf8");
   await fs.rename(temp, ownerPath);
+}
+
+async function renewLockOwner(ownerPath: string, owner: CacheLockOwner): Promise<void> {
+  // Before renewing, confirm we still own the lock. If owner.json is gone (a
+  // reclaimer renamed it aside to claim a wedged lock) or now holds a different
+  // token, stop renewing: recreating owner.json would race the reclaimer's
+  // pending directory removal and let two processes hold the lock. Combined with
+  // the reclaimer's post-claim live re-read, this closes the resume window.
+  const current = await readLockOwner(ownerPath);
+  if (!current || current.token !== owner.token) {
+    return;
+  }
+  owner.heartbeatAt = new Date().toISOString();
+  await writeLockOwner(ownerPath, owner);
 }
 
 async function readLockOwner(ownerPath: string): Promise<CacheLockOwner | null> {
