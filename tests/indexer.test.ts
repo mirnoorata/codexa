@@ -688,15 +688,77 @@ describe("Codexa indexer", () => {
     expect(artifact).not.toContain("do-not-index-this");
   });
 
-  it("uses metadata hashes for large or non-source dirty files", async () => {
+  it("does not credit a typecheck script whose body is a non-compiling tsc invocation", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-noncompiling-typecheck-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdir(path.join(repo, "src"), { recursive: true });
+    await writeFile(path.join(repo, "package.json"), JSON.stringify({ scripts: { typecheck: "tsc --help", build: "tsc --version" } }, null, 2), "utf8");
+    await writeFile(path.join(repo, "src/app.ts"), "export const app = () => 1\n", "utf8");
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t.io", "commit", "-m", "fixture"], { cwd: repo, stdio: "ignore" });
+    await buildIndex({ repoRoot: repo });
+    await changePlanQuery(repo, { task: "touch app", files: ["src/app.ts"], changeType: "behavior", diff: false, limit: 6, saveSnapshot: true, taskId: "nc-tsc" }, { autoRefresh: false });
+    await writeFile(path.join(repo, "src/app.ts"), "export const app = () => 2\n", "utf8");
+
+    const review = await postEditReviewQuery(repo, { taskId: "nc-tsc", ranCommands: ["npm run typecheck", "npm run build"] }, { autoRefresh: true });
+    const kinds = (review.data as { verificationCoverage: Array<{ kind: string }> }).verificationCoverage.map((e) => e.kind);
+    expect(kinds).not.toContain("typescript-syntax");
+    expect(kinds).not.toContain("build");
+  });
+
+  it("refuses the basename test-target fallback when the basename is ambiguous", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-ambiguous-test-target-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdir(path.join(repo, "pkg_a"), { recursive: true });
+    await mkdir(path.join(repo, "pkg_b"), { recursive: true });
+    await mkdir(path.join(repo, "tests"), { recursive: true });
+    // Two source files share a basename; the top-level test imports neither.
+    await writeFile(path.join(repo, "pkg_a/handlers.py"), "def handle():\n    return 1\n");
+    await writeFile(path.join(repo, "pkg_b/handlers.py"), "def handle():\n    return 2\n");
+    await writeFile(path.join(repo, "tests/test_handlers.py"), "def test_handlers():\n    assert True\n");
+    // A uniquely-named source remains linkable via the basename fallback.
+    await writeFile(path.join(repo, "pkg_a/widget.py"), "def widget():\n    return 1\n");
+    await writeFile(path.join(repo, "tests/test_widget.py"), "def test_widget():\n    assert True\n");
+    // A scoped test path uniquely suffix-matches one of the duplicate basenames.
+    await mkdir(path.join(repo, "src/api"), { recursive: true });
+    await mkdir(path.join(repo, "src/admin"), { recursive: true });
+    await mkdir(path.join(repo, "tests/api"), { recursive: true });
+    await writeFile(path.join(repo, "src/api/scoped.py"), "def scoped():\n    return 1\n");
+    await writeFile(path.join(repo, "src/admin/scoped.py"), "def scoped():\n    return 2\n");
+    await writeFile(path.join(repo, "tests/api/test_scoped.py"), "def test_scoped():\n    assert True\n");
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t.io", "commit", "-m", "fixture"], { cwd: repo, stdio: "ignore" });
+
+    const index = await buildIndex({ repoRoot: repo, writeArtifacts: false });
+    const handlerEdges = index.testEdges.filter((edge) => edge.path === "tests/test_handlers.py" && edge.targetPath?.endsWith("handlers.py"));
+    expect(handlerEdges).toEqual([]);
+    expect(index.testEdges.some((edge) => edge.path === "tests/test_widget.py" && edge.targetPath === "pkg_a/widget.py")).toBe(true);
+    // Scoped suffix match binds to the in-scope source, not the other package's.
+    expect(index.testEdges.some((edge) => edge.path === "tests/api/test_scoped.py" && edge.targetPath === "src/api/scoped.py")).toBe(true);
+    expect(index.testEdges.some((edge) => edge.path === "tests/api/test_scoped.py" && edge.targetPath === "src/admin/scoped.py")).toBe(false);
+  });
+
+  it("content-hashes dirty files including non-source and multi-MB ones (streamed)", async () => {
     const repo = await createFixtureRepo();
     await buildIndex({ repoRoot: repo });
 
-    await writeFile(path.join(repo, "large-output.bin"), Buffer.alloc(2 * 1024 * 1024 + 1, "a"));
+    // A multi-MB binary is now stream-hashed (under the raised per-file cap), so
+    // it gets a content hash rather than a collision-prone metadata hash.
+    await writeFile(path.join(repo, "large-output.bin"), Buffer.alloc(3 * 1024 * 1024 + 1, "a"));
+    // Non-source config file: must be content-hashed so a same-length edit in the
+    // same mtime tick still changes the hash (no silent drift reconciliation).
+    await writeFile(path.join(repo, "app.yaml"), "flag: on\n");
     const status = await statusQuery(repo);
 
     expect(status.freshness.dirtyFiles).toContain("large-output.bin");
-    expect(status.freshness.dirtyFileHashes["large-output.bin"]).toMatch(/^metadata:/u);
+    expect(status.freshness.dirtyFileHashes["large-output.bin"]).toMatch(/^[0-9a-f]{40}$/u);
+    expect(status.freshness.dirtyFileHashes["app.yaml"]).toMatch(/^[0-9a-f]{40}$/u);
+
+    // A same-length content change yields a different content hash.
+    await writeFile(path.join(repo, "app.yaml"), "flag: no\n");
+    const after = await statusQuery(repo);
+    expect(after.freshness.dirtyFileHashes["app.yaml"]).toMatch(/^[0-9a-f]{40}$/u);
+    expect(after.freshness.dirtyFileHashes["app.yaml"]).not.toBe(status.freshness.dirtyFileHashes["app.yaml"]);
   });
 
   it("keeps high-severity placeholder findings in the bounded placeholder map", async () => {
@@ -3085,14 +3147,299 @@ describe("Codexa indexer", () => {
     const fallbackShellFlow = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["false || npm test"] }, { autoRefresh: false });
     expect((fallbackShellFlow.data as { testsNotRun: unknown[] }).testsNotRun).toEqual([]);
 
+    // A pipe without pipefail returns the last stage's (tee's) exit, masking a
+    // test failure, so a piped runner must NOT count as covering (fail-closed).
     const pipedTestOutput = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["npm test | tee /tmp/codexa-test.log"] }, { autoRefresh: false });
-    expect((pipedTestOutput.data as { testsNotRun: unknown[] }).testsNotRun).toEqual([]);
+    expect((pipedTestOutput.data as { testsNotRun: Array<{ path: string }> }).testsNotRun.map((test) => test.path)).toContain("tests/shared.test.ts");
+
+    // A trailing `|| true` / `;` / `&` (background) masks a test failure (the
+    // aggregate exit code is forced/decoupled), so it must NOT count as covering
+    // — even when hidden inside a shell wrapper or a package-script body.
+    const maskCases = ["npm test || true", "npm test ; echo ok", "npm test &", "npm test & echo bg", "npm test&", "npm test& echo bg", "npm test&npm run lint", 'sh -c "npm test || true"', 'bash -lc "npm test || true"'];
+    for (const command of maskCases) {
+      const masked = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: [command] }, { autoRefresh: false });
+      expect((masked.data as { testsNotRun: Array<{ path: string }> }).testsNotRun.map((test) => test.path)).toContain("tests/shared.test.ts");
+    }
+
+    // An escaped-quote wrapper body cannot be cleanly tokenized; the unwrap would
+    // truncate and silently drop the trailing `|| true`, so it must fail closed.
+    const escapedWrapperMask = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ['bash -lc "npm test -- --grep \\"shared\\" || true"'] }, { autoRefresh: false });
+    expect((escapedWrapperMask.data as { testsNotRun: Array<{ path: string }> }).testsNotRun.map((test) => test.path)).toContain("tests/shared.test.ts");
+
+    // `|| false` / `|| exit 1` re-raise a failure, so they do NOT mask — the
+    // runner stays exit-faithful and credited.
+    for (const command of ["npm test || false", "npm test || exit 1"]) {
+      const exitFaithful = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: [command] }, { autoRefresh: false });
+      expect((exitFaithful.data as { testsNotRun: unknown[] }).testsNotRun).toEqual([]);
+    }
+
+    // A package script whose body masks its own exit must not be credited via the
+    // script-name heuristic; the masked body is authoritative. Covers `|| true`, a
+    // command substitution that discards the runner exit (`echo $(tsc ...)`), a
+    // trailing newline command (`tsc ...\nexit 0`), and an `if RUNNER; then ...; fi`
+    // compound (always exits 0 regardless of the runner's result).
+    // aposttypecheck: an apostrophe inside double quotes must not flip quote
+    // state and leak the substitution past the stripper (the runner exit is
+    // discarded by echo). condtypecheck: a runner inside `if <unknown>; then ...`
+    // may never run while the script exits 0. exporttypecheck: `export X=$(tsc)`
+    // returns export's own success, discarding the substitution exit.
+    // bgnltypecheck: a background `&` followed by a newline must keep its
+    // masking marker. yarnechobuild/pnpmechotypecheck: package-manager script
+    // invocations inside a carrier-discarded substitution poison the name like
+    // the bare-runner forms. exectypecheck: transparent exec-prefixes (exec/
+    // nohup/timeout...) do not hide the carrier.
+    for (const script of ["maskedtypecheck", "subtypecheck", "newlinetypecheck", "iftypecheck", "aposttypecheck", "condtypecheck", "exporttypecheck", "bgnltypecheck", "yarnechobuild", "pnpmechotypecheck", "exectypecheck"]) {
+      const maskedScriptBody = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: [`npm run ${script}`] }, { autoRefresh: false });
+      const kinds = (maskedScriptBody.data as { verificationCoverage: Array<{ kind: string }> }).verificationCoverage.map((e) => e.kind);
+      expect(kinds).not.toContain("typescript-syntax");
+      expect(kinds).not.toContain("build");
+    }
+
+    // A non-matching `case` (or empty `for`) exits 0 without running its body, so
+    // a build wrapped in one must not be name-credited.
+    const caseBuildScript = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["npm run casebuild"] }, { autoRefresh: false });
+    expect((caseBuildScript.data as { verificationCoverage: Array<{ kind: string }> }).verificationCoverage.map((e) => e.kind)).not.toContain("build");
+
+    // ...but a CLEAN shell-wrapped script body keeps its name-based credit (the
+    // body's exit faithfully reflects the named check), so it is not over-blocked.
+    const cleanWrappedScript = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["npm run wrappedbuild"] }, { autoRefresh: false });
+    expect((cleanWrappedScript.data as { verificationCoverage: Array<{ kind: string }> }).verificationCoverage.map((e) => e.kind)).toContain("build");
+
+    // A substitution used as a mere ARGUMENT stays exit-faithful (`vite build
+    // --define X=$(git rev-parse HEAD)`), so the build credit is not over-blocked.
+    const defineBuildScript = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["npm run definebuild"] }, { autoRefresh: false });
+    expect((defineBuildScript.data as { verificationCoverage: Array<{ kind: string }> }).verificationCoverage.map((e) => e.kind)).toContain("build");
+
+    // A carrier with a substitution that is NOT the exit-deciding (final)
+    // command must not suppress the real runner chained after it.
+    const exportBuildScript = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["npm run exportbuild"] }, { autoRefresh: false });
+    expect((exportBuildScript.data as { verificationCoverage: Array<{ kind: string }> }).verificationCoverage.map((e) => e.kind)).toContain("build");
+
+    // ...but when a NON-RUNNER decides the exit while the named check hides in a
+    // discarded substitution (`export X=$(tsc) && echo passed` always exits 0),
+    // the name credit must be suppressed.
+    const exportEchoScript = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["npm run exportechotypecheck"] }, { autoRefresh: false });
+    expect((exportEchoScript.data as { verificationCoverage: Array<{ kind: string }> }).verificationCoverage.map((e) => e.kind)).not.toContain("typescript-syntax");
+
+    // A carrier-final body with NO substitution stays faithful: `next build &&
+    // echo done` short-circuits on failure, so the runner keeps its exit.
+    const echoDoneBuildScript = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["npm run echodonebuild"] }, { autoRefresh: false });
+    expect((echoDoneBuildScript.data as { verificationCoverage: Array<{ kind: string }> }).verificationCoverage.map((e) => e.kind)).toContain("build");
+
+    // ...and a substitution that is an ARGUMENT to a real runner does not make a
+    // trailing echo unsafe — `vite build --define X=$(git rev) && echo ok` keeps
+    // the runner's failure via && short-circuit.
+    const defineEchoBuildScript = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["npm run defineechobuild"] }, { autoRefresh: false });
+    expect((defineEchoBuildScript.data as { verificationCoverage: Array<{ kind: string }> }).verificationCoverage.map((e) => e.kind)).toContain("build");
+
+    // Regex evidence on the stripped body survives an untrusted NAME: a real
+    // runner outside any substitution stays exit-faithful via && even when the
+    // chain ends in a status echo that carries a substitution.
+    for (const script of ["buildechohash", "exportnextecho"]) {
+      const regexEvidence = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: [`npm run ${script}`] }, { autoRefresh: false });
+      expect((regexEvidence.data as { verificationCoverage: Array<{ kind: string }> }).verificationCoverage.map((e) => e.kind)).toContain("build");
+    }
+
+    // ...while the same launder shape hidden inside a shell wrapper still cannot
+    // ride the script NAME into typescript credit.
+    const wrappedExportEcho = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["npm run wrappedexporttypecheck"] }, { autoRefresh: false });
+    expect((wrappedExportEcho.data as { verificationCoverage: Array<{ kind: string }> }).verificationCoverage.map((e) => e.kind)).not.toContain("typescript-syntax");
+
+    // Carrier aliases do not bypass the name-trust gate: `command echo $(tsc)`
+    // runs echo and discards tsc's exit just like the bare form.
+    const aliasCarrier = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["npm run aliastypecheck"] }, { autoRefresh: false });
+    expect((aliasCarrier.data as { verificationCoverage: Array<{ kind: string }> }).verificationCoverage.map((e) => e.kind)).not.toContain("typescript-syntax");
+
+    // A trailing REAL runner cannot whitewash a discarded check: in
+    // `echo $(tsc) && next build` the tsc exit is thrown away no matter what
+    // ends the chain, so the typescript name credit is suppressed — while the
+    // visible `next build` keeps its own regex-evidence build credit.
+    const echoNextTypecheck = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["npm run echonextypecheck"] }, { autoRefresh: false });
+    const echoNextKinds = (echoNextTypecheck.data as { verificationCoverage: Array<{ kind: string }> }).verificationCoverage.map((e) => e.kind);
+    expect(echoNextKinds).not.toContain("typescript-syntax");
+    expect(echoNextKinds).toContain("build");
+
+    // Tool evidence comes from command-position tokens, not substrings: a path
+    // containing "tsc" (`scripts/run-tsc.mjs`), an env-var named TSC, or a
+    // tsc-in-substitution-plus-unknown-checker body must credit nothing, while
+    // a real tsc behind a path (`./node_modules/.bin/tsc`) or a brace-grouped
+    // discarded check are classified by what actually runs.
+    // grouptypecheck/negtypecheck: a subshell-wrapped if-compound and a `!`
+    // negation both decouple/invert the exit, so the name cannot vouch.
+    for (const script of ["helper", "helper2", "flowtypecheck", "bracetypecheck", "grouptypecheck", "negtypecheck", "shhelptypecheck", "gitmsgtypecheck"]) {
+      const tokenEvidence = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: [`npm run ${script}`] }, { autoRefresh: false });
+      const kinds = (tokenEvidence.data as { verificationCoverage: Array<{ kind: string }> }).verificationCoverage.map((e) => e.kind);
+      expect(kinds).not.toContain("typescript-syntax");
+      expect(kinds).not.toContain("build");
+    }
+    // bintsctypecheck: a real tsc behind a path counts via basename.
+    // npxtypecheck: launcher flags (`npx -y tsc`) do not hide the tool.
+    // parenstypecheck: a glued subshell still resolves tsc + --noEmit).
+    for (const script of ["bintsctypecheck", "npxtypecheck", "parenstypecheck"]) {
+      const realTsc = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: [`npm run ${script}`] }, { autoRefresh: false });
+      const kinds = (realTsc.data as { verificationCoverage: Array<{ kind: string }> }).verificationCoverage.map((e) => e.kind);
+      expect(kinds).toContain("typescript-syntax");
+      expect(kinds).not.toContain("build");
+    }
+    // mixedbuild: an informational `tsc --version` does not veto the real vite
+    // build beside it, and credits no typescript itself.
+    const mixedBuild = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["npm run mixedbuild"] }, { autoRefresh: false });
+    const mixedKinds = (mixedBuild.data as { verificationCoverage: Array<{ kind: string }> }).verificationCoverage.map((e) => e.kind);
+    expect(mixedKinds).toContain("build");
+    expect(mixedKinds).not.toContain("typescript-syntax");
+
+    // The non-compiling veto resolves launchers too: `npx -y tsc --version`
+    // cannot ride a type-ish script name into credit.
+    const npxVersion = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["npm run npxversiontypecheck"] }, { autoRefresh: false });
+    expect((npxVersion.data as { verificationCoverage: Array<{ kind: string }> }).verificationCoverage.map((e) => e.kind)).not.toContain("typescript-syntax");
+
+    // A hygiene script invoked with --help runs nothing — no lint evidence.
+    const helpVerify = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["npm run helpverify"] }, { autoRefresh: false });
+    expect((helpVerify.data as { verificationCoverage: Array<{ kind: string }> }).verificationCoverage.map((e) => e.kind)).not.toContain("lint");
+
+    // A subshell-wrapped compound pops on its glued closer (`done)`), so a real
+    // test chained after it is not over-masked.
+    const subshellThenTest = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ['(for d in $DIRS; do echo $d; done) && npm test'] }, { autoRefresh: false });
+    expect((subshellThenTest.data as { testsNotRun: unknown[] }).testsNotRun).toEqual([]);
+
+    // A carrier that interpolates only metadata (`echo $(date)`) does not poison
+    // the name: the && chain stays faithful to the real runner before it.
+    const dateEcho = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["npm run datetypecheck"] }, { autoRefresh: false });
+    expect((dateEcho.data as { verificationCoverage: Array<{ kind: string }> }).verificationCoverage.map((e) => e.kind)).toContain("typescript-syntax");
+
+    // Stripping a substitution must not glue surrounding words into a phrase the
+    // command never contained (`vite $(x) build` is NOT `vite build`).
+    const glued = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["npm run gluecheck"] }, { autoRefresh: false });
+    expect((glued.data as { verificationCoverage: Array<{ kind: string }> }).verificationCoverage.map((e) => e.kind)).not.toContain("build");
+
+    // FD redirection is not exit masking: `2>&1` / `&>file` / `>&2` keep the
+    // runner's own exit, so the ubiquitous redirect idioms must stay covered.
+    const redirectCovered = [
+      "npm run test -- tests/shared.test.ts 2>&1",
+      "vitest run tests/shared.test.ts 2>&1",
+      "npm run test -- tests/shared.test.ts &> /tmp/codexa-redirect.log",
+      "vitest run tests/shared.test.ts >&2"
+    ];
+    for (const command of redirectCovered) {
+      const covered = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: [command] }, { autoRefresh: false });
+      expect((covered.data as { verificationLedger: Array<{ target: string; status: string }> }).verificationLedger.find((e) => e.target === "tests/shared.test.ts")?.status).toBe("covered");
+    }
+
+    // A masking operator hidden inside one or two nested shell wrappers must not
+    // be laundered into coverage: nested quoting that the tokenizer cannot parse
+    // fails closed (the inner `|| true` survives or the runner is recorded
+    // unknown), never crediting the test as passed.
+    const nestedMask = ['sh -c "npm test || true"', "sh -c \"sh -c 'npm test || true'\"", "bash -lc \"sh -c 'npm test || true'\""];
+    for (const command of nestedMask) {
+      const masked = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: [command] }, { autoRefresh: false });
+      expect((masked.data as { testsNotRun: Array<{ path: string }> }).testsNotRun.map((test) => test.path)).toContain("tests/shared.test.ts");
+    }
+
+    // ...but a clean shell-wrapped runner (no mask) stays credited.
+    const wrappedClean = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ['sh -c "npm test"'] }, { autoRefresh: false });
+    expect((wrappedClean.data as { testsNotRun: unknown[] }).testsNotRun).toEqual([]);
+
+    // Reported structured envelope must not launder a masked command into coverage.
+    const maskedEnvelope = await postEditReviewQuery(
+      repo,
+      { taskId: "verification-coverage", ranCommandReports: [{ command: "npm test || true", cwd: repo, packageManager: "npm", packageRoot: ".", scriptName: "test", args: [], exitCode: 0 }] },
+      { autoRefresh: false }
+    );
+    expect((maskedEnvelope.data as { verificationLedger: Array<{ target: string; status: string }> }).verificationLedger.find((e) => e.target === "tests/shared.test.ts")?.status).toBe("missing");
+
+    // A structured envelope whose command text hides the mask inside a shell
+    // wrapper (so a top-level operator scan misses it) must still be deferred to
+    // the unwrapping per-segment analyzer and recorded as not covered.
+    const maskedWrappedEnvelope = await postEditReviewQuery(
+      repo,
+      { taskId: "verification-coverage", ranCommandReports: [{ command: 'sh -c "npm test || true"', cwd: repo, packageManager: "npm", packageRoot: ".", scriptName: "test", args: [], exitCode: 0 }] },
+      { autoRefresh: false }
+    );
+    expect((maskedWrappedEnvelope.data as { verificationLedger: Array<{ target: string; status: string }> }).verificationLedger.find((e) => e.target === "tests/shared.test.ts")?.status).toBe("missing");
+
+    // Over-block guard: a real test that is the exit-deciding (last) command in a
+    // `;` sequence stays covered even though an earlier runner precedes it.
+    const buildThenTest = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["npm run build ; npm test"] }, { autoRefresh: false });
+    expect((buildThenTest.data as { testsNotRun: unknown[] }).testsNotRun).toEqual([]);
+
+    // `tsc --help` / `--showConfig` do not typecheck, directly or via a package script.
+    for (const command of ["tsc --help", "tsc --showConfig", "tsc --listFilesOnly", "npx tsc --version"]) {
+      const tscNonCompiling = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: [command] }, { autoRefresh: false });
+      expect((tscNonCompiling.data as { verificationCoverage: Array<{ kind: string }> }).verificationCoverage.map((e) => e.kind)).not.toContain("typescript-syntax");
+    }
 
     const simpleIfFlow = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["if true; then npm test; fi"] }, { autoRefresh: false });
     expect((simpleIfFlow.data as { testsNotRun: unknown[] }).testsNotRun).toEqual([]);
 
     const falseIfFlow = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["if false; then npm test; fi"] }, { autoRefresh: false });
     expect((falseIfFlow.data as { testsNotRun: Array<{ path: string }> }).testsNotRun.map((test) => test.path)).toContain("tests/shared.test.ts");
+
+    // A runner inside `if <unknown-cond>; then ...; fi` (or a while/for/case body)
+    // may never execute while the construct still exits 0, so it must not count
+    // as covering — only a statically-true condition keeps the branch credited.
+    // Nesting must not drain the masking: an inner compound glued behind `then`/
+    // `do` pushes its own entry, so its `fi`/`done` cannot unmask the outer body;
+    // a dead `if false` skip survives an inner `fi`; an `elif` branch is
+    // conditionally-reached even under an `if true`; and a trailing `cd` is a
+    // real exit-overriding command (`cd` exits 0), not invisible.
+    const compoundMaskCases = [
+      'if [ -n "$CI" ]; then npm test; fi',
+      'while [ -n "$RETRY" ]; do npm test; done',
+      "for d in $DIRS; do npm test; done",
+      'if [ "$CI" = true ]; then if [ -f tsconfig.json ]; then tsc --noEmit; fi; npm test; fi',
+      "for a in 1; do for b in 2; do echo x; done; npm test; done",
+      "if false; then if true; then echo x; fi; npm test; fi",
+      "if true; then echo ok; elif true; then npm test; fi",
+      "npm test ; cd /tmp",
+      "false && cd /tmp && npm test",
+      '{ if [ -n "$CI" ]; then npm test; fi; }',
+      '( if [ -n "$CI" ]; then npm test; fi )',
+      "true || if true; then npm test; fi",
+      "npm test ; { echo done; }",
+      "false && if true; then true; fi && npm test",
+      "git fetch || npm test",
+      "if true; then true; fi || npm test",
+      "if false; then echo x; fi || npm test",
+      "git fetch ||\nnpm test",
+      "git fetch || false || npm test",
+      "git fetch || if true; then npm test; fi",
+      "git fetch ||\n# retry\nnpm test",
+      "cat > notes.txt <<EOF\nnpm test\nEOF",
+      "npm run lint ||#fallback\nnpm test",
+      "npm test # docs use <<EOF\ntrue",
+      "cat <<-EOF\n\tnpm test\n\tEOF",
+      "cat <<9\nnpm test\n9",
+      "cat <<EOF-1\nblah\nEOF\nnpm test\nEOF-1",
+      "cat <<CONFIG.json > app.json\nnpm test\nCONFIG.json"
+    ];
+    for (const command of compoundMaskCases) {
+      const unknownCompound = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: [command] }, { autoRefresh: false });
+      expect((unknownCompound.data as { testsNotRun: Array<{ path: string }> }).testsNotRun.map((test) => test.path)).toContain("tests/shared.test.ts");
+    }
+
+    // ...while a nested compound with statically-true conditions all the way
+    // down keeps its credit, and a subshell-wrapped statically-true compound
+    // pops its glued closer cleanly.
+    const nestedTrueIf = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["if true; then if true; then npm test; fi; fi"] }, { autoRefresh: false });
+    expect((nestedTrueIf.data as { testsNotRun: unknown[] }).testsNotRun).toEqual([]);
+    const wrappedTrueIf = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["(if true; then npm test; fi)"] }, { autoRefresh: false });
+    expect((wrappedTrueIf.data as { testsNotRun: unknown[] }).testsNotRun).toEqual([]);
+
+    // A multi-line && chain is a line continuation, not separate statements:
+    // the pending operator binds across the newline and the chain stays
+    // exit-faithful, so the test keeps its credit.
+    const multilineChain = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["npm ci &&\nnpm run build &&\nnpm test"] }, { autoRefresh: false });
+    expect((multilineChain.data as { testsNotRun: unknown[] }).testsNotRun).toEqual([]);
+
+    // A trailing comment is not a command, and a heredoc BODY is data — neither
+    // affects the real runner's credit on its own line.
+    const commentedTest = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["npm test # smoke"] }, { autoRefresh: false });
+    expect((commentedTest.data as { testsNotRun: unknown[] }).testsNotRun).toEqual([]);
+    const heredocThenTest = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["cat <<EOF\nnot a real run\nEOF\nnpm test"] }, { autoRefresh: false });
+    expect((heredocThenTest.data as { testsNotRun: unknown[] }).testsNotRun).toEqual([]);
+    // Arithmetic `<<` is a shift, not a heredoc — the following real test still counts.
+    const arithThenTest = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["echo $((1 << 2))\nnpm test"] }, { autoRefresh: false });
+    expect((arithThenTest.data as { testsNotRun: unknown[] }).testsNotRun).toEqual([]);
 
     const falseAndFallback = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["false && npm test"] }, { autoRefresh: false });
     expect((falseAndFallback.data as { testsNotRun: Array<{ path: string }> }).testsNotRun.map((test) => test.path)).toContain("tests/shared.test.ts");
@@ -4142,7 +4489,46 @@ async function createVerificationCoverageFixtureRepo(): Promise<string> {
           build: "tsc -p tsconfig.json --noEmit",
           lint: "node scripts/lint-placeholder.mjs",
           test: "vitest run",
-          check: "npm run typecheck && npm run lint && npm test"
+          check: "npm run typecheck && npm run lint && npm test",
+          maskedtypecheck: "tsc -p tsconfig.json --noEmit || true",
+          subtypecheck: "echo $(tsc -p tsconfig.json --noEmit)",
+          newlinetypecheck: "tsc -p tsconfig.json --noEmit\nexit 0",
+          iftypecheck: "if tsc -p tsconfig.json --noEmit; then echo ok; fi",
+          aposttypecheck: "echo \"it's $(tsc -p tsconfig.json --noEmit)\"",
+          condtypecheck: 'if [ -n "$CI" ]; then tsc -p tsconfig.json --noEmit; fi',
+          exporttypecheck: "export TS_OUT=$(tsc -p tsconfig.json --noEmit)",
+          casebuild: "case $NODE_ENV in production) vite build;; esac",
+          wrappedbuild: "sh -c 'vite build'",
+          definebuild: "vite build --define __HASH__=$(git rev-parse HEAD)",
+          exportbuild: "export VERSION=$(git rev-parse HEAD) && next build",
+          exportechotypecheck: "export TS_OUT=$(tsc -p tsconfig.json --noEmit) && echo passed",
+          echodonebuild: "next build && echo done",
+          defineechobuild: "vite build --define __HASH__=$(git rev-parse HEAD) && echo ok",
+          buildechohash: 'vite build && echo "built $(git rev-parse HEAD)"',
+          exportnextecho: "export V=$(git describe) && next build && echo done",
+          wrappedexporttypecheck: 'sh -c "export X=$(tsc -p tsconfig.json --noEmit) && echo ok"',
+          aliastypecheck: "command echo $(tsc -p tsconfig.json --noEmit)",
+          datetypecheck: "node scripts/lint-placeholder.mjs && echo $(date)",
+          gluecheck: "vite $(echo extra) build",
+          bgnltypecheck: "tsc -p tsconfig.json --noEmit &\n",
+          yarnechobuild: "echo $(yarn build)",
+          pnpmechotypecheck: "echo $(pnpm run typecheck)",
+          exectypecheck: "exec echo $(tsc -p tsconfig.json --noEmit)",
+          echonextypecheck: "echo $(tsc -p tsconfig.json --noEmit) && next build",
+          helper: "node scripts/run-tsc.mjs",
+          helper2: "TSC=1 esbuild app.ts",
+          flowtypecheck: "export TSC=$(tsc --version) && flow check",
+          bintsctypecheck: "./node_modules/.bin/tsc -p tsconfig.json --noEmit",
+          bracetypecheck: "{ echo $(tsc -p tsconfig.json --noEmit); }",
+          grouptypecheck: "( if tsc -p tsconfig.json --noEmit; then :; fi )",
+          negtypecheck: "! tsc -p tsconfig.json --noEmit",
+          npxtypecheck: "npx -y tsc -p tsconfig.json --noEmit",
+          parenstypecheck: "(tsc -p tsconfig.json --noEmit)",
+          mixedbuild: "vite build && tsc --version",
+          npxversiontypecheck: "npx -y tsc --version",
+          helpverify: "node scripts/verify-source-hygiene.mjs --help",
+          shhelptypecheck: "sh -c 'tsc --help'",
+          gitmsgtypecheck: 'git commit -m "$(tsc -p tsconfig.json --noEmit)"'
         },
         devDependencies: { vitest: "*" }
       },
