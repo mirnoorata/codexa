@@ -1,5 +1,6 @@
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { mkdtemp, mkdir, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import http from "node:http";
 import os from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -2054,6 +2055,25 @@ describe("Codexa MCP server", () => {
       });
       expect(rejectedNonWebOrigin.status).toBe(403);
       expect(await rejectedNonWebOrigin.text()).toContain("Origin");
+      // DNS-rebinding defense: a request that reaches loopback but carries a
+      // non-loopback Host header must be rejected. (Raw http.request because
+      // fetch/undici forbids overriding the Host header.)
+      const rebindPort = Number(/:(\d+)\//u.exec(url!)![1]);
+      const rejectedHost = await new Promise<{ status: number; body: string }>((resolve, reject) => {
+        const req = http.request(
+          { host: "127.0.0.1", port: rebindPort, path: "/mcp", method: "POST", headers: { accept: "application/json, text/event-stream", "content-type": "application/json", host: "evil.example" } },
+          (res) => {
+            let body = "";
+            res.on("data", (chunk) => (body += chunk));
+            res.on("end", () => resolve({ status: res.statusCode ?? 0, body }));
+          }
+        );
+        req.on("error", reject);
+        req.write(JSON.stringify({ jsonrpc: "2.0", id: "host-test", method: "initialize", params: {} }));
+        req.end();
+      });
+      expect(rejectedHost.status).toBe(403);
+      expect(rejectedHost.body).toContain("Host");
       const transport = new StreamableHTTPClientTransport(new URL(url!));
       const client = new Client({ name: "codexa-http-test", version: "0.1.0" });
       await client.connect(transport);
