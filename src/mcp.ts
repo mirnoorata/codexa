@@ -59,6 +59,10 @@ export async function serveMcpHttp(repoRoot: string, options: QueryOptions = { a
         sendJsonRpcHttpError(res, 403, "MCP HTTP Origin is not allowed");
         return;
       }
+      if (!isAllowedHttpHost(req.headers.host)) {
+        sendJsonRpcHttpError(res, 403, "MCP HTTP Host is not allowed");
+        return;
+      }
       const requestUrl = new URL(req.url ?? "/", `http://${req.headers.host ?? `${host}:${port}`}`);
       if (requestUrl.pathname !== endpoint) {
         sendJsonRpcHttpError(res, 404, "MCP endpoint not found");
@@ -329,6 +333,23 @@ function normalizeMcpEndpoint(value: string): string {
 function isLoopbackHttpHost(host: string): boolean {
   const normalized = host.trim().toLowerCase().replace(/^\[/u, "").replace(/\]$/u, "");
   return normalized === "localhost" || normalized === "127.0.0.1" || normalized === "::1" || normalized === "0:0:0:0:0:0:0:1";
+}
+
+// Validate the Host header against the loopback allowlist. The SDK's
+// streamable-HTTP transport has no DNS-rebinding protection of its own, so a
+// rebound request (DNS flips evil.test -> 127.0.0.1, browser then posts with
+// Host: evil.test) would otherwise reach the endpoint. Absent Host is rejected:
+// HTTP/1.1 clients always send one. Origin handling is unchanged so non-browser
+// loopback clients that omit Origin still work.
+function isAllowedHttpHost(hostHeader: string | string[] | undefined): boolean {
+  if (typeof hostHeader !== "string" || hostHeader.length === 0) {
+    return false;
+  }
+  try {
+    return isLoopbackHttpHost(new URL(`http://${hostHeader}`).hostname);
+  } catch {
+    return false;
+  }
 }
 
 function isAllowedHttpOrigin(origin: string | string[] | undefined): boolean {
