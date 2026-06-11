@@ -12,7 +12,7 @@ import type {
   WorkflowStep,
   WorkflowTraceFact
 } from "./types.js";
-import { stableId, uniqueSorted } from "./util.js";
+import { rankLog2, stableId, uniqueSorted } from "./util.js";
 
 export interface GraphTarget {
   id: string;
@@ -757,7 +757,9 @@ function workflowConfidence(steps: WorkflowStep[]): Confidence {
 
 function workflowRank(files: string[], tests: string[], fileRank: Map<string, number>, kind: WorkflowTraceFact["workflowKind"]): number {
   const base = kind === "route" ? 8 : kind === "job" ? 7 : kind === "manifest" ? 6 : 4;
-  return base + files.reduce((sum, file) => sum + Math.log2((fileRank.get(file) ?? 0) + 1), 0) + tests.length * 2;
+  // Clamp: a generated file can carry a small negative rank (generatedPenalty),
+  // and log2 of a value <= 0 yields NaN/-Infinity that would poison the sum.
+  return base + files.reduce((sum, file) => sum + rankLog2(fileRank.get(file) ?? 0), 0) + tests.length * 2;
 }
 
 function summarizeWorkflow(kind: WorkflowTraceFact["workflowKind"], title: string, relatedFiles: string[], tests: string[]): string {

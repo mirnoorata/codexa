@@ -1,7 +1,7 @@
 import path from "node:path";
 import { isTestPath } from "../language.js";
 import type { CodexaIndex, FileFact, QueryOptions, QueryResult, WorkflowTraceFact } from "../types.js";
-import { limitText, uniqueSorted } from "../util.js";
+import { limitText, rankLog2, uniqueSorted } from "../util.js";
 import { formatGaps, indexGaps } from "./diff.js";
 import { matchScore } from "./search.js";
 import { assessContextQuality, formatContextQuality } from "./quality.js";
@@ -107,7 +107,7 @@ export function fallbackWorkflowMatches(index: { workflows: WorkflowTraceFact[] 
       const entryScore = terms.reduce((sum, term) => sum + (workflow.entryPath.toLowerCase().includes(term) ? 2 : 0), 0);
       return {
         workflow,
-        score: termScore + entryScore + Math.log2(workflow.rank + 1) * 0.1
+        score: termScore + entryScore + rankLog2(workflow.rank) * 0.1
       };
     })
     .filter((entry) => entry.score > 0)

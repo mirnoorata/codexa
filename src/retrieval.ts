@@ -2,7 +2,7 @@ import path from "node:path";
 import { isTestPath, moduleNameForPath } from "./language.js";
 import { semanticLaneEntriesForQuery, type SemanticQueryOptions, type SemanticRetrievalSummary } from "./semantic-retrieval.js";
 import type { CodexaIndex, FileFact, GraphEdgeFact, WorkflowTraceFact } from "./types.js";
-import { uniqueSorted } from "./util.js";
+import { rankLog2, uniqueSorted } from "./util.js";
 
 export type TaskIntent =
   | "architecture"
@@ -381,7 +381,7 @@ function scoreDocument(
   if (matchedTerms.length === 0) {
     return null;
   }
-  score += Math.log2(doc.file.rank + 1) * 0.25;
+  score += rankLog2(doc.file.rank) * 0.25;
   return {
     file: doc.file,
     score,
@@ -566,7 +566,7 @@ function graphLaneEntries(index: CodexaIndex, intents: TaskIntent[], anchoredEnt
 
   for (const file of index.files) {
     if (anchored.has(file.path) || (includeArchitectureCore && /src\/(indexer|parser|resolver|query|queries|mcp|artifacts|eval|init)\.ts$/.test(file.path))) {
-      add(file.path, Math.log2(file.rank + 1), "graph centrality tie-breaker");
+      add(file.path, rankLog2(file.rank), "graph centrality tie-breaker");
     }
   }
 
@@ -646,7 +646,7 @@ function fuseLaneRankings(index: CodexaIndex, lanes: Array<[RetrievalLane, LaneE
   return [...byPath.values()]
     .map((entry) => ({
       file: entry.file,
-      score: entry.score + Math.log1p(entry.rawScore) + Math.log2(entry.file.rank + 1) * 0.05,
+      score: entry.score + Math.log1p(entry.rawScore) + rankLog2(entry.file.rank) * 0.05,
       reasons: uniqueSorted(entry.reasons).slice(0, 10),
       matchedTerms: uniqueSorted(entry.matchedTerms),
       lanes: entry.lanes
@@ -846,7 +846,7 @@ function rankWorkflows(index: CodexaIndex, terms: string[], matches: RetrievalMa
       const fileScore = workflow.relatedFiles.filter((file) => matchedFiles.has(file)).length * 3;
       const sizePenalty = Math.log2(workflow.relatedFiles.length + workflow.steps.length + 2) * 0.75;
       const evidenceScore = titleScore + fileTermScore + stepScore + specificityBoost + primarySignalBoost + fileScore - sizePenalty - primarySignalPenalty;
-      return { workflow, score: evidenceScore > 0 ? evidenceScore + Math.log2(workflow.rank + 1) * 0.2 : 0 };
+      return { workflow, score: evidenceScore > 0 ? evidenceScore + rankLog2(workflow.rank) * 0.2 : 0 };
     })
     .filter((entry) => entry.score > 0)
     .sort((a, b) => b.score - a.score || a.workflow.title.localeCompare(b.workflow.title))
