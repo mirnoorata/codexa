@@ -598,8 +598,21 @@ function inferTestTarget(testPath: string, files: Set<string>): string | undefin
   if (files.has(normalized)) {
     return normalized;
   }
+  // Prefer a unique file whose path ends with the full normalized relative path,
+  // so tests/api/test_handlers.py -> api/handlers.py binds to src/api/handlers.py
+  // even when another package also has a handlers.py.
+  const suffixMatches = [...files].filter((file) => file === normalized || file.endsWith(`/${normalized}`));
+  if (suffixMatches.length === 1) {
+    return suffixMatches[0];
+  }
+  // Basename-only fallback: bind the test to a source file iff exactly one file
+  // in the repo carries that basename. With duplicate basenames (handlers.py,
+  // index.ts, utils.py across packages) an arbitrary first-match would emit a
+  // cross-module TESTS edge that corrupts blast radius and test recommendations.
+  // A wrong edge is worse than no edge, so refuse the guess when ambiguous.
   const base = path.posix.basename(normalized);
-  return [...files].find((file) => path.posix.basename(file) === base);
+  const candidates = [...files].filter((file) => path.posix.basename(file) === base);
+  return candidates.length === 1 ? candidates[0] : undefined;
 }
 
 export function relinkUsageIds(index: CodexaIndex): CodexaIndex {
