@@ -68,6 +68,14 @@ export function limitText(value: string, max = 2000): string {
   return `${value.slice(0, max - 20)}\n... truncated ...`;
 }
 
+// log2(rank+1) used as a ranking signal, made safe against the negative ranks a
+// generated-file penalty can produce and against a non-finite rank from a
+// corrupt/hand-edited cached index (Math.max(0, NaN) is still NaN, which would
+// poison every score that sums it).
+export function rankLog2(rank: number): number {
+  return Math.log2((Number.isFinite(rank) ? Math.max(0, rank) : 0) + 1);
+}
+
 export function isSubpath(candidate: string, parent: string): boolean {
   const rel = path.relative(parent, candidate);
   return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
