@@ -64,7 +64,35 @@ export async function saveTaskSnapshot({ repoRoot, input, snapshot }: SaveTaskSn
   await atomicJsonWrite(snapshotPath, saved);
   await fs.rm(path.join(dir, `${taskId}.blocked.json`), { force: true });
   await atomicJsonWrite(path.join(dir, LATEST_FILE), { schemaVersion: 1, taskId, path: path.basename(snapshotPath), createdAt });
+  await removeImplicitSiblingSnapshots(dir, taskId);
   return { snapshot: saved, path: snapshotPath };
+}
+
+// Hook-saved implicit baselines are superseded by ANY newer snapshot. Leaving
+// them behind would trip the latest-snapshot ambiguity checks (which disable
+// hook AutoVerify and floor un-bound reviews at "inspect") for every repo
+// that followed the recommended implicit -> explicit upgrade path.
+async function removeImplicitSiblingSnapshots(dir: string, keepTaskId: string): Promise<void> {
+  let entries: string[];
+  try {
+    entries = await fs.readdir(dir);
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (!entry.endsWith(".json") || entry === LATEST_FILE || entry.endsWith(".blocked.json") || entry === `${keepTaskId}.json`) {
+      continue;
+    }
+    const candidatePath = path.join(dir, entry);
+    try {
+      const parsed = JSON.parse(await fs.readFile(candidatePath, "utf8")) as Partial<TaskSnapshot>;
+      if (parsed.origin === "hook-implicit") {
+        await fs.rm(candidatePath, { force: true });
+      }
+    } catch {
+      // Unreadable sibling snapshots are left for the ambiguity checks to report.
+    }
+  }
 }
 
 export async function saveBlockedTaskSnapshot({ repoRoot, input, reason, details }: SaveBlockedTaskSnapshotInput): Promise<{ taskId: string; path: string }> {

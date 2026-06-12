@@ -63,9 +63,10 @@ program
   .option("--no-hooks", "do not write hooks.json")
   .option("--index", "index the repository immediately", true)
   .option("--no-index", "only write Codex config and hooks")
-  .option("--tools <profile>", "MCP tool exposure profile: core (primary loop only, cheaper per turn) or full", parseToolProfile, "full")
+  .option("--tools <profile>", "MCP tool exposure profile: core (primary loop, cheaper per turn) or full; defaults to the repo's existing profile, else core", parseToolProfile)
   .option("--agents-md", "write a managed Codexa workflow block into the repo's AGENTS.md (Codex)", false)
   .option("--claude-md", "write a managed Codexa workflow block into the repo's CLAUDE.md (Claude Code)", false)
+  .option("--claude", "write the codexa MCP server entry into the repo's .mcp.json for Claude Code", false)
   .description("Initialize Codexa for a project so future Codex sessions discover it automatically.")
   .action(
     async (
@@ -76,9 +77,10 @@ program
         autoRefresh: boolean;
         hooks: boolean;
         index: boolean;
-        tools: "core" | "full";
+        tools?: "core" | "full";
         agentsMd: boolean;
         claudeMd: boolean;
+        claude: boolean;
       }
     ) => {
       const result = await initializeProject(repo, {
@@ -89,7 +91,8 @@ program
         serverName: opts.serverName,
         toolProfile: opts.tools,
         agentsMd: opts.agentsMd,
-        claudeMd: opts.claudeMd
+        claudeMd: opts.claudeMd,
+        claude: opts.claude
       });
       console.log(`Codexa initialized for ${result.repoRoot}`);
       console.log(`Config: ${result.configPath}`);
@@ -101,6 +104,12 @@ program
       }
       if (result.claudeMdPath) {
         console.log(`CLAUDE.md: ${result.claudeMdPath}`);
+      }
+      if (result.claudeMcpPath) {
+        console.log(`Claude Code MCP config: ${result.claudeMcpPath}`);
+      }
+      if (result.launchNote) {
+        console.log(result.launchNote);
       }
       console.log(`MCP server: ${result.serverName}`);
       if (result.indexed) {
@@ -141,7 +150,7 @@ program
 program
   .command("hook-pre-edit")
   .argument("<repo>", "repository root")
-  .description("Cheap hook helper that reminds Codex when no change-plan snapshot exists before an edit.")
+  .description("Cheap hook helper that saves an implicit pre-edit baseline when no change-plan snapshot exists before an edit.")
   .action(async (repo: string) => {
     await runPreEditHook(repo);
   });
@@ -1077,6 +1086,7 @@ program
   .option("--auto-refresh", "refresh a stale or missing index before answering MCP context tools", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before answering MCP context tools")
   .option("--session-memory <mode>", "auto-record MCP session memory: auto or off", parseSessionMemoryMode, "auto")
+  .option("--tools <profile>", "server-side tool exposure: core (primary loop only, cheaper per turn) or full", parseToolProfile, "full")
   .option("--workspace-focus-file <path>", "workspace focus file to consult when <repo> is a workspace launch root")
   .option("--workspace-session <id>", "active WORKING.md session row to prefer when <repo> is a workspace launch root")
   .option("--transport <transport>", "MCP transport: stdio or http", parseMcpTransport, "stdio")
@@ -1084,9 +1094,9 @@ program
   .option("--port <n>", "HTTP port for --transport http", parseIntOption, 8729)
   .option("--endpoint <path>", "HTTP MCP endpoint path for --transport http", "/mcp")
   .description("Start the MCP server over stdio by default, or Streamable HTTP with --transport http.")
-  .action(async (repo: string, opts: CliQueryOptions & { transport: McpTransportKind; host: string; port: number; endpoint: string }) => {
+  .action(async (repo: string, opts: CliQueryOptions & { transport: McpTransportKind; host: string; port: number; endpoint: string; tools: "core" | "full" }) => {
     const resolved = path.resolve(repo);
-    const queryOptions = queryOptionsFromCli(opts);
+    const queryOptions = { ...queryOptionsFromCli(opts), toolProfile: opts.tools };
     if (opts.transport === "http") {
       await serveMcpHttp(resolved, queryOptions, { host: opts.host, port: opts.port, endpoint: opts.endpoint });
       return;

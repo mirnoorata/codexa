@@ -32,6 +32,30 @@ export interface McpCompactionOptions {
   format?: "concise" | "detailed";
 }
 
+const CONCISE_TEXT_MAX_LINES = 30;
+const CONCISE_TEXT_MAX_CHARS = 2_400;
+
+// The text content block mirrors structuredContent for hosts that render
+// text; responseFormat "concise" must shrink it too, not only the structured
+// payload. Codexa packets front-load the banner, verdict, and key sections,
+// so a head slice keeps the actionable part.
+export function conciseText(text: string): string {
+  const lines = text.split(/\r?\n/);
+  // Short texts pass through byte-identical — no footer, no CRLF rewrite.
+  if (lines.length <= CONCISE_TEXT_MAX_LINES && text.length <= CONCISE_TEXT_MAX_CHARS) {
+    return text;
+  }
+  let kept = lines.slice(0, CONCISE_TEXT_MAX_LINES).join("\n");
+  if (kept.length > CONCISE_TEXT_MAX_CHARS) {
+    const clipped = kept.slice(0, CONCISE_TEXT_MAX_CHARS);
+    const lastNewline = clipped.lastIndexOf("\n");
+    kept = lastNewline > 0 ? clipped.slice(0, lastNewline) : clipped;
+  }
+  const omittedLines = Math.max(0, lines.length - kept.split(/\r?\n/).length);
+  const omittedNote = omittedLines > 0 ? `${omittedLines} more line(s) omitted; ` : "";
+  return `${kept}\n[concise] ${omittedNote}call with responseFormat "detailed" for the full packet.`;
+}
+
 export function compactMcpResult(result: QueryResult, options?: McpCompactionOptions): QueryResult {
   if (!result.data || typeof result.data !== "object" || Array.isArray(result.data)) {
     return result;
@@ -440,6 +464,7 @@ export function compactPostEditMcpResult(result: QueryResult): QueryResult {
         ? {
             taskId: snapshot.taskId,
             createdAt: snapshot.createdAt,
+            origin: snapshot.origin,
             changeType: snapshot.changeType,
             plannedEditTargets: limitArray(snapshot.plannedEditTargets, 30),
             plannedFiles: limitArray(snapshot.plannedFiles, 40),
@@ -623,6 +648,7 @@ function compactChangePlanData(data: ChangePlanData): McpCompactionResult {
       ? {
           taskId: snapshot.taskId,
           createdAt: snapshot.createdAt,
+          origin: snapshot.origin,
           changeType: snapshot.changeType,
           task: snapshot.task,
           plannedEditTargets: snapshotLimit("plannedEditTargets", snapshot.plannedEditTargets, 30),

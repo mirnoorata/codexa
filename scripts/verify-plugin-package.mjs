@@ -55,6 +55,64 @@ if (marketplace) {
   requireField(plugin?.policy?.installation === "AVAILABLE", "plugin marketplace installation policy must be AVAILABLE");
 }
 
+// Claude Code plugin: must ship in the npm package with MCP wiring intact
+// and stay version-synced with the core package (release-please extra-files).
+const claudePluginRoot = path.join(root, "integrations", "claude-code");
+const claudeRequiredFiles = [
+  ".claude-plugin/plugin.json",
+  ".mcp.json",
+  "scripts/codexa-mcp.js",
+  "hooks/hooks.json",
+  "scripts/session-start.sh",
+  "scripts/pre-edit.sh",
+  "scripts/stop.sh",
+  "scripts/lib/codexa-repo.sh",
+  "commands/codexa-plan.md",
+  "commands/codexa-review.md"
+];
+for (const file of claudeRequiredFiles) {
+  const fullPath = path.join(claudePluginRoot, file);
+  try {
+    const stat = statSync(fullPath);
+    if (!stat.isFile()) {
+      failures.push(`claude plugin ${file} is not a file`);
+    }
+  } catch {
+    failures.push(`claude plugin ${file} is missing`);
+  }
+  requireField(packedFileSet?.has(`integrations/claude-code/${file}`) === true, `claude plugin ${file} is missing from npm pack output`);
+}
+
+const corePackage = parseJson(path.join(root, "package.json"), "package.json");
+const claudeManifest = parseJson(path.join(claudePluginRoot, ".claude-plugin/plugin.json"), "claude plugin manifest");
+if (claudeManifest) {
+  requireField(claudeManifest.name === "codexa", "claude plugin manifest name must be codexa");
+  requireField(claudeManifest.version === corePackage?.version, `claude plugin manifest version must match package.json (${corePackage?.version})`);
+}
+const codexManifest = parseJson(path.join(pluginRoot, ".codex-plugin/plugin.json"), "codex plugin manifest");
+if (codexManifest) {
+  requireField(codexManifest.version === corePackage?.version, `codex plugin manifest version must match package.json (${corePackage?.version})`);
+}
+
+const claudeMcpConfig = parseJson(path.join(claudePluginRoot, ".mcp.json"), "claude plugin MCP config");
+if (claudeMcpConfig) {
+  const server = claudeMcpConfig.mcpServers?.codexa;
+  requireField(server?.command === "node", "claude plugin MCP server must launch node");
+  requireField(
+    Array.isArray(server?.args) && server.args.some((arg) => typeof arg === "string" && arg.includes("${CLAUDE_PLUGIN_ROOT}/scripts/codexa-mcp.js")),
+    "claude plugin MCP server must launch ${CLAUDE_PLUGIN_ROOT}/scripts/codexa-mcp.js"
+  );
+}
+
+const claudeMarketplacePath = path.join(root, "integrations", ".claude-plugin", "marketplace.json");
+const claudeMarketplace = parseJson(claudeMarketplacePath, "claude plugin marketplace");
+if (claudeMarketplace) {
+  const entry = Array.isArray(claudeMarketplace.plugins) ? claudeMarketplace.plugins.find((plugin) => plugin?.name === "codexa") : undefined;
+  requireField(entry?.source === "./claude-code", "claude marketplace must point codexa at ./claude-code");
+  requireField(entry?.version === corePackage?.version, `claude marketplace version must match package.json (${corePackage?.version})`);
+}
+requireField(packedFileSet?.has("integrations/.claude-plugin/marketplace.json") === true, "claude marketplace manifest is missing from npm pack output");
+
 try {
   accessSync(path.join(pluginRoot, "scripts/codexa-mcp.js"), constants.X_OK);
 } catch {

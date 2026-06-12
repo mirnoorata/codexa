@@ -117,6 +117,8 @@ claudio_codexa_available() {
 
 # Run the codexa CLI with a hard timeout and stdout capped. Args after the
 # timeout are forwarded. Returns the CLI's exit status, or 124 on timeout.
+# Stock macOS ships no coreutils `timeout`; python3 (already required by
+# every parser in this lib) enforces the same bound there.
 claudio_codexa_run() {
   local seconds="$1"
   shift
@@ -124,7 +126,39 @@ claudio_codexa_run() {
     claudio_log "codexa CLI unavailable; skipping"
     return 127
   fi
-  timeout --preserve-status "${seconds}s" "${_CODEXA_INVOKE[@]}" "$@"
+  if command -v timeout >/dev/null 2>&1; then
+    timeout --preserve-status "${seconds}s" "${_CODEXA_INVOKE[@]}" "$@"
+    return $?
+  fi
+  python3 - "$seconds" "${_CODEXA_INVOKE[@]}" "$@" <<'PY'
+import subprocess
+import sys
+
+try:
+    seconds = float(sys.argv[1])
+except ValueError:
+    seconds = 30.0
+try:
+    proc = subprocess.Popen(sys.argv[2:])
+except OSError:
+    sys.exit(127)
+try:
+    sys.exit(proc.wait(timeout=seconds))
+except subprocess.TimeoutExpired:
+    proc.kill()
+    proc.wait()
+    sys.exit(124)
+except KeyboardInterrupt:
+    proc.kill()
+    proc.wait()
+    sys.exit(130)
+PY
+}
+
+# Lowercase helper that works on bash 3.2 (macOS): `${var,,}` is bash 4+
+# and aborts the whole script with "bad substitution" on stock macOS.
+claudio_lowercase() {
+  printf '%s' "${1:-}" | tr '[:upper:]' '[:lower:]'
 }
 
 # Emit a JSON string from a bash variable. Minimal escape set that covers
@@ -649,6 +683,59 @@ for line in raw.splitlines():
 
 for key in ["drift_reasons", "next_actions", "tests_unaccounted", "known_gaps", "verification_ledger"]:
     sys.stdout.write(f"section={key} count={counts[key]}\n")
+PY
+}
+
+# Parse the post-edit review's verdict, inspect classification, and baseline
+# origin into strict tokens. Output (only when matched, first occurrence wins):
+#   verdict=<continue|run_tests|inspect|replan>
+#   inspect=<none|blocking|advisory>
+#   origin=implicit
+# Scanning is anchored: nothing before the literal "Codexa post-edit review"
+# header line is considered, so repo-controlled text in the freshness banner
+# (e.g. a repo path embedding a newline + "Verdict: replan") cannot inject a
+# token. Anything that does not match the narrow enum regexes is dropped.
+claudio_parse_post_edit_verdict() {
+  local raw="${1:-}"
+  [[ -z "$raw" ]] && return 0
+  python3 - "$raw" <<'PY' 2>/dev/null
+import re
+import sys
+
+raw = sys.argv[1]
+verdict_rx = re.compile(r"^Verdict:\s+(continue|run_tests|inspect|replan)\s*$")
+inspect_rx = re.compile(r"^Inspect classification:\s+(none|blocking|advisory)\s*;\s*authority\s+[a-z_]{1,40}\s*$")
+origin_rx = re.compile(r"^Snapshot:\s+\S+\s+\(.{0,80}implicit pre-edit baseline\)$")
+seen_header = False
+verdict = None
+inspect = None
+origin = None
+for line in raw.splitlines():
+    stripped = line.strip()
+    if not seen_header:
+        if stripped == "Codexa post-edit review":
+            seen_header = True
+        continue
+    if origin is None and origin_rx.match(stripped):
+        origin = "implicit"
+        continue
+    if verdict is None:
+        m = verdict_rx.match(stripped)
+        if m:
+            verdict = m.group(1)
+            continue
+    if inspect is None:
+        m = inspect_rx.match(stripped)
+        if m:
+            inspect = m.group(1)
+out = []
+if verdict:
+    out.append(f"verdict={verdict}")
+if inspect:
+    out.append(f"inspect={inspect}")
+if origin:
+    out.append(f"origin={origin}")
+sys.stdout.write("\n".join(out))
 PY
 }
 

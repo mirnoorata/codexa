@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { initializeProject, sessionStartSummary } from "../src/init.js";
+import { CODEXA_VERSION } from "../src/version.js";
 
 describe("Codexa project init", () => {
   it("writes repo-local Codex config, hook, and initial artifacts", async () => {
@@ -487,3 +488,142 @@ async function createInitRepo(): Promise<string> {
   });
   return repo;
 }
+
+describe("Claude Code init wiring", () => {
+  it("writes a managed codexa entry into .mcp.json with --claude and preserves other servers", async () => {
+    const repo = await createInitRepo();
+    await writeFile(
+      path.join(repo, ".mcp.json"),
+      JSON.stringify({ mcpServers: { other: { command: "node", args: ["x.js"] } }, custom: true }, null, 2),
+      "utf8"
+    );
+
+    const result = await initializeProject(repo, { cliPath: "/opt/codexa/dist/cli.js", claude: true, index: false });
+
+    expect(result.claudeMcpPath).toBe(path.join(repo, ".mcp.json"));
+    const parsed = JSON.parse(await readFile(path.join(repo, ".mcp.json"), "utf8")) as {
+      custom: boolean;
+      mcpServers: Record<string, { command: string; args: string[] }>;
+    };
+    expect(parsed.custom).toBe(true);
+    expect(parsed.mcpServers.other).toEqual({ command: "node", args: ["x.js"] });
+    const entry = parsed.mcpServers[result.serverName];
+    expect(entry.command).toBe("node");
+    expect(entry.args).toEqual(["/opt/codexa/dist/cli.js", "serve", repo, "--auto-refresh", "--tools", "core"]);
+  });
+
+  it("replaces a stale codexa entry under a different name instead of duplicating it", async () => {
+    const repo = await createInitRepo();
+    await writeFile(
+      path.join(repo, ".mcp.json"),
+      JSON.stringify({ mcpServers: { "codexa-old": { command: "node", args: ["/old/codexa/dist/cli.js", "serve", repo] } } }, null, 2),
+      "utf8"
+    );
+
+    const result = await initializeProject(repo, { cliPath: "/opt/codexa/dist/cli.js", claude: true, index: false });
+
+    const parsed = JSON.parse(await readFile(path.join(repo, ".mcp.json"), "utf8")) as {
+      mcpServers: Record<string, unknown>;
+    };
+    expect(Object.keys(parsed.mcpServers)).toEqual([result.serverName]);
+  });
+
+  it("aborts the --claude write when .mcp.json is malformed", async () => {
+    const repo = await createInitRepo();
+    await writeFile(path.join(repo, ".mcp.json"), "{ not json", "utf8");
+
+    await expect(initializeProject(repo, { cliPath: "/opt/codexa/dist/cli.js", claude: true, index: false })).rejects.toThrow(/Cannot update/u);
+    expect(await readFile(path.join(repo, ".mcp.json"), "utf8")).toBe("{ not json");
+  });
+
+  it("pins a versioned npx launch when the CLI resolves from the npx cache", async () => {
+    const repo = await createInitRepo();
+    const npxCli = "/opt/npm-cache/_npx/0123abcd/node_modules/@mirnoorata/codexa/dist/cli.js";
+
+    const result = await initializeProject(repo, { cliPath: npxCli, claude: true, index: false });
+
+    expect(result.launchNote).toContain("npx cache");
+    const config = await readFile(path.join(repo, ".codex/config.toml"), "utf8");
+    expect(config).toContain('command = "npx"');
+    expect(config).toContain(`"@mirnoorata/codexa@${CODEXA_VERSION}"`);
+    expect(config).not.toContain("_npx");
+
+    const hooks = JSON.parse(await readFile(path.join(repo, ".codex/hooks.json"), "utf8")) as {
+      hooks: { SessionStart: Array<{ hooks: Array<{ command: string }> }> };
+    };
+    expect(hooks.hooks.SessionStart[0].hooks[0].command).toBe(`npx '-y' '@mirnoorata/codexa@${CODEXA_VERSION}' session-start '${repo}'`);
+
+    const mcp = JSON.parse(await readFile(path.join(repo, ".mcp.json"), "utf8")) as {
+      mcpServers: Record<string, { command: string; args: string[] }>;
+    };
+    expect(mcp.mcpServers[result.serverName].command).toBe("npx");
+    expect(mcp.mcpServers[result.serverName].args.slice(0, 2)).toEqual(["-y", `@mirnoorata/codexa@${CODEXA_VERSION}`]);
+  });
+
+  it("re-running init removes the previously generated npx hook commands", async () => {
+    const repo = await createInitRepo();
+    const npxCli = "/opt/npm-cache/_npx/0123abcd/node_modules/@mirnoorata/codexa/dist/cli.js";
+    await initializeProject(repo, { cliPath: npxCli, index: false });
+
+    await initializeProject(repo, { cliPath: "/opt/codexa/dist/cli.js", index: false });
+
+    const hooks = JSON.parse(await readFile(path.join(repo, ".codex/hooks.json"), "utf8")) as {
+      hooks: Record<string, Array<{ hooks: Array<{ command: string }> }>>;
+    };
+    const allCommands = Object.values(hooks.hooks)
+      .flat()
+      .flatMap((entry) => entry.hooks.map((hook) => hook.command));
+    expect(allCommands.filter((command) => command.includes("session-start"))).toHaveLength(1);
+    expect(allCommands.some((command) => command.startsWith("npx"))).toBe(false);
+  });
+});
+
+describe("init profile preservation and entry safety", () => {
+  it("re-running plain init preserves an existing full profile", async () => {
+    const repo = await createInitRepo();
+    await initializeProject(repo, { cliPath: "/opt/codexa/dist/cli.js", index: false, toolProfile: "full" });
+    const firstConfig = await readFile(path.join(repo, ".codex/config.toml"), "utf8");
+    expect(firstConfig).not.toContain("enabled_tools");
+
+    await initializeProject(repo, { cliPath: "/opt/codexa/dist/cli.js", index: false });
+    const rerunConfig = await readFile(path.join(repo, ".codex/config.toml"), "utf8");
+    expect(rerunConfig).not.toContain("enabled_tools");
+  });
+
+  it("re-running plain init preserves an existing core profile and fresh installs default to core", async () => {
+    const repo = await createInitRepo();
+    await initializeProject(repo, { cliPath: "/opt/codexa/dist/cli.js", index: false });
+    const fresh = await readFile(path.join(repo, ".codex/config.toml"), "utf8");
+    expect(fresh).toContain("enabled_tools");
+
+    await initializeProject(repo, { cliPath: "/opt/codexa/dist/cli.js", index: false });
+    const rerun = await readFile(path.join(repo, ".codex/config.toml"), "utf8");
+    expect(rerun).toContain("enabled_tools");
+  });
+
+  it("does not delete user MCP servers that merely mention codexa in a path", async () => {
+    const repo = await createInitRepo();
+    const userServer = { command: "node", args: ["/home-dir/codexa-tools/scripts/serve.js", "serve", "things"] };
+    await writeFile(path.join(repo, ".mcp.json"), JSON.stringify({ mcpServers: { mytool: userServer } }, null, 2), "utf8");
+
+    const result = await initializeProject(repo, { cliPath: "/opt/codexa/dist/cli.js", claude: true, index: false });
+
+    const parsed = JSON.parse(await readFile(path.join(repo, ".mcp.json"), "utf8")) as {
+      mcpServers: Record<string, unknown>;
+    };
+    expect(parsed.mcpServers.mytool).toEqual(userServer);
+    expect(Object.keys(parsed.mcpServers).sort()).toEqual(["mytool", result.serverName].sort());
+  });
+
+  it("pins a versioned npx launch for pnpm dlx cache paths", async () => {
+    const repo = await createInitRepo();
+    const dlxCli = "/opt/cache/pnpm/dlx/7f2a9c1b3e/node_modules/@mirnoorata/codexa/dist/cli.js";
+
+    const result = await initializeProject(repo, { cliPath: dlxCli, index: false });
+
+    expect(result.launchNote).toContain("npx");
+    const config = await readFile(path.join(repo, ".codex/config.toml"), "utf8");
+    expect(config).toContain('command = "npx"');
+    expect(config).not.toContain("/pnpm/dlx/");
+  });
+});

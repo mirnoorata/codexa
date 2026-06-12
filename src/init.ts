@@ -3,12 +3,12 @@ import path from "node:path";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { renderCodexUseContract } from "./codex-contract.js";
 import { buildIndexLocked } from "./indexer.js";
-import { PRIMARY_CODEX_LOOP, PRIMARY_MCP_TOOL_NAMES } from "./mcp-tool-catalog.js";
+import { CORE_PROFILE_TOOL_NAMES, PRIMARY_CODEX_LOOP } from "./mcp-tool-catalog.js";
 import { resolveMcpRepoRoot } from "./mcp-repo-root.js";
 import { statusQuery } from "./queries.js";
+import { CODEXA_VERSION } from "./version.js";
 
 const EDIT_HOOK_MATCHER = "Edit|MultiEdit|Write|NotebookEdit|apply_patch";
-const CORE_PROFILE_TOOL_NAMES = [...PRIMARY_MCP_TOOL_NAMES, "impact", "freshness"];
 
 export type InitToolProfile = "core" | "full";
 
@@ -21,6 +21,7 @@ export interface InitOptions {
   toolProfile?: InitToolProfile;
   agentsMd?: boolean;
   claudeMd?: boolean;
+  claude?: boolean;
 }
 
 export interface InitResult {
@@ -29,7 +30,9 @@ export interface InitResult {
   hooksPath: string | null;
   agentsMdPath: string | null;
   claudeMdPath: string | null;
+  claudeMcpPath: string | null;
   serverName: string;
+  launchNote: string | null;
   indexed: {
     files: number;
     symbols: number;
@@ -37,14 +40,64 @@ export interface InitResult {
   } | null;
 }
 
+interface LaunchSpec {
+  command: string;
+  args: string[];
+  pinnedNpx: boolean;
+}
+
+// An ephemeral runner cache path (npm's ~/.npm/_npx/<hash>/…, pnpm's
+// …/pnpm/dlx/<hash>/…) is evicted on cache prune; baking it into MCP config
+// breaks server startup weeks later with no visible cause. Pin the published
+// package version instead so the config stays launchable.
+function resolveLaunchSpec(cliPath: string): LaunchSpec {
+  if (/[\\/]_npx[\\/]/u.test(cliPath) || /[\\/]pnpm[\\/]dlx[\\/]/u.test(cliPath)) {
+    return { command: "npx", args: ["-y", `@mirnoorata/codexa@${CODEXA_VERSION}`], pinnedNpx: true };
+  }
+  return { command: "node", args: [cliPath], pinnedNpx: false };
+}
+
+// Re-running plain `codexa init` must not silently change an existing
+// install's tool exposure (the rendered managed block historically told
+// full-profile users to refresh with exactly `codexa init`). When --tools is
+// not passed, the previously rendered profile wins; "core" only applies to
+// fresh installs.
+function detectExistingToolProfile(existingConfig: string): InitToolProfile | undefined {
+  if (!existingConfig.includes("# >>> codexa managed")) {
+    return undefined;
+  }
+  const lines = existingConfig.split(/\r?\n/);
+  let inManaged = false;
+  let sawManaged = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (trimmed === "# >>> codexa managed") {
+      inManaged = true;
+      sawManaged = true;
+      continue;
+    }
+    if (trimmed === "# <<< codexa managed") {
+      inManaged = false;
+      continue;
+    }
+    if (inManaged && /^enabled_tools\s*=/u.test(trimmed)) {
+      return "core";
+    }
+  }
+  return sawManaged ? "full" : undefined;
+}
+
 export async function initializeProject(repoInput: string | undefined, options: InitOptions): Promise<InitResult> {
   const repoRoot = resolveInitRepo(repoInput);
   const codexDir = path.join(repoRoot, ".codex");
   const serverName = validateServerName(options.serverName ?? `codexa-${slugify(path.basename(repoRoot))}`);
   const cliPath = path.resolve(options.cliPath);
+  const launch = resolveLaunchSpec(cliPath);
   const configPath = path.join(codexDir, "config.toml");
   const hooksPath = path.join(codexDir, "hooks.json");
   const writeHooks = options.hooks ?? true;
+  const toolProfile = options.toolProfile ?? detectExistingToolProfile(await readTextIfExists(configPath)) ?? "core";
+  const autoRefresh = options.autoRefresh ?? true;
 
   await mkdir(codexDir, { recursive: true });
   const keepHooksFeature = writeHooks
@@ -54,23 +107,29 @@ export async function initializeProject(repoInput: string | undefined, options: 
         repoRoot
       });
   await upsertCodexConfig(configPath, {
-    autoRefresh: options.autoRefresh ?? true,
+    autoRefresh,
     cliPath,
+    launch,
     repoRoot,
     serverName,
     hooks: keepHooksFeature,
-    toolProfile: options.toolProfile ?? "full"
+    toolProfile
   });
 
   if (writeHooks) {
     await upsertHooksConfig(hooksPath, {
       cliPath,
+      launch,
       repoRoot
     });
   }
 
   const agentsMdPath = options.agentsMd ? await upsertManagedDoc(repoRoot, "AGENTS.md", serverName) : null;
   const claudeMdPath = options.claudeMd ? await upsertManagedDoc(repoRoot, "CLAUDE.md", serverName) : null;
+  const claudeMcpPath = options.claude ? path.join(repoRoot, ".mcp.json") : null;
+  if (claudeMcpPath) {
+    await upsertClaudeMcpConfig(claudeMcpPath, { autoRefresh, launch, repoRoot, serverName, toolProfile });
+  }
 
   const indexed =
     options.index === false
@@ -83,7 +142,11 @@ export async function initializeProject(repoInput: string | undefined, options: 
     hooksPath: writeHooks ? hooksPath : null,
     agentsMdPath,
     claudeMdPath,
+    claudeMcpPath,
     serverName,
+    launchNote: launch.pinnedNpx
+      ? `Codexa CLI resolved inside the evictable npx cache; generated configs pin "npx -y @mirnoorata/codexa@${CODEXA_VERSION}" instead of the cache path.`
+      : null,
     indexed
   };
 }
@@ -166,6 +229,7 @@ async function upsertCodexConfig(
   options: {
     autoRefresh: boolean;
     cliPath: string;
+    launch: LaunchSpec;
     repoRoot: string;
     serverName: string;
     hooks: boolean;
@@ -174,7 +238,9 @@ async function upsertCodexConfig(
 ): Promise<void> {
   const existing = await readTextIfExists(configPath);
   let next = stripManagedBlocks(existing);
-  next = removeCodexaMcpServerBlocks(next, options);
+  // Legacy detection keys on the real CLI path, never on launch args like
+  // "-y", which would also match unrelated npx-launched server blocks.
+  next = removeCodexaMcpServerBlocks(next, { cliPath: options.cliPath, repoRoot: options.repoRoot });
   next = removeMcpServerBlock(next, options.serverName);
   if (options.hooks) {
     next = ensureHooksFeature(next);
@@ -189,29 +255,93 @@ async function upsertCodexConfig(
   await writeFile(configPath, `${next}\n`, "utf8");
 }
 
-function renderMcpServerBlock(options: { autoRefresh: boolean; cliPath: string; repoRoot: string; serverName: string; toolProfile: InitToolProfile }): string {
-  const args = [options.cliPath, "serve", options.repoRoot];
+function renderMcpServerBlock(options: { autoRefresh: boolean; launch: LaunchSpec; repoRoot: string; serverName: string; toolProfile: InitToolProfile }): string {
+  const args = [...options.launch.args, "serve", options.repoRoot];
   args.push(options.autoRefresh ? "--auto-refresh" : "--no-auto-refresh");
   const toolProfileLines =
     options.toolProfile === "core"
       ? [
-          "# Core profile: fewer exposed tools means less per-turn schema cost and better routing.",
+          "# Core profile (default): fewer exposed tools means less per-turn schema cost and better routing.",
           `# Re-run \`codexa init --tools full\` to expose every tool.`,
           `enabled_tools = [${CORE_PROFILE_TOOL_NAMES.map(tomlString).join(", ")}]`
         ]
-      : [`# Tip: \`codexa init --tools core\` exposes only the primary loop tools (${CORE_PROFILE_TOOL_NAMES.join(", ")}) to cut per-turn token cost.`];
-  const refreshCommand = options.toolProfile === "core" ? "codexa init --tools core" : "codexa init";
+      : [`# Full profile: every tool is exposed. \`codexa init\` (core default) exposes only ${CORE_PROFILE_TOOL_NAMES.join(", ")} to cut per-turn token cost.`];
+  const refreshCommand = options.toolProfile === "core" ? "codexa init" : "codexa init --tools full";
   return [
     "# >>> codexa managed",
     `# Re-run \`${refreshCommand}\` from this repository to refresh this block.`,
     `[mcp_servers.${options.serverName}]`,
-    `command = "node"`,
+    `command = ${tomlString(options.launch.command)}`,
     `args = [${args.map(tomlString).join(", ")}]`,
     "startup_timeout_sec = 20",
     "tool_timeout_sec = 60",
     ...toolProfileLines,
     "# <<< codexa managed"
   ].join("\n");
+}
+
+// Repo-root .mcp.json is Claude Code's project-scope MCP config and is a
+// shared, often-committed file: only the codexa entry is managed; every
+// other server entry and unknown top-level key is preserved verbatim.
+// Malformed JSON aborts instead of being silently replaced.
+async function upsertClaudeMcpConfig(
+  mcpPath: string,
+  options: {
+    autoRefresh: boolean;
+    launch: LaunchSpec;
+    repoRoot: string;
+    serverName: string;
+    toolProfile: InitToolProfile;
+  }
+): Promise<void> {
+  const existing = await readTextIfExists(mcpPath);
+  const parsed = existing.trim() ? parseHooksJson(existing, mcpPath) : {};
+  const servers = isPlainObject(parsed.mcpServers) ? { ...parsed.mcpServers } : {};
+  for (const [name, entry] of Object.entries(servers)) {
+    if (name === options.serverName || isCodexaMcpJsonEntry(entry)) {
+      delete servers[name];
+    }
+  }
+  const args = [...options.launch.args, "serve", options.repoRoot];
+  args.push(options.autoRefresh ? "--auto-refresh" : "--no-auto-refresh");
+  if (options.toolProfile === "core") {
+    args.push("--tools", "core");
+  }
+  servers[options.serverName] = {
+    command: options.launch.command,
+    args
+  };
+  await writeFile(mcpPath, `${JSON.stringify({ ...parsed, mcpServers: servers }, null, 2)}\n`, "utf8");
+}
+
+// Only delete entries that are recognizably a codexa launch: the token
+// immediately before the standalone "serve" arg must be the codexa binary,
+// package, or CLI bundle. A loose substring match would also delete user
+// servers that merely mention "codexa" somewhere in a path plus a serve.js.
+function isCodexaMcpJsonEntry(entry: unknown): boolean {
+  if (!isPlainObject(entry)) {
+    return false;
+  }
+  const command = typeof entry.command === "string" ? entry.command : "";
+  const args = Array.isArray(entry.args) ? entry.args.filter((value): value is string => typeof value === "string") : [];
+  const serveIndex = args.indexOf("serve");
+  if (serveIndex === -1) {
+    return false;
+  }
+  const launcherToken = serveIndex === 0 ? command : args[serveIndex - 1];
+  return isCodexaLauncherToken(launcherToken);
+}
+
+function isCodexaLauncherToken(token: string | undefined): boolean {
+  if (!token) {
+    return false;
+  }
+  return (
+    token === "codexa" ||
+    /^@mirnoorata\/codexa(?:@[^\s]*)?$/u.test(token) ||
+    /[\\/]codexa[\\/]dist[\\/]cli\.js$/u.test(token) ||
+    /[\\/]@mirnoorata[\\/]codexa[\\/]dist[\\/]cli\.js$/u.test(token)
+  );
 }
 
 const MANAGED_DOC_START = "<!-- >>> codexa managed -->";
@@ -286,13 +416,14 @@ function assertBalancedManagedDocMarkers(content: string, docPath: string): void
   }
 }
 
-async function upsertHooksConfig(hooksPath: string, options: { cliPath: string; repoRoot: string }): Promise<void> {
+async function upsertHooksConfig(hooksPath: string, options: { cliPath: string; launch: LaunchSpec; repoRoot: string }): Promise<void> {
   const existing = await readTextIfExists(hooksPath);
   const parsed = existing.trim() ? parseHooksJson(existing, hooksPath) : {};
   const hooks = isPlainObject(parsed.hooks) ? parsed.hooks : {};
   const cleanedSessionStart = cleanHookList(hooks.SessionStart, options);
   const cleanedPreToolUse = cleanHookList(hooks.PreToolUse, options);
   const cleanedPostToolUse = cleanHookList(hooks.PostToolUse, options);
+  const launchShell = [options.launch.command, ...options.launch.args.map(shellQuote)].join(" ");
 
   cleanedSessionStart.push({
     codexaManaged: true,
@@ -301,7 +432,7 @@ async function upsertHooksConfig(hooksPath: string, options: { cliPath: string; 
       {
         codexaManaged: true,
         type: "command",
-        command: `node ${shellQuote(options.cliPath)} session-start ${shellQuote(options.repoRoot)}`,
+        command: `${launchShell} session-start ${shellQuote(options.repoRoot)}`,
         statusMessage: "Loading Codexa context",
         timeout: 5
       }
@@ -314,9 +445,9 @@ async function upsertHooksConfig(hooksPath: string, options: { cliPath: string; 
       {
         codexaManaged: true,
         type: "command",
-        command: `node ${shellQuote(options.cliPath)} hook-pre-edit ${shellQuote(options.repoRoot)}`,
-        statusMessage: "Checking Codexa change-plan snapshot",
-        timeout: 5
+        command: `${launchShell} hook-pre-edit ${shellQuote(options.repoRoot)}`,
+        statusMessage: "Saving Codexa pre-edit baseline",
+        timeout: 10
       }
     ]
   });
@@ -327,7 +458,7 @@ async function upsertHooksConfig(hooksPath: string, options: { cliPath: string; 
       {
         codexaManaged: true,
         type: "command",
-        command: `node ${shellQuote(options.cliPath)} hook-post-edit ${shellQuote(options.repoRoot)}`,
+        command: `${launchShell} hook-post-edit ${shellQuote(options.repoRoot)}`,
         statusMessage: "Running Codexa post-edit review",
         timeout: 90
       }
@@ -409,6 +540,10 @@ function cleanHookEntry(entry: unknown, options: { cliPath: string; repoRoot: st
 function isCodexaHookCommand(command: string, options: { cliPath: string; repoRoot: string }): boolean {
   const trimmed = command.trim();
   if (/^codexa-sessionstart(?:\s|$)/u.test(trimmed) || /(?:^|\/)codexa-sessionstart-[^/\s]+\.sh(?:\s|$)/u.test(trimmed)) {
+    return true;
+  }
+  // Pinned-npx form written when init ran from an evictable npx cache.
+  if (/^npx\s+(?:'-y'|-y)\s+'?@mirnoorata\/codexa(?:@[^\s']*)?'?\s+(?:session-start|hook-pre-edit|hook-post-edit)(?:\s|$)/u.test(trimmed)) {
     return true;
   }
   for (const action of ["session-start", "hook-pre-edit", "hook-post-edit"]) {

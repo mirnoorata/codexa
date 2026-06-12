@@ -45,6 +45,10 @@ export function postEditDecision(input: {
   testsNotRun: TestRecommendation[];
   hasTestVerificationAccounting: boolean;
   noVerificationProofForEditedFiles: boolean;
+  // True for hook-saved implicit baselines. An implicit baseline is not a
+  // plan: a commit during the session is normal work, not drift, so
+  // headChanged must not escalate to replan or a blocking inspect.
+  implicitBaseline: boolean;
 }): PostEditDecision {
   const missingWorkflowCheckCount = input.workflowChecks.filter((check) => check.status === "missing").length;
   const missingDependencyCheckCount = input.dependencyChecks.filter((check) => check.status === "missing").length;
@@ -66,7 +70,11 @@ export function postEditDecision(input: {
     input.worktreeDegradationReasons.length > 0
       ? `worktree state unavailable (${input.worktreeDegradationReasons.join("; ")}); treat empty change set as unknown, not clean`
       : undefined,
-    input.headChanged ? "git head changed since snapshot" : undefined,
+    input.headChanged
+      ? input.implicitBaseline
+        ? "git head changed since the implicit baseline (a commit during the session; informational)"
+        : "git head changed since snapshot"
+      : undefined,
     input.unplannedEditedFiles.length > 0 ? `${input.unplannedEditedFiles.length} edited file(s) outside planned scope` : undefined,
     input.unplannedChangedSymbols.length > 0 ? `${input.unplannedChangedSymbols.length} changed symbol(s) outside requested symbol target` : undefined,
     input.unindexedEditedFiles.length > 0 ? `${input.unindexedEditedFiles.length} changed-since-snapshot file(s) are not indexed` : undefined,
@@ -86,8 +94,12 @@ export function postEditDecision(input: {
     input.hasActualEditedFiles && input.testsNotRun.length > 0 && input.hasTestVerificationAccounting ? `${input.testsNotRun.length} recommended test(s) remain unaccounted for` : undefined,
     input.noVerificationProofForEditedFiles ? "edited files have no credible verification evidence" : undefined
   ].filter((reason): reason is string => Boolean(reason));
+  const headChangedBlocking = input.headChanged && !input.implicitBaseline;
+  // Quality-low likewise floors at inspect for implicit baselines: "replan"
+  // is advice about a plan, and an implicit baseline carries none.
+  const qualityLowReplan = input.quality?.level === "low" && !input.implicitBaseline;
   const verdict: PostEditDecision["verdict"] =
-    input.headChanged || input.unplannedEditedFiles.length >= 3 || input.quality?.level === "low"
+    headChangedBlocking || input.unplannedEditedFiles.length >= 3 || qualityLowReplan
       ? "replan"
       : !input.snapshot ||
           input.worktreeDegradationReasons.length > 0 ||
@@ -100,7 +112,8 @@ export function postEditDecision(input: {
             input.waivedVerification.length > 0 ||
             input.noVerificationProofForEditedFiles ||
             riskEscalationsNeedInspection ||
-            input.quality?.level === "medium"
+            input.quality?.level === "medium" ||
+            input.quality?.level === "low"
         ? "inspect"
         : input.hasActualEditedFiles && input.testsNotRun.length > 0
           ? "run_tests"
@@ -109,7 +122,7 @@ export function postEditDecision(input: {
     snapshot: input.snapshot,
     snapshotAmbiguity: input.snapshotAmbiguity,
     worktreeDegradationReasons: input.worktreeDegradationReasons,
-    headChanged: input.headChanged,
+    headChanged: headChangedBlocking,
     unplannedEditedFiles: input.unplannedEditedFiles,
     unplannedChangedSymbols: input.unplannedChangedSymbols,
     unindexedEditedFiles: input.unindexedEditedFiles,

@@ -1,7 +1,10 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 
-export function registerWorkflowPrompts(server: McpServer): void {
+// enabledTools mirrors the server's registration filter: prompt text must
+// not instruct the model to call a tool the reduced profile never registered.
+export function registerWorkflowPrompts(server: McpServer, enabledTools?: ReadonlySet<string>): void {
+  const toolAvailable = (name: string): boolean => !enabledTools || enabledTools.has(name);
   server.registerPrompt(
     "impact_before_edit",
     {
@@ -54,7 +57,7 @@ export function registerWorkflowPrompts(server: McpServer): void {
               "Use Codexa to review the current dirty diff.",
               task ? `Expected intent: ${task}` : undefined,
               "Call `post_edit_review` first if a change_plan snapshot exists; otherwise call `search` for target discovery or `task_brief` with `diff: true` when the target is already clear.",
-              "Then call `diff_impact` or `test_plan` only if the review or brief leaves a gap.",
+              toolAvailable("diff_impact") ? "Then call `diff_impact` or `test_plan` only if the review or brief leaves a gap." : "Then call `test_plan` only if the review or brief leaves a gap.",
               "Check changed-but-unindexed files, parser errors, heuristic-only links, and candidate test command provenance."
             ]
               .filter((line): line is string => Boolean(line))

@@ -1,7 +1,6 @@
 ---
 description: Save a Codexa change-plan snapshot before editing concrete files
 argument-hint: '"<task>" [file ...]'
-disable-model-invocation: true
 allowed-tools: Bash(bash:*)
 ---
 

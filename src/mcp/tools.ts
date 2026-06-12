@@ -61,6 +61,7 @@ interface RegisterMcpToolsOptions {
   server: McpServer;
   queryOptions: QueryOptions;
   outputSchema: ZodRawShapeCompat;
+  enabledTools?: ReadonlySet<string>;
   annotations: {
     pureRead: ToolAnnotations;
     sourceContext: ToolAnnotations;
@@ -562,6 +563,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
           )
           .max(30)
           .optional(),
+        ...responseFormatSchema,
         ...semanticQuerySchema
       },
       outputSchema,
@@ -574,6 +576,11 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
     const register = toolDefinitions.get(toolName);
     if (!register) {
       throw new Error(`MCP tool ${toolName} is missing an executable definition`);
+    }
+    // The coverage assertion above still proves every catalog tool has an
+    // executable definition; the profile filter only limits registration.
+    if (options.enabledTools && !options.enabledTools.has(toolName)) {
+      continue;
     }
     register();
   }
