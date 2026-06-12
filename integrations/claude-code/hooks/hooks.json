@@ -19,7 +19,7 @@
           {
             "type": "command",
             "command": "bash \"${CLAUDE_PLUGIN_ROOT}/scripts/pre-edit.sh\"",
-            "timeout": 3
+            "timeout": 10
           }
         ]
       }

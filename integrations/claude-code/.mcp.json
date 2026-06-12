@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "codexa": {
+      "command": "node",
+      "args": ["${CLAUDE_PLUGIN_ROOT}/scripts/codexa-mcp.js"]
+    }
+  }
+}

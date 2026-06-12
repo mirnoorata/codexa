@@ -30,7 +30,9 @@
   },
   "files": [
     "dist",
-    "plugins/codexa"
+    "plugins/codexa",
+    "integrations/claude-code",
+    "integrations/.claude-plugin"
   ],
   "scripts": {
     "build": "tsc -p tsconfig.json",

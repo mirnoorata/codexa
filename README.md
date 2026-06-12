@@ -1,19 +1,54 @@
 # Codexa
 
-Codexa is a local codebase map for AI coding agents.
+Codexa is an edit-lifecycle governance layer for AI coding agents — plan
+conformance, drift review, and verification crediting — built on a local,
+deterministic codebase map.
 
 In plain English: it reads a repository, builds a compact index of the files,
-symbols, imports, tests, risks, and workflows it can prove, then gives Codex or
-another MCP client small evidence-backed packets before and after edits. It is
-meant to help an agent answer questions like:
+symbols, imports, tests, risks, and workflows it can prove, then gives Codex,
+Claude Code, or another MCP client small evidence-backed packets before and
+after edits. It is meant to help an agent answer questions like:
 
 - What should I read first?
 - What could this change break?
 - Which tests are relevant?
 - Did my final dirty tree match the plan I saved before editing?
+- Did the verification commands the agent reported actually prove anything?
 
 It is not an autonomous coding agent. It does not edit your source files through
 MCP. It is a context compiler, query server, and verification guide.
+
+## Why Codexa
+
+Three capabilities are deliberately hard to find elsewhere:
+
+- **A drift loop.** `change_plan` snapshots per-file hashes plus symbol and
+  risk baselines before editing; `post_edit_review` diffs the real dirty tree
+  against that plan afterwards, rename-aware. When no plan was saved, the
+  pre-edit hook saves an implicit baseline automatically, so the review always
+  has a pre-edit reference; an explicit `change_plan` upgrades it with planned
+  scope and tests. Blocking is opt-in: only reviews against an explicit plan
+  can surface a blocking verdict to the host — implicit baselines keep the
+  loop informational.
+- **A verification ledger.** Commands the agent reports are parsed against a
+  faithful POSIX-shell subset before earning coverage credit: `npm test ||
+  true` earns nothing, `tsc --help` is vetoed as non-compiling, `sh -c`
+  wrappers are unwrapped with ambiguity failing closed. Scope stated plainly:
+  this detects structural exit-masking in *reported* commands — it cannot
+  detect a wholesale fabricated report. The opt-in AutoVerify lane exists for
+  execution-backed evidence.
+- **A fail-closed eval.** The eval harness runs real `rg`/`git` baselines and
+  fails a scenario outright if the raw baseline does the job better. The
+  archived v0.2.0 release run passed 20/20 scenarios with packets averaging
+  0.66x the raw baseline output size — and the harness ships in this repo, so
+  you can re-run it yourself. See [Public Proof](#public-proof).
+
+Limits, stated up front: TypeScript/JavaScript and Python are the deep lanes
+(Rust/Go/Java are shallow; other languages get light file facts). Impact
+expansion caps at graph depth 3. The tested envelope is repos around the
+~50K-LOC scale of Codexa itself — expect slower cold indexing and shallower
+ranking on large monorepos. Everything runs locally: zero API keys and zero
+network calls in the core paths.
 
 ## Maintainer Expectations
 
@@ -56,21 +91,33 @@ npm link
 Wire Codexa into another repository:
 
 ```bash
-codexa init /path/to/project
+codexa init /path/to/project            # Codex CLI: .codex/config.toml + hooks
+codexa init /path/to/project --claude   # also writes a repo-root .mcp.json for Claude Code
 codexa session-start /path/to/project
 ```
 
 After `codexa init`, the target repository gets a repo-local `.codex/config.toml`
-entry that lets Codex discover the Codexa MCP server automatically. Useful flags:
-`--tools core` exposes only the primary-loop tools (plus `impact`/`freshness`) via an
-`enabled_tools` allowlist to cut per-turn schema token cost (confirm your Codex CLI
-supports `enabled_tools` first), `--agents-md` (opt-in) writes a managed Codexa
-workflow block into the repo's `AGENTS.md` for Codex, and `--claude-md` (opt-in)
-writes the same managed block into `CLAUDE.md` for Claude Code. The region between
-the `<!-- >>> codexa managed -->` / `<!-- <<< codexa managed -->` markers is
-reserved: Codexa replaces it in place on every re-run (so the block stays current)
-and never edits anything outside it. Unbalanced or malformed markers abort the
-write instead of silently truncating the file.
+entry that lets Codex discover the Codexa MCP server automatically, and with
+`--claude` a repo-root `.mcp.json` so Claude Code discovers the same server
+(only the codexa entry is managed; other servers in an existing `.mcp.json`
+are preserved, and malformed JSON aborts the write). When init runs from an
+evictable npx cache, generated configs pin `npx -y @mirnoorata/codexa@<version>`
+instead of the cache path so they keep working after a cache prune.
+
+Useful flags: the default tool profile for fresh installs is `core` — only the
+primary-loop tools (plus `impact`/`freshness`) are exposed, which cuts per-turn
+schema token cost; `--tools full` exposes all 20 tools, and re-running plain
+`codexa init` preserves whichever profile the repo already uses. On the Codex
+side the core profile relies on Codex CLI honoring `enabled_tools` (older
+versions ignore the key and simply expose every tool); the Claude Code
+`.mcp.json` path filters server-side via `serve --tools core` and needs no
+client support. `--agents-md` (opt-in) writes a managed
+Codexa workflow block into the repo's `AGENTS.md` for Codex, and `--claude-md`
+(opt-in) writes the same managed block into `CLAUDE.md` for Claude Code. The
+region between the `<!-- >>> codexa managed -->` / `<!-- <<< codexa managed -->`
+markers is reserved: Codexa replaces it in place on every re-run (so the block
+stays current) and never edits anything outside it. Unbalanced or malformed
+markers abort the write instead of silently truncating the file.
 
 The installed command is `codexa`, and the server can also run ad hoc:
 
@@ -86,20 +133,30 @@ Codexa is also listed in the official MCP registry as
 Codexa is deterministic and model-agnostic — its core indexing, ranking, and
 query paths call no model and need no API keys, so it serves the same
 evidence-backed context to any agent host that speaks MCP: the OpenAI Codex CLI
-(repo-local `.codex/config.toml`), Claude Code (the bundled plugin under
-`integrations/claude-code/`, plus `--claude-md` steering), and any client that
-discovers it through the MCP registry. There is no per-model integration to do —
-the model lives in the host, and Codexa is the host's context server. (The one
-exception is the opt-in, off-by-default semantic lane, which can call a configured
-embedding provider such as OpenAI — see [Optional Lanes](#optional-lanes).)
+(repo-local `.codex/config.toml`), Claude Code (`codexa init --claude` writes a
+repo-root `.mcp.json`; the bundled plugin under `integrations/claude-code/`
+ships its own MCP server entry, hooks that auto-save the pre-edit baseline and
+surface blocking drift verdicts to the model, and slash commands; `--claude-md`
+adds workflow steering — pick the plugin **or** `init --claude` for MCP wiring,
+not both, or Claude Code will register the codexa server twice), and any client
+that discovers it through the MCP registry. There is no per-model integration to do — the model lives in the
+host, and Codexa is the host's context server. (The one exception is the
+opt-in, off-by-default semantic lane, which can call a configured embedding
+provider such as OpenAI — see [Optional Lanes](#optional-lanes).)
 
 Token discipline is built in: every tool description states its typical output
 cost, structured results are budget-compacted with truncation records naming
 dropped fields, hosts with small MCP result limits can set
 `CODEXA_MCP_STRUCTURED_BUDGET_BYTES`, and the big retrieval tools accept
-`responseFormat: "concise"` for a summary-tier packet. Because the budget caps
-tokens rather than dollars, the savings scale with the host model's price — they
-matter most on frontier-tier models.
+`responseFormat: "concise"` for a summary-tier packet that compacts both the
+structured payload and the text block. The `tools/list` surface is budgeted
+too: the per-tool output schema defaults to a compact top-level contract
+(measured on this repo: 123KB -> 54KB for the full 20-tool surface, 21KB with
+the core profile; `CODEXA_MCP_OUTPUT_SCHEMA=full` restores the deep schema),
+and `codexa serve --tools core` registers only the primary-loop tools for
+hosts without a client-side allowlist. Because the budget caps tokens rather
+than dollars, the savings scale with the host model's price — they matter most
+on frontier-tier models.
 
 ### Managed cloud agents
 
@@ -139,6 +196,10 @@ Use Codexa as a guardrail around code changes:
 4. Save a change plan before non-trivial edits.
    `change_plan` with `saveSnapshot=true`, or CLI
    `change-plan --save-snapshot`, records the intended scope and test plan.
+   If you skip this step, the pre-edit hooks save an implicit baseline of the
+   dirty tree on the first edit — the review still gets changed-since-baseline
+   and head-drift accuracy, but only an explicit plan enables unplanned-scope
+   drift detection.
 
 5. Review after editing.
    `post_edit_review` / `post-edit-review` compares the actual dirty tree with
@@ -187,7 +248,7 @@ writes are allowed; source-file mutation is not exposed through MCP tools.
 
 | Command | Use it for |
 | --- | --- |
-| `codexa init <repo>` | Write repo-local Codex MCP config/hooks and index the repo (`--tools core` for a lean tool allowlist, `--agents-md` for an AGENTS.md workflow block). |
+| `codexa init <repo>` | Write repo-local Codex MCP config/hooks and index the repo (`--claude` for a repo-root Claude Code `.mcp.json`, `--tools full` to expose every tool, `--agents-md` for an AGENTS.md workflow block). |
 | `codexa session-start <repo>` | Print cheap startup status and the automatic-use loop. |
 | `codexa index <repo>` | Build `.codex/codebase/` artifacts once. |
 | `codexa watch <repo>` | Keep artifacts fresh during active edit sessions. |
@@ -215,7 +276,7 @@ writes are allowed; source-file mutation is not exposed through MCP tools.
 | `codexa eval <repo>` | Run structured retrieval/verification benchmark scenarios. |
 | `codexa github-sync-check <repo>` | Diagnose GitHub source sync readiness. |
 | `codexa github-release <repo>` | Create release notes, tags, and GitHub Release entries. |
-| `codexa serve <repo>` | Start the MCP context server over stdio. |
+| `codexa serve <repo>` | Start the MCP context server over stdio (`--tools core` registers only the primary-loop tools). |
 | `codexa serve <repo> --transport http --host 127.0.0.1 --port 8729` | Start loopback-only HTTP MCP. |
 
 Most context commands auto-refresh stale or missing Codexa artifacts before
@@ -471,7 +532,9 @@ scrubbed environments and write reports under `.codex/static-analysis/`.
 
 `codexa init` writes advisory hooks when Codex hooks are available:
 
-- `hook-pre-edit` reminds the agent to save a change-plan snapshot.
+- `hook-pre-edit` saves an implicit pre-edit baseline when no change-plan
+  snapshot exists (and reminds the agent that an explicit `change_plan`
+  upgrades it with planned scope and tests).
 - `hook-post-edit` runs a bounded post-edit review after edits.
 
 AutoVerify command execution is disabled unless user-owned autonomy is
@@ -569,8 +632,9 @@ node dist/cli.js eval /path/to/project --suite all --seed codexa-v1-benchmark
 The eval scores structured query data, not prose. It compares Codexa packets
 against raw `rg`/`git status` baselines, tracks recall/precision/test
 recommendations/context size, and can run ranking experiments without changing
-production ranking. A scenario fails outright if the raw-grep baseline does the
-job better.
+production ranking. The claim is deliberately falsifiable: a scenario fails
+outright if the raw-grep baseline does the job better, and the harness runs in
+CI — so "beats grep on its scenarios" is a gate, not a one-off benchmark.
 
 Measured results for v0.2.0 (seed `codexa-v020-release`, full suite, archived
 in [`reports/benchmarks/v0.2.0-eval.json`](reports/benchmarks/v0.2.0-eval.json)):

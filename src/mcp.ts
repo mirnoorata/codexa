@@ -10,14 +10,14 @@ import type { QueryOptions, QueryResult } from "./types.js";
 import type { QuerySession } from "./query/session.js";
 import { semanticMayUseOpenWorldProvider } from "./semantic-retrieval.js";
 import { resolveMcpRepoRoot, shouldPreferConfiguredRepoRoot } from "./mcp-repo-root.js";
-import { compactMcpResult } from "./mcp/compaction.js";
+import { compactMcpResult, conciseText } from "./mcp/compaction.js";
 import { createMcpOutputSchema, safeQuery, toToolResult, type McpToolPolicyOptions } from "./mcp/envelope.js";
 import { registerWorkflowPrompts } from "./mcp/prompts.js";
 import { registerArtifactResources } from "./mcp/resources.js";
 import { createMcpRuntime, notifyResourceListChangedAfterRefresh, withSessionRuntime } from "./mcp/runtime.js";
 import { withAutoRecordedSessionMemory } from "./mcp/session-memory.js";
 import { registerMcpTools, type McpOptionalQueryInput } from "./mcp/tools.js";
-import { NO_SOURCE_MUTATION_CONTRACT, PRIMARY_CODEX_LOOP } from "./mcp-tool-catalog.js";
+import { CORE_PROFILE_TOOL_NAMES, NO_SOURCE_MUTATION_CONTRACT, PRIMARY_CODEX_LOOP } from "./mcp-tool-catalog.js";
 import { CODEXA_VERSION } from "./version.js";
 export { compactMcpResult, compactNonPostEditMcpResult, compactPostEditMcpResult } from "./mcp/compaction.js";
 export { MCP_TOOL_CATALOG, PRIMARY_CODEX_LOOP, PRIMARY_MCP_TOOL_NAMES } from "./mcp-tool-catalog.js";
@@ -261,7 +261,8 @@ async function createCodexaMcpServer(repoRoot: string, options: QueryOptions): P
     lspTimeoutMs: input.lspTimeoutMs ?? queryOptions.lspTimeoutMs,
     lspMaxFiles: input.lspMaxFiles ?? queryOptions.lspMaxFiles
   });
-  const policyOptions: McpToolPolicyOptions = { autoRefresh: queryOptions.autoRefresh ?? true, sessionMemoryMode };
+  const enabledTools = queryOptions.toolProfile === "core" ? new Set<string>(CORE_PROFILE_TOOL_NAMES) : undefined;
+  const policyOptions: McpToolPolicyOptions = { autoRefresh: queryOptions.autoRefresh ?? true, sessionMemoryMode, enabledTools };
   const runTool = async (
     producer: (session: QuerySession) => Promise<QueryResult>,
     toolContext: string | { toolName: string; input?: Record<string, unknown>; autoRecord?: boolean }
@@ -276,7 +277,10 @@ async function createCodexaMcpServer(repoRoot: string, options: QueryOptions): P
         const rawResult = withSessionRuntime(await producer(session), session);
         const memoryResult = autoRecord && autoRecordSessionMemory ? await withAutoRecordedSessionMemory(session, rawResult, autoRecord.toolName, autoRecord.input) : rawResult;
         const responseFormat = toolInput?.responseFormat === "concise" ? ("concise" as const) : undefined;
-        const result = compactMcpResult(memoryResult, responseFormat ? { format: responseFormat } : undefined);
+        let result = compactMcpResult(memoryResult, responseFormat ? { format: responseFormat } : undefined);
+        if (responseFormat === "concise") {
+          result = { ...result, text: conciseText(result.text) };
+        }
         await notifyResourceListChangedAfterRefresh(server, session);
         return result;
       }, activeRepoRoot),
@@ -289,6 +293,7 @@ async function createCodexaMcpServer(repoRoot: string, options: QueryOptions): P
     server,
     queryOptions,
     outputSchema,
+    enabledTools,
     annotations: {
       pureRead: pureReadAnnotations,
       sourceContext: sourceContextAnnotations,
@@ -317,7 +322,7 @@ async function createCodexaMcpServer(repoRoot: string, options: QueryOptions): P
   });
 
   await registerArtifactResources(server, mcpRuntime.resolveActiveRepoRoot);
-  registerWorkflowPrompts(server);
+  registerWorkflowPrompts(server, enabledTools);
 
   return { configuredRepoRoot, queryOptions, server };
 }

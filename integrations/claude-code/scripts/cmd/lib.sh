@@ -19,8 +19,14 @@ CMD_LIB_INTEGRATION_ROOT="$(cd "$CMD_LIB_DIR/../.." && pwd -P)"
 # input (unbalanced quotes, etc.), with the error written to stderr.
 cmd_shlex_split() {
   local raw="${1:-}"
-  local -n out_arr="$2"
-  out_arr=()
+  # No `local -n` nameref: that is bash 4.3+, and stock macOS ships bash
+  # 3.2. The array name is allowlist-validated before any eval so untrusted
+  # input can never reach the evaluated identifier.
+  local arr_name="${2:-}"
+  case "$arr_name" in
+    "" | *[!a-zA-Z0-9_]*) return 2 ;;
+  esac
+  eval "$arr_name=()"
   [[ -z "$raw" ]] && return 0
   local tokens_file err_file
   tokens_file="$(mktemp)" || return 2
@@ -45,7 +51,7 @@ PY
   rm -f "$err_file"
   local token
   while IFS= read -r -d '' token; do
-    out_arr+=("$token")
+    eval "$arr_name+=(\"\$token\")"
   done <"$tokens_file"
   rm -f "$tokens_file"
   return 0

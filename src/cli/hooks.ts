@@ -3,6 +3,7 @@ import path from "node:path";
 import { effectiveAutonomyMode } from "../autonomy.js";
 import { runAutoVerifyForPostEdit, autoVerifyPolicySignature, sanitizeAutoVerifyText } from "../autoverify.js";
 import { acquireCacheLock } from "../cache-lock.js";
+import { saveImplicitBaselineSnapshot } from "../implicit-baseline.js";
 import { getFreshness } from "../indexer.js";
 import { resolveMcpRepoRoot, shouldPreferConfiguredRepoRoot } from "../mcp-repo-root.js";
 import {
@@ -24,13 +25,21 @@ export async function runPreEditHook(repo: string): Promise<void> {
   const configuredRoot = path.resolve(repo);
   await runAdvisoryHook(configuredRoot, "pre-edit", "change-plan snapshot check", async () => {
     const { activeRepoRoot } = await resolveHookRepoRoots(repo);
-    const snapshot = await loadTaskSnapshot(activeRepoRoot);
-    if (!snapshot.snapshot) {
-      console.log("Codexa: no change-plan snapshot is available. For code edits, call change_plan with saveSnapshot=true before editing when the task is non-trivial.");
-      return { status: "skipped", reason: "missing-change-plan-snapshot", taskId: snapshot.latestTaskId };
+    const baseline = await saveImplicitBaselineSnapshot(activeRepoRoot);
+    if (baseline.status === "existing-snapshot") {
+      console.log(`Codexa: change-plan snapshot ready (${baseline.taskId}). After edits, post_edit_review will compare planned vs actual work.`);
+      return { status: "ok", reason: "snapshot-ready", taskId: baseline.taskId };
     }
-    console.log(`Codexa: change-plan snapshot ready (${snapshot.snapshot.taskId}). After edits, post_edit_review will compare planned vs actual work.`);
-    return { status: "ok", reason: "snapshot-ready", taskId: snapshot.snapshot.taskId };
+    if (baseline.status === "saved") {
+      console.log(
+        `Codexa: saved an implicit pre-edit baseline (${baseline.taskId}); post_edit_review will diff the final tree against it. Call change_plan with saveSnapshot=true to declare planned scope and tests.`
+      );
+      return { status: "ok", reason: "implicit-baseline-saved", taskId: baseline.taskId };
+    }
+    console.log(
+      `Codexa: no change-plan snapshot is available${baseline.reason ? ` (${baseline.reason})` : ""}. For code edits, call change_plan with saveSnapshot=true before editing when the task is non-trivial.`
+    );
+    return { status: "skipped", reason: baseline.reason ?? "missing-change-plan-snapshot", taskId: baseline.latestTaskId };
   });
 }
 

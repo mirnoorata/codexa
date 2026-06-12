@@ -13,6 +13,9 @@ type McpActionability = (typeof MCP_ACTIONABILITY_VALUES)[number];
 export type McpToolPolicyOptions = {
   autoRefresh: boolean;
   sessionMemoryMode: string;
+  // When the server runs a reduced tool profile, guidance (nextTools,
+  // derived systemMessage) must not steer the model to unregistered tools.
+  enabledTools?: ReadonlySet<string>;
   input?: Record<string, unknown>;
   data?: Record<string, unknown>;
 };
@@ -31,7 +34,39 @@ type McpToolPolicy = {
 const sourceContextToolNames = new Set<string>(SOURCE_CONTEXT_MCP_TOOL_NAMES);
 const memoryRecordingToolNames = new Set<string>(MEMORY_RECORDING_MCP_TOOL_NAMES);
 
-export function createMcpOutputSchema(): Record<string, z.ZodTypeAny> {
+export type McpOutputSchemaDetail = "compact" | "full";
+
+export function mcpOutputSchemaDetail(): McpOutputSchemaDetail {
+  return process.env.CODEXA_MCP_OUTPUT_SCHEMA === "full" ? "full" : "compact";
+}
+
+export function createMcpOutputSchema(detail: McpOutputSchemaDetail = mcpOutputSchemaDetail()): Record<string, z.ZodTypeAny> {
+  // Every tool repeats this schema in tools/list, so its serialized size is a
+  // per-session token tax multiplied by the tool count. The compact default
+  // keeps the envelope's top-level contract (keys, required/optional, enums)
+  // and relaxes nested object internals to permissive records — every
+  // envelope that validates against the full schema also validates here.
+  // CODEXA_MCP_OUTPUT_SCHEMA=full restores the deep self-describing schema.
+  if (detail === "compact") {
+    const looseRecord = z.record(z.string(), z.unknown());
+    return {
+      schemaVersion: z.literal(1),
+      mode: z.string(),
+      actionability: z.enum(MCP_ACTIONABILITY_VALUES),
+      data: z.object({ mode: z.string() }).catchall(z.unknown()),
+      freshness: looseRecord,
+      refresh: looseRecord,
+      quality: z.unknown().optional(),
+      lifecycle: looseRecord,
+      toolPolicy: looseRecord.optional(),
+      worktree: looseRecord,
+      verificationProvenance: looseRecord,
+      truncation: z.record(z.string(), z.object({ total: z.number(), returned: z.number() })).optional(),
+      nextTools: z.array(z.unknown()).optional(),
+      systemMessage: z.string().optional(),
+      relatedResources: z.array(looseRecord).optional()
+    };
+  }
   const mcpTruncationSchema = z.record(z.string(), z.object({ total: z.number(), returned: z.number() }));
   const mcpRelatedResourceSchema = z.object({
     uri: z.string(),
@@ -153,7 +188,11 @@ function buildMcpEnvelope(result: { data: unknown; freshness: unknown; refresh?:
   const record = isRecord(data) ? data : {};
   const mode = typeof record.mode === "string" ? record.mode : "unknown";
   const lifecycle = lifecycleForMcpData(mode, record);
-  const guidance = guidanceForMcpEnvelope(record, lifecycle.nextTools);
+  if (policyOptions.enabledTools) {
+    const enabled = policyOptions.enabledTools;
+    lifecycle.nextTools = lifecycle.nextTools.filter((tool) => enabled.has(tool));
+  }
+  const guidance = guidanceForMcpEnvelope(record, lifecycle.nextTools, policyOptions.enabledTools);
   const relatedResources = relatedResourcesForMode(mode);
   const worktree = worktreeForMcpData(record);
   const toolPolicy = mcpToolPolicyForTool(toolName, { ...policyOptions, data: record });
@@ -176,13 +215,24 @@ function buildMcpEnvelope(result: { data: unknown; freshness: unknown; refresh?:
   };
 }
 
-function guidanceForMcpEnvelope(record: Record<string, unknown>, lifecycleNextTools: string[]): { nextTools: unknown[]; systemMessage?: string } {
+function guidanceForMcpEnvelope(
+  record: Record<string, unknown>,
+  lifecycleNextTools: string[],
+  enabledTools?: ReadonlySet<string>
+): { nextTools: unknown[]; systemMessage?: string } {
   const explicitNextTools = Array.isArray(record.nextTools);
-  const nextTools = explicitNextTools ? (compactNextTools(record.nextTools) as unknown[]) : lifecycleNextTools;
+  const rawNextTools = explicitNextTools ? (compactNextTools(record.nextTools) as unknown[]) : lifecycleNextTools;
+  const nextTools = enabledTools
+    ? rawNextTools.filter((entry) => {
+        const name = typeof entry === "string" ? entry : isRecord(entry) && typeof entry.tool === "string" ? entry.tool : undefined;
+        return name === undefined || enabledTools.has(name);
+      })
+    : rawNextTools;
   const explicitSystemMessage = stringValue(record.systemMessage);
+  const lifecycleFallback = typeof nextTools[0] === "string" ? (nextTools[0] as string) : undefined;
   return {
     nextTools,
-    systemMessage: explicitSystemMessage ?? (explicitNextTools ? undefined : lifecycleNextTools[0])
+    systemMessage: explicitSystemMessage ?? (explicitNextTools ? undefined : lifecycleFallback)
   };
 }
 

@@ -1,7 +1,6 @@
 ---
 description: Run Codexa post-edit review against the saved change-plan snapshot
 argument-hint: "[--change-type <type>] [--ran-test <path> ...] [--ran-command <cmd> ...]"
-disable-model-invocation: true
 allowed-tools: Bash(bash:*)
 ---
 

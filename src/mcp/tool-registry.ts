@@ -304,6 +304,11 @@ export const MCP_TOOL_CATALOG = MCP_TOOL_REGISTRY.map(({ name, tier, phase, cost
 
 export const MCP_TOOL_NAMES = Object.freeze(MCP_TOOL_REGISTRY.map((tool) => tool.name));
 export const PRIMARY_MCP_TOOL_NAMES = Object.freeze(MCP_TOOL_REGISTRY.filter((tool) => tool.tier === "primary").map((tool) => tool.name));
+// The "core" exposure profile: the primary loop plus the two cheap
+// inspection tools. Shared by `codexa init --tools core` (Codex
+// enabled_tools allowlist) and `codexa serve --tools core` (server-side
+// registration filter for hosts without a client allowlist).
+export const CORE_PROFILE_TOOL_NAMES = Object.freeze([...PRIMARY_MCP_TOOL_NAMES, "impact" as McpToolName, "freshness" as McpToolName]);
 export const ADVANCED_MCP_TOOL_NAMES = Object.freeze(MCP_TOOL_REGISTRY.filter((tool) => tool.tier === "advanced").map((tool) => tool.name));
 export const SOURCE_CONTEXT_MCP_TOOL_NAMES = Object.freeze(MCP_TOOL_REGISTRY.filter((tool) => tool.writeEffects === "index-cache-if-auto-refresh").map((tool) => tool.name));
 export const MEMORY_RECORDING_MCP_TOOL_NAMES = Object.freeze(MCP_TOOL_REGISTRY.filter((tool) => tool.writeEffects === "session-memory-auto").map((tool) => tool.name));

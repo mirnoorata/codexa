@@ -296,6 +296,7 @@ async function postEditReviewQueryInternal(
     hasActualEditedFiles && !hasCredibleVerificationEvidence && tests.length === 0 && workflowChecks.length === 0 && dependencyChecks.length === 0;
   const decision = postEditDecision({
     snapshot,
+    implicitBaseline: snapshot?.origin === "hook-implicit",
     loadedSnapshot,
     snapshotAmbiguity,
     worktreeDegradationReasons: session.worktreeDegradationReasons,
@@ -407,7 +408,9 @@ async function postEditReviewQueryInternal(
     "Codexa post-edit review",
     "Review gate: first-class post-edit review; reconcile snapshot, dirty diff, semantic context, and verification before finalizing.",
     `Task: ${task}`,
-    snapshot ? `Snapshot: ${snapshot.taskId} (${snapshot.createdAt})` : `Snapshot: unavailable${loadedSnapshot.missingReason ? ` (${loadedSnapshot.missingReason})` : ""}; using current dirty tree only`,
+    snapshot
+      ? `Snapshot: ${snapshot.taskId} (${snapshot.createdAt}${snapshot.origin === "hook-implicit" ? "; implicit pre-edit baseline" : ""})`
+      : `Snapshot: unavailable${loadedSnapshot.missingReason ? ` (${loadedSnapshot.missingReason})` : ""}; using current dirty tree only`,
     `Verdict: ${verdict}`,
     `Inspect classification: ${inspectMode}; authority ${completionAuthority}`,
     semanticReviewContext ? formatPostEditSemanticReviewContext(semanticReviewContext) : undefined,
@@ -423,7 +426,11 @@ async function postEditReviewQueryInternal(
     ...resolvedBaselineFiles.slice(0, 20).map((filePath) => `- ${filePath}`),
     "",
     "Plan drift:",
-    snapshot ? `- Planned edit targets: ${plannedScope.slice(0, 20).join(", ") || "none"}` : "- Planned edit targets: unavailable",
+    snapshot
+      ? snapshot.origin === "hook-implicit"
+        ? "- Planned edit targets: none declared (implicit baseline); call change_plan with saveSnapshot=true to declare scope and tests"
+        : `- Planned edit targets: ${plannedScope.slice(0, 20).join(", ") || "none"}`
+      : "- Planned edit targets: unavailable",
     `- Actual edited files since snapshot: ${editPaths.slice(0, 30).join(", ") || "none"}`,
     unplannedEditedFiles.length > 0 ? `- Unplanned edited files: ${unplannedEditedFiles.join(", ")}` : "- No unplanned edits detected against the saved planned scope.",
     plannedRenames.length > 0 ? `- Planned renames: ${plannedRenames.map((entry) => `${entry.oldPath} -> ${entry.path}`).join(", ")}` : undefined,
@@ -1169,6 +1176,7 @@ function compactSnapshotForData(snapshot: TaskSnapshot | undefined): unknown {
   return {
     taskId: snapshot.taskId,
     createdAt: snapshot.createdAt,
+    origin: snapshot.origin,
     changeType: snapshot.changeType,
     plannedEditTargets: limitArray(snapshot.plannedEditTargets, 30),
     plannedFiles: limitArray(snapshot.plannedFiles, 40),

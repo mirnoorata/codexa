@@ -38,6 +38,11 @@ try {
   requirePackedFile(packageFiles, "plugins/codexa/.mcp.json");
   requirePackedFile(packageFiles, "plugins/codexa/scripts/codexa-mcp.js");
   requirePackedFile(packageFiles, "plugins/codexa/skills/codexa/SKILL.md");
+  requirePackedFile(packageFiles, "integrations/claude-code/.claude-plugin/plugin.json");
+  requirePackedFile(packageFiles, "integrations/claude-code/.mcp.json");
+  requirePackedFile(packageFiles, "integrations/claude-code/scripts/codexa-mcp.js");
+  requirePackedFile(packageFiles, "integrations/claude-code/hooks/hooks.json");
+  requirePackedFile(packageFiles, "integrations/.claude-plugin/marketplace.json");
   rejectPackedPrefix(packageFiles, "src/");
   rejectPackedPrefix(packageFiles, ".codex/");
 
@@ -113,6 +118,19 @@ try {
     args: [installedPluginWrapper],
     env: { ...process.env, CODEXA_REPO: targetRepo, CODEXA_PLUGIN_AUTO_REFRESH: "0" },
     label: "installed plugin wrapper MCP startup"
+  });
+  // The Claude Code plugin launcher must resolve the bundled CLI through its
+  // walk-up (integrations/claude-code/scripts -> package root/dist) from the
+  // installed layout, and its core default must register the primary loop.
+  const installedClaudeLauncher = path.join(installedPackageRoot, "integrations", "claude-code", "scripts", "codexa-mcp.js");
+  if (!existsSync(installedClaudeLauncher)) {
+    throw new Error("installed package is missing the Claude Code plugin MCP launcher");
+  }
+  await smokeMcp(process.execPath, targetRepo, {
+    args: [installedClaudeLauncher],
+    env: { ...process.env, CODEXA_REPO: targetRepo, CODEXA_PLUGIN_AUTO_REFRESH: "0" },
+    requiredTools: ["freshness", "task_brief", "change_plan", "post_edit_review"],
+    label: "installed Claude Code plugin launcher MCP startup (core profile)"
   });
   createWorkspaceFocusedRepo(workspaceRoot, focusedRepo);
   const focusedInit = run(codexa, ["init", focusedRepo], {
@@ -219,7 +237,7 @@ async function smokeMcp(command, mcpRoot, options = {}) {
     await withTimeout(client.connect(transport), 15_000, "MCP connect timed out");
     const tools = await withTimeout(client.listTools(), 15_000, "MCP listTools timed out");
     const names = tools.tools.map((tool) => tool.name);
-    for (const name of ["freshness", "repo_map", "task_brief"]) {
+    for (const name of options.requiredTools ?? ["freshness", "repo_map", "task_brief"]) {
       if (!names.includes(name)) {
         throw new Error(`installed MCP server did not expose ${name}`);
       }

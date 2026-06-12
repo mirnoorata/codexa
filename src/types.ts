@@ -450,6 +450,9 @@ export interface RefreshInfo {
 export interface QueryOptions {
   autoRefresh?: boolean;
   sessionMemory?: "auto" | "off";
+  // MCP server-side tool exposure: "core" registers only the primary-loop
+  // tools (for hosts without a client-side allowlist such as Claude Code).
+  toolProfile?: "core" | "full";
   commandBudgetMs?: number;
   maxResultBytes?: number;
   maxResults?: number;
@@ -1023,6 +1026,9 @@ export interface TaskSnapshot {
   taskId: string;
   repoRoot: string;
   task?: string;
+  // "hook-implicit" marks an auto-saved pre-edit baseline with no declared
+  // plan scope; absent means an explicit change_plan snapshot.
+  origin?: "hook-implicit";
   changeType: ChangeType;
   createdAt: string;
   snapshotFreshness: FreshnessInfo;

@@ -16,6 +16,21 @@
           "type": "json",
           "path": "server.json",
           "jsonpath": "$.packages[0].version"
+        },
+        {
+          "type": "json",
+          "path": "plugins/codexa/.codex-plugin/plugin.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "integrations/claude-code/.claude-plugin/plugin.json",
+          "jsonpath": "$.version"
+        },
+        {
+          "type": "json",
+          "path": "integrations/.claude-plugin/marketplace.json",
+          "jsonpath": "$.plugins[0].version"
         }
       ]
     }
