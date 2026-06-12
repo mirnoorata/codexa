@@ -21,7 +21,7 @@ export const MCP_TOOL_REGISTRY = [
   {
     name: "session_context",
     title: "Codexa session context",
-    description: "Orient at session start or resume: project focus, dirty groups, likely workflows, and the next Codexa call to make. Alias of focus_brief. Compact output.",
+    description: "Session start context and project orientation: current focus, dirty file groups, likely workflows, and the next Codexa call to make. Use when starting or resuming work in a repository. Alias of focus_brief. Compact output.",
     tier: "primary",
     phase: "orientation",
     cost: "compact",
@@ -35,7 +35,7 @@ export const MCP_TOOL_REGISTRY = [
     name: "search",
     title: "Codexa hybrid semantic search",
     description:
-      "First-class target discovery when the task or identifier is ambiguous: one bounded hybrid pass (raw, exact, symbol, ranking; semantic only when configured) with likely tests and value/gap labels. Medium output; cheaper than context_pack.",
+      "Search the codebase: find code, files, symbols, and likely tests for an ambiguous task or identifier in one bounded hybrid pass (raw, exact, symbol, ranking; semantic only when configured) with value/gap labels. Medium output; cheaper than context_pack.",
     tier: "primary",
     phase: "inspect",
     cost: "medium",
@@ -49,7 +49,7 @@ export const MCP_TOOL_REGISTRY = [
     name: "task_brief",
     title: "Codexa task brief",
     description:
-      "Default pre-edit context once a target or bounded task is known: read-first files, impact expansion, risks, likely tests, freshness, confidence labels, snippets. Medium output.",
+      "Pre-edit context brief: what to read first before changing code — read-first files, impact expansion, risks, likely tests, freshness, confidence labels, snippets. Default once a target or bounded task is known. Medium output.",
     tier: "primary",
     phase: "brief",
     cost: "medium",
@@ -63,7 +63,7 @@ export const MCP_TOOL_REGISTRY = [
     name: "change_plan",
     title: "Codexa change plan",
     description:
-      "Plan a non-trivial edit; set saveSnapshot=true before editing so post_edit_review can detect drift. Returns plan targets, tests, freshness, and known gaps. Medium output.",
+      "Plan a code change and save a pre-edit snapshot: set saveSnapshot=true before editing so post_edit_review can detect drift against the plan. Returns planned edit targets, tests, freshness, and known gaps. Medium output.",
     tier: "primary",
     phase: "plan",
     cost: "medium",
@@ -77,7 +77,7 @@ export const MCP_TOOL_REGISTRY = [
     name: "post_edit_review",
     title: "Codexa post-edit review",
     description:
-      "Go-to post-edit review gate: compares the dirty tree against the change_plan snapshot for planned-vs-actual drift, symbol/risk deltas, affected callers/tests/workflows, and tests still unaccounted for. Pass the snapshot task id plus commands that actually ran. MCP calls do not persist outcome files. Large output, budget-compacted.",
+      "Review code changes for drift: compares the dirty tree against the change_plan snapshot for planned-vs-actual drift, unplanned edits, symbol/risk deltas, affected callers/tests/workflows, and tests still unaccounted for. Pass the snapshot task id plus commands that actually ran. MCP calls do not persist outcome files. Large output, budget-compacted.",
     tier: "primary",
     phase: "review",
     cost: "large",
@@ -90,7 +90,7 @@ export const MCP_TOOL_REGISTRY = [
   {
     name: "test_plan",
     title: "Codexa test plan",
-    description: "Recommend targeted tests for the current diff or top-ranked files. Recommendations only, not execution evidence. Compact output.",
+    description: "Which tests to run: recommend targeted tests and verification commands for the current diff or top-ranked files. Recommendations only, not execution evidence. Compact output.",
     tier: "primary",
     phase: "verify",
     cost: "compact",
@@ -103,7 +103,7 @@ export const MCP_TOOL_REGISTRY = [
   {
     name: "workflow_path",
     title: "Codexa workflow path",
-    description: "Trace route/job/manifest workflow paths related to a query, file, or symbol. Medium output.",
+    description: "Trace a route, endpoint, job, manifest, or workflow path related to a query, file, or symbol. Medium output.",
     tier: "advanced",
     phase: "inspect",
     cost: "medium",
@@ -116,7 +116,7 @@ export const MCP_TOOL_REGISTRY = [
   {
     name: "freshness",
     title: "Codexa freshness",
-    description: "Report whether the Codexa index is present, fresh, stale, or missing. Compact, read-only.",
+    description: "Index status check: report whether the Codexa codebase index is present, fresh, stale, or missing. Compact, read-only.",
     tier: "advanced",
     phase: "diagnose",
     cost: "compact",
@@ -129,7 +129,7 @@ export const MCP_TOOL_REGISTRY = [
   {
     name: "repo_map",
     title: "Codexa repo map",
-    description: "Ranked map of top modules and files for orientation. Compact output.",
+    description: "Repository map and project structure overview: ranked top modules and files for orientation. Compact output.",
     tier: "advanced",
     phase: "orientation",
     cost: "compact",
@@ -142,7 +142,7 @@ export const MCP_TOOL_REGISTRY = [
   {
     name: "find_context",
     title: "Codexa find context",
-    description: "Locate files, symbols, and usage sites matching a precise query. Compact output; cheaper than search when the name is already known.",
+    description: "Find files, symbols, definitions, and usage sites matching a precise known name. Compact output; cheaper than search when the name is already known.",
     tier: "advanced",
     phase: "inspect",
     cost: "compact",
@@ -156,7 +156,7 @@ export const MCP_TOOL_REGISTRY = [
     name: "context_pack",
     title: "Codexa context pack",
     description:
-      "Largest evidence packet for one task: focus files, bounded impact expansion, evidence snippets, impact groups, tests, freshness, provenance. Use only when task_brief is not enough. Large output.",
+      "Deep context packet for one task: focus files, bounded impact expansion, evidence snippets, impact groups, tests, freshness, provenance. Use only when task_brief is not enough. Large output.",
     tier: "advanced",
     phase: "brief",
     cost: "large",
@@ -169,7 +169,7 @@ export const MCP_TOOL_REGISTRY = [
   {
     name: "focus_brief",
     title: "Codexa focus brief",
-    description: "Classify a broad natural-language task, pick likely subsystems, and recommend the next Codexa call. Compact output.",
+    description: "Orient a broad natural-language question: classify the task, pick likely subsystems, and recommend the next Codexa call. Compact output.",
     tier: "advanced",
     phase: "orientation",
     cost: "compact",
@@ -182,7 +182,7 @@ export const MCP_TOOL_REGISTRY = [
   {
     name: "impact",
     title: "Codexa impact",
-    description: "Blast-radius evidence for one file or symbol; traversal depth auto-scales with changeType (rename/delete reach deeper than style). Medium output.",
+    description: "Impact analysis and blast radius: what could break if one file or symbol changes; traversal depth auto-scales with changeType (rename/delete reach deeper than style). Medium output.",
     tier: "advanced",
     phase: "inspect",
     cost: "medium",
@@ -195,7 +195,7 @@ export const MCP_TOOL_REGISTRY = [
   {
     name: "diff_impact",
     title: "Codexa diff impact",
-    description: "Group the current dirty git diff into impact modules before review or verification. Medium output.",
+    description: "Analyze the current git diff: group dirty working-tree changes into impact modules before review or verification. Medium output.",
     tier: "advanced",
     phase: "inspect",
     cost: "medium",
@@ -209,7 +209,7 @@ export const MCP_TOOL_REGISTRY = [
     name: "symbol_context",
     title: "Codexa symbol context",
     description:
-      "Proof-carrying neighborhood for one symbol: callers, callees, references, tests, risks, evidence. depth=1 is compact; depth=3 expands several-fold.",
+      "Symbol definition and neighborhood: callers, callees, references, tests, risks, and evidence for one symbol. depth=1 is compact; depth=3 expands several-fold.",
     tier: "advanced",
     phase: "inspect",
     cost: "medium",
@@ -222,7 +222,7 @@ export const MCP_TOOL_REGISTRY = [
   {
     name: "callers",
     title: "Codexa callers",
-    description: "Typed inbound graph edges (calls, references, imports, tests) for a file or symbol. Compact output.",
+    description: "Who calls or references this: typed inbound call-graph edges (calls, references, imports, tests) for a file or symbol. Compact output.",
     tier: "advanced",
     phase: "inspect",
     cost: "compact",
@@ -235,7 +235,7 @@ export const MCP_TOOL_REGISTRY = [
   {
     name: "callees",
     title: "Codexa callees",
-    description: "Typed outbound graph edges (calls, references, imports, tests, risks) for a file or symbol. Compact output.",
+    description: "What this calls or depends on: typed outbound call-graph edges (calls, references, imports, tests, risks) for a file or symbol. Compact output.",
     tier: "advanced",
     phase: "inspect",
     cost: "compact",
@@ -248,7 +248,7 @@ export const MCP_TOOL_REGISTRY = [
   {
     name: "dependency_path",
     title: "Codexa dependency path",
-    description: "Bounded typed graph path between two known files or symbols. Compact output.",
+    description: "How two files or symbols are connected: bounded typed dependency path between two known endpoints. Compact output.",
     tier: "advanced",
     phase: "inspect",
     cost: "compact",
@@ -261,7 +261,7 @@ export const MCP_TOOL_REGISTRY = [
   {
     name: "placeholder_report",
     title: "Codexa placeholder report",
-    description: "Indexed placeholder, dummy, TODO, and stub findings; tracked as risk signals that participate in post_edit_review deltas. Compact output.",
+    description: "Find TODOs, stubs, placeholders, and unimplemented code; tracked as risk signals that participate in post_edit_review deltas. Compact output.",
     tier: "advanced",
     phase: "risk",
     cost: "compact",
