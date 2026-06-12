@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.3.0](https://github.com/mirnoorata/codexa/compare/v0.2.2...v0.3.0) (2026-06-12)
+
+
+### Features
+
+* activate the edit-lifecycle governance loop for Claude Code ([#45](https://github.com/mirnoorata/codexa/issues/45)) ([ed1a91b](https://github.com/mirnoorata/codexa/commit/ed1a91b27f957ced86c27546e0bf5d7bdca74560))
+
 ## [0.2.2](https://github.com/mirnoorata/codexa/compare/v0.2.1...v0.2.2) (2026-06-12)
 
 
