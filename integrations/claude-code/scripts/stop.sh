@@ -16,10 +16,14 @@
 #   - Always exits 0. When a review's verdict is replan or a blocking
 #     inspect, the drift summary is made model-visible through the Stop
 #     hook JSON contract ({"decision":"block","reason":...}) so the agent
-#     can act on it; clean/advisory verdicts stay stderr-only. The
-#     stop_hook_active re-entrancy guard plus the fingerprint debounce
-#     bound this to at most one block per stop sequence and per dirty-tree
-#     state. Set CLAUDIO_STOP_BLOCK=0 for stderr-only behavior.
+#     can act on it; clean/advisory verdicts stay stderr-only. Blocking
+#     additionally requires BOTH opt-in signals: an explicit change_plan
+#     snapshot (implicit hook baselines never block) AND the session
+#     working inside the repo (mode 1) — parent-scan reviews of other
+#     workspace repos are always stderr-only. The stop_hook_active
+#     re-entrancy guard plus the fingerprint debounce bound this to at
+#     most one block per stop sequence and per dirty-tree state. Set
+#     CLAUDIO_STOP_BLOCK=0 for stderr-only behavior everywhere.
 
 set -u
 
@@ -31,10 +35,15 @@ MAX_STOP_REPOS_PER_TURN="${CLAUDIO_STOP_MAX_REPOS:-3}"
 
 # Run a post-edit review for one repo. Returns 0 in all cases — this is a
 # best-effort helper that never raises. Emits one stderr block per call.
+# block_eligible=1 only when the session is working inside this repo (mode
+# 1): parent-scan reviews of sibling/child repos must never block a session
+# that did not touch them — a stale snapshot in an unrelated workspace repo
+# would otherwise force-block every session rooted above it.
 claudio_stop_review_one() {
   local repo="$1"
   local session_id="$2"
   local data_dir="$3"
+  local block_eligible="${4:-0}"
 
   if ! claudio_has_snapshot "$repo"; then
     return 0
@@ -268,7 +277,9 @@ $(printf '%s\n' "$summary_fields" | sed 's/^/  /')
 [codexa] Full review: run /codexa-review or codexa post-edit-review $safe_repo
 EOF
 
-  claudio_stop_collect_block "$safe_repo" "$out" "$summary_fields"
+  if [[ "$block_eligible" == "1" ]]; then
+    claudio_stop_collect_block "$safe_repo" "$out" "$summary_fields"
+  fi
 
   return 0
 }
@@ -385,7 +396,7 @@ if [[ -n "$repo" ]] && claudio_has_snapshot "$repo"; then
     data_dir="$default_state_dir"
     mkdir -p "$data_dir" 2>/dev/null || true
   fi
-  claudio_stop_review_one "$repo" "$session_id" "$data_dir"
+  claudio_stop_review_one "$repo" "$session_id" "$data_dir" 1
   exit 0
 fi
 
@@ -421,7 +432,7 @@ while IFS= read -r _ranked_line; do
     mkdir -p "$data_dir" 2>/dev/null || true
   fi
   set +e
-  claudio_stop_review_one "$candidate" "$session_id" "$data_dir"
+  claudio_stop_review_one "$candidate" "$session_id" "$data_dir" 0
   review_rc=$?
   set -e
   if [[ "$review_rc" -ne 20 ]]; then

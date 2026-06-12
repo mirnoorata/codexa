@@ -1294,6 +1294,24 @@ else
   fail "stop ignores verdict lines before the review header" "rc=$LAST_RC stdout='$LAST_STDOUT'"
 fi
 
+# Parent-scan reviews (cwd ABOVE the wired repo) must never block, even on
+# a replan verdict from an explicit snapshot: only the session's working
+# repo is block-eligible.
+SCAN_PARENT="$TMP/scan-parent"
+mkdir -p "$SCAN_PARENT"
+SCAN_CHILD="$SCAN_PARENT/child-repo"
+make_wired_repo "$SCAN_CHILD"
+echo '{"taskId":"t","path":"t.json","createdAt":"now"}' >"$SCAN_CHILD/.codex/cache/codexa-tasks/latest.json"
+SCAN_NODE="$TMP/stub-node-scan"
+printf '#!/usr/bin/env bash\ncat <<OUT\n%s\nOUT\n' "$REPLAN_REVIEW" >"$SCAN_NODE"
+chmod +x "$SCAN_NODE"
+run_hook "stop.sh" "{\"session_id\":\"vscan\",\"cwd\":\"$SCAN_PARENT\"}" "$INTEG_ROOT" "CLAUDIO_NODE_BIN=$SCAN_NODE CODEXA_CLI=$TMP/stub-cli-review.js CLAUDE_PLUGIN_DATA=$TMP/scan-data"
+if [[ $LAST_RC -eq 0 && -z "$LAST_STDOUT" ]] && printf '%s' "$LAST_STDERR" | grep -q "Post-edit review"; then
+  pass "parent-scan reviews stay stderr-only even on a replan verdict"
+else
+  fail "parent-scan reviews stay stderr-only even on a replan verdict" "rc=$LAST_RC stdout='$LAST_STDOUT'"
+fi
+
 # Blocking is opt-in via an explicit plan: a replan verdict against a
 # hook-saved implicit baseline must stay stderr-only.
 IMPLICIT_REPLAN_REVIEW='Codexa post-edit review

@@ -29,7 +29,9 @@ When Claude Code is running in a Codexa-wired repo (one that contains
   blocking `inspect`, the summary is surfaced to the model through the Stop
   hook's `{"decision":"block","reason":…}` contract so Claude can act on the
   drift. Reviews against hook-saved implicit baselines never block — saving
-  a plan is the opt-in. Clean and advisory verdicts stay quiet. Debounced
+  a plan is the opt-in — and neither do parent-scan reviews of other
+  workspace repos: only the repo the session is working inside can block.
+  Clean and advisory verdicts stay quiet. Debounced
   per session+repo+dirty-tree state, with a `stop_hook_active` re-entrancy
   guard, so it blocks at most once per stop and never loops. Set
   `CLAUDIO_STOP_BLOCK=0` for stderr-only behavior.
