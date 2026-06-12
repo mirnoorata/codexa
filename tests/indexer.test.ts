@@ -738,6 +738,25 @@ describe("Codexa indexer", () => {
     expect(index.testEdges.some((edge) => edge.path === "tests/api/test_scoped.py" && edge.targetPath === "src/admin/scoped.py")).toBe(false);
   });
 
+  it("links a directory-named test to its unique source despite a basename collision", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-dir-named-test-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdir(path.join(repo, "src"), { recursive: true });
+    await mkdir(path.join(repo, "tests"), { recursive: true });
+    // The test is identified by its `tests/` directory, not a `.test`/`_test`
+    // suffix, so its basename collides with the source's — the source is still
+    // the unique non-test target.
+    await writeFile(path.join(repo, "src/button.ts"), "export function button() { return 1 }\n");
+    await writeFile(path.join(repo, "tests/button.ts"), "import { button } from '../src/button'\ntest('button', () => expect(button()).toBe(1))\n");
+
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t.io", "commit", "-m", "fixture"], { cwd: repo, stdio: "ignore" });
+
+    const index = await buildIndex({ repoRoot: repo, writeArtifacts: false });
+    expect(index.testEdges.some((edge) => edge.path === "tests/button.ts" && edge.targetPath === "src/button.ts")).toBe(true);
+    expect(index.testEdges.some((edge) => edge.path === "tests/button.ts" && edge.targetPath === "tests/button.ts")).toBe(false);
+  });
+
   it("content-hashes dirty files including non-source and multi-MB ones (streamed)", async () => {
     const repo = await createFixtureRepo();
     await buildIndex({ repoRoot: repo });

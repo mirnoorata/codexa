@@ -595,13 +595,18 @@ function inferTestTarget(testPath: string, files: Set<string>): string | undefin
     .replace(/\.spec\.([cm]?[jt]sx?)$/, ".$1")
     .replace(/(^|\/)test_([^/]+)\.py$/, "$1$2.py")
     .replace(/(^|\/)([^/]+)_test\.py$/, "$1$2.py");
-  if (files.has(normalized)) {
+  if (files.has(normalized) && normalized !== testPath) {
     return normalized;
   }
+  // A test's target is a source file, never itself or another test: exclude all
+  // test files so a directory-named test (`tests/button.ts` with a source at
+  // `src/button.ts`, both normalizing to basename `button.ts`) is not blocked by
+  // its own basename colliding with the source's.
+  const sourceFiles = [...files].filter((file) => file !== testPath && !isTestPath(file));
   // Prefer a unique file whose path ends with the full normalized relative path,
   // so tests/api/test_handlers.py -> api/handlers.py binds to src/api/handlers.py
   // even when another package also has a handlers.py.
-  const suffixMatches = [...files].filter((file) => file === normalized || file.endsWith(`/${normalized}`));
+  const suffixMatches = sourceFiles.filter((file) => file === normalized || file.endsWith(`/${normalized}`));
   if (suffixMatches.length === 1) {
     return suffixMatches[0];
   }
@@ -611,7 +616,7 @@ function inferTestTarget(testPath: string, files: Set<string>): string | undefin
   // cross-module TESTS edge that corrupts blast radius and test recommendations.
   // A wrong edge is worse than no edge, so refuse the guess when ambiguous.
   const base = path.posix.basename(normalized);
-  const candidates = [...files].filter((file) => path.posix.basename(file) === base);
+  const candidates = sourceFiles.filter((file) => path.posix.basename(file) === base);
   return candidates.length === 1 ? candidates[0] : undefined;
 }
 
