@@ -1,7 +1,7 @@
 # Change Summary
 
 - Project: `codexa`
-- Worktree: `/srv/worktree/codexa/codex/codexa-scip-importer-20260617`
+- Worktree: `/path/to/codexa-worktree`
 - Branch: `codex/general/codexa-codexa-scip-importer-20260617`
 - Base: `main`
 - Primary commit: `5197492`
@@ -24,8 +24,8 @@
 ## Verification
 
 - git diff --check: passed
-- bash -lc 'source /home/q/.nvm/nvm.sh && nvm use 22.22.2 >/dev/null && npm run check': passed
-- Codexa not wired: no .codex/config.toml
+- bash -lc 'source /path/to/nvm.sh && nvm use 22.22.2 >/dev/null && npm run check': passed
+- Codexa post-edit-review: passed manually with Verdict: continue after final-scope snapshot refresh
 - git diff --cached --check: passed
 - staged safety scan: passed
 

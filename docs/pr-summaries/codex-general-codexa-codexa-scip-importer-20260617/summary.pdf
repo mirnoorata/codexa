@@ -12,7 +12,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
 endobj
 5 0 obj
-<< /Length 1690 >>
+<< /Length 1713 >>
 stream
 BT
 /F1 10 Tf
@@ -21,7 +21,7 @@ BT
 (Change Summary) Tj T*
 () Tj T*
 (- Project: codexa) Tj T*
-(- Worktree: /srv/worktree/codexa/codex/codexa-scip-importer-20260617) Tj T*
+(- Worktree: /path/to/codexa-worktree) Tj T*
 (- Branch: codex/general/codexa-codexa-scip-importer-20260617) Tj T*
 (- Base: main) Tj T*
 (- Primary commit: 5197492) Tj T*
@@ -44,9 +44,9 @@ BT
 (Verification) Tj T*
 () Tj T*
 (- git diff --check: passed) Tj T*
-(- bash -lc 'source /home/q/.nvm/nvm.sh && nvm use 22.22.2 >/dev/null && npm run check':) Tj T*
-(passed) Tj T*
-(- Codexa not wired: no .codex/config.toml) Tj T*
+(- bash -lc 'source /path/to/nvm.sh && nvm use 22.22.2 >/dev/null && npm run check': passed) Tj T*
+(- Codexa post-edit-review: passed manually with Verdict: continue after final-scope snapshot) Tj T*
+(refresh) Tj T*
 (- git diff --cached --check: passed) Tj T*
 (- staged safety scan: passed) Tj T*
 () Tj T*
@@ -69,5 +69,5 @@ xref
 trailer
 << /Size 6 /Root 1 0 R >>
 startxref
-2052
+2075
 %%EOF
