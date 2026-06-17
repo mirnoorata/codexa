@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.4.0](https://github.com/mirnoorata/codexa/compare/v0.3.0...v0.4.0) (2026-06-17)
+
+
+### Features
+
+* enforce and CI-gate the retrieval eval; sharpen the companion surface ([b72d40e](https://github.com/mirnoorata/codexa/commit/b72d40eb7f713ee2b732471007a486c212860d54))
+
 ## [0.3.0](https://github.com/mirnoorata/codexa/compare/v0.2.2...v0.3.0) (2026-06-12)
 
 
