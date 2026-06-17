@@ -1,34 +1,36 @@
 # Change Summary
 
 - Project: `codexa`
-- Worktree: `/path/to/codexa-worktree`
+- Worktree: `/srv/worktree/codexa/codex/codexa-scip-importer-20260617`
 - Branch: `codex/general/codexa-codexa-scip-importer-20260617`
 - Base: `main`
-- Primary commit: `5197492`
-- Subject: `feat(static-analysis): import SCIP code intelligence reports`
+- Primary commit: `8e4be00`
+- Subject: `fix(static-analysis): harden SCIP report ingestion`
 
 ## Changed Files
 
-5197492 feat(static-analysis): import SCIP code intelligence reports
- README.md                                  |   7 +-
- docs/architecture/codexa-context-server.md |  35 +-
- src/cli.ts                                 |   5 +-
- src/scip-import.ts                         | 542 +++++++++++++++++++++++++++++
- src/static-analysis.ts                     |  39 ++-
- src/symbol-report-ingest.ts                |   5 +-
- tests/command.test.ts                      |  50 ++-
- tests/static-analysis.test.ts              | 213 +++++++++++-
- 8 files changed, 873 insertions(+), 23 deletions(-)
- create mode 100644 src/scip-import.ts
+8e4be00 fix(static-analysis): harden SCIP report ingestion
+ docs/architecture/codexa-context-server.md |   12 +-
+ src/indexer.ts                             |   77 +-
+ src/indexer/external-facts.ts              |   20 +-
+ src/indexer/freshness.ts                   |   22 +-
+ src/risk-ingest.ts                         |  159 +++-
+ src/scip-import.ts                         |  245 ++++--
+ src/static-analysis.ts                     |  397 +++++++--
+ src/symbol-report-ingest.ts                |  326 ++++++-
+ src/types.ts                               |    4 +
+ tests/indexer.test.ts                      |  962 +++++++++++++++++++++
+ tests/static-analysis.test.ts              | 1280 +++++++++++++++++++++++++++-
+ 11 files changed, 3292 insertions(+), 212 deletions(-)
 
 ## Verification
 
 - git diff --check: passed
-- bash -lc 'source /path/to/nvm.sh && nvm use 22.22.2 >/dev/null && npm run check': passed
-- Codexa post-edit-review: passed manually with Verdict: continue after final-scope snapshot refresh
+- source /home/q/.nvm/nvm.sh && nvm use 22.22.2 >/dev/null && npm run check: passed
+- Codexa not wired: no .codex/config.toml
 - git diff --cached --check: passed
 - staged safety scan: passed
 
 ## Notes
 
-Adds a JSON-only SCIP import lane that converts scip print --json output into CodexaSymbolReportV1 artifacts for derived symbol and relationship context without vendoring or running SCIP indexers.
+Hardened SCIP conversion and external static-analysis report ingestion after adversarial review, including transactional scanner publish, report trust-boundary checks, freshness hashing, and lane ownership tests.
