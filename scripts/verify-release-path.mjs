@@ -88,7 +88,7 @@ requireText(".github/workflows/release-please.yml", [
   "github.repository == 'mirnoorata/codexa'",
   "secrets.RELEASE_PLEASE_TOKEN",
   "release: published",
-  "googleapis/release-please-action@v4",
+  "googleapis/release-please-action@v5",
   "config-file: release-please-config.json",
   "manifest-file: .release-please-manifest.json"
 ]);
