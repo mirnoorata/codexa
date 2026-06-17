@@ -83,9 +83,16 @@ export function scoreScenario(scenario: EvalScenario, result: QueryResult, basel
   if (precisionAtK !== null && precisionAtK < minPrecision) {
     failures.push(`precision@${precisionK} ${precisionAtK.toFixed(2)} < ${minPrecision.toFixed(2)}`);
   }
+  // The compactness ratio is meaningless against a tiny baseline: a 1-2
+  // line `git status` makes ANY useful packet look bloated (ratio 5.00 for
+  // ten context files against two dirty ones). Enforce only when the
+  // baseline is substantial enough for the comparison to mean something.
+  const MIN_BASELINE_LINES_FOR_RATIO = 5;
   if (
     scenario.oracle.maxSelectedToBaselineRatio !== undefined &&
     selectedToBaselineRatio !== null &&
+    baselineLines !== null &&
+    baselineLines >= MIN_BASELINE_LINES_FOR_RATIO &&
     selectedToBaselineRatio > scenario.oracle.maxSelectedToBaselineRatio
   ) {
     failures.push(`selected/baseline ratio ${selectedToBaselineRatio.toFixed(2)} > ${scenario.oracle.maxSelectedToBaselineRatio.toFixed(2)}`);
@@ -116,6 +123,16 @@ export function scoreScenario(scenario: EvalScenario, result: QueryResult, basel
   }
   if (failOnRefresh && refreshed) {
     failures.push(`query auto-refreshed from ${result.refresh?.reason ?? "unknown"}`);
+  }
+  // The headline gate conditions, enforced — not just recorded as
+  // calibration data. Without these, a ranking regression could sit at the
+  // per-scenario minimum thresholds while raw grep strictly wins, and the
+  // build would stay green under a step named "fails if raw grep wins".
+  if (rawRgBetter) {
+    failures.push(`raw baseline beat Codexa: ${rawRgBetterReason ?? "baseline metrics higher"}`);
+  }
+  if (heuristicHeavy) {
+    failures.push("heuristic-heavy packet: heuristic evidence outweighs authoritative+derived");
   }
 
   const measured = [fileRecall, changedFileRecall, testRecall, precisionAtK].filter((value): value is number => value !== null);
