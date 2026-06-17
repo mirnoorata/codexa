@@ -19,6 +19,7 @@ const SYMBOL_REPORT_PATHS = [".codex/static-analysis/symbols.json", "reports/sta
 const SYMBOL_REPORT_DIRS = [".codex/static-analysis", "reports/static-analysis"];
 const MAX_SYMBOL_REPORT_BYTES = 2 * 1024 * 1024;
 const MAX_SYMBOL_REPORTS = 50;
+const MAX_SYMBOL_REPORT_RELATIONSHIPS = 50_000;
 const SUPPORTED_RELATIONSHIP_KINDS = new Set<GraphEdgeKind>(["DEFINES", "CALLS", "REFERENCES", "IMPORTS", "IMPLEMENTS", "EXTENDS", "EXPORTS", "TYPE_EXPORTS"]);
 
 export interface ExternalSymbolFacts {
@@ -74,7 +75,7 @@ async function factsFromSymbolReport(
     pathSet.add(normalizedPath);
     normalizedSymbols.push({ input: symbol, path: normalizedPath });
   }
-  for (const relationship of report.relationships ?? []) {
+  for (const relationship of (report.relationships ?? []).slice(0, MAX_SYMBOL_REPORT_RELATIONSHIPS)) {
     const normalizedFromPath = relationship.fromPath ? await normalizeExistingRepoFile(repoRoot, relationship.fromPath) : undefined;
     const normalizedToPath = relationship.toPath ? await normalizeExistingRepoFile(repoRoot, relationship.toPath) : undefined;
     for (const candidate of [relationship.fromPath, relationship.toPath]) {
@@ -154,7 +155,7 @@ async function factsFromSymbolReport(
     .filter((symbol) => fileByPath.has(symbol.path));
 
   const graphEdges: GraphEdgeFact[] = [];
-  for (const relationship of report.relationships ?? []) {
+  for (const relationship of (report.relationships ?? []).slice(0, MAX_SYMBOL_REPORT_RELATIONSHIPS)) {
     const edge = graphEdgeFromRelationship({
       relationship,
       reportPath,

@@ -159,13 +159,16 @@ The watcher has bounded operational knobs: `--debounce-ms`, `--poll-ms`,
 SARIF, generic SARIF, Codexa risk JSON reports, and bounded
 `CodexaSymbolReportV1` symbol reports into `.codex/static-analysis/` and
 reindexes by default so the findings become `RiskSignal`, `Symbol`, usage, and
-typed graph facts. Symbol report paths must realpath under the repo and exist as
-files. Imported symbol relationships are labeled `source: "static-analysis"`
-with confidence capped at `derived`, giving Rust/Go/Java/etc. repositories a
-lower-trust symbol lane without Codexa owning native parsers for those
-languages. It can optionally run user-installed `semgrep` or `codeql` binaries,
-but this is never implicit and is not exposed through MCP. The command writes
-reports/cache files under `.codex/` only; it does not edit source code.
+typed graph facts. It can also import SCIP JSON produced by
+`scip print --json`, convert it into a bounded Codexa symbol report, and then
+feed that converted report through the same derived-confidence path. Symbol and
+SCIP document paths must realpath under the repo and exist as files. Imported
+symbol relationships are labeled `source: "static-analysis"` with confidence
+capped at `derived`, giving Rust/Go/Java/etc. repositories a lower-trust symbol
+lane without Codexa owning native parsers for those languages. It can optionally
+run user-installed `semgrep` or `codeql` binaries, but this is never implicit
+and is not exposed through MCP. The command writes reports/cache files under
+`.codex/` only; it does not edit source code.
 
 `search` is the first-class target-discovery surface. It runs a bounded raw
 `rg` lookup, then overlays exact/symbol evidence, semantic retrieval when the
@@ -335,17 +338,19 @@ execution boundaries.
 
 Third-party static-analysis integration is report-based, not code-based. Codexa
 can ingest Semgrep JSON, CodeQL SARIF, generic SARIF, a small generic risk JSON
-shape, or a `CodexaSymbolReportV1` JSON symbol report from
-`.codex/static-analysis/` and `reports/`, but it does not vendor Semgrep or
-CodeQL engine code, bundled rules, query packs, CLI binaries, or external
+shape, SCIP JSON exported by `scip print --json`, or a
+`CodexaSymbolReportV1` JSON symbol report from `.codex/static-analysis/` and
+`reports/`, but it does not vendor Semgrep, SCIP, or CodeQL engine code,
+bundled rules, query packs, CLI binaries, protobuf runtimes, or external
 language analyzers. That keeps V1 small and avoids mixing Codexa's MIT package
 with third-party runtime/license obligations. Users can still run Semgrep,
-CodeQL, Rust/Go/Java/etc. analyzers, or explicitly ask `codexa static-analysis`
-to invoke installed Semgrep/CodeQL scanners, and let Codexa fold the produced
-findings into ranked risk and symbol context.
+CodeQL, SCIP-capable Rust/Go/Java/etc. analyzers, or explicitly ask
+`codexa static-analysis` to invoke installed Semgrep/CodeQL scanners, and let
+Codexa fold the produced findings into ranked risk and symbol context.
 
-The static-analysis bridge deliberately stores only scanner output. Semgrep
-configs such as `p/default` and CodeQL query suites such as
+The static-analysis bridge deliberately stores imported reports or bounded
+Codexa conversions under `.codex/`, not analyzer code or runtime dependencies.
+Semgrep configs such as `p/default` and CodeQL query suites such as
 `codeql/<language>-queries:codeql-suites/<language>-code-scanning.qls` remain
 owned by the user's scanner installation. Scanner execution defaults are
 conservative: Semgrep runs with `--metrics=off`, CodeQL output is SARIF, and both

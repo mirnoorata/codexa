@@ -252,6 +252,7 @@ program
   .option("--sarif <path...>", "generic SARIF report to copy into .codex/static-analysis")
   .option("--generic-report <path...>", "generic Codexa risk JSON report to copy into .codex/static-analysis")
   .option("--symbol-report <path...>", "CodexaSymbolReportV1 JSON report to copy into .codex/static-analysis")
+  .option("--scip-report <path...>", "SCIP JSON from scip print --json to convert into a Codexa symbol report")
   .option("--run-semgrep", "run an installed Semgrep CLI and ingest JSON output", false)
   .option("--semgrep-config <config...>", "Semgrep config value; repeat or pass multiple values", ["p/default"])
   .option("--run-codeql", "run an installed CodeQL CLI for JavaScript/TypeScript and Python and ingest SARIF output", false)
@@ -261,7 +262,7 @@ program
   .option("--timeout-ms <n>", "scanner command timeout in milliseconds", parseIntOption, 600_000)
   .option("--index", "reindex after reports are copied or generated", true)
   .option("--no-index", "only copy/generate reports")
-  .description("Import Semgrep/CodeQL/SARIF risk reports, optionally run user-installed scanners, and fold findings into Codexa context.")
+  .description("Import risk and symbol/code-intelligence reports, optionally run user-installed scanners, and fold findings into Codexa context.")
   .action(
     async (
       repo: string,
@@ -271,6 +272,7 @@ program
         sarif?: string[];
         genericReport?: string[];
         symbolReport?: string[];
+        scipReport?: string[];
         runSemgrep: boolean;
         semgrepConfig: string[];
         runCodeql: boolean;
@@ -287,6 +289,7 @@ program
         sarifReports: opts.sarif,
         genericReports: opts.genericReport,
         symbolReports: opts.symbolReport,
+        scipReports: opts.scipReport,
         runSemgrep: opts.runSemgrep,
         semgrepConfigs: opts.semgrepConfig,
         runCodeql: opts.runCodeql,

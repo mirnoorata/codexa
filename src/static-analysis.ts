@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { buildIndexLocked } from "./indexer.js";
 import { loadExternalRiskSignalReport, type ExternalRiskReportDiagnostic } from "./risk-ingest.js";
+import { convertScipJsonReportToSymbolReport } from "./scip-import.js";
 import { validateCodexaSymbolReportFile } from "./symbol-report-ingest.js";
 import type { CodexaIndex } from "./types.js";
 import { isSubpath, normalizePath, stableId } from "./util.js";
@@ -9,6 +10,7 @@ import { runCommand } from "./command.js";
 
 const STATIC_ANALYSIS_DIR = ".codex/static-analysis";
 const CODEQL_DB_DIR = ".codex/cache/codeql-db";
+const MAX_GENERATED_SYMBOL_REPORT_BYTES = 2 * 1024 * 1024;
 
 export interface StaticAnalysisOptions {
   semgrepReports?: string[];
@@ -16,6 +18,7 @@ export interface StaticAnalysisOptions {
   sarifReports?: string[];
   genericReports?: string[];
   symbolReports?: string[];
+  scipReports?: string[];
   runSemgrep?: boolean;
   semgrepConfigs?: string[];
   runCodeql?: boolean;
@@ -27,7 +30,7 @@ export interface StaticAnalysisOptions {
 }
 
 export interface StaticAnalysisReport {
-  kind: "semgrep" | "codeql" | "sarif" | "generic" | "shellcheck" | "symbol-report";
+  kind: "semgrep" | "codeql" | "sarif" | "generic" | "shellcheck" | "symbol-report" | "scip";
   source: string;
   path: string;
   copied: boolean;
@@ -68,6 +71,9 @@ export async function updateStaticAnalysisReports(repoInput: string, options: St
   }
   for (const source of options.symbolReports ?? []) {
     reports.push(await importSymbolReport(repoRoot, source));
+  }
+  for (const source of options.scipReports ?? []) {
+    reports.push(await importScipReport(repoRoot, source));
   }
 
   if (options.runSemgrep) {
@@ -130,6 +136,37 @@ async function importReport(repoRoot: string, kind: StaticAnalysisReport["kind"]
 async function importSymbolReport(repoRoot: string, sourceInput: string): Promise<StaticAnalysisReport> {
   await validateCodexaSymbolReportFile(repoRoot, sourceInput);
   return importReport(repoRoot, "symbol-report", sourceInput);
+}
+
+async function importScipReport(repoRoot: string, sourceInput: string): Promise<StaticAnalysisReport> {
+  const source = path.resolve(sourceInput);
+  const report = await convertScipJsonReportToSymbolReport(repoRoot, sourceInput);
+  const targetDir = path.join(repoRoot, STATIC_ANALYSIS_DIR);
+  await fs.mkdir(targetDir, { recursive: true });
+  const destination = path.join(targetDir, reportFileName("scip", source).replace(/\.[^.]+$/i, ".symbols.json"));
+  await writeJsonAtomic(destination, report);
+  await validateCodexaSymbolReportFile(repoRoot, destination);
+  return {
+    kind: "scip",
+    source,
+    path: normalizePath(path.relative(repoRoot, destination)),
+    copied: true
+  };
+}
+
+async function writeJsonAtomic(destination: string, value: unknown): Promise<void> {
+  const content = `${JSON.stringify(value, null, 2)}\n`;
+  if (Buffer.byteLength(content, "utf8") > MAX_GENERATED_SYMBOL_REPORT_BYTES) {
+    throw new Error(`Generated symbol report exceeds ${MAX_GENERATED_SYMBOL_REPORT_BYTES} bytes: ${normalizePath(path.basename(destination))}`);
+  }
+  const temp = `${destination}.${process.pid}.${stableId("tmp", destination, Date.now())}.tmp`;
+  try {
+    await fs.writeFile(temp, content, "utf8");
+    await fs.rename(temp, destination);
+  } catch (error) {
+    await fs.rm(temp, { force: true }).catch(() => undefined);
+    throw error;
+  }
 }
 
 async function runSemgrep(repoRoot: string, configs: string[], timeoutMs: number): Promise<StaticAnalysisRun> {

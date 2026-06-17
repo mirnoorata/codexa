@@ -523,12 +523,15 @@ The default safe shape is report ingestion:
 codexa static-analysis /path/to/project \
   --semgrep-report /tmp/semgrep.json \
   --codeql-report /tmp/codeql.sarif \
-  --symbol-report /tmp/codexa-symbols.json
+  --symbol-report /tmp/codexa-symbols.json \
+  --scip-report /tmp/index.scip.json
 ```
 
 Codexa also accepts a bounded `CodexaSymbolReportV1` JSON document so external
 language tools can feed symbols and relationships into Codexa with `derived`
-confidence.
+confidence. SCIP reports are accepted as JSON exported by `scip print --json`;
+Codexa converts them into the same bounded symbol-report lane and does not run
+or vendor SCIP indexers.
 
 Scanner execution flags such as `--run-semgrep`, `--run-codeql`, and
 `--run-shellcheck` are explicit opt-ins. They run installed local tools under
