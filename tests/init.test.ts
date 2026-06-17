@@ -627,3 +627,25 @@ describe("init profile preservation and entry safety", () => {
     expect(config).not.toContain("/pnpm/dlx/");
   });
 });
+
+describe("launch pinning for ephemeral runner caches", () => {
+  it("pins a versioned npx launch for yarn dlx temp paths", async () => {
+    const repo = await createInitRepo();
+    const yarnCli = "/tmp-cache/xfs-9a1b2c3d/dlx-48211/node_modules/@mirnoorata/codexa/dist/cli.js";
+
+    const result = await initializeProject(repo, { cliPath: yarnCli, index: false });
+
+    expect(result.launchNote).toContain("npx");
+    const config = await readFile(path.join(repo, ".codex/config.toml"), "utf8");
+    expect(config).toContain('command = "npx"');
+    expect(config).not.toContain("xfs-");
+  });
+
+  it("does not pin for ordinary install paths", async () => {
+    const repo = await createInitRepo();
+    const result = await initializeProject(repo, { cliPath: "/usr/lib/node_modules/@mirnoorata/codexa/dist/cli.js", index: false });
+    expect(result.launchNote).toBeNull();
+    const config = await readFile(path.join(repo, ".codex/config.toml"), "utf8");
+    expect(config).toContain('command = "node"');
+  });
+});

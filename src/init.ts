@@ -47,11 +47,16 @@ interface LaunchSpec {
 }
 
 // An ephemeral runner cache path (npm's ~/.npm/_npx/<hash>/…, pnpm's
-// …/pnpm/dlx/<hash>/…) is evicted on cache prune; baking it into MCP config
-// breaks server startup weeks later with no visible cause. Pin the published
-// package version instead so the config stays launchable.
+// …/pnpm/dlx/<hash>/…, yarn's $TMP/xfs-<hash>/dlx-<pid>/…) is evicted on
+// cache prune or reboot; baking it into MCP config breaks server startup
+// weeks later with no visible cause. Pin the published package version
+// instead so the config stays launchable.
 function resolveLaunchSpec(cliPath: string): LaunchSpec {
-  if (/[\\/]_npx[\\/]/u.test(cliPath) || /[\\/]pnpm[\\/]dlx[\\/]/u.test(cliPath)) {
+  // The yarn shape requires BOTH segments (xfs-<hex>/dlx-<id>): matching
+  // a bare "dlx-" directory would mis-pin ordinary local installs that
+  // happen to live under a dlx-named folder.
+  const ephemeral = /[\\/]_npx[\\/]/u.test(cliPath) || /[\\/]pnpm[\\/]dlx[\\/]/u.test(cliPath) || /[\\/]xfs-[0-9a-f]+[\\/]dlx-[^\\/]+[\\/]/u.test(cliPath);
+  if (ephemeral) {
     return { command: "npx", args: ["-y", `@mirnoorata/codexa@${CODEXA_VERSION}`], pinnedNpx: true };
   }
   return { command: "node", args: [cliPath], pinnedNpx: false };

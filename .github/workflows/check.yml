@@ -41,6 +41,22 @@ jobs:
       - name: Run Codexa gates
         run: npm run check
 
+      # The retrieval-quality gate: a scenario FAILS outright if the raw
+      # rg/git baseline beats Codexa, output exceeds budgets, or packets are
+      # heuristic-heavy. Seeded per commit so the synthetic anti-cheat
+      # holdouts cannot be overfitted. `npm run check` already built dist.
+      - name: Run retrieval eval gate (fails if raw grep wins)
+        run: npm run eval:ci
+
+      - name: Upload eval report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: codexa-eval-report
+          path: .codex/cache/codexa-eval/latest.json
+          if-no-files-found: ignore
+          retention-days: 30
+
   package-smoke:
     # Keep this as a separate source-to-tarball gate so package installation
     # failures cannot be hidden by source-tree tests.
