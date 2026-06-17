@@ -497,7 +497,10 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
     {
       inputSchema: {
         task: z.string().optional(),
-        files: z.array(z.string()).max(20).optional(),
+        // Planning surfaces accept more files than the context tools: a
+        // 20-file cap forced legitimately large changes to under-declare
+        // scope, guaranteeing false unplanned-edit drift at review time.
+        files: z.array(z.string()).max(64).optional(),
         symbols: z.array(z.string()).max(20).optional(),
         query: z.string().optional(),
         changeType: changeTypeSchema.optional(),
@@ -524,7 +527,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
       inputSchema: {
         task: z.string().optional(),
         taskId: z.string().optional(),
-        files: z.array(z.string()).max(20).optional(),
+        files: z.array(z.string()).max(64).optional(),
         symbols: z.array(z.string()).max(20).optional(),
         changeType: changeTypeSchema.optional(),
         tokenBudget: z.number().int().min(600).max(10000).optional(),

@@ -1,5 +1,8 @@
 # Codexa
 
+[![Check](https://github.com/mirnoorata/codexa/actions/workflows/check.yml/badge.svg)](https://github.com/mirnoorata/codexa/actions/workflows/check.yml)
+[![npm](https://img.shields.io/npm/v/%40mirnoorata%2Fcodexa)](https://www.npmjs.com/package/@mirnoorata/codexa)
+
 Codexa is an edit-lifecycle governance layer for AI coding agents — plan
 conformance, drift review, and verification crediting — built on a local,
 deterministic codebase map.
@@ -626,6 +629,7 @@ matches `HEAD`.
 Codexa has a structured eval harness:
 
 ```bash
+node dist/cli.js index /path/to/project
 node dist/cli.js eval /path/to/project --suite all --seed codexa-v1-benchmark
 ```
 
@@ -634,10 +638,12 @@ against raw `rg`/`git status` baselines, tracks recall/precision/test
 recommendations/context size, and can run ranking experiments without changing
 production ranking. The claim is deliberately falsifiable: a scenario fails
 outright if the raw-grep baseline does the job better, and the harness runs in
-CI — so "beats grep on its scenarios" is a gate, not a one-off benchmark.
+CI on every push (`npm run eval:ci` in the check workflow, seeded per commit
+so the synthetic holdouts cannot be overfitted) — "beats grep on its
+scenarios" is a gate, not a one-off benchmark.
 
-Measured results for v0.2.0 (seed `codexa-v020-release`, full suite, archived
-in [`reports/benchmarks/v0.2.0-eval.json`](reports/benchmarks/v0.2.0-eval.json)):
+Measured results for v0.3.0 (seed `codexa-v030-eval`, full suite, archived
+in [`reports/benchmarks/v0.3.0-eval.json`](reports/benchmarks/v0.3.0-eval.json)):
 
 | Metric | Result |
 | --- | --- |
@@ -648,6 +654,12 @@ in [`reports/benchmarks/v0.2.0-eval.json`](reports/benchmarks/v0.2.0-eval.json))
 | Scenarios where raw `rg`/`git` beat Codexa | 0 |
 | Packet size vs. raw baseline output (mean) | 0.66x |
 | Over-budget packets | 0 |
+
+Known imperfections in that run, recorded by the harness itself: 2
+false-positive impact files and 1 broad-retrieval failure
+(`synthetic-session-context-seedless`) — see the `calibrationSummary` block in
+the archived report. The previous run is kept at
+[`reports/benchmarks/v0.2.0-eval.json`](reports/benchmarks/v0.2.0-eval.json).
 
 Do not update public benchmark claims without rerunning the eval on the current
 checkout and current target.

@@ -419,8 +419,8 @@ describe("Codexa MCP server", () => {
     expect(MCP_TOOL_REGISTRY.map((tool) => ({ name: tool.name, title: tool.title, description: tool.description }))).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ name: "change_plan", title: "Codexa change plan", description: expect.stringContaining("saveSnapshot=true") }),
-        expect.objectContaining({ name: "search", title: "Codexa hybrid semantic search", description: expect.stringContaining("First-class target discovery") }),
-        expect.objectContaining({ name: "post_edit_review", title: "Codexa post-edit review", description: expect.stringContaining("Go-to post-edit review gate") })
+        expect.objectContaining({ name: "search", title: "Codexa hybrid semantic search", description: expect.stringContaining("Search the codebase") }),
+        expect.objectContaining({ name: "post_edit_review", title: "Codexa post-edit review", description: expect.stringContaining("Review code changes for drift") })
       ])
     );
   });
