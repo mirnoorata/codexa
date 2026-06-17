@@ -99,6 +99,9 @@ codexa init /path/to/project --claude   # also writes a repo-root .mcp.json for 
 codexa session-start /path/to/project
 ```
 
+For a start-to-finish first setup, see the
+[new user tutorial](https://github.com/mirnoorata/codexa/blob/main/docs/guides/new-user-tutorial.md).
+
 After `codexa init`, the target repository gets a repo-local `.codex/config.toml`
 entry that lets Codex discover the Codexa MCP server automatically, and with
 `--claude` a repo-root `.mcp.json` so Claude Code discovers the same server
