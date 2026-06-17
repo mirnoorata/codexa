@@ -225,6 +225,7 @@ export interface CodexaSymbolReportRelationshipV1 {
 export interface CodexaSymbolReportV1 {
   schemaVersion: 1;
   tool: string;
+  generatedBy?: string;
   language: string;
   symbols: CodexaSymbolReportSymbolV1[];
   relationships?: CodexaSymbolReportRelationshipV1[];
@@ -400,6 +401,9 @@ export interface FreshnessInfo {
   externalRiskReportHashes?: Record<string, string>;
   indexedExternalRiskReportHashes?: Record<string, string>;
   externalRiskReportDiagnostics?: Array<{ path: string; reason: string; sizeBytes?: number; limitBytes?: number }>;
+  externalSymbolReportHashes?: Record<string, string>;
+  indexedExternalSymbolReportHashes?: Record<string, string>;
+  externalSymbolReportDiagnostics?: Array<{ path: string; reason: string; sizeBytes?: number; limitBytes?: number }>;
 }
 
 export interface CodexaIndex {

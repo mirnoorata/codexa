@@ -8,14 +8,20 @@ const MAX_SCIP_DOCUMENTS = 5_000;
 const MAX_SCIP_OCCURRENCES = 100_000;
 const MAX_SCIP_SYMBOLS = 20_000;
 const MAX_SCIP_RELATIONSHIPS = 50_000;
+const MAX_SCIP_ENCLOSING_RANGE_CHECKS = 1_000_000;
+const MAX_SCIP_INT32 = 2_147_483_647;
 const SCIP_ROLE_DEFINITION = 1;
 const SCIP_ROLE_IMPORT = 2;
+const SCIP_ROLE_FORWARD_DEFINITION = 64;
+export const CODEXA_SCIP_SYMBOL_REPORT_GENERATOR = "codexa-scip-import";
 
 type CodexaSymbolKind = SymbolFact["kind"];
 
 interface ScipRange {
   startLine: number;
+  startCharacter: number;
   endLine: number;
+  endCharacter: number;
 }
 
 interface LocalSymbolInfo {
@@ -58,13 +64,14 @@ export async function convertScipJsonReportToSymbolReport(repoRootInput: string,
   let occurrenceCount = 0;
   let scipSymbolCount = 0;
   let scipRelationshipCount = 0;
+  let scipContainmentCheckCount = 0;
   const documentInfos: DocumentInfo[] = [];
   const symbolByScipId = new Map<string, LocalSymbolInfo>();
   const convertedSymbols = new Map<string, CodexaSymbolReportSymbolV1>();
 
   for (let documentIndex = 0; documentIndex < documents.length; documentIndex += 1) {
     const document = objectValue(documents[documentIndex], `documents[${documentIndex}]`);
-    const relativePath = stringField(document, "relativePath", "relative_path");
+    const relativePath = documentPathField(document);
     if (!relativePath) {
       throw new Error(`SCIP document ${documentIndex} is missing relativePath.`);
     }
@@ -104,7 +111,7 @@ export async function convertScipJsonReportToSymbolReport(repoRootInput: string,
     }
 
     for (const [symbolId, definition] of definitions) {
-      if (isLocalScipSymbol(symbolId) || symbolByScipId.has(symbolId)) {
+      if (isLocalScipSymbol(symbolId) || documentSymbols.has(symbolId)) {
         continue;
       }
       const localInfo: LocalSymbolInfo = {
@@ -123,16 +130,23 @@ export async function convertScipJsonReportToSymbolReport(repoRootInput: string,
   }
 
   const relationships = new Map<string, CodexaSymbolReportRelationshipV1>();
+  const countRelationship = (): void => {
+    scipRelationshipCount += 1;
+    if (scipRelationshipCount > MAX_SCIP_RELATIONSHIPS) {
+      throw new Error(`SCIP JSON report contains more than ${MAX_SCIP_RELATIONSHIPS} relationships.`);
+    }
+  };
+  const countContainmentCheck = (): void => {
+    scipContainmentCheckCount += 1;
+    if (scipContainmentCheckCount > MAX_SCIP_ENCLOSING_RANGE_CHECKS) {
+      throw new Error(`SCIP JSON report requires more than ${MAX_SCIP_ENCLOSING_RANGE_CHECKS} enclosing range checks.`);
+    }
+  };
   for (let documentIndex = 0; documentIndex < documents.length; documentIndex += 1) {
     const document = documents[documentIndex] as Record<string, unknown>;
     const documentInfo = documentInfos[documentIndex];
-    addRelationshipsFromSymbolInfo(document, documentInfo, symbolByScipId, relationships, () => {
-      scipRelationshipCount += 1;
-      if (scipRelationshipCount > MAX_SCIP_RELATIONSHIPS) {
-        throw new Error(`SCIP JSON report contains more than ${MAX_SCIP_RELATIONSHIPS} relationships.`);
-      }
-    });
-    addRelationshipsFromOccurrences(document, documentInfo, symbolByScipId, relationships);
+    addRelationshipsFromSymbolInfo(document, documentInfo, symbolByScipId, relationships, countRelationship);
+    addRelationshipsFromOccurrences(document, documentInfo, symbolByScipId, relationships, countRelationship, countContainmentCheck);
   }
 
   const symbols = [...convertedSymbols.values()].sort(sortSymbols);
@@ -140,6 +154,7 @@ export async function convertScipJsonReportToSymbolReport(repoRootInput: string,
   return {
     schemaVersion: 1,
     tool: scipToolName(parsed),
+    generatedBy: CODEXA_SCIP_SYMBOL_REPORT_GENERATOR,
     language,
     symbols,
     relationships: [...relationships.values()].sort(sortRelationships)
@@ -159,7 +174,14 @@ function parseScipJson(content: string, sourceInput: string): Record<string, unk
 }
 
 async function normalizeScipDocumentPath(repoReal: string, relativePath: string): Promise<string> {
-  if (!relativePath || relativePath.includes("\0") || relativePath.includes("\\") || relativePath.startsWith("/") || path.win32.isAbsolute(relativePath)) {
+  if (
+    !relativePath ||
+    relativePath !== relativePath.trim() ||
+    /[\x00-\x1f\x7f]/u.test(relativePath) ||
+    relativePath.includes("\\") ||
+    relativePath.startsWith("/") ||
+    path.win32.isAbsolute(relativePath)
+  ) {
     throw new Error(`SCIP document path is not a canonical relative path: ${relativePath}`);
   }
   const parts = relativePath.split("/");
@@ -183,7 +205,7 @@ function definitionRanges(occurrences: unknown[], documentIndex: number): Map<st
   for (let occurrenceIndex = 0; occurrenceIndex < occurrences.length; occurrenceIndex += 1) {
     const occurrence = objectValue(occurrences[occurrenceIndex], `documents[${documentIndex}].occurrences[${occurrenceIndex}]`);
     const symbol = stringField(occurrence, "symbol");
-    if (!symbol || !hasRole(occurrence, SCIP_ROLE_DEFINITION, ["definition"])) {
+    if (!symbol || !hasDefinitionRole(occurrence, `documents[${documentIndex}].occurrences[${occurrenceIndex}]`)) {
       parseOptionalRange(occurrence, `documents[${documentIndex}].occurrences[${occurrenceIndex}]`);
       continue;
     }
@@ -206,12 +228,13 @@ function addSymbol(
   symbolByScipId: Map<string, LocalSymbolInfo>,
   documentSymbols: Map<string, LocalSymbolInfo>
 ): void {
-  if (!convertedSymbols.has(localInfo.symbol) && convertedSymbols.size >= MAX_SCIP_SYMBOLS) {
+  const symbolKey = `${localInfo.symbol}\0${localInfo.path}`;
+  if (!convertedSymbols.has(symbolKey) && convertedSymbols.size >= MAX_SCIP_SYMBOLS) {
     throw new Error(`SCIP JSON report generates more than ${MAX_SCIP_SYMBOLS} symbols.`);
   }
   symbolByScipId.set(localInfo.symbol, localInfo);
   documentSymbols.set(localInfo.symbol, localInfo);
-  convertedSymbols.set(localInfo.symbol, {
+  convertedSymbols.set(symbolKey, {
     id: localInfo.symbol,
     name: localInfo.name,
     qualifiedName: localInfo.symbol,
@@ -234,15 +257,15 @@ function addRelationshipsFromSymbolInfo(
   for (const symbolInfoValue of arrayField(document, "symbols") ?? []) {
     const symbolInfo = objectValue(symbolInfoValue, "SCIP symbol information");
     const fromSymbol = stringField(symbolInfo, "symbol");
-    const from = fromSymbol ? symbolByScipId.get(fromSymbol) : undefined;
-    if (!from || from.path !== documentInfo.path) {
+    const from = fromSymbol ? documentInfo.symbols.get(fromSymbol) : undefined;
+    if (!from) {
       continue;
     }
     for (const relationshipValue of arrayField(symbolInfo, "relationships") ?? []) {
       countRelationship();
       const relationship = objectValue(relationshipValue, `SCIP relationships for ${fromSymbol}`);
       const toSymbol = stringField(relationship, "symbol");
-      const to = toSymbol ? symbolByScipId.get(toSymbol) : undefined;
+      const to = toSymbol ? documentInfo.symbols.get(toSymbol) ?? symbolByScipId.get(toSymbol) : undefined;
       if (!to) {
         continue;
       }
@@ -260,31 +283,39 @@ function addRelationshipsFromOccurrences(
   document: Record<string, unknown>,
   documentInfo: DocumentInfo,
   symbolByScipId: Map<string, LocalSymbolInfo>,
-  relationships: Map<string, CodexaSymbolReportRelationshipV1>
+  relationships: Map<string, CodexaSymbolReportRelationshipV1>,
+  countRelationship: () => void,
+  countContainmentCheck: () => void
 ): void {
-  const enclosingDefinitions = [...documentInfo.symbols.values()].filter((symbol) => symbol.bodyRange);
-  if (enclosingDefinitions.length === 0) {
-    return;
-  }
+  const enclosingDefinitions = [...documentInfo.symbols.values()]
+    .filter((symbol) => symbol.bodyRange)
+    .sort((a, b) => compareRangeSpecificity(a.bodyRange!, b.bodyRange!) || a.symbol.localeCompare(b.symbol));
   for (const occurrenceValue of arrayField(document, "occurrences") ?? []) {
     const occurrence = objectValue(occurrenceValue, "SCIP occurrence");
     const toSymbolId = stringField(occurrence, "symbol");
-    const to = toSymbolId ? symbolByScipId.get(toSymbolId) : undefined;
-    if (!to || hasRole(occurrence, SCIP_ROLE_DEFINITION, ["definition"])) {
+    const to = toSymbolId ? documentInfo.symbols.get(toSymbolId) ?? symbolByScipId.get(toSymbolId) : undefined;
+    if (!to || hasDefinitionRole(occurrence, "SCIP occurrence")) {
       continue;
     }
     const range = parseOptionalRange(occurrence, "SCIP occurrence");
     if (!range) {
       continue;
     }
-    const from = enclosingDefinitions
-      .filter((symbol) => symbol.symbol !== to.symbol && symbol.bodyRange && rangeWithin(range, symbol.bodyRange))
-      .sort((a, b) => rangeWidth(a.bodyRange!) - rangeWidth(b.bodyRange!) || a.symbol.localeCompare(b.symbol))[0];
-    if (!from) {
-      continue;
+    let from: LocalSymbolInfo | undefined;
+    for (const candidate of enclosingDefinitions) {
+      countContainmentCheck();
+      if (candidate.bodyRange && rangeWithin(range, candidate.bodyRange)) {
+        from = candidate;
+        break;
+      }
     }
-    const kind = hasRole(occurrence, SCIP_ROLE_IMPORT, ["import"]) ? "IMPORTS" : "REFERENCES";
-    addRelationship(relationships, kind, from, to, range.startLine + 1, `SCIP ${kind.toLowerCase()} occurrence`);
+    countRelationship();
+    const kind = hasRole(occurrence, SCIP_ROLE_IMPORT, "SCIP occurrence") ? "IMPORTS" : "REFERENCES";
+    if (from) {
+      addRelationship(relationships, kind, from, to, range.startLine + 1, `SCIP ${kind.toLowerCase()} occurrence`);
+    } else {
+      addFileRelationship(relationships, kind, documentInfo.path, to, range.startLine + 1, `SCIP file-level ${kind.toLowerCase()} occurrence`);
+    }
   }
 }
 
@@ -296,7 +327,7 @@ function addRelationship(
   line: number | undefined,
   reason: string
 ): void {
-  const key = `${kind}\0${from.symbol}\0${to.symbol}\0${line ?? 0}`;
+  const key = `${kind}\0${from.path}\0${from.symbol}\0${to.path}\0${to.symbol}\0${line ?? 0}`;
   if (!relationships.has(key) && relationships.size >= MAX_SCIP_RELATIONSHIPS) {
     throw new Error(`SCIP JSON report generates more than ${MAX_SCIP_RELATIONSHIPS} relationships.`);
   }
@@ -313,6 +344,29 @@ function addRelationship(
   relationships.set(key, relationship);
 }
 
+function addFileRelationship(
+  relationships: Map<string, CodexaSymbolReportRelationshipV1>,
+  kind: CodexaSymbolReportRelationshipV1["kind"],
+  fromPath: string,
+  to: LocalSymbolInfo,
+  line: number | undefined,
+  reason: string
+): void {
+  const key = `${kind}\0${fromPath}\0${to.symbol}\0${line ?? 0}`;
+  if (!relationships.has(key) && relationships.size >= MAX_SCIP_RELATIONSHIPS) {
+    throw new Error(`SCIP JSON report generates more than ${MAX_SCIP_RELATIONSHIPS} relationships.`);
+  }
+  relationships.set(key, {
+    kind,
+    fromPath,
+    toSymbol: to.symbol,
+    toPath: to.path,
+    line,
+    confidence: "derived",
+    reason
+  });
+}
+
 function parseOptionalRange(record: Record<string, unknown>, context: string, camel = "range", snake = "range"): ScipRange | undefined {
   const typed = typedRange(record, camel === "enclosingRange" || camel === "enclosing_range");
   if (typed) {
@@ -323,9 +377,6 @@ function parseOptionalRange(record: Record<string, unknown>, context: string, ca
     return undefined;
   }
   const parsed = rangeValue(value, context);
-  if (parsed.endLine < parsed.startLine) {
-    throw new Error(`SCIP ${context} has an invalid range.`);
-  }
   return parsed;
 }
 
@@ -335,11 +386,14 @@ function typedRange(record: Record<string, unknown>, enclosing: boolean): ScipRa
     if (!single || typeof single !== "object" || Array.isArray(single)) {
       throw new Error("SCIP typed range has a malformed range.");
     }
-    const line = numberField(single as Record<string, unknown>, "line");
-    if (line === undefined) {
+    const singleRecord = single as Record<string, unknown>;
+    const line = numberField(singleRecord, "line");
+    const startCharacter = numberField(singleRecord, "startCharacter", "start_character");
+    const endCharacter = numberField(singleRecord, "endCharacter", "end_character");
+    if (line === undefined || startCharacter === undefined || endCharacter === undefined) {
       throw new Error("SCIP typed range has a malformed range.");
     }
-    return { startLine: line, endLine: line };
+    return validatedRange({ startLine: line, startCharacter, endLine: line, endCharacter }, "typed range");
   }
   const multi = enclosing ? field(record, "multiLineEnclosingRange", "multi_line_enclosing_range") : field(record, "multiLineRange", "multi_line_range");
   if (multi !== undefined) {
@@ -348,61 +402,104 @@ function typedRange(record: Record<string, unknown>, enclosing: boolean): ScipRa
     }
     const multiRecord = multi as Record<string, unknown>;
     const startLine = numberField(multiRecord, "startLine", "start_line");
+    const startCharacter = numberField(multiRecord, "startCharacter", "start_character");
     const endLine = numberField(multiRecord, "endLine", "end_line");
-    if (startLine === undefined || endLine === undefined) {
+    const endCharacter = numberField(multiRecord, "endCharacter", "end_character");
+    if (startLine === undefined || startCharacter === undefined || endLine === undefined || endCharacter === undefined) {
       throw new Error("SCIP typed range has a malformed range.");
     }
-    if (endLine < startLine) {
-      throw new Error("SCIP typed range has an invalid range.");
-    }
-    return { startLine, endLine };
+    return validatedRange({ startLine, startCharacter, endLine, endCharacter }, "typed range");
   }
   return undefined;
 }
 
 function rangeValue(value: unknown, context: string): ScipRange {
   if (Array.isArray(value)) {
-    const numbers = value.map((entry) => (typeof entry === "number" && Number.isInteger(entry) && entry >= 0 ? entry : undefined));
+    const numbers = value.map((entry) => (typeof entry === "number" && Number.isSafeInteger(entry) && entry >= 0 && entry <= MAX_SCIP_INT32 ? entry : undefined));
     if ((numbers.length === 3 || numbers.length === 4) && numbers.every((entry) => entry !== undefined)) {
-      return { startLine: numbers[0]!, endLine: numbers.length === 3 ? numbers[0]! : numbers[2]! };
+      return validatedRange(
+        {
+          startLine: numbers[0]!,
+          startCharacter: numbers[1]!,
+          endLine: numbers.length === 3 ? numbers[0]! : numbers[2]!,
+          endCharacter: numbers.length === 3 ? numbers[2]! : numbers[3]!
+        },
+        context
+      );
     }
   }
   if (value && typeof value === "object") {
     const record = value as Record<string, unknown>;
     const single = field(record, "singleLineRange", "single_line_range");
     if (single && typeof single === "object") {
-      const line = numberField(single as Record<string, unknown>, "line");
-      if (line !== undefined) return { startLine: line, endLine: line };
+      const singleRecord = single as Record<string, unknown>;
+      const line = numberField(singleRecord, "line");
+      const startCharacter = numberField(singleRecord, "startCharacter", "start_character");
+      const endCharacter = numberField(singleRecord, "endCharacter", "end_character");
+      if (line !== undefined && startCharacter !== undefined && endCharacter !== undefined) return validatedRange({ startLine: line, startCharacter, endLine: line, endCharacter }, context);
     }
     const multi = field(record, "multiLineRange", "multi_line_range");
     if (multi && typeof multi === "object") {
       const multiRecord = multi as Record<string, unknown>;
       const startLine = numberField(multiRecord, "startLine", "start_line");
+      const startCharacter = numberField(multiRecord, "startCharacter", "start_character");
       const endLine = numberField(multiRecord, "endLine", "end_line");
-      if (startLine !== undefined && endLine !== undefined) return { startLine, endLine };
+      const endCharacter = numberField(multiRecord, "endCharacter", "end_character");
+      if (startLine !== undefined && startCharacter !== undefined && endLine !== undefined && endCharacter !== undefined) return validatedRange({ startLine, startCharacter, endLine, endCharacter }, context);
     }
-    const startLine = numberField(record, "startLine", "start_line");
-    const endLine = numberField(record, "endLine", "end_line") ?? startLine;
+    const startLine = requiredRangeIntegerField(record, context, "startLine", "start_line");
+    const startCharacter = optionalRangeIntegerField(record, context, 0, "startCharacter", "start_character");
+    const endLine = optionalRangeIntegerField(record, context, startLine, "endLine", "end_line");
+    const endCharacter = optionalRangeIntegerField(record, context, startCharacter, "endCharacter", "end_character");
     if (startLine !== undefined && endLine !== undefined) {
-      return { startLine, endLine };
+      return validatedRange({ startLine, startCharacter, endLine, endCharacter }, context);
     }
   }
   throw new Error(`SCIP ${context} has a malformed range.`);
 }
 
-function hasRole(record: Record<string, unknown>, bit: number, names: string[]): boolean {
+function validatedRange(range: ScipRange, context: string): ScipRange {
+  if (range.endLine < range.startLine || (range.endLine === range.startLine && range.endCharacter < range.startCharacter)) {
+    throw new Error(`SCIP ${context} has an invalid range.`);
+  }
+  return range;
+}
+
+function hasRole(record: Record<string, unknown>, bit: number, context: string): boolean {
   const value = field(record, "symbolRoles", "symbol_roles");
-  if (typeof value === "number" && Number.isInteger(value)) {
+  if (value === undefined) {
+    return false;
+  }
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= MAX_SCIP_INT32) {
     return (value & bit) !== 0;
   }
-  const lowerNames = new Set(names.map((name) => name.toLowerCase()));
-  if (typeof value === "string") {
-    return lowerNames.has(value.trim().toLowerCase());
+  throw new Error(`SCIP ${context} symbolRoles must be a non-negative integer bitset.`);
+}
+
+function hasDefinitionRole(record: Record<string, unknown>, context: string): boolean {
+  return hasRole(record, SCIP_ROLE_DEFINITION, context) || hasRole(record, SCIP_ROLE_FORWARD_DEFINITION, context);
+}
+
+function requiredRangeIntegerField(record: Record<string, unknown>, context: string, camel: string, snake = camel): number | undefined {
+  const value = field(record, camel, snake);
+  if (value === undefined) {
+    return undefined;
   }
-  if (Array.isArray(value)) {
-    return value.some((entry) => typeof entry === "string" && lowerNames.has(entry.trim().toLowerCase()));
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= MAX_SCIP_INT32) {
+    return value;
   }
-  return false;
+  throw new Error(`SCIP ${context} has a malformed range.`);
+}
+
+function optionalRangeIntegerField(record: Record<string, unknown>, context: string, fallback: number | undefined, camel: string, snake = camel): number {
+  const value = field(record, camel, snake);
+  if (value === undefined) {
+    return fallback ?? 0;
+  }
+  if (typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= MAX_SCIP_INT32) {
+    return value;
+  }
+  throw new Error(`SCIP ${context} has a malformed range.`);
 }
 
 function scipSymbolKind(symbolInfo: Record<string, unknown>): CodexaSymbolKind {
@@ -502,9 +599,14 @@ function stringField(record: Record<string, unknown>, camel: string, snake = cam
   return typeof value === "string" && value.trim() ? value.trim() : undefined;
 }
 
+function documentPathField(record: Record<string, unknown>): string | undefined {
+  const value = field(record, "relativePath", "relative_path");
+  return typeof value === "string" && value.length > 0 ? value : undefined;
+}
+
 function numberField(record: Record<string, unknown>, camel: string, snake = camel): number | undefined {
   const value = field(record, camel, snake);
-  return typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : undefined;
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 && value <= MAX_SCIP_INT32 ? value : undefined;
 }
 
 function truthyField(record: Record<string, unknown>, camel: string, snake = camel): boolean {
@@ -520,11 +622,28 @@ function isLocalScipSymbol(symbol: string): boolean {
 }
 
 function rangeWithin(candidate: ScipRange, container: ScipRange): boolean {
-  return candidate.startLine >= container.startLine && candidate.endLine <= container.endLine;
+  return comparePosition(candidate.startLine, candidate.startCharacter, container.startLine, container.startCharacter) >= 0 && comparePosition(candidate.endLine, candidate.endCharacter, container.endLine, container.endCharacter) <= 0;
 }
 
-function rangeWidth(range: ScipRange): number {
+function compareRangeSpecificity(a: ScipRange, b: ScipRange): number {
+  return (
+    lineSpan(a) - lineSpan(b) ||
+    comparePosition(b.startLine, b.startCharacter, a.startLine, a.startCharacter) ||
+    comparePosition(a.endLine, a.endCharacter, b.endLine, b.endCharacter) ||
+    characterSpan(a) - characterSpan(b)
+  );
+}
+
+function lineSpan(range: ScipRange): number {
   return range.endLine - range.startLine;
+}
+
+function characterSpan(range: ScipRange): number {
+  return range.endLine === range.startLine ? Math.max(0, range.endCharacter - range.startCharacter) : 0;
+}
+
+function comparePosition(lineA: number, characterA: number, lineB: number, characterB: number): number {
+  return lineA - lineB || characterA - characterB;
 }
 
 function sortSymbols(a: CodexaSymbolReportSymbolV1, b: CodexaSymbolReportSymbolV1): number {
@@ -537,6 +656,8 @@ function sortRelationships(a: CodexaSymbolReportRelationshipV1, b: CodexaSymbolR
     (a.fromPath ?? "").localeCompare(b.fromPath ?? "") ||
     (a.toPath ?? "").localeCompare(b.toPath ?? "") ||
     (a.fromSymbol ?? "").localeCompare(b.fromSymbol ?? "") ||
-    (a.toSymbol ?? "").localeCompare(b.toSymbol ?? "")
+    (a.toSymbol ?? "").localeCompare(b.toSymbol ?? "") ||
+    (a.line ?? 0) - (b.line ?? 0) ||
+    (a.reason ?? "").localeCompare(b.reason ?? "")
   );
 }

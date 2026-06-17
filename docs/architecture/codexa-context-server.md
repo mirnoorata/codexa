@@ -166,9 +166,9 @@ SCIP document paths must realpath under the repo and exist as files. Imported
 symbol relationships are labeled `source: "static-analysis"` with confidence
 capped at `derived`, giving Rust/Go/Java/etc. repositories a lower-trust symbol
 lane without Codexa owning native parsers for those languages. It can optionally
-run user-installed `semgrep` or `codeql` binaries, but this is never implicit
-and is not exposed through MCP. The command writes reports/cache files under
-`.codex/` only; it does not edit source code.
+run user-installed `semgrep`, `codeql`, or `shellcheck` binaries, but this is
+never implicit and is not exposed through MCP. The command writes reports/cache
+files under `.codex/` only; it does not edit source code.
 
 `search` is the first-class target-discovery surface. It runs a bounded raw
 `rg` lookup, then overlays exact/symbol evidence, semantic retrieval when the
@@ -344,9 +344,9 @@ shape, SCIP JSON exported by `scip print --json`, or a
 bundled rules, query packs, CLI binaries, protobuf runtimes, or external
 language analyzers. That keeps V1 small and avoids mixing Codexa's MIT package
 with third-party runtime/license obligations. Users can still run Semgrep,
-CodeQL, SCIP-capable Rust/Go/Java/etc. analyzers, or explicitly ask
-`codexa static-analysis` to invoke installed Semgrep/CodeQL scanners, and let
-Codexa fold the produced findings into ranked risk and symbol context.
+CodeQL, ShellCheck, SCIP-capable Rust/Go/Java/etc. analyzers, or explicitly ask
+`codexa static-analysis` to invoke installed Semgrep/CodeQL/ShellCheck scanners,
+and let Codexa fold the produced findings into ranked risk and symbol context.
 
 The static-analysis bridge deliberately stores imported reports or bounded
 Codexa conversions under `.codex/`, not analyzer code or runtime dependencies.

@@ -490,6 +490,602 @@ describe("Codexa indexer", () => {
     expect(stale.reason).toBe("external-risk-reports-changed");
   });
 
+  it("marks freshness stale when external risk reports become invalid", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-risk-invalid-freshness-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    execFileSync("git", ["add", ".gitignore", "src/app.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "risk-invalid-freshness"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    await buildIndex({ repoRoot: repo, writeArtifacts: true });
+
+    await writeFile(path.join(repo, ".codex/static-analysis/risks.json"), "{not-json", "utf8");
+
+    const stale = await getFreshness(repo);
+    expect(stale.stale).toBe(true);
+    expect(stale.reason).toBe("external-risk-reports-changed");
+    expect(stale.externalRiskReportDiagnostics?.some((diagnostic) => diagnostic.path === ".codex/static-analysis/risks.json")).toBe(true);
+  });
+
+  it("does not read external risk reports through symlinks outside the repository", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-risk-symlink-outside-"));
+    const outside = await mkdtemp(path.join(os.tmpdir(), "codexa-risk-symlink-outside-target-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    await writeFile(path.join(outside, "risks.json"), JSON.stringify({ risks: [{ path: "src/app.ts", signal: "outside-risk", reason: "outside", score: 9 }] }), "utf8");
+    await symlink(path.join(outside, "risks.json"), path.join(repo, ".codex/static-analysis/risks.json"));
+    execFileSync("git", ["add", ".gitignore", "src/app.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "risk-symlink-outside"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+
+    const index = await buildIndex({ repoRoot: repo, writeArtifacts: true });
+    expect(index.risks.some((risk) => risk.signal === "outside-risk")).toBe(false);
+    expect(index.freshness.externalRiskReportHashes?.[".codex/static-analysis/risks.json"]).toBeUndefined();
+  });
+
+  it("marks freshness stale when ignored external symbol reports change", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-symbol-freshness-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    execFileSync("git", ["add", ".gitignore", "src/app.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "symbol-freshness"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    await buildIndex({ repoRoot: repo, writeArtifacts: true });
+
+    const fresh = await getFreshness(repo);
+    expect(fresh.stale).toBe(false);
+    await writeFile(
+      path.join(repo, ".codex/static-analysis/symbols.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        tool: "fixture-symbol-tool",
+        language: "typescript",
+        symbols: [{ id: "external-app", name: "externalApp", qualifiedName: "externalApp", kind: "function", path: "src/app.ts", line: 1 }]
+      }),
+      "utf8"
+    );
+
+    const stale = await getFreshness(repo);
+    expect(stale.stale).toBe(true);
+    expect(stale.reason).toBe("external-symbol-reports-changed");
+    const refreshed = await buildIndex({ repoRoot: repo, writeArtifacts: true });
+    expect(refreshed.symbols.some((symbol) => symbol.qualifiedName === "externalApp" && symbol.source === "static-analysis")).toBe(true);
+  });
+
+  it("marks freshness stale when ignored symbol-named reports become invalid", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-symbol-invalid-freshness-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    execFileSync("git", ["add", ".gitignore", "src/app.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "symbol-invalid-freshness"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    await buildIndex({ repoRoot: repo, writeArtifacts: true });
+
+    await writeFile(path.join(repo, ".codex/static-analysis/symbols.json"), "{not-json", "utf8");
+
+    const stale = await getFreshness(repo);
+    expect(stale.stale).toBe(true);
+    expect(stale.reason).toBe("external-symbol-reports-changed");
+    expect(stale.externalSymbolReportDiagnostics?.some((diagnostic) => diagnostic.path === ".codex/static-analysis/symbols.json")).toBe(true);
+  });
+
+  it("surfaces invalid symbol report diagnostics as parser errors", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-symbol-invalid-parser-error-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    await writeFile(path.join(repo, ".codex/static-analysis/symbols.json"), "{not-json", "utf8");
+    execFileSync("git", ["add", ".gitignore", "src/app.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "symbol-invalid-parser-error"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+
+    const index = await buildIndex({ repoRoot: repo, writeArtifacts: true });
+    expect(index.parserErrors.some((error) => error.path === ".codex/static-analysis/symbols.json" && error.message.includes("external symbol report"))).toBe(true);
+  });
+
+  it("does not hash or diagnose external symbol reports through symlinks outside the repository", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-symbol-symlink-outside-"));
+    const outside = await mkdtemp(path.join(os.tmpdir(), "codexa-symbol-symlink-outside-target-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    await writeFile(path.join(outside, "symbols.json"), "{not-json", "utf8");
+    await symlink(path.join(outside, "symbols.json"), path.join(repo, ".codex/static-analysis/symbols.json"));
+    execFileSync("git", ["add", ".gitignore", "src/app.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "symbol-symlink-outside"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+
+    const index = await buildIndex({ repoRoot: repo, writeArtifacts: true });
+    expect(index.freshness.externalSymbolReportHashes?.[".codex/static-analysis/symbols.json"]).toBeUndefined();
+    expect(index.freshness.externalSymbolReportDiagnostics?.some((diagnostic) => diagnostic.path === ".codex/static-analysis/symbols.json")).toBe(false);
+    expect(index.parserErrors.some((error) => error.path === ".codex/static-analysis/symbols.json")).toBe(false);
+  });
+
+  it("labels valid JSON symbol report schema or path failures separately from invalid JSON", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-symbol-invalid-shape-parser-error-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    await writeFile(
+      path.join(repo, ".codex/static-analysis/symbols.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        tool: "fixture-symbol-tool",
+        language: "typescript",
+        symbols: [{ id: "missing", name: "missing", qualifiedName: "missing", kind: "function", path: "src/missing.ts", line: 1 }]
+      }),
+      "utf8"
+    );
+    execFileSync("git", ["add", ".gitignore", "src/app.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "symbol-invalid-shape-parser-error"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+
+    const index = await buildIndex({ repoRoot: repo, writeArtifacts: true });
+    const diagnostic = index.parserErrors.find((error) => error.path === ".codex/static-analysis/symbols.json" && error.message.includes("external symbol report"));
+    expect(diagnostic?.message).toContain("valid JSON");
+    expect(diagnostic?.message).not.toContain("invalid JSON");
+  });
+
+  it("surfaces new generic custom symbol reports with invalid referenced paths", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-custom-symbol-invalid-path-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    await writeFile(
+      path.join(repo, ".codex/static-analysis/custom.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        tool: "fixture-symbol-tool",
+        language: "typescript",
+        symbols: [{ id: "missing", name: "missing", qualifiedName: "missing", kind: "function", path: "src/missing.ts", line: 1 }]
+      }),
+      "utf8"
+    );
+    execFileSync("git", ["add", ".gitignore", "src/app.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "custom-symbol-invalid-path"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+
+    const index = await buildIndex({ repoRoot: repo, writeArtifacts: true });
+    expect(index.freshness.externalSymbolReportDiagnostics?.some((diagnostic) => diagnostic.path === ".codex/static-analysis/custom.json" && diagnostic.reason === "invalid-symbol-report")).toBe(true);
+    expect(index.parserErrors.some((error) => error.path === ".codex/static-analysis/custom.json" && error.message.includes("valid JSON"))).toBe(true);
+    expect(index.freshness.externalRiskReportHashes?.[".codex/static-analysis/custom.json"]).toBeUndefined();
+  });
+
+  it("surfaces symbol-shaped JSON with malformed symbol entries", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-custom-symbol-malformed-entry-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    await writeFile(
+      path.join(repo, ".codex/static-analysis/custom.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        tool: "fixture-symbol-tool",
+        language: "typescript",
+        symbols: [{ name: "bad" }]
+      }),
+      "utf8"
+    );
+    execFileSync("git", ["add", ".gitignore", "src/app.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "custom-symbol-malformed-entry"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+
+    const index = await buildIndex({ repoRoot: repo, writeArtifacts: true });
+    expect(index.freshness.externalSymbolReportDiagnostics?.some((diagnostic) => diagnostic.path === ".codex/static-analysis/custom.json" && diagnostic.reason === "invalid-symbol-report")).toBe(true);
+    expect(index.symbols.some((symbol) => symbol.source === "static-analysis" && symbol.qualifiedName === "bad")).toBe(false);
+  });
+
+  it("surfaces malformed symbol-shaped JSON even when it also contains risk fields", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-custom-symbol-malformed-with-risk-field-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    await writeFile(
+      path.join(repo, ".codex/static-analysis/custom.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        tool: "fixture-symbol-tool",
+        language: "typescript",
+        symbols: [{ name: "bad" }],
+        risks: []
+      }),
+      "utf8"
+    );
+    execFileSync("git", ["add", ".gitignore", "src/app.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "custom-symbol-malformed-with-risk-field"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+
+    const index = await buildIndex({ repoRoot: repo, writeArtifacts: true });
+    expect(index.freshness.externalSymbolReportDiagnostics?.some((diagnostic) => diagnostic.path === ".codex/static-analysis/custom.json" && diagnostic.reason === "invalid-symbol-report")).toBe(true);
+    expect(index.freshness.externalRiskReportHashes?.[".codex/static-analysis/custom.json"]).toBeUndefined();
+  });
+
+  it("surfaces mixed symbol/risk JSON when symbol paths are invalid", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-custom-symbol-invalid-path-with-risk-field-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    await writeFile(
+      path.join(repo, ".codex/static-analysis/custom.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        tool: "fixture-symbol-tool",
+        language: "typescript",
+        symbols: [{ id: "missing", name: "missing", qualifiedName: "missing", kind: "function", path: "src/missing.ts", line: 1 }],
+        risks: []
+      }),
+      "utf8"
+    );
+    execFileSync("git", ["add", ".gitignore", "src/app.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "custom-symbol-invalid-path-with-risk-field"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+
+    const index = await buildIndex({ repoRoot: repo, writeArtifacts: true });
+    expect(index.freshness.externalSymbolReportDiagnostics?.some((diagnostic) => diagnostic.path === ".codex/static-analysis/custom.json" && diagnostic.reason === "invalid-symbol-report")).toBe(true);
+    expect(index.freshness.externalRiskReportHashes?.[".codex/static-analysis/custom.json"]).toBeUndefined();
+  });
+
+  it("surfaces oversized mixed symbol/risk JSON as a symbol report diagnostic", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-mixed-symbol-risk-too-large-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    await writeFile(
+      path.join(repo, ".codex/static-analysis/risks.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        tool: "fixture-symbol-tool",
+        language: "typescript",
+        symbols: [{ id: "app", name: "app", qualifiedName: "app", kind: "function", path: "src/app.ts", line: 1 }],
+        risks: [],
+        padding: "x".repeat(2 * 1024 * 1024 + 1)
+      }),
+      "utf8"
+    );
+    execFileSync("git", ["add", ".gitignore", "src/app.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "mixed-symbol-risk-too-large"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+
+    const index = await buildIndex({ repoRoot: repo, writeArtifacts: true });
+    expect(index.freshness.externalSymbolReportDiagnostics?.some((diagnostic) => diagnostic.path === ".codex/static-analysis/risks.json" && diagnostic.reason === "report-too-large")).toBe(true);
+    expect(index.freshness.externalRiskReportHashes?.[".codex/static-analysis/risks.json"]).toBeUndefined();
+  });
+
+  it("does not let generated symbol reports crowd out reports/static-analysis symbol reports", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-symbol-cross-dir-crowd-out-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await mkdirp(path.join(repo, "reports/static-analysis"));
+    await writeFile(path.join(repo, ".gitignore"), ".codex/\nreports/static-analysis/\n", "utf8");
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    for (let index = 0; index < 500; index += 1) {
+      await writeFile(
+        path.join(repo, ".codex/static-analysis", `scip-ambient-${String(index).padStart(3, "0")}.symbols.json`),
+        JSON.stringify({
+          schemaVersion: 1,
+          tool: "ambient-scip",
+          language: "typescript",
+          symbols: [{ id: `ambient-${index}`, name: `ambient${index}`, qualifiedName: `ambient${index}`, kind: "function", path: "src/app.ts", line: 1 }]
+        }),
+        "utf8"
+      );
+    }
+    await writeFile(
+      path.join(repo, "reports/static-analysis/symbol-report-manual.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        tool: "manual-symbol-tool",
+        language: "typescript",
+        symbols: [{ id: "manual-external", name: "manualExternal", qualifiedName: "manualExternal", kind: "function", path: "src/app.ts", line: 2 }]
+      }),
+      "utf8"
+    );
+    execFileSync("git", ["add", ".gitignore", "src/app.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "symbol-cross-dir-crowd-out"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+
+    const index = await buildIndex({ repoRoot: repo, writeArtifacts: true });
+    expect(index.symbols.some((symbol) => symbol.qualifiedName === "manualExternal" && symbol.source === "static-analysis")).toBe(true);
+    expect(index.freshness.externalSymbolReportHashes?.["reports/static-analysis/symbol-report-manual.json"]).toBeTruthy();
+  });
+
+  it("does not let explicit symbol reports crowd out generated SCIP symbol reports before rank reservation", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-symbol-rank-reservation-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    for (let index = 0; index < 500; index += 1) {
+      await writeFile(
+        path.join(repo, ".codex/static-analysis", `symbol-report-${String(index).padStart(3, "0")}.json`),
+        JSON.stringify({
+          schemaVersion: 1,
+          tool: "manual-symbol-tool",
+          language: "typescript",
+          symbols: [{ id: `manual-${index}`, name: `manual${index}`, qualifiedName: `manual${index}`, kind: "function", path: "src/app.ts", line: 1 }]
+        }),
+        "utf8"
+      );
+    }
+    await writeFile(
+      path.join(repo, ".codex/static-analysis/scip-index.symbols.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        tool: "scip",
+        language: "typescript",
+        symbols: [{ id: "scip-symbol", name: "scipSymbol", qualifiedName: "scipSymbol", kind: "function", path: "src/app.ts", line: 2 }]
+      }),
+      "utf8"
+    );
+    execFileSync("git", ["add", ".gitignore", "src/app.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "symbol-rank-reservation"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+
+    const index = await buildIndex({ repoRoot: repo, writeArtifacts: true });
+    expect(index.symbols.some((symbol) => symbol.qualifiedName === "scipSymbol" && symbol.source === "static-analysis")).toBe(true);
+    expect(index.freshness.externalSymbolReportHashes?.[".codex/static-analysis/scip-index.symbols.json"]).toBeTruthy();
+  });
+
+  it("keeps custom Codexa symbol reports out of risk ingestion and risk freshness", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-symbol-risk-namespace-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    await writeFile(
+      path.join(repo, ".codex/static-analysis/custom.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        tool: "fixture-symbol-tool",
+        language: "typescript",
+        symbols: [{ id: "custom-symbol", name: "customSymbol", qualifiedName: "customSymbol", kind: "function", path: "src/app.ts", line: 1 }],
+        risks: [{ path: "src/app.ts", signal: "symbol-report-extra-risk", reason: "must not import", score: 10 }]
+      }),
+      "utf8"
+    );
+    execFileSync("git", ["add", ".gitignore", "src/app.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "symbol-risk-namespace"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+
+    const indexed = await buildIndex({ repoRoot: repo, writeArtifacts: true });
+    expect(indexed.symbols.some((symbol) => symbol.qualifiedName === "customSymbol" && symbol.source === "static-analysis")).toBe(true);
+    expect(indexed.risks.some((risk) => risk.signal === "symbol-report-extra-risk")).toBe(false);
+
+    await writeFile(
+      path.join(repo, ".codex/static-analysis/custom.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        tool: "fixture-symbol-tool",
+        language: "typescript",
+        symbols: [{ id: "custom-symbol", name: "customSymbol2", qualifiedName: "customSymbol2", kind: "function", path: "src/app.ts", line: 1 }]
+      }),
+      "utf8"
+    );
+    const stale = await getFreshness(repo);
+    expect(stale.stale).toBe(true);
+    expect(stale.reason).toBe("external-symbol-reports-changed");
+  });
+
+  it("reserves capacity for previously indexed custom symbol reports", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-custom-symbol-known-capacity-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    await writeFile(
+      path.join(repo, ".codex/static-analysis/custom.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        tool: "fixture-symbol-tool",
+        language: "typescript",
+        symbols: [{ id: "custom-symbol", name: "customSymbol", qualifiedName: "customSymbol", kind: "function", path: "src/app.ts", line: 2 }]
+      }),
+      "utf8"
+    );
+    execFileSync("git", ["add", ".gitignore", "src/app.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "custom-symbol-known-capacity"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    const firstIndex = await buildIndex({ repoRoot: repo, writeArtifacts: true });
+    expect(firstIndex.freshness.externalSymbolReportHashes?.[".codex/static-analysis/custom.json"]).toBeTruthy();
+
+    for (let index = 0; index < 50; index += 1) {
+      await writeFile(
+        path.join(repo, ".codex/static-analysis", `symbol-report-${String(index).padStart(2, "0")}.json`),
+        JSON.stringify({
+          schemaVersion: 1,
+          tool: "manual-symbol-tool",
+          language: "typescript",
+          symbols: [{ id: `manual-${index}`, name: `manual${index}`, qualifiedName: `manual${index}`, kind: "function", path: "src/app.ts", line: 1 }]
+        }),
+        "utf8"
+      );
+    }
+
+    const refreshed = await buildIndex({ repoRoot: repo, writeArtifacts: true });
+    expect(refreshed.symbols.some((symbol) => symbol.qualifiedName === "customSymbol" && symbol.source === "static-analysis")).toBe(true);
+    expect(refreshed.freshness.externalSymbolReportHashes?.[".codex/static-analysis/custom.json"]).toBeTruthy();
+  });
+
+  it("keeps malformed previously indexed custom symbol reports in the symbol diagnostics lane", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-custom-symbol-malformed-lane-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    await writeFile(
+      path.join(repo, ".codex/static-analysis/custom.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        tool: "fixture-symbol-tool",
+        language: "typescript",
+        symbols: [{ id: "custom-symbol", name: "customSymbol", qualifiedName: "customSymbol", kind: "function", path: "src/app.ts", line: 1 }]
+      }),
+      "utf8"
+    );
+    execFileSync("git", ["add", ".gitignore", "src/app.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "custom-symbol-malformed-lane"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    await buildIndex({ repoRoot: repo, writeArtifacts: true });
+
+    await writeFile(path.join(repo, ".codex/static-analysis/custom.json"), "{not-json", "utf8");
+
+    const stale = await getFreshness(repo);
+    expect(stale.stale).toBe(true);
+    expect(stale.reason).toBe("external-symbol-reports-changed");
+    expect(stale.externalSymbolReportDiagnostics?.some((diagnostic) => diagnostic.path === ".codex/static-analysis/custom.json")).toBe(true);
+    expect(stale.externalRiskReportDiagnostics?.some((diagnostic) => diagnostic.path === ".codex/static-analysis/custom.json")).toBe(false);
+
+    const reindexed = await buildIndex({ repoRoot: repo, writeArtifacts: true });
+    expect(reindexed.parserErrors.some((error) => error.path === ".codex/static-analysis/custom.json" && error.message.includes("external symbol report"))).toBe(true);
+    expect(reindexed.parserErrors.some((error) => error.path === ".codex/static-analysis/custom.json" && error.message.includes("external risk report"))).toBe(false);
+  });
+
+  it("lets a previously indexed custom symbol report transfer cleanly to the risk lane", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-custom-symbol-to-risk-lane-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    await writeFile(
+      path.join(repo, ".codex/static-analysis/custom.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        tool: "fixture-symbol-tool",
+        language: "typescript",
+        symbols: [{ id: "custom-symbol", name: "customSymbol", qualifiedName: "customSymbol", kind: "function", path: "src/app.ts", line: 1 }]
+      }),
+      "utf8"
+    );
+    execFileSync("git", ["add", ".gitignore", "src/app.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "custom-symbol-to-risk-lane"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    await buildIndex({ repoRoot: repo, writeArtifacts: true });
+
+    for (let index = 0; index < 250; index += 1) {
+      await writeFile(
+        path.join(repo, ".codex/static-analysis", `aaa-${String(index).padStart(3, "0")}.json`),
+        JSON.stringify({ risks: [{ path: "src/app.ts", signal: `ambient-transfer-risk-${index}`, reason: "ambient", score: 1 }] }),
+        "utf8"
+      );
+    }
+    await writeFile(path.join(repo, ".codex/static-analysis/custom.json"), JSON.stringify({ risks: [{ path: "src/app.ts", signal: "custom-risk", reason: "custom", score: 7 }] }), "utf8");
+
+    const reindexed = await buildIndex({ repoRoot: repo, writeArtifacts: true });
+    expect(reindexed.risks.some((risk) => risk.signal === "custom-risk")).toBe(true);
+    expect(reindexed.freshness.externalRiskReportHashes?.[".codex/static-analysis/custom.json"]).toBeTruthy();
+    expect(reindexed.freshness.externalSymbolReportHashes?.[".codex/static-analysis/custom.json"]).toBeUndefined();
+    expect(reindexed.parserErrors.some((error) => error.path === ".codex/static-analysis/custom.json" && error.message.includes("external symbol report"))).toBe(false);
+  });
+
+  it("lets a large previously indexed custom symbol report transfer to the risk lane without symbol diagnostics", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-large-custom-symbol-to-risk-lane-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    await writeFile(
+      path.join(repo, ".codex/static-analysis/custom.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        tool: "fixture-symbol-tool",
+        language: "typescript",
+        symbols: [{ id: "custom-symbol", name: "customSymbol", qualifiedName: "customSymbol", kind: "function", path: "src/app.ts", line: 1 }]
+      }),
+      "utf8"
+    );
+    execFileSync("git", ["add", ".gitignore", "src/app.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "large-custom-symbol-to-risk-lane"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    await buildIndex({ repoRoot: repo, writeArtifacts: true });
+
+    await writeFile(
+      path.join(repo, ".codex/static-analysis/custom.json"),
+      JSON.stringify({
+        risks: [{ path: "src/app.ts", signal: "large-custom-risk", reason: "custom", score: 7 }],
+        padding: "x".repeat(2 * 1024 * 1024 + 1)
+      }),
+      "utf8"
+    );
+
+    const reindexed = await buildIndex({ repoRoot: repo, writeArtifacts: true });
+    expect(reindexed.risks.some((risk) => risk.signal === "large-custom-risk")).toBe(true);
+    expect(reindexed.freshness.externalRiskReportHashes?.[".codex/static-analysis/custom.json"]).toBeTruthy();
+    expect(reindexed.parserErrors.some((error) => error.path === ".codex/static-analysis/custom.json" && error.message.includes("external symbol report"))).toBe(false);
+  });
+
   it("dedupes external risks before applying the total cap so duplicate reports do not starve later findings", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-risk-dedupe-cap-"));
     await mkdirp(path.join(repo, ".codex/static-analysis"));
@@ -502,6 +1098,372 @@ describe("Codexa indexer", () => {
 
     expect(risks.some((risk) => risk.signal === "duplicate")).toBe(true);
     expect(risks.some((risk) => risk.signal === "unique-late")).toBe(true);
+  });
+
+  it("does not let .codex risk report candidates crowd out reports/static-analysis custom risks", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-risk-cross-dir-crowd-out-"));
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await mkdirp(path.join(repo, "reports/static-analysis"));
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    for (let index = 0; index < 250; index += 1) {
+      await writeFile(
+        path.join(repo, ".codex/static-analysis", `ambient-${String(index).padStart(3, "0")}.json`),
+        JSON.stringify({ risks: [{ path: "src/app.ts", signal: `ambient-${index}`, reason: "ambient", score: 1 }] }),
+        "utf8"
+      );
+    }
+    await writeFile(path.join(repo, "reports/static-analysis/manual-risk.json"), JSON.stringify({ risks: [{ path: "src/app.ts", signal: "manual-late-risk", reason: "manual", score: 5 }] }), "utf8");
+
+    const risks = await loadExternalRiskSignals(repo, "snapshot", "2026-05-31T00:00:00.000Z");
+
+    expect(risks.some((risk) => risk.signal === "manual-late-risk")).toBe(true);
+  });
+
+  it("reserves candidate capacity for previously indexed custom risk reports", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-known-risk-capacity-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    await writeFile(path.join(repo, ".codex/static-analysis/zz-risk.json"), JSON.stringify({ risks: [{ path: "src/app.ts", signal: "known-risk", reason: "known", score: 7 }] }), "utf8");
+    execFileSync("git", ["add", ".gitignore", "src/app.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "known-risk-capacity"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    const firstIndex = await buildIndex({ repoRoot: repo, writeArtifacts: true });
+    expect(firstIndex.freshness.externalRiskReportHashes?.[".codex/static-analysis/zz-risk.json"]).toBeTruthy();
+
+    for (let index = 0; index < 250; index += 1) {
+      await writeFile(
+        path.join(repo, ".codex/static-analysis", `aaa-${String(index).padStart(3, "0")}.json`),
+        JSON.stringify({ risks: [{ path: "src/app.ts", signal: `ambient-risk-${index}`, reason: "ambient", score: 1 }] }),
+        "utf8"
+      );
+    }
+
+    const refreshed = await buildIndex({ repoRoot: repo, writeArtifacts: true });
+    expect(refreshed.risks.some((risk) => risk.signal === "known-risk")).toBe(true);
+    expect(refreshed.freshness.externalRiskReportHashes?.[".codex/static-analysis/zz-risk.json"]).toBeTruthy();
+  });
+
+  it("keeps invalid previously indexed custom risk reports in the risk diagnostics lane", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-known-risk-invalid-lane-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    await writeFile(path.join(repo, ".codex/static-analysis/custom.json"), JSON.stringify({ risks: [{ path: "src/app.ts", signal: "known-risk", reason: "known", score: 7 }] }), "utf8");
+    execFileSync("git", ["add", ".gitignore", "src/app.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "known-risk-invalid-lane"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    await buildIndex({ repoRoot: repo, writeArtifacts: true });
+
+    await writeFile(path.join(repo, ".codex/static-analysis/custom.json"), "{not-json", "utf8");
+
+    const reindexed = await buildIndex({ repoRoot: repo, writeArtifacts: true });
+    expect(reindexed.parserErrors.some((error) => error.path === ".codex/static-analysis/custom.json" && error.message.includes("external risk report"))).toBe(true);
+    expect(reindexed.parserErrors.some((error) => error.path === ".codex/static-analysis/custom.json" && error.message.includes("external symbol report"))).toBe(false);
+  });
+
+  it("lets a previously indexed custom risk report transfer to the symbol lane under candidate pressure", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-custom-risk-to-symbol-lane-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    await writeFile(path.join(repo, ".codex/static-analysis/custom.json"), JSON.stringify({ risks: [{ path: "src/app.ts", signal: "custom-risk", reason: "custom", score: 7 }] }), "utf8");
+    execFileSync("git", ["add", ".gitignore", "src/app.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "custom-risk-to-symbol-lane"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    await buildIndex({ repoRoot: repo, writeArtifacts: true });
+
+    for (let index = 0; index < 500; index += 1) {
+      await writeFile(path.join(repo, ".codex/static-analysis", `aaa-${String(index).padStart(3, "0")}.json`), JSON.stringify({ risks: [] }), "utf8");
+    }
+    await writeFile(
+      path.join(repo, ".codex/static-analysis/custom.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        tool: "fixture-symbol-tool",
+        language: "typescript",
+        symbols: [{ id: "custom-symbol", name: "customSymbol", qualifiedName: "customSymbol", kind: "function", path: "src/app.ts", line: 2 }]
+      }),
+      "utf8"
+    );
+
+    const refreshed = await buildIndex({ repoRoot: repo, writeArtifacts: true });
+    expect(refreshed.symbols.some((symbol) => symbol.qualifiedName === "customSymbol" && symbol.source === "static-analysis")).toBe(true);
+    expect(refreshed.freshness.externalSymbolReportHashes?.[".codex/static-analysis/custom.json"]).toBeTruthy();
+    expect(refreshed.freshness.externalRiskReportHashes?.[".codex/static-analysis/custom.json"]).toBeUndefined();
+  });
+
+  it("keeps risk report freshness stable after the risk fact cap is reached", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-risk-cap-freshness-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    execFileSync("git", ["add", ".gitignore", "src/app.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "risk-cap-freshness"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    for (let reportIndex = 0; reportIndex < 5; reportIndex += 1) {
+      await writeFile(
+        path.join(repo, ".codex/static-analysis", `cap-${reportIndex}.json`),
+        JSON.stringify({
+          risks: Array.from({ length: 5000 }, (_, riskIndex) => ({
+            path: "src/app.ts",
+            signal: `cap-${reportIndex}-${riskIndex}`,
+            reason: "cap",
+            score: 1
+          }))
+        }),
+        "utf8"
+      );
+    }
+
+    await buildIndex({ repoRoot: repo, writeArtifacts: true });
+    const freshness = await getFreshness(repo);
+
+    expect(freshness.stale).toBe(false);
+  });
+
+  it("prioritizes fixed risk reports before generic reports when the risk fact cap is reached", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-fixed-risk-priority-cap-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    execFileSync("git", ["add", ".gitignore", "src/app.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixed-risk-priority-cap"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    for (let reportIndex = 0; reportIndex < 4; reportIndex += 1) {
+      await writeFile(
+        path.join(repo, ".codex/static-analysis", `aaa-${reportIndex}.json`),
+        JSON.stringify({
+          risks: Array.from({ length: 5000 }, (_, riskIndex) => ({
+            path: "src/app.ts",
+            signal: `ambient-cap-${reportIndex}-${riskIndex}`,
+            reason: "ambient",
+            score: 1
+          }))
+        }),
+        "utf8"
+      );
+    }
+    await writeFile(path.join(repo, ".codex/static-analysis/risks.json"), JSON.stringify({ risks: [{ path: "src/app.ts", signal: "fixed-risk", reason: "fixed", score: 9 }] }), "utf8");
+
+    const index = await buildIndex({ repoRoot: repo, writeArtifacts: true });
+
+    expect(index.risks.some((risk) => risk.signal === "fixed-risk")).toBe(true);
+  });
+
+  it("prioritizes fixed risk reports before previously known custom risks when the cap is reached", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-fixed-risk-before-known-cap-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    for (let reportIndex = 0; reportIndex < 4; reportIndex += 1) {
+      await writeFile(
+        path.join(repo, ".codex/static-analysis", `custom-${reportIndex}.json`),
+        JSON.stringify({
+          risks: Array.from({ length: 5000 }, (_, riskIndex) => ({
+            path: "src/app.ts",
+            signal: `known-cap-${reportIndex}-${riskIndex}`,
+            reason: "known",
+            score: 1
+          }))
+        }),
+        "utf8"
+      );
+    }
+    execFileSync("git", ["add", ".gitignore", "src/app.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixed-risk-before-known-cap"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    await buildIndex({ repoRoot: repo, writeArtifacts: true });
+
+    await writeFile(path.join(repo, ".codex/static-analysis/risks.json"), JSON.stringify({ risks: [{ path: "src/app.ts", signal: "fixed-risk", reason: "fixed", score: 9 }] }), "utf8");
+
+    const refreshed = await buildIndex({ repoRoot: repo, writeArtifacts: true });
+    expect(refreshed.risks.some((risk) => risk.signal === "fixed-risk")).toBe(true);
+  });
+
+  it("imports symbol-shaped fixed risk paths under generic symbol candidate pressure", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-risk-path-symbol-pressure-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    for (let index = 0; index < 500; index += 1) {
+      await writeFile(path.join(repo, ".codex/static-analysis", `aaa-${String(index).padStart(3, "0")}.json`), JSON.stringify({ risks: [] }), "utf8");
+    }
+    await writeFile(
+      path.join(repo, ".codex/static-analysis/risks.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        tool: "fixture-symbol-tool",
+        language: "typescript",
+        symbols: [{ id: "risk-path-symbol", name: "riskPathSymbol", qualifiedName: "riskPathSymbol", kind: "function", path: "src/app.ts", line: 2 }]
+      }),
+      "utf8"
+    );
+    execFileSync("git", ["add", ".gitignore", "src/app.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "risk-path-symbol-pressure"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+
+    const index = await buildIndex({ repoRoot: repo, writeArtifacts: true });
+    expect(index.symbols.some((symbol) => symbol.qualifiedName === "riskPathSymbol" && symbol.source === "static-analysis")).toBe(true);
+    expect(index.freshness.externalSymbolReportHashes?.[".codex/static-analysis/risks.json"]).toBeTruthy();
+    expect(index.freshness.externalRiskReportHashes?.[".codex/static-analysis/risks.json"]).toBeUndefined();
+  });
+
+  it("reserves symbol load capacity for fixed risk paths containing symbol reports", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-risk-path-symbol-load-cap-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    for (let index = 0; index < 50; index += 1) {
+      await writeFile(
+        path.join(repo, ".codex/static-analysis", `symbol-report-${String(index).padStart(2, "0")}.json`),
+        JSON.stringify({
+          schemaVersion: 1,
+          tool: "manual-symbol-tool",
+          language: "typescript",
+          symbols: [{ id: `manual-${index}`, name: `manual${index}`, qualifiedName: `manual${index}`, kind: "function", path: "src/app.ts", line: 1 }]
+        }),
+        "utf8"
+      );
+    }
+    await writeFile(
+      path.join(repo, ".codex/static-analysis/risks.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        tool: "fixture-symbol-tool",
+        language: "typescript",
+        symbols: [{ id: "risk-path-symbol", name: "riskPathSymbol", qualifiedName: "riskPathSymbol", kind: "function", path: "src/app.ts", line: 2 }]
+      }),
+      "utf8"
+    );
+    execFileSync("git", ["add", ".gitignore", "src/app.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "risk-path-symbol-load-cap"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+
+    const index = await buildIndex({ repoRoot: repo, writeArtifacts: true });
+    expect(index.symbols.some((symbol) => symbol.qualifiedName === "riskPathSymbol" && symbol.source === "static-analysis")).toBe(true);
+    expect(index.freshness.externalSymbolReportHashes?.[".codex/static-analysis/risks.json"]).toBeTruthy();
+  });
+
+  it("reserves fixed risk-path symbol reports after known custom symbol reports", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-risk-path-symbol-fixed-reserve-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    for (let index = 0; index < 50; index += 1) {
+      await writeFile(
+        path.join(repo, ".codex/static-analysis", `custom-${String(index).padStart(2, "0")}.json`),
+        JSON.stringify({
+          schemaVersion: 1,
+          tool: "manual-symbol-tool",
+          language: "typescript",
+          symbols: [{ id: `custom-${index}`, name: `custom${index}`, qualifiedName: `custom${index}`, kind: "function", path: "src/app.ts", line: 1 }]
+        }),
+        "utf8"
+      );
+    }
+    execFileSync("git", ["add", ".gitignore", "src/app.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "risk-path-symbol-fixed-reserve"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    await buildIndex({ repoRoot: repo, writeArtifacts: true });
+
+    await writeFile(
+      path.join(repo, ".codex/static-analysis/risks.json"),
+      JSON.stringify({
+        schemaVersion: 1,
+        tool: "fixture-symbol-tool",
+        language: "typescript",
+        symbols: [{ id: "risk-path-symbol", name: "riskPathSymbol", qualifiedName: "riskPathSymbol", kind: "function", path: "src/app.ts", line: 2 }]
+      }),
+      "utf8"
+    );
+
+    const refreshed = await buildIndex({ repoRoot: repo, writeArtifacts: true });
+    expect(refreshed.symbols.some((symbol) => symbol.qualifiedName === "riskPathSymbol" && symbol.source === "static-analysis")).toBe(true);
+    expect(refreshed.freshness.externalSymbolReportHashes?.[".codex/static-analysis/risks.json"]).toBeTruthy();
+  });
+
+  it("does not surface large generic risk reports as symbol report parser errors", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-large-risk-no-symbol-error-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    await writeFile(
+      path.join(repo, ".codex/static-analysis/manual-risk.json"),
+      JSON.stringify({
+        risks: [{ path: "src/app.ts", signal: "manual-large-risk", reason: "manual", score: 5 }],
+        padding: "x".repeat(2 * 1024 * 1024 + 1)
+      }),
+      "utf8"
+    );
+    execFileSync("git", ["add", ".gitignore", "src/app.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "large-risk-no-symbol-error"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+
+    const index = await buildIndex({ repoRoot: repo, writeArtifacts: true });
+
+    expect(index.risks.some((risk) => risk.signal === "manual-large-risk")).toBe(true);
+    expect(index.parserErrors.some((error) => error.path === ".codex/static-analysis/manual-risk.json" && error.message.includes("external symbol report"))).toBe(false);
+  });
+
+  it("does not surface large generic non-report JSON as a symbol report diagnostic", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-large-generic-json-no-symbol-error-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    await writeFile(path.join(repo, ".codex/static-analysis/notes.json"), JSON.stringify({ note: "not a report", padding: "x".repeat(2 * 1024 * 1024 + 1) }), "utf8");
+    execFileSync("git", ["add", ".gitignore", "src/app.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "large-generic-json-no-symbol-error"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+
+    const index = await buildIndex({ repoRoot: repo, writeArtifacts: true });
+    expect(index.freshness.externalSymbolReportDiagnostics?.some((diagnostic) => diagnostic.path === ".codex/static-analysis/notes.json")).toBe(false);
+    expect(index.parserErrors.some((error) => error.path === ".codex/static-analysis/notes.json" && error.message.includes("external symbol report"))).toBe(false);
   });
 
   it("dedupes external risks within a report before applying the per-report cap", async () => {
