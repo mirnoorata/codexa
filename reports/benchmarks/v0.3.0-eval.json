@@ -1,0 +1,1456 @@
+{
+  "seed": "codexa-v030-eval",
+  "suite": "all",
+  "passed": true,
+  "score": 1,
+  "antiCheat": [
+    "Scores use structured QueryResult.data, not human-readable prose substrings.",
+    "Synthetic scenarios use seed-generated identifiers and decoy files.",
+    "Historical fixtures use generated repositories or explicit task packs rather than private project strings.",
+    "Patch-task scenarios score read-first files, targeted tests, and false-positive cost without applying hardcoded edits.",
+    "Benchmark scenarios run with auto-refresh disabled unless explicitly requested.",
+    "Refresh is scored separately and fails the benchmark when failOnRefresh is enabled."
+  ],
+  "calibrationSummary": {
+    "falsePositiveFiles": [
+      "src/riqrvzpl_consumer_b.ts",
+      "src/riqrvzpl_consumer_a.ts"
+    ],
+    "missingExpectedChangedFiles": [],
+    "missingExpectedTests": [],
+    "heuristicHeavyScenarios": [],
+    "broadRetrievalFailures": [
+      "synthetic-session-context-seedless"
+    ],
+    "rawRgBetterScenarios": [],
+    "overBudgetedOutputScenarios": [],
+    "overBudgetedStructuredDataScenarios": [],
+    "postEditMissedTests": [
+      "src/feature.test.ts"
+    ],
+    "postEditModifiedPublicSymbols": [
+      "formatRiqrvzplLabel (function) in src/riqrvzpl_shared.ts"
+    ],
+    "postEditCalibrationLabels": [
+      "aggregate-command-coverage",
+      "blocking-inspection",
+      "false-missing-test-warning-avoided",
+      "modified-public-symbols",
+      "requires-inspection",
+      "missing-recommended-tests",
+      "real-missed-tests"
+    ],
+    "postEditRequiredChecksMissingScenarios": [],
+    "postEditAggregateCoverageScenarios": [
+      "synthetic-patch-task-post-edit-review"
+    ],
+    "postEditVerificationMissingScenarios": [
+      "historical-fixture-post-edit-drift"
+    ],
+    "postEditVerdicts": {
+      "inspect": 2
+    },
+    "outcomeRecords": [
+      ".codex/cache/codexa-outcomes/eval-post-edit-shared-20260612051359-cd967f3cb9507833.json",
+      ".codex/cache/codexa-outcomes/historical-post-edit-drift-ee9c3edf-b2c4-20260612051359-a9708f2f936040a2.json"
+    ]
+  },
+  "scenarios": [
+    {
+      "id": "project-dirty-context-pack",
+      "suite": "project",
+      "description": "Current repository dirty tree should produce bounded grouped context, not a raw git-status dump.",
+      "passed": true,
+      "score": 1,
+      "scored": true,
+      "baselineLines": 0,
+      "baselineFiles": [],
+      "baselineTests": [],
+      "files": [
+        "tests/indexer.test.ts",
+        "tests/eval.test.ts",
+        "tests/mcp.test.ts",
+        "src/cli.ts",
+        "tests/session.test.ts",
+        "src/query/context.ts",
+        "src/query/post-edit.ts",
+        "src/indexer.ts",
+        "src/post-edit-outcomes.ts",
+        "src/eval/historical.ts"
+      ],
+      "plannedFiles": [],
+      "tests": [
+        "tests/indexer.test.ts",
+        "tests/mcp.test.ts",
+        "tests/session.test.ts",
+        "tests/eval.test.ts",
+        "tests/semantic-retrieval.test.ts",
+        "tests/live-index.test.ts",
+        "tests/lsp-assist.test.ts",
+        "tests/schema.test.ts",
+        "tests/static-analysis.test.ts",
+        "tests/init.test.ts",
+        "tests/cli-hooks.test.ts"
+      ],
+      "metrics": {
+        "fileRecall": null,
+        "changedFileRecall": null,
+        "testRecall": null,
+        "precisionAtK": null,
+        "selectedToBaselineRatio": null,
+        "textChars": 9998,
+        "dataBytes": 104451,
+        "refreshed": false,
+        "structuredBytes": 104451,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": false
+      },
+      "comparison": {
+        "baselineFileRecall": null,
+        "baselineTestRecall": null,
+        "baselinePrecisionAtK": null,
+        "fileRecallDelta": null,
+        "testRecallDelta": null,
+        "precisionDelta": null,
+        "codexaFileCount": 10,
+        "baselineFileCount": 0,
+        "codexaTestCount": 11,
+        "baselineTestCount": 0,
+        "codexaToBaselineFileRatio": null
+      },
+      "calibration": {
+        "falsePositiveFiles": [],
+        "missingExpectedFiles": [],
+        "missingExpectedChangedFiles": [],
+        "missingExpectedTests": [],
+        "heuristicHeavy": false,
+        "broadRetrievalFailure": false,
+        "rawRgBetter": false,
+        "overBudgetedOutput": false,
+        "overBudgetedStructuredData": false
+      },
+      "failures": []
+    },
+    {
+      "id": "project-diff-test-plan",
+      "suite": "project",
+      "description": "Current dirty diff test plan should expose grouped changes and test candidates.",
+      "passed": true,
+      "score": 1,
+      "scored": true,
+      "baselineLines": 0,
+      "baselineFiles": [],
+      "baselineTests": [],
+      "files": [],
+      "plannedFiles": [],
+      "tests": [
+        "tests/indexer.test.ts",
+        "tests/mcp.test.ts",
+        "tests/semantic-retrieval.test.ts",
+        "tests/static-analysis.test.ts",
+        "tests/session.test.ts",
+        "tests/eval.test.ts",
+        "tests/live-index.test.ts",
+        "tests/lsp-assist.test.ts",
+        "tests/schema.test.ts",
+        "tests/github-release.test.ts",
+        "tests/init.test.ts",
+        "tests/recommend-tests-change-type.test.ts",
+        "tests/cli-hooks.test.ts",
+        "tests/command.test.ts",
+        "tests/github-sync.test.ts",
+        "tests/plugin-package.test.ts",
+        "tests/privacy-hygiene.test.ts",
+        "tests/raw-search.test.ts",
+        "tests/session-memory.test.ts"
+      ],
+      "metrics": {
+        "fileRecall": null,
+        "changedFileRecall": null,
+        "testRecall": null,
+        "precisionAtK": null,
+        "selectedToBaselineRatio": null,
+        "textChars": 6206,
+        "dataBytes": 34581,
+        "refreshed": false,
+        "structuredBytes": 34581,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": false
+      },
+      "comparison": {
+        "baselineFileRecall": null,
+        "baselineTestRecall": null,
+        "baselinePrecisionAtK": null,
+        "fileRecallDelta": null,
+        "testRecallDelta": null,
+        "precisionDelta": null,
+        "codexaFileCount": 0,
+        "baselineFileCount": 0,
+        "codexaTestCount": 19,
+        "baselineTestCount": 0,
+        "codexaToBaselineFileRatio": null
+      },
+      "calibration": {
+        "falsePositiveFiles": [],
+        "missingExpectedFiles": [],
+        "missingExpectedChangedFiles": [],
+        "missingExpectedTests": [],
+        "heuristicHeavy": false,
+        "broadRetrievalFailure": false,
+        "rawRgBetter": false,
+        "overBudgetedOutput": false,
+        "overBudgetedStructuredData": false
+      },
+      "failures": []
+    },
+    {
+      "id": "synthetic-search-exact-raw-sufficient",
+      "suite": "synthetic",
+      "description": "Exact randomized search should admit when raw search is already sufficient while still returning structured targets.",
+      "passed": true,
+      "score": 1,
+      "scored": true,
+      "baselineLines": 1,
+      "baselineFiles": [
+        "src/riqrvzpl_leaf.ts"
+      ],
+      "baselineTests": [],
+      "files": [
+        "src/riqrvzpl_leaf.ts"
+      ],
+      "plannedFiles": [],
+      "tests": [],
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": null,
+        "testRecall": null,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 1,
+        "textChars": 1157,
+        "dataBytes": 22599,
+        "refreshed": false,
+        "structuredBytes": 22599,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": false
+      },
+      "comparison": {
+        "baselineFileRecall": 1,
+        "baselineTestRecall": null,
+        "baselinePrecisionAtK": 1,
+        "fileRecallDelta": 0,
+        "testRecallDelta": null,
+        "precisionDelta": 0,
+        "codexaFileCount": 1,
+        "baselineFileCount": 1,
+        "codexaTestCount": 0,
+        "baselineTestCount": 0,
+        "codexaToBaselineFileRatio": 1
+      },
+      "calibration": {
+        "falsePositiveFiles": [],
+        "missingExpectedFiles": [],
+        "missingExpectedChangedFiles": [],
+        "missingExpectedTests": [],
+        "heuristicHeavy": false,
+        "broadRetrievalFailure": false,
+        "rawRgBetter": false,
+        "overBudgetedOutput": false,
+        "overBudgetedStructuredData": false
+      },
+      "failures": []
+    },
+    {
+      "id": "synthetic-shared-style-fanout",
+      "suite": "synthetic",
+      "description": "Style-shaped shared-module impact should collapse repeated consumers and keep tests/read-first small.",
+      "passed": true,
+      "score": 1,
+      "scored": true,
+      "baselineLines": 8,
+      "baselineFiles": [
+        "src/riqrvzpl_consumer_a.ts",
+        "src/riqrvzpl_consumer_b.ts",
+        "src/riqrvzpl_shared.test.ts",
+        "src/riqrvzpl_shared.ts",
+        "src/riqrvzpl_shared_decoy.ts"
+      ],
+      "baselineTests": [
+        "src/riqrvzpl_shared.test.ts"
+      ],
+      "files": [
+        "src/riqrvzpl_shared.ts",
+        "src/riqrvzpl_shared.test.ts",
+        "src/riqrvzpl_consumer_b.ts",
+        "src/riqrvzpl_consumer_a.ts"
+      ],
+      "plannedFiles": [],
+      "tests": [
+        "src/riqrvzpl_shared.test.ts"
+      ],
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": null,
+        "testRecall": 1,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 0.5,
+        "textChars": 2475,
+        "dataBytes": 20361,
+        "refreshed": false,
+        "structuredBytes": 20361,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": false
+      },
+      "comparison": {
+        "baselineFileRecall": 1,
+        "baselineTestRecall": 1,
+        "baselinePrecisionAtK": 0,
+        "fileRecallDelta": 0,
+        "testRecallDelta": 0,
+        "precisionDelta": 1,
+        "codexaFileCount": 4,
+        "baselineFileCount": 5,
+        "codexaTestCount": 1,
+        "baselineTestCount": 1,
+        "codexaToBaselineFileRatio": 0.8
+      },
+      "calibration": {
+        "falsePositiveFiles": [
+          "src/riqrvzpl_consumer_b.ts",
+          "src/riqrvzpl_consumer_a.ts"
+        ],
+        "missingExpectedFiles": [],
+        "missingExpectedChangedFiles": [],
+        "missingExpectedTests": [],
+        "heuristicHeavy": false,
+        "broadRetrievalFailure": false,
+        "rawRgBetter": false,
+        "overBudgetedOutput": false,
+        "overBudgetedStructuredData": false
+      },
+      "failures": []
+    },
+    {
+      "id": "synthetic-shared-api-fanout",
+      "suite": "synthetic",
+      "description": "API-shaped shared-module impact should preserve broader importer and test coverage.",
+      "passed": true,
+      "score": 1,
+      "scored": true,
+      "baselineLines": 8,
+      "baselineFiles": [
+        "src/riqrvzpl_consumer_a.ts",
+        "src/riqrvzpl_consumer_b.ts",
+        "src/riqrvzpl_shared.test.ts",
+        "src/riqrvzpl_shared.ts",
+        "src/riqrvzpl_shared_decoy.ts"
+      ],
+      "baselineTests": [
+        "src/riqrvzpl_shared.test.ts"
+      ],
+      "files": [
+        "src/riqrvzpl_shared.ts",
+        "src/riqrvzpl_shared.test.ts",
+        "src/riqrvzpl_consumer_b.ts",
+        "src/riqrvzpl_consumer_a.ts"
+      ],
+      "plannedFiles": [],
+      "tests": [
+        "src/riqrvzpl_shared.test.ts"
+      ],
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": null,
+        "testRecall": 1,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 0.5,
+        "textChars": 2463,
+        "dataBytes": 20347,
+        "refreshed": false,
+        "structuredBytes": 20347,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": false
+      },
+      "comparison": {
+        "baselineFileRecall": 1,
+        "baselineTestRecall": 1,
+        "baselinePrecisionAtK": 1,
+        "fileRecallDelta": 0,
+        "testRecallDelta": 0,
+        "precisionDelta": 0,
+        "codexaFileCount": 4,
+        "baselineFileCount": 5,
+        "codexaTestCount": 1,
+        "baselineTestCount": 1,
+        "codexaToBaselineFileRatio": 0.8
+      },
+      "calibration": {
+        "falsePositiveFiles": [],
+        "missingExpectedFiles": [],
+        "missingExpectedChangedFiles": [],
+        "missingExpectedTests": [],
+        "heuristicHeavy": false,
+        "broadRetrievalFailure": false,
+        "rawRgBetter": false,
+        "overBudgetedOutput": false,
+        "overBudgetedStructuredData": false
+      },
+      "failures": []
+    },
+    {
+      "id": "synthetic-task-brief-impact-expansion",
+      "suite": "synthetic",
+      "description": "Task brief should include bounded impact consumers and covering tests from a requested source file.",
+      "passed": true,
+      "score": 1,
+      "scored": true,
+      "baselineLines": 8,
+      "baselineFiles": [
+        "src/riqrvzpl_consumer_a.ts",
+        "src/riqrvzpl_consumer_b.ts",
+        "src/riqrvzpl_shared.test.ts",
+        "src/riqrvzpl_shared.ts",
+        "src/riqrvzpl_shared_decoy.ts"
+      ],
+      "baselineTests": [
+        "src/riqrvzpl_shared.test.ts"
+      ],
+      "files": [
+        "src/riqrvzpl_shared.ts",
+        "src/riqrvzpl_shared.test.ts",
+        "src/riqrvzpl_consumer_b.ts",
+        "src/riqrvzpl_consumer_a.ts"
+      ],
+      "plannedFiles": [],
+      "tests": [
+        "src/riqrvzpl_shared.test.ts"
+      ],
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": null,
+        "testRecall": 1,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 0.5,
+        "textChars": 4673,
+        "dataBytes": 13429,
+        "refreshed": false,
+        "structuredBytes": 13429,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": false
+      },
+      "comparison": {
+        "baselineFileRecall": 1,
+        "baselineTestRecall": 1,
+        "baselinePrecisionAtK": 1,
+        "fileRecallDelta": 0,
+        "testRecallDelta": 0,
+        "precisionDelta": 0,
+        "codexaFileCount": 4,
+        "baselineFileCount": 5,
+        "codexaTestCount": 1,
+        "baselineTestCount": 1,
+        "codexaToBaselineFileRatio": 0.8
+      },
+      "calibration": {
+        "falsePositiveFiles": [],
+        "missingExpectedFiles": [],
+        "missingExpectedChangedFiles": [],
+        "missingExpectedTests": [],
+        "heuristicHeavy": false,
+        "broadRetrievalFailure": false,
+        "rawRgBetter": false,
+        "overBudgetedOutput": false,
+        "overBudgetedStructuredData": false
+      },
+      "failures": []
+    },
+    {
+      "id": "synthetic-ts-impact-decoy-control",
+      "suite": "synthetic",
+      "description": "Randomized TypeScript impact should include true dependents and exclude similarly named decoys.",
+      "passed": true,
+      "score": 1,
+      "scored": true,
+      "baselineLines": 6,
+      "baselineFiles": [
+        "src/riqrvzpl_core.test.ts",
+        "src/riqrvzpl_core.ts",
+        "src/riqrvzpl_core_decoy.ts",
+        "src/riqrvzpl_feature.ts"
+      ],
+      "baselineTests": [
+        "src/riqrvzpl_core.test.ts"
+      ],
+      "files": [
+        "src/riqrvzpl_core.ts",
+        "src/riqrvzpl_core.test.ts",
+        "src/riqrvzpl_feature.ts"
+      ],
+      "plannedFiles": [],
+      "tests": [
+        "src/riqrvzpl_core.test.ts"
+      ],
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": null,
+        "testRecall": 1,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 0.5,
+        "textChars": 2022,
+        "dataBytes": 15892,
+        "refreshed": false,
+        "structuredBytes": 15892,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": false
+      },
+      "comparison": {
+        "baselineFileRecall": 1,
+        "baselineTestRecall": 1,
+        "baselinePrecisionAtK": 0.6666666666666666,
+        "fileRecallDelta": 0,
+        "testRecallDelta": 0,
+        "precisionDelta": 0.33333333333333337,
+        "codexaFileCount": 3,
+        "baselineFileCount": 4,
+        "codexaTestCount": 1,
+        "baselineTestCount": 1,
+        "codexaToBaselineFileRatio": 0.75
+      },
+      "calibration": {
+        "falsePositiveFiles": [],
+        "missingExpectedFiles": [],
+        "missingExpectedChangedFiles": [],
+        "missingExpectedTests": [],
+        "heuristicHeavy": false,
+        "broadRetrievalFailure": false,
+        "rawRgBetter": false,
+        "overBudgetedOutput": false,
+        "overBudgetedStructuredData": false
+      },
+      "failures": []
+    },
+    {
+      "id": "synthetic-python-impact-decoy-control",
+      "suite": "synthetic",
+      "description": "Randomized Python helper impact should include importer and pytest file without fabricated commands.",
+      "passed": true,
+      "score": 1,
+      "scored": true,
+      "baselineLines": 4,
+      "baselineFiles": [
+        "service_riqrvzpl/app.py",
+        "service_riqrvzpl/helpers.py",
+        "service_riqrvzpl/helpers_decoy.py"
+      ],
+      "baselineTests": [],
+      "files": [
+        "service_riqrvzpl/helpers.py",
+        "tests/test_riqrvzpl.py",
+        "service_riqrvzpl/app.py"
+      ],
+      "plannedFiles": [],
+      "tests": [
+        "tests/test_riqrvzpl.py"
+      ],
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": null,
+        "testRecall": 1,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 0.75,
+        "textChars": 2379,
+        "dataBytes": 14123,
+        "refreshed": false,
+        "structuredBytes": 14123,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": false
+      },
+      "comparison": {
+        "baselineFileRecall": 0.6666666666666666,
+        "baselineTestRecall": 0,
+        "baselinePrecisionAtK": 0.6666666666666666,
+        "fileRecallDelta": 0.33333333333333337,
+        "testRecallDelta": 1,
+        "precisionDelta": 0.33333333333333337,
+        "codexaFileCount": 3,
+        "baselineFileCount": 3,
+        "codexaTestCount": 1,
+        "baselineTestCount": 0,
+        "codexaToBaselineFileRatio": 1
+      },
+      "calibration": {
+        "falsePositiveFiles": [],
+        "missingExpectedFiles": [],
+        "missingExpectedChangedFiles": [],
+        "missingExpectedTests": [],
+        "heuristicHeavy": false,
+        "broadRetrievalFailure": false,
+        "rawRgBetter": false,
+        "overBudgetedOutput": false,
+        "overBudgetedStructuredData": false
+      },
+      "failures": []
+    },
+    {
+      "id": "synthetic-manifest-impact",
+      "suite": "synthetic",
+      "description": "Randomized node manifest should link node id references without hardcoded project names.",
+      "passed": true,
+      "score": 1,
+      "scored": true,
+      "baselineLines": 3,
+      "baselineFiles": [
+        "manifests/riqrvzpl.node.json",
+        "web/src/riqrvzpl_node.ts",
+        "web/src/riqrvzpl_node_decoy.ts"
+      ],
+      "baselineTests": [],
+      "files": [
+        "manifests/riqrvzpl.node.json",
+        "web/src/riqrvzpl_node.ts"
+      ],
+      "plannedFiles": [],
+      "tests": [],
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": null,
+        "testRecall": null,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 0.6666666666666666,
+        "textChars": 1396,
+        "dataBytes": 6907,
+        "refreshed": false,
+        "structuredBytes": 6907,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": false
+      },
+      "comparison": {
+        "baselineFileRecall": 1,
+        "baselineTestRecall": null,
+        "baselinePrecisionAtK": 1,
+        "fileRecallDelta": 0,
+        "testRecallDelta": null,
+        "precisionDelta": 0,
+        "codexaFileCount": 2,
+        "baselineFileCount": 3,
+        "codexaTestCount": 0,
+        "baselineTestCount": 0,
+        "codexaToBaselineFileRatio": 0.6666666666666666
+      },
+      "calibration": {
+        "falsePositiveFiles": [],
+        "missingExpectedFiles": [],
+        "missingExpectedChangedFiles": [],
+        "missingExpectedTests": [],
+        "heuristicHeavy": false,
+        "broadRetrievalFailure": false,
+        "rawRgBetter": false,
+        "overBudgetedOutput": false,
+        "overBudgetedStructuredData": false
+      },
+      "failures": []
+    },
+    {
+      "id": "synthetic-dirty-diff-context-pack",
+      "suite": "synthetic",
+      "description": "Dirty diff context should report stale/gap state and still select focused changed context.",
+      "passed": true,
+      "score": 1,
+      "scored": true,
+      "baselineLines": 2,
+      "baselineFiles": [
+        "service_riqrvzpl/helpers.py",
+        ".codex/"
+      ],
+      "baselineTests": [],
+      "files": [
+        "service_riqrvzpl/helpers.py",
+        "service_riqrvzpl/app.py",
+        "tests/test_riqrvzpl.py"
+      ],
+      "plannedFiles": [],
+      "tests": [
+        "tests/test_riqrvzpl.py"
+      ],
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": null,
+        "testRecall": 1,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 1.5,
+        "textChars": 4152,
+        "dataBytes": 13812,
+        "refreshed": false,
+        "structuredBytes": 13812,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": false
+      },
+      "comparison": {
+        "baselineFileRecall": 0.5,
+        "baselineTestRecall": 0,
+        "baselinePrecisionAtK": 0.5,
+        "fileRecallDelta": 0.5,
+        "testRecallDelta": 1,
+        "precisionDelta": 0.5,
+        "codexaFileCount": 3,
+        "baselineFileCount": 2,
+        "codexaTestCount": 1,
+        "baselineTestCount": 0,
+        "codexaToBaselineFileRatio": 1.5
+      },
+      "calibration": {
+        "falsePositiveFiles": [],
+        "missingExpectedFiles": [],
+        "missingExpectedChangedFiles": [],
+        "missingExpectedTests": [],
+        "heuristicHeavy": false,
+        "broadRetrievalFailure": false,
+        "rawRgBetter": false,
+        "overBudgetedOutput": false,
+        "overBudgetedStructuredData": false
+      },
+      "failures": []
+    },
+    {
+      "id": "synthetic-broad-focus-brief",
+      "suite": "synthetic",
+      "description": "Natural-language broad task should identify a workflow subsystem without explicit file seeds.",
+      "passed": true,
+      "score": 1,
+      "scored": true,
+      "baselineLines": 0,
+      "baselineFiles": [],
+      "baselineTests": [],
+      "files": [
+        "service_riqrvzpl/app.py",
+        "tests/test_riqrvzpl.py",
+        "service_riqrvzpl/helpers.py"
+      ],
+      "plannedFiles": [],
+      "tests": [
+        "tests/test_riqrvzpl.py"
+      ],
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": null,
+        "testRecall": 1,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": null,
+        "textChars": 3362,
+        "dataBytes": 19955,
+        "refreshed": false,
+        "structuredBytes": 19955,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": false
+      },
+      "comparison": {
+        "baselineFileRecall": 0,
+        "baselineTestRecall": 0,
+        "baselinePrecisionAtK": 0,
+        "fileRecallDelta": 1,
+        "testRecallDelta": 1,
+        "precisionDelta": 1,
+        "codexaFileCount": 3,
+        "baselineFileCount": 0,
+        "codexaTestCount": 1,
+        "baselineTestCount": 0,
+        "codexaToBaselineFileRatio": null
+      },
+      "calibration": {
+        "falsePositiveFiles": [],
+        "missingExpectedFiles": [],
+        "missingExpectedChangedFiles": [],
+        "missingExpectedTests": [],
+        "heuristicHeavy": false,
+        "broadRetrievalFailure": false,
+        "rawRgBetter": false,
+        "overBudgetedOutput": false,
+        "overBudgetedStructuredData": false
+      },
+      "failures": []
+    },
+    {
+      "id": "synthetic-session-context-seedless",
+      "suite": "synthetic",
+      "description": "Seedless session-context style focus should run without refresh and expose fallback quality instead of pretending evidence.",
+      "passed": true,
+      "score": 0,
+      "scored": false,
+      "baselineLines": null,
+      "baselineFiles": [],
+      "baselineTests": [],
+      "files": [
+        "service_riqrvzpl/app.py",
+        "src/riqrvzpl_shared.ts",
+        "manifests/riqrvzpl.node.json",
+        "src/riqrvzpl_core.test.ts"
+      ],
+      "plannedFiles": [],
+      "tests": [
+        "tests/test_riqrvzpl.py",
+        "src/riqrvzpl_shared.test.ts",
+        "src/riqrvzpl_core.test.ts"
+      ],
+      "metrics": {
+        "fileRecall": null,
+        "changedFileRecall": null,
+        "testRecall": null,
+        "precisionAtK": null,
+        "selectedToBaselineRatio": null,
+        "textChars": 3096,
+        "dataBytes": 5641,
+        "refreshed": false,
+        "structuredBytes": 5641,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": false
+      },
+      "comparison": {
+        "baselineFileRecall": null,
+        "baselineTestRecall": null,
+        "baselinePrecisionAtK": null,
+        "fileRecallDelta": null,
+        "testRecallDelta": null,
+        "precisionDelta": null,
+        "codexaFileCount": 4,
+        "baselineFileCount": 0,
+        "codexaTestCount": 3,
+        "baselineTestCount": 0,
+        "codexaToBaselineFileRatio": null
+      },
+      "calibration": {
+        "falsePositiveFiles": [],
+        "missingExpectedFiles": [],
+        "missingExpectedChangedFiles": [],
+        "missingExpectedTests": [],
+        "heuristicHeavy": false,
+        "broadRetrievalFailure": true,
+        "rawRgBetter": false,
+        "overBudgetedOutput": false,
+        "overBudgetedStructuredData": false
+      },
+      "failures": []
+    },
+    {
+      "id": "synthetic-patch-task-change-plan",
+      "suite": "synthetic",
+      "description": "Patch-task change plan should select enough context, tests, and verification hints to avoid blind shared-helper edits.",
+      "passed": true,
+      "score": 1,
+      "scored": true,
+      "baselineLines": 8,
+      "baselineFiles": [
+        "src/riqrvzpl_consumer_a.ts",
+        "src/riqrvzpl_consumer_b.ts",
+        "src/riqrvzpl_shared.test.ts",
+        "src/riqrvzpl_shared.ts",
+        "src/riqrvzpl_shared_decoy.ts"
+      ],
+      "baselineTests": [
+        "src/riqrvzpl_shared.test.ts"
+      ],
+      "files": [
+        "src/riqrvzpl_shared.ts",
+        "src/riqrvzpl_shared.test.ts",
+        "src/riqrvzpl_consumer_b.ts",
+        "src/riqrvzpl_consumer_a.ts"
+      ],
+      "plannedFiles": [
+        "src/riqrvzpl_shared.ts"
+      ],
+      "tests": [
+        "src/riqrvzpl_shared.test.ts"
+      ],
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": null,
+        "testRecall": 1,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 0.5,
+        "textChars": 3793,
+        "dataBytes": 37180,
+        "refreshed": false,
+        "structuredBytes": 37180,
+        "toolHopsToEditReady": 0,
+        "verificationProvenancePresent": false
+      },
+      "comparison": {
+        "baselineFileRecall": 1,
+        "baselineTestRecall": 1,
+        "baselinePrecisionAtK": 1,
+        "fileRecallDelta": 0,
+        "testRecallDelta": 0,
+        "precisionDelta": 0,
+        "codexaFileCount": 4,
+        "baselineFileCount": 5,
+        "codexaTestCount": 1,
+        "baselineTestCount": 1,
+        "codexaToBaselineFileRatio": 0.8
+      },
+      "calibration": {
+        "falsePositiveFiles": [],
+        "missingExpectedFiles": [],
+        "missingExpectedChangedFiles": [],
+        "missingExpectedTests": [],
+        "heuristicHeavy": false,
+        "broadRetrievalFailure": false,
+        "rawRgBetter": false,
+        "overBudgetedOutput": false,
+        "overBudgetedStructuredData": false
+      },
+      "failures": []
+    },
+    {
+      "id": "synthetic-patch-task-post-edit-review",
+      "suite": "synthetic",
+      "description": "Post-edit review should compare an actual edit against the saved task snapshot and keep tests/consumers visible.",
+      "passed": true,
+      "score": 1,
+      "scored": true,
+      "baselineLines": 8,
+      "baselineFiles": [
+        "src/riqrvzpl_consumer_a.ts",
+        "src/riqrvzpl_consumer_b.ts",
+        "src/riqrvzpl_shared.test.ts",
+        "src/riqrvzpl_shared.ts",
+        "src/riqrvzpl_shared_decoy.ts"
+      ],
+      "baselineTests": [
+        "src/riqrvzpl_shared.test.ts"
+      ],
+      "files": [
+        "src/riqrvzpl_shared.ts",
+        "src/riqrvzpl_shared.test.ts",
+        "src/riqrvzpl_consumer_b.ts",
+        "src/riqrvzpl_consumer_a.ts"
+      ],
+      "plannedFiles": [
+        "src/riqrvzpl_shared.ts"
+      ],
+      "tests": [
+        "src/riqrvzpl_shared.test.ts"
+      ],
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": null,
+        "testRecall": 1,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 0.5,
+        "textChars": 6246,
+        "dataBytes": 32886,
+        "refreshed": false,
+        "structuredBytes": 32886,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": true
+      },
+      "comparison": {
+        "baselineFileRecall": 1,
+        "baselineTestRecall": 1,
+        "baselinePrecisionAtK": 1,
+        "fileRecallDelta": 0,
+        "testRecallDelta": 0,
+        "precisionDelta": 0,
+        "codexaFileCount": 4,
+        "baselineFileCount": 5,
+        "codexaTestCount": 1,
+        "baselineTestCount": 1,
+        "codexaToBaselineFileRatio": 0.8
+      },
+      "calibration": {
+        "falsePositiveFiles": [],
+        "missingExpectedFiles": [],
+        "missingExpectedChangedFiles": [],
+        "missingExpectedTests": [],
+        "heuristicHeavy": false,
+        "broadRetrievalFailure": false,
+        "rawRgBetter": false,
+        "overBudgetedOutput": false,
+        "overBudgetedStructuredData": false,
+        "postEditOutcome": {
+          "verdict": "inspect",
+          "outcomeId": "eval-post-edit-shared-20260612051359-cd967f3cb9507833",
+          "path": ".codex/cache/codexa-outcomes/eval-post-edit-shared-20260612051359-cd967f3cb9507833.json",
+          "driftReasons": [],
+          "calibrationLabels": [
+            "aggregate-command-coverage",
+            "blocking-inspection",
+            "false-missing-test-warning-avoided",
+            "modified-public-symbols",
+            "requires-inspection"
+          ],
+          "testsNotRun": [],
+          "missedLikelyTests": [],
+          "modifiedPublicSymbols": [
+            "formatRiqrvzplLabel (function) in src/riqrvzpl_shared.ts"
+          ],
+          "requiredChecksMissing": 0,
+          "ranCommands": [
+            "npm run check"
+          ],
+          "commandEnvelopes": [
+            {
+              "command": "npm run check",
+              "cwd": "<repo>",
+              "packageManager": "npm",
+              "packageRoot": ".",
+              "scriptName": "check",
+              "args": [],
+              "source": "derived-from-raw-command",
+              "scopeStatus": "repo",
+              "classifierVersion": "command-coverage-v3"
+            }
+          ],
+          "verificationProvenance": {
+            "schemaVersion": 1,
+            "commandCoverageClassifier": "codexa-command-coverage",
+            "commandCoverageClassifierVersion": "command-coverage-v3",
+            "commandEnvelopeRulesetVersion": "command-envelope-v2",
+            "verificationLedgerVersion": "verification-ledger-v2"
+          },
+          "verificationCovered": 9,
+          "verificationMissing": 0,
+          "verificationWaived": 0,
+          "verificationNotApplicable": 0
+        }
+      },
+      "failures": []
+    },
+    {
+      "id": "historical-fixture-exact-shared-api",
+      "suite": "historical-fixture",
+      "description": "Refactor normalizeRiqrvzpl API without missing consumers",
+      "passed": true,
+      "score": 1,
+      "scored": true,
+      "baselineLines": 6,
+      "baselineFiles": [
+        "src/feature.test.ts",
+        "src/feature.ts",
+        "src/shared.ts",
+        "src/shared_decoy.ts"
+      ],
+      "baselineTests": [
+        "src/feature.test.ts"
+      ],
+      "files": [
+        "src/shared.ts",
+        "src/feature.test.ts",
+        "src/feature.ts"
+      ],
+      "plannedFiles": [
+        "src/shared.ts"
+      ],
+      "tests": [
+        "src/feature.test.ts"
+      ],
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": 1,
+        "testRecall": 1,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 0.5,
+        "textChars": 3107,
+        "dataBytes": 42085,
+        "refreshed": false,
+        "structuredBytes": 42085,
+        "toolHopsToEditReady": 0,
+        "verificationProvenancePresent": false
+      },
+      "comparison": {
+        "baselineFileRecall": 1,
+        "baselineTestRecall": 1,
+        "baselinePrecisionAtK": 1,
+        "fileRecallDelta": 0,
+        "testRecallDelta": 0,
+        "precisionDelta": 0,
+        "codexaFileCount": 3,
+        "baselineFileCount": 4,
+        "codexaTestCount": 1,
+        "baselineTestCount": 1,
+        "codexaToBaselineFileRatio": 0.75
+      },
+      "calibration": {
+        "falsePositiveFiles": [],
+        "missingExpectedFiles": [],
+        "missingExpectedChangedFiles": [],
+        "missingExpectedTests": [],
+        "heuristicHeavy": false,
+        "broadRetrievalFailure": false,
+        "rawRgBetter": false,
+        "overBudgetedOutput": false,
+        "overBudgetedStructuredData": false
+      },
+      "failures": []
+    },
+    {
+      "id": "historical-fixture-broad-workflow",
+      "suite": "historical-fixture",
+      "description": "riqrvzpl queue polling from UI to backend route store and tests",
+      "passed": true,
+      "score": 1,
+      "scored": true,
+      "baselineLines": 22,
+      "baselineFiles": [
+        "manifests/riqrvzpl.json",
+        "src/backend/adapter.py",
+        "src/backend/app.py",
+        "src/backend/helpers.py",
+        "src/backend/routes.py",
+        "src/backend/store.py",
+        "src/feature.test.ts",
+        "src/ui/api_client.ts",
+        "src/ui/use_polling.test.ts",
+        "tests/test_adapter.py",
+        "tests/test_queue.py"
+      ],
+      "baselineTests": [
+        "src/feature.test.ts",
+        "src/ui/use_polling.test.ts",
+        "tests/test_adapter.py",
+        "tests/test_queue.py"
+      ],
+      "files": [
+        "src/backend/routes.py",
+        "src/ui/api_client.ts",
+        "src/backend/store.py",
+        "src/ui/use_polling.ts"
+      ],
+      "plannedFiles": [],
+      "tests": [
+        "src/ui/use_polling.test.ts",
+        "tests/test_queue.py"
+      ],
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": null,
+        "testRecall": 1,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 0.18181818181818182,
+        "textChars": 2912,
+        "dataBytes": 27080,
+        "refreshed": false,
+        "structuredBytes": 27080,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": false
+      },
+      "comparison": {
+        "baselineFileRecall": 0.75,
+        "baselineTestRecall": 1,
+        "baselinePrecisionAtK": 0.3333333333333333,
+        "fileRecallDelta": 0.25,
+        "testRecallDelta": 0,
+        "precisionDelta": 0.6666666666666667,
+        "codexaFileCount": 4,
+        "baselineFileCount": 11,
+        "codexaTestCount": 2,
+        "baselineTestCount": 4,
+        "codexaToBaselineFileRatio": 0.36363636363636365
+      },
+      "calibration": {
+        "falsePositiveFiles": [],
+        "missingExpectedFiles": [],
+        "missingExpectedChangedFiles": [],
+        "missingExpectedTests": [],
+        "heuristicHeavy": false,
+        "broadRetrievalFailure": false,
+        "rawRgBetter": false,
+        "overBudgetedOutput": false,
+        "overBudgetedStructuredData": false
+      },
+      "failures": []
+    },
+    {
+      "id": "historical-fixture-python-route-helper",
+      "suite": "historical-fixture",
+      "description": "Change prepare_riqrvzpl helper and keep route tests in scope",
+      "passed": true,
+      "score": 1,
+      "scored": true,
+      "baselineLines": 3,
+      "baselineFiles": [
+        "src/backend/app.py",
+        "src/backend/helpers.py"
+      ],
+      "baselineTests": [],
+      "files": [
+        "src/backend/helpers.py",
+        "tests/test_backend.py",
+        "src/backend/app.py"
+      ],
+      "plannedFiles": [],
+      "tests": [
+        "tests/test_backend.py"
+      ],
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": null,
+        "testRecall": 1,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 1,
+        "textChars": 1968,
+        "dataBytes": 13170,
+        "refreshed": false,
+        "structuredBytes": 13170,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": false
+      },
+      "comparison": {
+        "baselineFileRecall": 1,
+        "baselineTestRecall": 0,
+        "baselinePrecisionAtK": 1,
+        "fileRecallDelta": 0,
+        "testRecallDelta": 1,
+        "precisionDelta": 0,
+        "codexaFileCount": 3,
+        "baselineFileCount": 2,
+        "codexaTestCount": 1,
+        "baselineTestCount": 0,
+        "codexaToBaselineFileRatio": 1.5
+      },
+      "calibration": {
+        "falsePositiveFiles": [],
+        "missingExpectedFiles": [],
+        "missingExpectedChangedFiles": [],
+        "missingExpectedTests": [],
+        "heuristicHeavy": false,
+        "broadRetrievalFailure": false,
+        "rawRgBetter": false,
+        "overBudgetedOutput": false,
+        "overBudgetedStructuredData": false
+      },
+      "failures": []
+    },
+    {
+      "id": "historical-fixture-manifest-adapter",
+      "suite": "historical-fixture",
+      "description": "Change riqrvzpl.node manifest behavior and find adapter tests",
+      "passed": true,
+      "score": 1,
+      "scored": true,
+      "baselineLines": 3,
+      "baselineFiles": [
+        "manifests/riqrvzpl.json",
+        "src/backend/adapter.py",
+        "tests/test_adapter.py"
+      ],
+      "baselineTests": [
+        "tests/test_adapter.py"
+      ],
+      "files": [
+        "manifests/riqrvzpl.json",
+        "tests/test_adapter.py",
+        "src/backend/adapter.py"
+      ],
+      "plannedFiles": [],
+      "tests": [
+        "tests/test_adapter.py"
+      ],
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": null,
+        "testRecall": 1,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 1,
+        "textChars": 5154,
+        "dataBytes": 31823,
+        "refreshed": false,
+        "structuredBytes": 31823,
+        "toolHopsToEditReady": 1,
+        "verificationProvenancePresent": false
+      },
+      "comparison": {
+        "baselineFileRecall": 1,
+        "baselineTestRecall": 1,
+        "baselinePrecisionAtK": 1,
+        "fileRecallDelta": 0,
+        "testRecallDelta": 0,
+        "precisionDelta": 0,
+        "codexaFileCount": 3,
+        "baselineFileCount": 3,
+        "codexaTestCount": 1,
+        "baselineTestCount": 1,
+        "codexaToBaselineFileRatio": 1
+      },
+      "calibration": {
+        "falsePositiveFiles": [],
+        "missingExpectedFiles": [],
+        "missingExpectedChangedFiles": [],
+        "missingExpectedTests": [],
+        "heuristicHeavy": false,
+        "broadRetrievalFailure": false,
+        "rawRgBetter": false,
+        "overBudgetedOutput": false,
+        "overBudgetedStructuredData": false
+      },
+      "failures": []
+    },
+    {
+      "id": "historical-fixture-post-edit-drift",
+      "suite": "historical-fixture",
+      "description": "Edit normalizeRiqrvzpl and verify planned drift before finishing",
+      "passed": true,
+      "score": 1,
+      "scored": true,
+      "baselineLines": 6,
+      "baselineFiles": [
+        "src/feature.test.ts",
+        "src/feature.ts",
+        "src/shared.ts",
+        "src/shared_decoy.ts"
+      ],
+      "baselineTests": [
+        "src/feature.test.ts"
+      ],
+      "files": [
+        "src/shared.ts",
+        "src/feature.test.ts",
+        "src/feature.ts"
+      ],
+      "plannedFiles": [
+        "src/shared.ts"
+      ],
+      "tests": [
+        "src/feature.test.ts"
+      ],
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": 1,
+        "testRecall": 1,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 0.5,
+        "textChars": 6265,
+        "dataBytes": 29817,
+        "refreshed": false,
+        "structuredBytes": 29817,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": true
+      },
+      "comparison": {
+        "baselineFileRecall": 1,
+        "baselineTestRecall": 1,
+        "baselinePrecisionAtK": 1,
+        "fileRecallDelta": 0,
+        "testRecallDelta": 0,
+        "precisionDelta": 0,
+        "codexaFileCount": 3,
+        "baselineFileCount": 4,
+        "codexaTestCount": 1,
+        "baselineTestCount": 1,
+        "codexaToBaselineFileRatio": 0.75
+      },
+      "calibration": {
+        "falsePositiveFiles": [],
+        "missingExpectedFiles": [],
+        "missingExpectedChangedFiles": [],
+        "missingExpectedTests": [],
+        "heuristicHeavy": false,
+        "broadRetrievalFailure": false,
+        "rawRgBetter": false,
+        "overBudgetedOutput": false,
+        "overBudgetedStructuredData": false,
+        "postEditOutcome": {
+          "verdict": "inspect",
+          "outcomeId": "historical-post-edit-drift-ee9c3edf-b2c4-20260612051359-a9708f2f936040a2",
+          "path": ".codex/cache/codexa-outcomes/historical-post-edit-drift-ee9c3edf-b2c4-20260612051359-a9708f2f936040a2.json",
+          "driftReasons": [
+            "recommended tests have not been accounted for"
+          ],
+          "calibrationLabels": [
+            "blocking-inspection",
+            "missing-recommended-tests",
+            "real-missed-tests",
+            "requires-inspection"
+          ],
+          "testsNotRun": [
+            "src/feature.test.ts"
+          ],
+          "missedLikelyTests": [
+            "src/feature.test.ts"
+          ],
+          "modifiedPublicSymbols": [],
+          "requiredChecksMissing": 0,
+          "ranCommands": [],
+          "commandEnvelopes": [],
+          "verificationProvenance": {
+            "schemaVersion": 1,
+            "commandCoverageClassifier": "codexa-command-coverage",
+            "commandCoverageClassifierVersion": "command-coverage-v3",
+            "commandEnvelopeRulesetVersion": "command-envelope-v2",
+            "verificationLedgerVersion": "verification-ledger-v2"
+          },
+          "verificationCovered": 8,
+          "verificationMissing": 1,
+          "verificationWaived": 0,
+          "verificationNotApplicable": 0
+        }
+      },
+      "failures": []
+    },
+    {
+      "id": "historical-fixture-target-led-broad-dirty",
+      "suite": "historical-fixture",
+      "description": "Change normalizeRiqrvzpl while unrelated queue, route, and manifest edits are already dirty",
+      "passed": true,
+      "score": 1,
+      "scored": true,
+      "baselineLines": 6,
+      "baselineFiles": [
+        "src/feature.test.ts",
+        "src/feature.ts",
+        "src/shared.ts",
+        "src/shared_decoy.ts"
+      ],
+      "baselineTests": [
+        "src/feature.test.ts"
+      ],
+      "files": [
+        "src/shared.ts",
+        "src/feature.test.ts",
+        "src/feature.ts"
+      ],
+      "plannedFiles": [],
+      "tests": [
+        "src/feature.test.ts"
+      ],
+      "metrics": {
+        "fileRecall": 1,
+        "changedFileRecall": null,
+        "testRecall": 1,
+        "precisionAtK": 1,
+        "selectedToBaselineRatio": 0.5,
+        "textChars": 4146,
+        "dataBytes": 12311,
+        "refreshed": false,
+        "structuredBytes": 12311,
+        "toolHopsToEditReady": null,
+        "verificationProvenancePresent": false
+      },
+      "comparison": {
+        "baselineFileRecall": 1,
+        "baselineTestRecall": 1,
+        "baselinePrecisionAtK": 1,
+        "fileRecallDelta": 0,
+        "testRecallDelta": 0,
+        "precisionDelta": 0,
+        "codexaFileCount": 3,
+        "baselineFileCount": 4,
+        "codexaTestCount": 1,
+        "baselineTestCount": 1,
+        "codexaToBaselineFileRatio": 0.75
+      },
+      "calibration": {
+        "falsePositiveFiles": [],
+        "missingExpectedFiles": [],
+        "missingExpectedChangedFiles": [],
+        "missingExpectedTests": [],
+        "heuristicHeavy": false,
+        "broadRetrievalFailure": false,
+        "rawRgBetter": false,
+        "overBudgetedOutput": false,
+        "overBudgetedStructuredData": false
+      },
+      "failures": []
+    }
+  ],
+  "generatedAt": "2026-06-12T05:14:00Z",
+  "codexaVersion": "0.3.0",
+  "note": "Reduced projection of `codexa eval --json` output: per-scenario `sample` prose (which embeds absolute local paths) is stripped; all structured scores, metrics, comparisons, and calibration data are verbatim."
+}

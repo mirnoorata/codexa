@@ -46,6 +46,7 @@
     "package:hygiene": "node scripts/verify-package-hygiene.mjs && npm run plugin:hygiene",
     "smoke:package": "node scripts/package-install-smoke.mjs",
     "benchmark:ci": "npm run build && node scripts/benchmark-hot-paths.mjs --output .codex/cache/codexa-benchmarks/latest.json",
+    "eval:ci": "bash scripts/eval-ci.sh",
     "ci:extended": "npm run smoke:package && npm run benchmark:ci",
     "public:snapshot-check": "node scripts/verify-public-snapshot.mjs",
     "clean:private-artifacts": "node scripts/clean-private-artifacts.mjs",
@@ -73,7 +74,7 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
-    "@types/node": "25.6.2",
+    "@types/node": "25.9.3",
     "tsx": "4.22.4",
     "vitest": "4.1.8"
   },

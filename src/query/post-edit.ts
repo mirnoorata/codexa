@@ -127,12 +127,25 @@ async function postEditReviewQueryInternal(
   const task = input.task ?? snapshot?.task ?? "Post-edit review";
   const effectiveTaskId = snapshot?.taskId ?? loadedSnapshot.latestTaskId ?? input.taskId;
   const changeType = input.changeType ?? snapshot?.changeType ?? "unknown";
-  const reviewTargets = uniqueSorted([
-    ...(editPaths.length > 0 ? editPaths : []),
+  // Priority order, then cap: actually-edited files must never be dropped
+  // in favor of alphabetically-earlier explicit inputs (uniqueSorted+slice
+  // did exactly that, silently shrinking verdict-relevant test accounting).
+  const reviewTargetPool = [
+    ...editPaths,
     ...explicitFiles,
     ...explicitSymbolFiles,
     ...(editPaths.length === 0 && explicitFiles.length === 0 && explicitSymbolFiles.length === 0 && snapshot ? snapshot.plannedFiles.slice(0, limit) : [])
-  ]).slice(0, Math.max(limit, 3));
+  ];
+  const seenReviewTargets = new Set<string>();
+  const orderedReviewTargets: string[] = [];
+  for (const target of reviewTargetPool) {
+    if (!seenReviewTargets.has(target)) {
+      seenReviewTargets.add(target);
+      orderedReviewTargets.push(target);
+    }
+  }
+  const reviewTargets = orderedReviewTargets.slice(0, Math.max(limit, 3));
+  const droppedReviewTargets = orderedReviewTargets.length - reviewTargets.length;
   const context = await contextPackQuery(
     session,
     {
@@ -415,6 +428,23 @@ async function postEditReviewQueryInternal(
     `Inspect classification: ${inspectMode}; authority ${completionAuthority}`,
     semanticReviewContext ? formatPostEditSemanticReviewContext(semanticReviewContext) : undefined,
     `Outcome record: ${outcomePath ?? "not persisted"}`,
+    droppedReviewTargets > 0
+      ? `Review scope: first ${reviewTargets.length} of ${orderedReviewTargets.length} candidate targets (edited files prioritized); ${droppedReviewTargets} not analyzed — raise limit to widen.`
+      : undefined,
+    // Verdict-relevant summaries render BEFORE the bulk sections: small
+    // token budgets truncate from the end, and a hook consuming this text
+    // needs the drift reasons and next actions to survive, not the
+    // thirtieth changed-file entry.
+    "",
+    "Drift reasons:",
+    ...(driftReasons.length > 0 ? driftReasons.map((reason) => `- ${reason}`) : ["- none"]),
+    inspectReasons.length > 0 ? "" : undefined,
+    inspectReasons.length > 0 ? "Inspect reasons:" : undefined,
+    ...inspectReasons.map((reason) => `- ${reason}`),
+    "",
+    "Next actions:",
+    ...nextActions.map((action) => `- ${action}`),
+    missedLikelyTests.length > 0 ? `Tests still unaccounted for: ${missedLikelyTests.slice(0, 8).map((test) => test.path).join(", ")}` : "Tests still unaccounted for: none",
     "",
     "Changed since snapshot:",
     ...(changedSinceSnapshot.length > 0 ? changedSinceSnapshot.slice(0, 30).map(formatChangedEntry) : ["- none detected"]),
@@ -429,7 +459,7 @@ async function postEditReviewQueryInternal(
     snapshot
       ? snapshot.origin === "hook-implicit"
         ? "- Planned edit targets: none declared (implicit baseline); call change_plan with saveSnapshot=true to declare scope and tests"
-        : `- Planned edit targets: ${plannedScope.slice(0, 20).join(", ") || "none"}`
+        : `- Planned edit targets: ${plannedScope.slice(0, 20).join(", ") || "none"}${plannedScope.length > 20 ? `; +${plannedScope.length - 20} more` : ""}`
       : "- Planned edit targets: unavailable",
     `- Actual edited files since snapshot: ${editPaths.slice(0, 30).join(", ") || "none"}`,
     unplannedEditedFiles.length > 0 ? `- Unplanned edited files: ${unplannedEditedFiles.join(", ")}` : "- No unplanned edits detected against the saved planned scope.",
@@ -439,7 +469,9 @@ async function postEditReviewQueryInternal(
       : requestedSymbolNames.size > 0
         ? "- No changed symbols outside the requested symbol target detected."
         : undefined,
-    snapshot && plannedButUntouchedFiles.length > 0 ? `- Planned targets not touched yet: ${plannedButUntouchedFiles.slice(0, 12).join(", ")}` : undefined,
+    snapshot && plannedButUntouchedFiles.length > 0
+      ? `- Planned targets not touched yet: ${plannedButUntouchedFiles.slice(0, 12).join(", ")}${plannedButUntouchedFiles.length > 12 ? `; +${plannedButUntouchedFiles.length - 12} more` : ""}`
+      : undefined,
     headChanged ? `- Snapshot commit ${snapshot?.dirtyBaseline.headCommit ?? "none"} differs from current ${freshness.headCommit ?? "none"}` : undefined,
     "",
     "Symbol delta:",
@@ -483,16 +515,6 @@ async function postEditReviewQueryInternal(
     "",
     "Verification ledger:",
     ...formatVerificationLedger(dataVerificationLedger),
-    missedLikelyTests.length > 0 ? `Tests still unaccounted for: ${missedLikelyTests.slice(0, 8).map((test) => test.path).join(", ")}` : "Tests still unaccounted for: none",
-    "",
-    "Drift reasons:",
-    ...(driftReasons.length > 0 ? driftReasons.map((reason) => `- ${reason}`) : ["- none"]),
-    inspectReasons.length > 0 ? "" : undefined,
-    inspectReasons.length > 0 ? "Inspect reasons:" : undefined,
-    ...inspectReasons.map((reason) => `- ${reason}`),
-    "",
-    "Next actions:",
-    ...nextActions.map((action) => `- ${action}`),
     "",
     "Known gaps:",
     ...formatGaps(uniqueSorted([...(contextData.gaps ?? []), ...indexGaps(index, freshness, unindexedEditedFiles)]))
