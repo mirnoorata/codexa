@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { isTestPath } from "../language.js";
+import { buildPostEditComplexityReview, formatComplexityReview } from "./complexity.js";
 import { groupDiffImpact, formatDiffGroups, formatGaps, indexGaps } from "./diff.js";
 import { clampInt, fitLinesToTokenBudget, formatReasons } from "./formatting.js";
 import { affectedWorkflowGraphEdges, testsFromGraphEdges } from "./graph.js";
@@ -358,6 +359,14 @@ async function postEditReviewQueryInternal(
     riskEscalationsNeedInspection,
     riskEscalations
   });
+  const complexityReview = buildPostEditComplexityReview({
+    changedSinceSnapshot,
+    unplannedEditedFiles,
+    plannedScope,
+    testsNotRun,
+    noVerificationProofForEditedFiles,
+    hasActualEditedFiles
+  });
   const quality = contextData.quality;
   const sessionMemoryPointer = priorSessionMemory
     ? {
@@ -445,6 +454,8 @@ async function postEditReviewQueryInternal(
     "Next actions:",
     ...nextActions.map((action) => `- ${action}`),
     missedLikelyTests.length > 0 ? `Tests still unaccounted for: ${missedLikelyTests.slice(0, 8).map((test) => test.path).join(", ")}` : "Tests still unaccounted for: none",
+    "",
+    ...formatComplexityReview(complexityReview),
     "",
     "Changed since snapshot:",
     ...(changedSinceSnapshot.length > 0 ? changedSinceSnapshot.slice(0, 30).map(formatChangedEntry) : ["- none detected"]),
@@ -607,6 +618,7 @@ async function postEditReviewQueryInternal(
       workflows: limitArray(workflows, 12),
       workflowChecks: limitArray(workflowChecks, 20),
       dependencyChecks: limitArray(dependencyChecks, 30),
+      complexityReview,
       context: compactContextData(context.data),
       quality,
       semanticReviewContext,

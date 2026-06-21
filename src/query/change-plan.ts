@@ -1,5 +1,6 @@
 import path from "node:path";
 import { formatGaps } from "./diff.js";
+import { buildPlanComplexityReview, formatComplexityReview } from "./complexity.js";
 import { nextTool } from "./next-tools.js";
 import { contextPackQuery, focusBriefQuery } from "./context.js";
 import { formatContextQuality, type ContextQuality } from "./quality.js";
@@ -186,6 +187,13 @@ export async function changePlanQuery(
         nextTool(editReadiness.recommendedNextTool ?? focusData.nextCall?.tool ?? "search", "narrow the task to an explicit file or symbol target before editing", { task: effectiveInput.task }),
         targetCandidates[0] ? nextTool("change_plan", "follow the highest-confidence target candidate", { taskId: blockedSnapshot?.taskId ?? effectiveInput.taskId, followCandidate: targetCandidates[0].candidateId, saveSnapshot: true }, true, [".codex/cache/codexa-task-snapshots"]) : undefined
       ].filter((tool): tool is ReturnType<typeof nextTool> => Boolean(tool));
+  const complexityReview = buildPlanComplexityReview({
+    editReadiness,
+    plannedEditTargets,
+    plannedTests,
+    requiredWorkflowChecks: editReadiness.editable ? requiredWorkflowChecks : [],
+    requiredDependencyChecks: editReadiness.editable ? requiredDependencyChecks : []
+  });
   const snapshotIndex = effectiveInput.saveSnapshot && editReadiness.editable ? session.index : undefined;
   const snapshotScope = uniqueSorted([...plannedEditTargets, ...files]);
   const sessionMemoryPointer = effectiveInput.saveSnapshot && editReadiness.editable
@@ -245,6 +253,8 @@ export async function changePlanQuery(
     "",
     ...planSteps,
     "",
+    ...formatComplexityReview(complexityReview),
+    "",
     "Read first:",
     ...focusFiles.slice(0, 10).map((entry) => `- ${entry.file.path}: ${entry.tier}; ${entry.reasons.join("; ")}`),
     "",
@@ -283,6 +293,7 @@ export async function changePlanQuery(
       quality,
       requiredWorkflowChecks: editReadiness.editable ? requiredWorkflowChecks : [],
 	      requiredDependencyChecks: editReadiness.editable ? requiredDependencyChecks : [],
+	      complexityReview,
 	      nextTools: structuredNextTools,
 	      systemMessage: structuredNextTools[0]?.reason,
 	      snapshot: savedSnapshot?.snapshot,

@@ -366,6 +366,21 @@ function buildChangePlanPacket() {
     quality: { level: "medium" },
     requiredWorkflowChecks: seq(25, (index) => ({ target: `workflow-${index}` })),
     requiredDependencyChecks: seq(35, (index) => ({ target: `dependency-${index}` })),
+    complexityReview: {
+      schemaVersion: 1,
+      phase: "plan",
+      status: "review",
+      blocking: false,
+      summary: "14 complexity signals need review.",
+      items: seq(14, (index) => ({
+        kind: "scope",
+        severity: index % 2 === 0 ? "review" : "watch",
+        message: `complexity item ${index}`,
+        paths: seq(10, (pathIndex) => `src/complexity-${index}-${pathIndex}.ts`),
+        rationale: `rationale ${index}`
+      })),
+      invariants: seq(10, (index) => `invariant ${index}`)
+    },
     snapshot: {
       taskId: "snap-1",
       createdAt: "2026-04-11T00:00:00.000Z",
@@ -1359,6 +1374,21 @@ describe("Codexa MCP server", () => {
         waivedVerification: Array.from({ length: 35 }, (_, index) => ({ status: "waived", evidence: [`waiver ${index}`] })),
         workflowChecks: Array.from({ length: 25 }, (_, index) => ({ target: `workflow ${index}` })),
         dependencyChecks: Array.from({ length: 35 }, (_, index) => ({ target: `dependency ${index}` })),
+        complexityReview: {
+          schemaVersion: 1,
+          phase: "post-edit",
+          status: "review",
+          blocking: false,
+          summary: "11 complexity signals need review.",
+          items: Array.from({ length: 11 }, (_, index) => ({
+            kind: "scope",
+            severity: index % 2 === 0 ? "review" : "watch",
+            message: `complexity item ${index}`,
+            paths: Array.from({ length: 10 }, (_, pathIndex) => `src/complexity-${index}-${pathIndex}.ts`),
+            rationale: `rationale ${index}`
+          })),
+          invariants: Array.from({ length: 9 }, (_, index) => `invariant ${index}`)
+        },
       snapshot: {
           plannedFiles: Array.from({ length: 45 }, (_, index) => `src/planned-${index}.ts`),
           requiredWorkflowCheckCount: 41,
@@ -1400,6 +1430,13 @@ describe("Codexa MCP server", () => {
       waivedVerification: Array<unknown>;
       workflowChecks: Array<unknown>;
       dependencyChecks: Array<unknown>;
+      complexityReview?: {
+        status?: string;
+        blocking?: boolean;
+        items: Array<{ paths?: unknown[] }>;
+        invariants: unknown[];
+        truncation?: { items?: { total: number; returned: number }; invariants?: { total: number; returned: number } };
+      };
       verificationProvenance?: typeof CURRENT_VERIFICATION_PROVENANCE;
       truncation?: {
         changedSinceSnapshot?: { total: number; returned: number };
@@ -1453,6 +1490,11 @@ describe("Codexa MCP server", () => {
     expect(data.waivedVerification).toHaveLength(30);
     expect(data.workflowChecks).toHaveLength(20);
     expect(data.dependencyChecks).toHaveLength(30);
+    expect(data.complexityReview).toMatchObject({ status: "review", blocking: false });
+    expect(data.complexityReview?.items).toHaveLength(8);
+    expect(data.complexityReview?.items[0]?.paths).toHaveLength(8);
+    expect(data.complexityReview?.invariants).toHaveLength(6);
+    expect(data.complexityReview?.truncation).toMatchObject({ items: { total: 11, returned: 8 }, invariants: { total: 9, returned: 6 } });
     expect(data.snapshot?.plannedFiles).toHaveLength(40);
     expect(data.snapshot?.requiredWorkflowCheckCount).toBe(41);
     expect(data.snapshot?.requiredDependencyCheckCount).toBe(42);
@@ -1621,6 +1663,7 @@ describe("Codexa MCP server", () => {
       plannedEditTargets?: unknown[];
       tests?: unknown[];
       snapshot?: { taskId?: string; plannedEditTargets?: unknown[]; plannedFiles?: unknown[]; plannedTests?: unknown[]; requiredWorkflowCheckCount?: number; requiredDependencyCheckCount?: number };
+      complexityReview?: { status?: string; blocking?: boolean; items: unknown[]; invariants: unknown[]; truncation?: { items?: { total: number; returned: number }; invariants?: { total: number; returned: number } } };
       truncation?: Record<string, { total: number; returned: number }>;
       mcp: { mode: string; returnedBytes: number; targetBytes: number; hardBudgetEnforced?: boolean; budgetCompaction?: string };
     };
@@ -1648,6 +1691,11 @@ describe("Codexa MCP server", () => {
     expect(data.files?.length).toBeGreaterThan(0);
     expect(data.plannedEditTargets?.length).toBeGreaterThan(0);
     expect(data.tests?.length).toBeGreaterThan(0);
+    expect(data.complexityReview).toMatchObject({ status: "review", blocking: false });
+    expect(data.complexityReview?.items.length).toBeGreaterThanOrEqual(4);
+    expect(data.complexityReview?.items.length).toBeLessThanOrEqual(8);
+    expect(data.complexityReview?.invariants).toHaveLength(6);
+    expect(data.complexityReview?.truncation).toMatchObject({ items: { total: 14, returned: data.complexityReview?.items.length }, invariants: { total: 10, returned: 6 } });
     expect(data.snapshot?.taskId).toBe("snap-1");
     expect(data.snapshot?.plannedFiles?.length).toBeGreaterThan(0);
     expect(data.snapshot?.plannedTests?.length).toBeGreaterThan(0);

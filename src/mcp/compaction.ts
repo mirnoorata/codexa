@@ -1,5 +1,6 @@
 import { CURRENT_VERIFICATION_PROVENANCE } from "../types.js";
 import { asCodexaQueryData, asPostEditReviewData } from "../query-data.js";
+import { compactComplexityReview } from "../query/complexity.js";
 import type { ChangePlanData, CodexaQueryData, ContextPacketData, FocusBriefData, FreshnessInfo, PostEditReviewData, QueryResult, TestPlanData } from "../types.js";
 
 const DEFAULT_MCP_STRUCTURED_DATA_TARGET_BYTES = 96_000;
@@ -185,6 +186,7 @@ function enforceMcpStructuredBudget(
       snapshotBlock: compactSnapshotBlock(dataWithoutMetrics.snapshotBlock),
       targetCandidates: Array.isArray(dataWithoutMetrics.targetCandidates) ? dataWithoutMetrics.targetCandidates.slice(0, 8).map(compactTargetCandidate) : dataWithoutMetrics.targetCandidates,
       packetVerdict: dataWithoutMetrics.packetVerdict,
+      complexityReview: compactComplexityReview(dataWithoutMetrics.complexityReview, 4),
       verificationProvenance: boundedVerificationProvenance(dataWithoutMetrics.verificationProvenance),
       nextTools: compactNextTools(dataWithoutMetrics.nextTools, fallbackTruncation),
       systemMessage: stringValue(dataWithoutMetrics.systemMessage),
@@ -272,6 +274,7 @@ function buildMcpBudgetSummaryData(data: Record<string, unknown>, mode: string, 
     snapshotBlock: compactSnapshotBlock(data.snapshotBlock),
     targetCandidates: compactSummaryArray("targetCandidates", data.targetCandidates, 8, truncation, compactTargetCandidate),
     packetVerdict: data.packetVerdict,
+    complexityReview: compactComplexityReview(data.complexityReview, 4),
     nextTools: compactNextTools(data.nextTools, truncation),
     systemMessage: stringValue(data.systemMessage),
     files: compactSummaryArray("files", data.files, 12, truncation),
@@ -453,6 +456,7 @@ export function compactPostEditMcpResult(result: QueryResult): QueryResult {
       workflows: limitArray(data.workflows, 12),
       workflowChecks: limitArray(data.workflowChecks, 20),
       dependencyChecks: limitArray(data.dependencyChecks, 30),
+      complexityReview: compactComplexityReview(data.complexityReview, 8),
       quality: data.quality,
       driftReasons: data.driftReasons,
       nextActions: data.nextActions,
@@ -641,6 +645,7 @@ function compactChangePlanData(data: ChangePlanData): McpCompactionResult {
     quality: data.quality,
     requiredWorkflowChecks: limit("requiredWorkflowChecks", data.requiredWorkflowChecks, 20, compactCheck),
     requiredDependencyChecks: limit("requiredDependencyChecks", data.requiredDependencyChecks, 30, compactCheck),
+    complexityReview: compactComplexityReview(data.complexityReview, 8),
     sessionMemory: data.sessionMemory,
     nextTools: compactNextTools(data.nextTools, limit.truncation),
     systemMessage: stringValue(data.systemMessage),
