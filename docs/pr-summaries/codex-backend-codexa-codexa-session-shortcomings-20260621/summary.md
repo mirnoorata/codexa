@@ -1,7 +1,7 @@
 # Change Summary
 
 - Project: `codexa`
-- Worktree: `/srv/worktree/codexa/codex/codexa-session-shortcomings-20260621`
+- Worktree: isolated Codex worktree
 - Branch: `codex/backend/codexa-codexa-session-shortcomings-20260621`
 - Base: `main`
 - Primary commit: `30921d4`
@@ -35,4 +35,4 @@
 
 ## Notes
 
-Fixes Codexa issues observed in this session: workspace-root MCP calls no longer treat workspace-level /srv prose or inherited helper SESSION_ID values as the focused repo, and post-edit review no longer blocks verified CSS/non-source edits solely because they lack symbol ranges.
+Fixes Codexa issues observed in this session: workspace-root MCP calls no longer treat workspace-level prose or inherited helper SESSION_ID values as the focused repo, and post-edit review no longer blocks verified CSS/non-source edits solely because they lack symbol ranges.
