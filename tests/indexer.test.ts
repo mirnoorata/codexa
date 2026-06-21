@@ -1914,10 +1914,94 @@ describe("Codexa indexer", () => {
 
     const plan = await changePlanQuery(repo, { task: "Change route normalization safely", files: ["service/helpers.py"], diff: false, limit: 6 }, { autoRefresh: false });
     expect(plan.text).toContain("Codexa change plan");
-    expect((plan.data as { editReadiness?: { editable: boolean; status: string }; targetCandidates?: unknown[] }).editReadiness).toMatchObject({ editable: true, status: "edit-ready" });
-    expect((plan.data as { targetCandidates?: unknown[] }).targetCandidates).toEqual([]);
+    const planData = plan.data as {
+      editReadiness?: { editable: boolean; status: string };
+      targetCandidates?: unknown[];
+      complexityReview?: { status: string; blocking: boolean; invariants: string[] };
+    };
+    expect(planData.editReadiness).toMatchObject({ editable: true, status: "edit-ready" });
+    expect(planData.targetCandidates).toEqual([]);
+    expect(planData.complexityReview).toMatchObject({ status: "lean", blocking: false });
+    expect(planData.complexityReview?.invariants.some((invariant) => invariant.includes("security"))).toBe(true);
+    expect(plan.text).toContain("Complexity review:");
     expect(plan.text).toContain("Read first:");
     expect(plan.text).toContain("tests/test_app.py");
+  });
+
+  it("adds advisory complexity review signals to change plans for manifest-scoped edits", async () => {
+    const repo = await createFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+
+    const plan = await changePlanQuery(
+      repo,
+      {
+        task: "Add a package helper dependency only if needed",
+        files: ["package.json"],
+        diff: false,
+        limit: 6
+      },
+      { autoRefresh: false }
+    );
+
+    const data = plan.data as {
+      complexityReview?: {
+        status: string;
+        blocking: boolean;
+        items: Array<{ kind: string; severity: string; paths?: string[]; message: string }>;
+      };
+    };
+    expect(plan.text).toContain("Complexity review:");
+    expect(data.complexityReview).toMatchObject({ status: "review", blocking: false });
+    expect(data.complexityReview?.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "existing-dependency",
+          severity: "review",
+          paths: expect.arrayContaining(["package.json"])
+        })
+      ])
+    );
+  });
+
+  it("adds advisory complexity review signals to post-edit reviews for manifest changes", async () => {
+    const repo = await createFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+    await changePlanQuery(
+      repo,
+      {
+        task: "Change package manifest only if needed",
+        files: ["package.json"],
+        diff: false,
+        limit: 6,
+        saveSnapshot: true,
+        taskId: "manifest-complexity-review"
+      },
+      { autoRefresh: false }
+    );
+    const manifestPath = path.join(repo, "package.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as { dependencies: Record<string, string> };
+    manifest.dependencies.leftpad = "^1.3.0";
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+
+    const review = await postEditReviewQuery(repo, { taskId: "manifest-complexity-review", ranCommands: ["npm test"], persistOutcome: false }, { autoRefresh: true });
+    const data = review.data as {
+      complexityReview?: {
+        status: string;
+        blocking: boolean;
+        items: Array<{ kind: string; severity: string; paths?: string[]; message: string }>;
+      };
+    };
+    expect(review.text).toContain("Complexity review:");
+    expect(data.complexityReview).toMatchObject({ status: "review", blocking: false });
+    expect(data.complexityReview?.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "existing-dependency",
+          severity: "review",
+          paths: expect.arrayContaining(["package.json"])
+        })
+      ])
+    );
   });
 
   it("saves task snapshots and reports post-edit drift against the actual dirty tree", async () => {
