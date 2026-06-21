@@ -7,6 +7,7 @@ import { getGitState } from "../src/git.js";
 import { buildIndex, buildIndexLocked, getFreshness, loadIndex } from "../src/indexer.js";
 import { MAX_INDEXED_SOURCE_BYTES } from "../src/repo-files.js";
 import { validateChangePlanTargetCandidate } from "../src/query/change-plan.js";
+import { postEditDecision } from "../src/query/post-edit/decision.js";
 import { postEditReviewWithTrustedRunnerReports } from "../src/query/post-edit.js";
 import { loadExternalRiskSignals, MAX_RISK_REPORT_BYTES } from "../src/risk-ingest.js";
 import { recordSessionMemory } from "../src/session-memory.js";
@@ -2486,6 +2487,52 @@ describe("Codexa indexer", () => {
       expect(data.inspectMode).toBe("advisory");
       expect(data.completionAuthority).toBe("advisory_inspect");
       expect(data.driftReasons.some((reason) => reason.includes("used latest snapshot second-helper-edit without an explicit taskId"))).toBe(true);
+    });
+
+    it("keeps verified non-source unindexed post-edit drift advisory", () => {
+      type DecisionInput = Parameters<typeof postEditDecision>[0];
+      const mediumQuality: DecisionInput["quality"] = {
+        level: "medium",
+        recommendation: "Use explicit verification and inspect advisory gaps.",
+        reasons: ["non-source file has no symbol ranges"],
+        counts: { authoritative: 1, derived: 0, heuristic: 0, fallback: 0 }
+      };
+      const baseInput = (unindexedEditedFiles: string[]): DecisionInput => ({
+        snapshot: { taskId: "style-css" } as NonNullable<DecisionInput["snapshot"]>,
+        loadedSnapshot: {},
+        snapshotAmbiguity: undefined,
+        worktreeDegradationReasons: [],
+        headChanged: false,
+        unplannedEditedFiles: [],
+        unplannedChangedSymbols: [],
+        unindexedEditedFiles,
+        symbolDeltas: [],
+        riskDeltas: [],
+        workflowChecks: [],
+        dependencyChecks: [],
+        degradedSnapshotTests: [],
+        quality: mediumQuality,
+        riskEscalations: [],
+        waivedVerification: [],
+        hasActualEditedFiles: true,
+        testsNotRun: [],
+        hasTestVerificationAccounting: true,
+        noVerificationProofForEditedFiles: false,
+        implicitBaseline: false
+      });
+
+      const cssDecision = postEditDecision(baseInput(["web/src/styles.css"]));
+      expect(cssDecision.verdict).toBe("inspect");
+      expect(cssDecision.inspectMode).toBe("advisory");
+      expect(cssDecision.completionAuthority).toBe("advisory_inspect");
+      expect(cssDecision.inspectReasons).toEqual(expect.arrayContaining(["edited non-source files lack symbol ranges", "context quality is medium"]));
+      expect(cssDecision.inspectReasons).not.toContain("source-like edited files are not indexed");
+      expect(cssDecision.driftReasons).toContain("1 changed-since-snapshot file(s) lack indexed source/symbol context");
+
+      const sourceLikeDecision = postEditDecision(baseInput(["web/src/App.vue"]));
+      expect(sourceLikeDecision.inspectMode).toBe("blocking");
+      expect(sourceLikeDecision.completionAuthority).toBe("blocking_inspect");
+      expect(sourceLikeDecision.inspectReasons).toContain("source-like edited files are not indexed");
     });
 
     it("does not continue edited files when no verification was recommended or reported", async () => {

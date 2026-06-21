@@ -1,0 +1,147 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+2 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica-Bold >>
+endobj
+3 0 obj
+<< /Length 2544 >>
+stream
+BT
+/F2 18 Tf
+72 752 Td
+/F2 18 Tf
+(Change Summary) Tj
+0 -16 Td
+0 -16 Td
+/F1 10 Tf
+(- Project: `codexa`) Tj
+0 -16 Td
+/F1 10 Tf
+(- Worktree: isolated Codex worktree) Tj
+0 -16 Td
+/F1 10 Tf
+(- Branch: `codex/backend/codexa-codexa-session-shortcomings-20260621`) Tj
+0 -16 Td
+/F1 10 Tf
+(- Base: `main`) Tj
+0 -16 Td
+/F1 10 Tf
+(- Primary commit: `30921d4`) Tj
+0 -16 Td
+/F1 10 Tf
+(- Subject: `fix\(mcp\): resolve focused workspace sessions`) Tj
+0 -16 Td
+0 -16 Td
+/F2 13 Tf
+(Changed Files) Tj
+0 -16 Td
+0 -16 Td
+/F1 10 Tf
+(30921d4 fix\(mcp\): resolve focused workspace sessions) Tj
+0 -16 Td
+/F1 10 Tf
+( src/mcp-repo-root.ts            | 17 ++++++---) Tj
+0 -16 Td
+/F1 10 Tf
+( src/query/post-edit/decision.ts | 30 +++++++++++----) Tj
+0 -16 Td
+/F1 10 Tf
+( tests/cli-hooks.test.ts         | 11 ++++--) Tj
+0 -16 Td
+/F1 10 Tf
+( tests/indexer.test.ts           | 47 +++++++++++++++++++++++) Tj
+0 -16 Td
+/F1 10 Tf
+( tests/mcp.test.ts               | 83 +++++++++++++++++++++++++++++++++++++++++) Tj
+0 -16 Td
+/F1 10 Tf
+( 5 files changed, 173 insertions\(+\), 15 deletions\(-\)) Tj
+0 -16 Td
+0 -16 Td
+/F2 13 Tf
+(Verification) Tj
+0 -16 Td
+0 -16 Td
+/F1 10 Tf
+(- git diff --check: passed) Tj
+0 -16 Td
+/F1 10 Tf
+(- npm run typecheck: passed) Tj
+0 -16 Td
+/F1 10 Tf
+(- npm run lint: passed) Tj
+0 -16 Td
+/F1 10 Tf
+(- npm run build: passed) Tj
+0 -16 Td
+/F1 10 Tf
+(- npx -y node@22 node_modules/vitest/vitest.mjs run tests/mcp.test.ts: passed) Tj
+0 -16 Td
+/F1 10 Tf
+(- npx -y node@22 node_modules/vitest/vitest.mjs run tests/indexer.test.ts: passed) Tj
+0 -16 Td
+/F1 10 Tf
+(- npx -y node@22 node_modules/vitest/vitest.mjs run tests/init.test.ts: passed) Tj
+0 -16 Td
+/F1 10 Tf
+(- npx -y node@22 node_modules/vitest/vitest.mjs run tests/schema.test.ts: passed) Tj
+0 -16 Td
+/F1 10 Tf
+(- npx -y node@22 node_modules/vitest/vitest.mjs run tests/session.test.ts: passed) Tj
+0 -16 Td
+/F1 10 Tf
+(- npx -y node@22 node_modules/vitest/vitest.mjs run tests/cli-hooks.test.ts: passed) Tj
+0 -16 Td
+/F1 10 Tf
+(- Codexa not wired: no .codex/config.toml) Tj
+0 -16 Td
+/F1 10 Tf
+(- git diff --cached --check: passed) Tj
+0 -16 Td
+/F1 10 Tf
+(- staged safety scan: passed) Tj
+0 -16 Td
+0 -16 Td
+/F2 13 Tf
+(Notes) Tj
+0 -16 Td
+0 -16 Td
+/F1 10 Tf
+(Fixes Codexa issues observed in this session: workspace-root MCP calls no longer treat) Tj
+0 -16 Td
+/F1 10 Tf
+(workspace-level prose or inherited helper SESSION_ID values as the focused repo, and) Tj
+0 -16 Td
+/F1 10 Tf
+(post-edit review no longer blocks verified CSS/non-source edits solely because they lack) Tj
+0 -16 Td
+/F1 10 Tf
+(symbol ranges.) Tj
+ET
+endstream
+endobj
+4 0 obj
+<< /Type /Page /Parent 5 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 1 0 R /F2 2 0 R >> >> /Contents 3 0 R >>
+endobj
+5 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+6 0 obj
+<< /Type /Catalog /Pages 5 0 R >>
+endobj
+xref
+0 7
+0000000000 65535 f 
+0000000009 00000 n 
+0000000079 00000 n 
+0000000154 00000 n 
+0000002750 00000 n 
+0000002886 00000 n 
+0000002943 00000 n 
+trailer
+<< /Size 7 /Root 6 0 R >>
+startxref
+2992
+%%EOF

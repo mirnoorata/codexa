@@ -528,6 +528,89 @@ describe("Codexa MCP server", () => {
     }
   });
 
+  it("does not treat workspace-level active project focus prose as the focused repo", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-working-prose-focus-"));
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const activeRepo = await createIndexedMcpRepo(workspace, "active-repo", "beta", "betaSymbol");
+    const focusFile = path.join(workspace, ".codex", "WORKING.md");
+    await mkdir(path.dirname(focusFile), { recursive: true });
+    await writeFile(
+      focusFile,
+      [
+        "## Workspace Default",
+        "",
+        `- Default repo: \`${workspace}\`.`,
+        `- Active project focus: workspace-level \`${workspace}\` helper/protocol maintenance.`,
+        "",
+        "## Active Sessions",
+        "",
+        "| session | agent | repo | task | status | claims | last_seen | next |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        `| codex-current | codex | ${activeRepo} | route task | active | none | now | inspect |`
+      ].join("\n"),
+      "utf8"
+    );
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-working-prose-focus-routing-test", version: "0.1.0" });
+    await client.connect(transport);
+
+    try {
+      const freshness = await client.callTool({ name: "freshness", arguments: {} });
+      const serialized = JSON.stringify(freshness);
+      expect(serialized).toContain(activeRepo);
+      expect(serialized).not.toContain(`"repoRoot":"${workspace}"`);
+      expect(serialized).not.toContain("Failed to read git status");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("routes workspace-root freshness from verified session rows before WORKING.md default", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-working-verified-status-"));
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const activeRepo = await createIndexedMcpRepo(workspace, "active-repo", "beta", "betaSymbol");
+    const focusFile = path.join(workspace, ".codex", "WORKING.md");
+    await mkdir(path.dirname(focusFile), { recursive: true });
+    await writeFile(
+      focusFile,
+      [
+        "## Workspace Default",
+        "",
+        `- Default repo: \`${workspace}\`.`,
+        "",
+        "## Active Sessions",
+        "",
+        "| session | agent | repo | task | status | claims | last_seen | next |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        `| codex-current | codex | ${activeRepo} | verified task | verified | none | now | inspect |`
+      ].join("\n"),
+      "utf8"
+    );
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-working-verified-status-test", version: "0.1.0" });
+    await client.connect(transport);
+
+    try {
+      const freshness = await client.callTool({ name: "freshness", arguments: {} });
+      const serialized = JSON.stringify(freshness);
+      expect(serialized).toContain(activeRepo);
+      expect(serialized).not.toContain(`"repoRoot":"${workspace}"`);
+      expect(serialized).not.toContain("Failed to read git status");
+    } finally {
+      await client.close();
+    }
+  });
+
   it("fails closed when active-session rows are ambiguous without a workspace session selector", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-working-ambiguous-active-"));
     execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });

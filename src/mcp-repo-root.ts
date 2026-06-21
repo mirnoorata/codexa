@@ -39,10 +39,11 @@ interface FocusFileRepoSelection {
 const FOCUSED_REPO_LINE_PATTERN = /\bfocused\s+(?:project|repo|repository)\s*:\s*(?:`([^`]+)`|([^\r\n#]+))/iu;
 const DEFAULT_REPO_LINE_PATTERN = /\bdefault\s+(?:repo|repository)\s*:\s*(?:`([^`]+)`|([^\r\n#|]+))/iu;
 const ACTIVE_PROJECT_FOCUS_LINE_PATTERN = /\bactive\s+project\s+focus\s*:/iu;
-const BACKTICKED_ABSOLUTE_PATH_PATTERN = /`(\/[^`]+)`/u;
-const ACTIVE_PROJECT_FOCUS_REPO_PATTERN = /\b(?:via\s+)?(?:repo|repository)\s+(\/[^\s#|.,;:]+)/iu;
+const ACTIVE_PROJECT_FOCUS_REPO_PATTERN = /\b(?:via\s+)?(?:repo|repository)\s*:?\s*(?:`(\/[^`]+)`|(\/[^\s#|.,;:]+))/iu;
+const ACTIVE_PROJECT_FOCUS_DIRECT_PATH_PATTERN = /\bactive\s+project\s+focus\s*:\s*(?:`(\/[^`]+)`|(\/[^\s#|.,;:]+))\s*$/iu;
 const COMPACT_PROJECT_LINE_PATTERN = /^\s*(?:[-*]\s*)?project\s*:\s*(?:`([^`]+)`|([^\r\n#]+))/iu;
 const HEADING_PATTERN = /^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/u;
+const INACTIVE_SESSION_STATUSES = new Set(["done", "stale", "parked", "merged", "superseded", "removed", "shipped", "shipped+live", "live", "released", "closed", "abandoned"]);
 
 export async function shouldPreferConfiguredRepoRoot(configuredRootInput: string, options: McpRepoRootResolutionOptions = {}): Promise<boolean> {
   const configuredRoot = path.resolve(configuredRootInput);
@@ -149,7 +150,7 @@ async function readFocusedRepoPaths(focusFile: string, options: McpRepoRootResol
     return emptyFocusFileSelection();
   }
 
-  const workspaceSessionId = normalizeWorkspaceSessionId(options.workspaceSessionId ?? process.env.CODEXA_WORKSPACE_SESSION ?? process.env.SESSION_ID);
+  const workspaceSessionId = normalizeWorkspaceSessionId(options.workspaceSessionId ?? process.env.CODEXA_WORKSPACE_SESSION);
   const selectedSessionPaths: string[] = [];
   const explicitPaths: string[] = [];
   const activeSessionPaths: string[] = [];
@@ -246,7 +247,12 @@ function activeProjectFocusPathFromLine(line: string): string | undefined {
   if (!ACTIVE_PROJECT_FOCUS_LINE_PATTERN.test(line)) {
     return undefined;
   }
-  return BACKTICKED_ABSOLUTE_PATH_PATTERN.exec(line)?.[1] ?? ACTIVE_PROJECT_FOCUS_REPO_PATTERN.exec(line)?.[1];
+  const repoMatch = ACTIVE_PROJECT_FOCUS_REPO_PATTERN.exec(line);
+  if (repoMatch) {
+    return repoMatch[1] ?? repoMatch[2];
+  }
+  const directPathMatch = ACTIVE_PROJECT_FOCUS_DIRECT_PATH_PATTERN.exec(line);
+  return directPathMatch?.[1] ?? directPathMatch?.[2];
 }
 
 function pushFocusedRepoPath(paths: string[], raw: string): void {
@@ -316,7 +322,8 @@ function isMarkdownSeparatorRow(cells: string[]): boolean {
 }
 
 function isActiveSessionStatus(status: string | undefined): boolean {
-  return ["active", "in_progress", "running"].includes(String(status ?? "").trim().toLowerCase());
+  const normalized = String(status ?? "").trim().toLowerCase();
+  return Boolean(normalized) && normalized !== "status" && !INACTIVE_SESSION_STATUSES.has(normalized);
 }
 
 function normalizeCandidatePath(candidate: string): string | null {
