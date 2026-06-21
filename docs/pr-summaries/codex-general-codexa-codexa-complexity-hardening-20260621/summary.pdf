@@ -1,0 +1,64 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 1051 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(Change Summary) Tj T*
+() Tj T*
+(- Project: codexa) Tj T*
+(- Worktree: isolated fresh Codexa worktree) Tj T*
+(- Branch: codex/general/codexa-codexa-complexity-hardening-20260621) Tj T*
+(- Base: main) Tj T*
+(- Primary commit: ed08f30) Tj T*
+(- Subject: fix\(types\): align post-edit changed entries contract) Tj T*
+() Tj T*
+(Changed Files) Tj T*
+() Tj T*
+(ed08f30 fix\(types\): align post-edit changed entries contract) Tj T*
+(src/types.ts | 2 +-) Tj T*
+(1 file changed, 1 insertion\(+\), 1 deletion\(-\)) Tj T*
+() Tj T*
+(Verification) Tj T*
+() Tj T*
+(- git diff --check: passed) Tj T*
+(- npm run check: passed) Tj T*
+(- Codexa not wired: no .codex/config.toml) Tj T*
+(- git diff --cached --check: passed) Tj T*
+(- staged safety scan: passed) Tj T*
+() Tj T*
+(Notes) Tj T*
+() Tj T*
+(Hardening follow-up for the Codexa complexity-review lane. The source change aligns the) Tj T*
+(exported PostEditReviewData contract with the structured ChangedFileEntry[] payload already) Tj T*
+(produced and compacted at runtime.) Tj T*
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000185 00000 n 
+0000000311 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1413
+%%EOF
