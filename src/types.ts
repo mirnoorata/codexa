@@ -685,7 +685,7 @@ export interface PostEditReviewData extends BaseQueryData {
   completionAuthority?: "complete" | "tests_required" | "advisory_inspect" | "blocking_inspect" | "replan_required";
   files?: string[];
   reviewTargets?: string[];
-  changedSinceSnapshot?: string[];
+  changedSinceSnapshot?: ChangedFileEntry[];
   changedGroups?: CompactDiffImpactGroup[];
   resolvedBaselineFiles?: string[];
   unplannedEditedFiles?: string[];
