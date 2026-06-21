@@ -11,6 +11,10 @@ import type {
 } from "../../types.js";
 import type { ContextQuality } from "../quality.js";
 
+const ADVISORY_UNINDEXED_FILE_PATTERN =
+  /\.(?:avif|bmp|css|gif|ico|ini|jpe?g|jsonc?|less|lock|mdx?|otf|pcss|png|postcss|rst|sass|scss|svg|toml|ttf|txt|webp|woff2?|ya?ml)$/iu;
+const ADVISORY_UNINDEXED_BASENAME_PATTERN = /(^|\/)(?:dockerfile|package-lock\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb)$/iu;
+
 export interface PostEditDecision {
   driftReasons: string[];
   verdict: "continue" | "run_tests" | "inspect" | "replan";
@@ -52,6 +56,8 @@ export function postEditDecision(input: {
 }): PostEditDecision {
   const missingWorkflowCheckCount = input.workflowChecks.filter((check) => check.status === "missing").length;
   const missingDependencyCheckCount = input.dependencyChecks.filter((check) => check.status === "missing").length;
+  const blockingUnindexedEditedFiles = input.unindexedEditedFiles.filter((filePath) => !isAdvisoryUnindexedEditedFile(filePath));
+  const advisoryUnindexedEditedFiles = input.unindexedEditedFiles.filter((filePath) => isAdvisoryUnindexedEditedFile(filePath));
   const riskEscalationsCoveredByVerification =
     input.riskEscalations.length > 0 &&
     input.unplannedEditedFiles.length === 0 &&
@@ -77,7 +83,7 @@ export function postEditDecision(input: {
       : undefined,
     input.unplannedEditedFiles.length > 0 ? `${input.unplannedEditedFiles.length} edited file(s) outside planned scope` : undefined,
     input.unplannedChangedSymbols.length > 0 ? `${input.unplannedChangedSymbols.length} changed symbol(s) outside requested symbol target` : undefined,
-    input.unindexedEditedFiles.length > 0 ? `${input.unindexedEditedFiles.length} changed-since-snapshot file(s) are not indexed` : undefined,
+    input.unindexedEditedFiles.length > 0 ? `${input.unindexedEditedFiles.length} changed-since-snapshot file(s) lack indexed source/symbol context` : undefined,
     input.symbolDeltas.some((delta) => delta.newSymbols.length > 0 || delta.removedSymbols.length > 0)
       ? `${input.symbolDeltas.reduce((sum, delta) => sum + delta.newSymbols.length + delta.removedSymbols.length, 0)} symbol delta(s) detected`
       : undefined,
@@ -125,7 +131,8 @@ export function postEditDecision(input: {
     headChanged: headChangedBlocking,
     unplannedEditedFiles: input.unplannedEditedFiles,
     unplannedChangedSymbols: input.unplannedChangedSymbols,
-    unindexedEditedFiles: input.unindexedEditedFiles,
+    blockingUnindexedEditedFiles,
+    advisoryUnindexedEditedFiles,
     symbolDeltas: input.symbolDeltas,
     riskDeltas: input.riskDeltas,
     missingWorkflowCheckCount,
@@ -150,6 +157,10 @@ export function postEditDecision(input: {
   };
 }
 
+function isAdvisoryUnindexedEditedFile(filePath: string): boolean {
+  return ADVISORY_UNINDEXED_FILE_PATTERN.test(filePath) || ADVISORY_UNINDEXED_BASENAME_PATTERN.test(filePath);
+}
+
 function inspectClassification(
   verdict: PostEditDecision["verdict"],
   input: {
@@ -159,7 +170,8 @@ function inspectClassification(
     headChanged: boolean;
     unplannedEditedFiles: string[];
     unplannedChangedSymbols: Array<{ symbol: SymbolFact }>;
-    unindexedEditedFiles: string[];
+    blockingUnindexedEditedFiles: string[];
+    advisoryUnindexedEditedFiles: string[];
     symbolDeltas: Array<{ path: string; newSymbols: TaskSnapshotSymbol[]; removedSymbols: TaskSnapshotSymbol[] }>;
     riskDeltas: Array<{ path: string; before: TaskSnapshotRiskFile; after: TaskSnapshotRiskFile; delta: number }>;
     missingWorkflowCheckCount: number;
@@ -174,19 +186,21 @@ function inspectClassification(
   if (verdict !== "inspect") {
     return { mode: "none", reasons: [] };
   }
-  const blockingReasons = [
+  const blockingReasonsWithoutQuality = [
     input.headChanged ? "snapshot commit changed" : undefined,
     input.worktreeDegradationReasons.length > 0 ? "worktree state unavailable" : undefined,
     input.unplannedEditedFiles.length > 0 ? "edited files outside planned scope" : undefined,
     input.unplannedChangedSymbols.length > 0 ? "changed symbols outside requested symbol target" : undefined,
-    input.unindexedEditedFiles.length > 0 ? "edited files are not indexed" : undefined,
+    input.blockingUnindexedEditedFiles.length > 0 ? "source-like edited files are not indexed" : undefined,
     input.missingWorkflowCheckCount > 0 ? "required workflow checks missing" : undefined,
     input.missingDependencyCheckCount > 0 ? "required dependency checks missing" : undefined,
-    input.quality?.level === "medium" || input.quality?.level === "low" ? "context quality is not high" : undefined,
     input.riskEscalationsNeedInspection ? "high-risk target lacks complete verification accounting" : undefined,
     input.waivedVerification.length > 0 ? "verification was waived" : undefined,
     input.noVerificationProofForEditedFiles ? "edited files have no credible verification evidence" : undefined
   ].filter((reason): reason is string => Boolean(reason));
+  const qualityBlockingReason =
+    input.quality?.level === "low" ? "context quality is low" : input.quality?.level === "medium" && blockingReasonsWithoutQuality.length > 0 ? "context quality is not high" : undefined;
+  const blockingReasons = [...blockingReasonsWithoutQuality, qualityBlockingReason].filter((reason): reason is string => Boolean(reason));
   if (blockingReasons.length > 0) {
     return { mode: "blocking", reasons: blockingReasons };
   }
@@ -194,9 +208,11 @@ function inspectClassification(
   const advisoryReasons = [
     !input.snapshot ? "no saved task snapshot" : undefined,
     input.snapshotAmbiguity ? "latest snapshot was ambiguous" : undefined,
+    input.advisoryUnindexedEditedFiles.length > 0 ? "edited non-source files lack symbol ranges" : undefined,
     input.hasDegradedSnapshotTests ? "planned snapshot tests have degraded provenance" : undefined,
     input.symbolDeltas.some((delta) => delta.newSymbols.length > 0 || delta.removedSymbols.length > 0) ? "symbol inventory changed" : undefined,
-    input.riskDeltas.some((delta) => delta.delta > 0) ? "risk score changed but blocking risk checks are covered" : undefined
+    input.riskDeltas.some((delta) => delta.delta > 0) ? "risk score changed but blocking risk checks are covered" : undefined,
+    input.quality?.level === "medium" ? "context quality is medium" : undefined
   ].filter((reason): reason is string => Boolean(reason));
   return { mode: "advisory", reasons: advisoryReasons.length > 0 ? advisoryReasons : ["inspect is advisory; no blocking drift signal was found"] };
 }
