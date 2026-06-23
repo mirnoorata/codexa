@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { isGeneratedPath, isTestPath, languageForPath } from "./language.js";
@@ -15,16 +16,58 @@ import type {
 } from "./types.js";
 import { isSubpath, normalizePath, stableId } from "./util.js";
 
-const SYMBOL_REPORT_PATHS = [".codex/static-analysis/symbols.json", "reports/static-analysis/symbols.json"];
+const SYMBOL_REPORT_PATHS = [
+  ".codex/static-analysis/symbols.json",
+  "reports/static-analysis/symbols.json",
+  ".codex/static-analysis/risks.json",
+  ".codex/static-analysis/semgrep.json",
+  ".codex/static-analysis/codeql.sarif",
+  ".codex/static-analysis/codeql-results.sarif",
+  "reports/static-analysis/risks.json",
+  "reports/static-analysis/codeql.sarif",
+  "reports/semgrep.json",
+  "reports/codeql.sarif",
+  "reports/codeql-results.sarif",
+  "codeql.sarif",
+  "semgrep.json"
+];
+const FIXED_SYMBOL_REPORT_PATHS = new Set(SYMBOL_REPORT_PATHS);
+const SYMBOL_OWNED_REPORT_PATHS = new Set([".codex/static-analysis/symbols.json", "reports/static-analysis/symbols.json"]);
 const SYMBOL_REPORT_DIRS = [".codex/static-analysis", "reports/static-analysis"];
 const MAX_SYMBOL_REPORT_BYTES = 2 * 1024 * 1024;
+const MAX_SYMBOL_REPORT_CANDIDATES = 500;
 const MAX_SYMBOL_REPORTS = 50;
+const MAX_SYMBOL_REPORT_RELATIONSHIPS = 50_000;
+const MAX_RISK_COMPATIBLE_REPORT_BYTES = 8 * 1024 * 1024;
+const KNOWN_SYMBOL_REPORT_RANK = -1;
+const FIXED_SYMBOL_REPORT_RANK = -2;
 const SUPPORTED_RELATIONSHIP_KINDS = new Set<GraphEdgeKind>(["DEFINES", "CALLS", "REFERENCES", "IMPORTS", "IMPLEMENTS", "EXTENDS", "EXPORTS", "TYPE_EXPORTS"]);
 
 export interface ExternalSymbolFacts {
   files: FileFact[];
   symbols: SymbolFact[];
   graphEdges: GraphEdgeFact[];
+  reportHashes: Record<string, string>;
+  diagnostics: ExternalSymbolReportDiagnostic[];
+}
+
+export interface ExternalSymbolReportDiagnostic {
+  path: string;
+  reason: "report-too-large" | "invalid-json" | "invalid-symbol-report";
+  sizeBytes?: number;
+  limitBytes?: number;
+}
+
+interface SymbolReportCandidateHash {
+  hash: string;
+  tooLarge: boolean;
+  sizeBytes?: number;
+  limitBytes?: number;
+}
+
+interface ReportFile {
+  absolutePath: string;
+  stat: { size: number; mtimeMs: number };
 }
 
 export async function validateCodexaSymbolReportFile(repoRoot: string, sourceInput: string): Promise<void> {
@@ -34,26 +77,112 @@ export async function validateCodexaSymbolReportFile(repoRoot: string, sourceInp
   }
 }
 
-export async function loadExternalSymbolReportFacts(repoRoot: string, snapshotId: string, indexedAt: string, dirtyFiles: Set<string>): Promise<ExternalSymbolFacts> {
-  const facts: ExternalSymbolFacts = { files: [], symbols: [], graphEdges: [] };
+export async function loadExternalSymbolReportFacts(
+  repoRoot: string,
+  snapshotId: string,
+  indexedAt: string,
+  dirtyFiles: Set<string>,
+  knownSymbolReportPaths: Set<string> = new Set(),
+  candidateExtraPaths: Set<string> = knownSymbolReportPaths
+): Promise<ExternalSymbolFacts> {
+  const facts: ExternalSymbolFacts = { files: [], symbols: [], graphEdges: [], reportHashes: {}, diagnostics: [] };
   const seenReports = new Set<string>();
-  for (const reportPath of (await candidateSymbolReports(repoRoot)).slice(0, MAX_SYMBOL_REPORTS)) {
-    const absolutePath = path.join(repoRoot, reportPath);
-    const parsed = await readSymbolReportFile(repoRoot, absolutePath, { strict: false, requireReportUnderRepo: true });
+  let loadedReports = 0;
+  const loadedReportsByRank = new Map<number, number>();
+  for (const reportPath of await candidateSymbolReports(repoRoot, candidateExtraPaths)) {
+    const reportFile = await symbolReportFileUnderRepo(repoRoot, reportPath);
+    if (!reportFile) {
+      continue;
+    }
+    const shouldTrack = shouldTrackSymbolReportHash(reportPath, knownSymbolReportPaths);
+    const candidateHash = await hashSymbolReportCandidate(reportFile.absolutePath, reportFile.stat);
+    const parsed = await readSymbolReportFile(repoRoot, reportFile.absolutePath, { strict: false, requireReportUnderRepo: true });
     if (!parsed || seenReports.has(parsed.realPath)) {
+      if (!parsed && candidateHash) {
+        const reason = await symbolReportFailureReason(repoRoot, reportFile.absolutePath, { required: shouldTrack, symbolOwned: SYMBOL_OWNED_REPORT_PATHS.has(normalizePath(reportPath)), tooLarge: candidateHash.tooLarge });
+        if (reason) {
+          facts.reportHashes[reportPath] = candidateHash.hash;
+          pushSymbolReportDiagnostic(facts.diagnostics, reportPath, reason, candidateHash);
+        }
+      }
+      continue;
+    }
+    const candidateRank = symbolReportCandidateRank(reportPath);
+    const fixedCandidate = FIXED_SYMBOL_REPORT_PATHS.has(normalizePath(reportPath));
+    const knownCandidate = candidateExtraPaths.has(normalizePath(reportPath));
+    if (!canLoadSymbolReportCandidate(candidateRank, loadedReports, loadedReportsByRank, knownCandidate, fixedCandidate)) {
       continue;
     }
     seenReports.add(parsed.realPath);
+    facts.reportHashes[reportPath] = candidateHash?.hash ?? metadataHash(reportFile.stat);
     const reportFacts = await factsFromSymbolReport(repoRoot, reportPath, parsed.report, snapshotId, indexedAt, dirtyFiles);
     facts.files.push(...reportFacts.files);
     facts.symbols.push(...reportFacts.symbols);
     facts.graphEdges.push(...reportFacts.graphEdges);
+    loadedReports += 1;
+    loadedReportsByRank.set(candidateRank, (loadedReportsByRank.get(candidateRank) ?? 0) + 1);
+    if (knownCandidate) {
+      loadedReportsByRank.set(KNOWN_SYMBOL_REPORT_RANK, (loadedReportsByRank.get(KNOWN_SYMBOL_REPORT_RANK) ?? 0) + 1);
+    }
+    if (fixedCandidate) {
+      loadedReportsByRank.set(FIXED_SYMBOL_REPORT_RANK, (loadedReportsByRank.get(FIXED_SYMBOL_REPORT_RANK) ?? 0) + 1);
+    }
   }
   return {
     files: dedupeFiles(facts.files),
     symbols: dedupeSymbols(facts.symbols),
-    graphEdges: dedupeGraphEdges(facts.graphEdges)
+    graphEdges: dedupeGraphEdges(facts.graphEdges),
+    reportHashes: sortHashes(facts.reportHashes),
+    diagnostics: facts.diagnostics
   };
+}
+
+export async function externalSymbolReportSnapshot(
+  repoRoot: string,
+  knownSymbolReportPaths: Set<string> = new Set(),
+  candidateExtraPaths: Set<string> = knownSymbolReportPaths
+): Promise<Pick<ExternalSymbolFacts, "reportHashes" | "diagnostics">> {
+  const reportHashes: Record<string, string> = {};
+  const diagnostics: ExternalSymbolReportDiagnostic[] = [];
+  const seenReports = new Set<string>();
+  let loadedReports = 0;
+  const loadedReportsByRank = new Map<number, number>();
+  for (const reportPath of await candidateSymbolReports(repoRoot, candidateExtraPaths)) {
+    const reportFile = await symbolReportFileUnderRepo(repoRoot, reportPath);
+    if (!reportFile) {
+      continue;
+    }
+    const shouldTrack = shouldTrackSymbolReportHash(reportPath, knownSymbolReportPaths);
+    const candidateHash = await hashSymbolReportCandidate(reportFile.absolutePath, reportFile.stat);
+    const parsed = await readSymbolReportFile(repoRoot, reportFile.absolutePath, { strict: false, requireReportUnderRepo: true });
+    if (!parsed || seenReports.has(parsed.realPath)) {
+      if (!parsed && candidateHash) {
+        const reason = await symbolReportFailureReason(repoRoot, reportFile.absolutePath, { required: shouldTrack, symbolOwned: SYMBOL_OWNED_REPORT_PATHS.has(normalizePath(reportPath)), tooLarge: candidateHash.tooLarge });
+        if (reason) {
+          reportHashes[reportPath] = candidateHash.hash;
+          pushSymbolReportDiagnostic(diagnostics, reportPath, reason, candidateHash);
+        }
+      }
+      continue;
+    }
+    const candidateRank = symbolReportCandidateRank(reportPath);
+    const fixedCandidate = FIXED_SYMBOL_REPORT_PATHS.has(normalizePath(reportPath));
+    const knownCandidate = candidateExtraPaths.has(normalizePath(reportPath));
+    if (!canLoadSymbolReportCandidate(candidateRank, loadedReports, loadedReportsByRank, knownCandidate, fixedCandidate)) {
+      continue;
+    }
+    seenReports.add(parsed.realPath);
+    reportHashes[reportPath] = candidateHash?.hash ?? metadataHash(reportFile.stat);
+    loadedReports += 1;
+    loadedReportsByRank.set(candidateRank, (loadedReportsByRank.get(candidateRank) ?? 0) + 1);
+    if (knownCandidate) {
+      loadedReportsByRank.set(KNOWN_SYMBOL_REPORT_RANK, (loadedReportsByRank.get(KNOWN_SYMBOL_REPORT_RANK) ?? 0) + 1);
+    }
+    if (fixedCandidate) {
+      loadedReportsByRank.set(FIXED_SYMBOL_REPORT_RANK, (loadedReportsByRank.get(FIXED_SYMBOL_REPORT_RANK) ?? 0) + 1);
+    }
+  }
+  return { reportHashes: sortHashes(reportHashes), diagnostics };
 }
 
 async function factsFromSymbolReport(
@@ -74,7 +203,7 @@ async function factsFromSymbolReport(
     pathSet.add(normalizedPath);
     normalizedSymbols.push({ input: symbol, path: normalizedPath });
   }
-  for (const relationship of report.relationships ?? []) {
+  for (const relationship of (report.relationships ?? []).slice(0, MAX_SYMBOL_REPORT_RELATIONSHIPS)) {
     const normalizedFromPath = relationship.fromPath ? await normalizeExistingRepoFile(repoRoot, relationship.fromPath) : undefined;
     const normalizedToPath = relationship.toPath ? await normalizeExistingRepoFile(repoRoot, relationship.toPath) : undefined;
     for (const candidate of [relationship.fromPath, relationship.toPath]) {
@@ -154,7 +283,7 @@ async function factsFromSymbolReport(
     .filter((symbol) => fileByPath.has(symbol.path));
 
   const graphEdges: GraphEdgeFact[] = [];
-  for (const relationship of report.relationships ?? []) {
+  for (const relationship of (report.relationships ?? []).slice(0, MAX_SYMBOL_REPORT_RELATIONSHIPS)) {
     const edge = graphEdgeFromRelationship({
       relationship,
       reportPath,
@@ -167,7 +296,7 @@ async function factsFromSymbolReport(
       graphEdges.push(edge);
     }
   }
-  return { files: fileFacts, symbols, graphEdges };
+  return { files: fileFacts, symbols, graphEdges, reportHashes: {}, diagnostics: [] };
 }
 
 function graphEdgeFromRelationship(input: {
@@ -217,19 +346,50 @@ function graphEdgeFromRelationship(input: {
   };
 }
 
-async function candidateSymbolReports(repoRoot: string): Promise<string[]> {
-  const candidates = new Set(SYMBOL_REPORT_PATHS);
+async function candidateSymbolReports(repoRoot: string, knownSymbolReportPaths: Set<string>): Promise<string[]> {
+  const candidates = new Set([...SYMBOL_REPORT_PATHS, ...[...knownSymbolReportPaths].map((entry) => normalizePath(entry)).filter(Boolean)]);
   for (const relativeDir of SYMBOL_REPORT_DIRS) {
     const absoluteDir = path.join(repoRoot, relativeDir);
-    for (const report of await walkReportDir(absoluteDir, relativeDir, 0)) {
+    for (const report of await walkReportDir(absoluteDir, relativeDir, 0, MAX_SYMBOL_REPORT_CANDIDATES)) {
       candidates.add(report);
     }
   }
-  return [...candidates].sort((a, b) => a.localeCompare(b));
+  return [...candidates].sort((a, b) => symbolReportCandidateRank(a) - symbolReportCandidateRank(b) || a.localeCompare(b));
 }
 
-async function walkReportDir(absoluteDir: string, relativeDir: string, depth: number): Promise<string[]> {
-  if (depth > 2) {
+function symbolReportCandidateRank(relativePath: string): number {
+  const base = path.posix.basename(normalizePath(relativePath));
+  if (base === "symbols.json" || base.startsWith("symbol-report-")) {
+    return 0;
+  }
+  if (/^scip-.*\.symbols\.json$/u.test(base)) {
+    return 1;
+  }
+  if (base.endsWith(".symbols.json")) {
+    return 2;
+  }
+  return 3;
+}
+
+function canLoadSymbolReportCandidate(candidateRank: number, totalLoaded: number, loadedReportsByRank: Map<number, number>, knownCandidate: boolean, fixedCandidate: boolean): boolean {
+  if (totalLoaded < MAX_SYMBOL_REPORTS) {
+    return true;
+  }
+  if (fixedCandidate && (loadedReportsByRank.get(FIXED_SYMBOL_REPORT_RANK) ?? 0) < MAX_SYMBOL_REPORTS) {
+    return true;
+  }
+  if (knownCandidate && (loadedReportsByRank.get(KNOWN_SYMBOL_REPORT_RANK) ?? 0) < MAX_SYMBOL_REPORTS) {
+    return true;
+  }
+  return candidateRank <= 1 && (loadedReportsByRank.get(candidateRank) ?? 0) < MAX_SYMBOL_REPORTS;
+}
+
+function shouldTrackSymbolReportHash(relativePath: string, knownSymbolReportPaths: Set<string>): boolean {
+  return symbolReportCandidateRank(relativePath) < 3 || knownSymbolReportPaths.has(normalizePath(relativePath));
+}
+
+async function walkReportDir(absoluteDir: string, relativeDir: string, depth: number, perRankLimit: number, countsByRank: Map<number, number> = new Map()): Promise<string[]> {
+  if (depth > 2 || perRankLimit <= 0) {
     return [];
   }
   let entries: Array<{ name: string; isDirectory(): boolean; isFile(): boolean }>;
@@ -243,18 +403,128 @@ async function walkReportDir(absoluteDir: string, relativeDir: string, depth: nu
     return [];
   }
   const reports: string[] = [];
-  for (const entry of entries) {
+  for (const entry of entries.sort((a, b) => symbolReportCandidateRank(path.posix.join(relativeDir, a.name)) - symbolReportCandidateRank(path.posix.join(relativeDir, b.name)) || a.name.localeCompare(b.name))) {
     const relativePath = normalizePath(path.posix.join(relativeDir, entry.name));
     const absolutePath = path.join(absoluteDir, entry.name);
     if (entry.isDirectory()) {
-      reports.push(...(await walkReportDir(absolutePath, relativePath, depth + 1)));
+      reports.push(...(await walkReportDir(absolutePath, relativePath, depth + 1, perRankLimit, countsByRank)));
       continue;
     }
     if (entry.isFile() && /\.json$/i.test(entry.name)) {
+      const rank = symbolReportCandidateRank(relativePath);
+      const count = countsByRank.get(rank) ?? 0;
+      if (count >= perRankLimit) {
+        continue;
+      }
+      countsByRank.set(rank, count + 1);
       reports.push(relativePath);
     }
   }
   return reports.sort((a, b) => a.localeCompare(b));
+}
+
+async function symbolReportFileUnderRepo(repoRoot: string, reportPath: string): Promise<ReportFile | undefined> {
+  const absolutePath = path.resolve(repoRoot, reportPath);
+  const repoReal = await fs.realpath(repoRoot).catch(() => "");
+  if (!repoReal || !isSubpath(absolutePath, repoRoot)) {
+    return undefined;
+  }
+  const stat = await fs.lstat(absolutePath).catch(() => null);
+  if (!stat?.isFile()) {
+    return undefined;
+  }
+  const realPath = await fs.realpath(absolutePath).catch(() => "");
+  if (!realPath || !isSubpath(realPath, repoReal)) {
+    return undefined;
+  }
+  return { absolutePath, stat: { size: Number(stat.size), mtimeMs: Number(stat.mtimeMs) } };
+}
+
+async function hashSymbolReportCandidate(absolutePath: string, stat: ReportFile["stat"]): Promise<SymbolReportCandidateHash | undefined> {
+  try {
+    if (stat.size > MAX_SYMBOL_REPORT_BYTES) {
+      return { hash: metadataHash(stat), tooLarge: true, sizeBytes: stat.size, limitBytes: MAX_SYMBOL_REPORT_BYTES };
+    }
+    return { hash: hashText(await fs.readFile(absolutePath, "utf8")), tooLarge: false };
+  } catch {
+    return undefined;
+  }
+}
+
+function pushSymbolReportDiagnostic(
+  diagnostics: ExternalSymbolReportDiagnostic[],
+  reportPath: string,
+  reason: ExternalSymbolReportDiagnostic["reason"],
+  candidateHash?: SymbolReportCandidateHash
+): void {
+  if (!diagnostics.some((diagnostic) => diagnostic.path === reportPath)) {
+    diagnostics.push({ path: reportPath, reason, sizeBytes: candidateHash?.sizeBytes, limitBytes: candidateHash?.limitBytes });
+  }
+}
+
+async function symbolReportFailureReason(
+  repoRoot: string,
+  absolutePath: string,
+  options: { required: boolean; symbolOwned: boolean; tooLarge: boolean }
+): Promise<ExternalSymbolReportDiagnostic["reason"] | undefined> {
+  const stat = await fs.stat(absolutePath).catch(() => null);
+  if (options.tooLarge && (!stat || stat.size > MAX_RISK_COMPATIBLE_REPORT_BYTES)) {
+    return options.required ? "report-too-large" : undefined;
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await fs.readFile(absolutePath, "utf8"));
+  } catch {
+    return options.tooLarge ? options.required ? "report-too-large" : undefined : options.required ? "invalid-json" : undefined;
+  }
+  const symbolSignature = isSymbolReportSignature(parsed);
+  const riskShape = isRiskReportShape(parsed);
+  const validationErrors = strictSymbolReportErrors(parsed);
+  if (validationErrors.length > 0 && (options.required || symbolSignature)) {
+    if (!symbolSignature && riskShape && !options.symbolOwned) {
+      return undefined;
+    }
+    return options.tooLarge ? "report-too-large" : "invalid-symbol-report";
+  }
+  if (riskShape && !symbolSignature && options.symbolOwned) {
+    return options.tooLarge ? "report-too-large" : "invalid-symbol-report";
+  }
+  if (riskShape && !symbolSignature) {
+    return undefined;
+  }
+  const report = normalizeSymbolReport(parsed);
+  if (!report) {
+    return options.required ? (options.tooLarge ? "report-too-large" : "invalid-symbol-report") : undefined;
+  }
+  if (symbolSignature && (await reportPathsOutsideRepo(repoRoot, report)).length > 0) {
+    return "invalid-symbol-report";
+  }
+  if (options.tooLarge && symbolSignature) {
+    return "report-too-large";
+  }
+  if (riskShape) {
+    return undefined;
+  }
+  if (options.tooLarge) {
+    return "report-too-large";
+  }
+  return (await reportPathsOutsideRepo(repoRoot, report)).length > 0 ? "invalid-symbol-report" : undefined;
+}
+
+function isRiskReportShape(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return Array.isArray(record.risks) || Array.isArray(record.results) || Array.isArray(record.runs) || Array.isArray(record.findings);
+}
+
+function isSymbolReportSignature(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return record.schemaVersion === 1 && typeof record.tool === "string" && typeof record.language === "string" && Array.isArray(record.symbols);
 }
 
 async function readSymbolReportFile(
@@ -286,11 +556,12 @@ async function readSymbolReportFile(
     if (strict) throw new Error(`Symbol report is not valid JSON: ${(error as Error).message}`);
     return undefined;
   }
-  if (strict) {
-    const errors = strictSymbolReportErrors(parsed);
-    if (errors.length > 0) {
-      throw new Error(`Symbol report failed CodexaSymbolReportV1 validation: ${errors.slice(0, 5).join("; ")}`);
+  const validationErrors = strictSymbolReportErrors(parsed);
+  if (validationErrors.length > 0) {
+    if (strict) {
+      throw new Error(`Symbol report failed CodexaSymbolReportV1 validation: ${validationErrors.slice(0, 5).join("; ")}`);
     }
+    return undefined;
   }
   const report = normalizeSymbolReport(parsed);
   if (!report) {
@@ -452,6 +723,8 @@ function symbolKeys(input: CodexaSymbolReportSymbolV1, symbol: SymbolFact): stri
     symbol.id,
     symbol.name,
     symbol.qualifiedName,
+    trimmed(input.id) ? `${symbol.path}:${trimmed(input.id)}` : undefined,
+    `${symbol.path}:${symbol.id}`,
     `${symbol.path}:${symbol.name}`,
     `${symbol.path}:${symbol.qualifiedName}`
   ].filter((entry): entry is string => Boolean(entry));
@@ -462,7 +735,7 @@ function lookupSymbol(symbolByKey: Map<string, SymbolFact>, key?: string, filePa
   if (!normalizedKey) {
     return undefined;
   }
-  return symbolByKey.get(normalizedKey) ?? (filePath ? symbolByKey.get(`${normalizePath(filePath)}:${normalizedKey}`) : undefined);
+  return (filePath ? symbolByKey.get(`${normalizePath(filePath)}:${normalizedKey}`) : undefined) ?? symbolByKey.get(normalizedKey);
 }
 
 function graphTargetForFile(file: FileFact): { id: string; kind: GraphNodeKind; path: string; label: string; symbolId?: string } {
@@ -511,6 +784,18 @@ function safeLine(value: unknown): number | undefined {
 
 function trimmed(value: unknown): string | undefined {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+function hashText(value: string): string {
+  return createHash("sha1").update(value).digest("hex");
+}
+
+function metadataHash(stat: { size: number; mtimeMs: number }): string {
+  return `metadata:${stat.size}:${Math.trunc(stat.mtimeMs)}`;
+}
+
+function sortHashes(hashes: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(Object.entries(hashes).sort(([a], [b]) => a.localeCompare(b)));
 }
 
 function dedupeFiles(files: FileFact[]): FileFact[] {

@@ -1,7 +1,7 @@
 import { formatBytes } from "./parsing.js";
 import type { CodexaIndex, ParserErrorFact, RiskSignalFact } from "../types.js";
 import type { ExternalRiskReportDiagnostic } from "../risk-ingest.js";
-import type { loadExternalSymbolReportFacts } from "../symbol-report-ingest.js";
+import type { ExternalSymbolReportDiagnostic, loadExternalSymbolReportFacts } from "../symbol-report-ingest.js";
 import { stableId } from "../util.js";
 
 export function applyExternalSymbolFacts(index: CodexaIndex, external: Awaited<ReturnType<typeof loadExternalSymbolReportFacts>>): CodexaIndex {
@@ -47,5 +47,23 @@ export function riskReportParserError(diagnostic: ExternalRiskReportDiagnostic, 
       diagnostic.reason === "report-too-large"
         ? `Skipped external risk report ${diagnostic.path}: ${formatBytes(diagnostic.sizeBytes ?? 0)} exceeds Codexa's ${formatBytes(diagnostic.limitBytes ?? 0)} report cap`
         : `Skipped external risk report ${diagnostic.path}: invalid JSON`
+  };
+}
+
+export function symbolReportParserError(diagnostic: ExternalSymbolReportDiagnostic, snapshotId: string, indexedAt: string): ParserErrorFact {
+  return {
+    id: stableId("external-symbol-report-diagnostic", diagnostic.path, diagnostic.reason, diagnostic.sizeBytes ?? 0, diagnostic.limitBytes ?? 0),
+    type: "ParserError",
+    path: diagnostic.path,
+    source: "static-analysis",
+    confidence: "heuristic",
+    snapshotId,
+    indexedAt,
+    message:
+      diagnostic.reason === "report-too-large"
+        ? `Skipped external symbol report ${diagnostic.path}: ${formatBytes(diagnostic.sizeBytes ?? 0)} exceeds Codexa's ${formatBytes(diagnostic.limitBytes ?? 0)} report cap`
+        : diagnostic.reason === "invalid-symbol-report"
+          ? `Skipped external symbol report ${diagnostic.path}: valid JSON did not match CodexaSymbolReportV1 or referenced files outside the repository`
+        : `Skipped external symbol report ${diagnostic.path}: invalid JSON`
   };
 }

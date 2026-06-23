@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { createCommandBudget, runCommand } from "../src/command.js";
@@ -125,5 +125,53 @@ describe("runCommand", () => {
     expect(aliasHelp.stdout).toContain("Usage: codera");
     expect(directHelp.ok).toBe(true);
     expect(directHelp.stdout).toContain("Usage: codexa");
+  });
+
+  it("advertises SCIP report ingestion without a scanner execution flag", async () => {
+    const help = await runCommand(process.execPath, [path.resolve("dist/cli.js"), "static-analysis", "--help"], {
+      timeoutMs: 2_000,
+      maxBufferBytes: 32 * 1024
+    });
+
+    expect(help.ok).toBe(true);
+    expect(help.stdout).toContain("--scip-report <path...>");
+    expect(help.stdout).not.toContain("--run-scip");
+    expect(help.stdout).toContain("Import risk and symbol/code-intelligence reports");
+  });
+
+  it("passes SCIP report arguments through the static-analysis CLI", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-cli-scip-"));
+    await mkdir(path.join(repo, "src"), { recursive: true });
+    await writeFile(path.join(repo, "src/lib.rs"), "pub fn used() {}\n", "utf8");
+    const scipPath = path.join(repo, "index.scip.json");
+    const symbol = "scip-rust cargo fixture 0.1.0 src/lib.rs/ used().";
+    await writeFile(
+      scipPath,
+      JSON.stringify({
+        metadata: { toolInfo: { name: "fixture-scip" } },
+        documents: [
+          {
+            relativePath: "src/lib.rs",
+            language: "rust",
+            occurrences: [{ symbol, symbolRoles: 1, range: [0, 7, 11] }],
+            symbols: [{ symbol, displayName: "used", kind: "Function" }]
+          }
+        ]
+      }),
+      "utf8"
+    );
+
+    const result = await runCommand(process.execPath, [path.resolve("dist/cli.js"), "static-analysis", repo, "--scip-report", scipPath, "--no-index"], {
+      timeoutMs: 5_000,
+      maxBufferBytes: 64 * 1024
+    });
+
+    expect(result.ok).toBe(true);
+    expect(result.stdout).toContain("Codexa static-analysis update");
+    expect(result.stdout).toContain("scip");
+    expect(result.stdout).toContain("Reindexed: skipped");
+    const generated = (await readdir(path.join(repo, ".codex/static-analysis"))).filter((entry) => entry.endsWith(".symbols.json"));
+    expect(generated).toHaveLength(1);
+    expect(await readFile(path.join(repo, ".codex/static-analysis", generated[0]), "utf8")).toContain(symbol);
   });
 });

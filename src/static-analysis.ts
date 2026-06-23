@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { buildIndexLocked } from "./indexer.js";
 import { loadExternalRiskSignalReport, type ExternalRiskReportDiagnostic } from "./risk-ingest.js";
+import { CODEXA_SCIP_SYMBOL_REPORT_GENERATOR, convertScipJsonReportToSymbolReport } from "./scip-import.js";
 import { validateCodexaSymbolReportFile } from "./symbol-report-ingest.js";
 import type { CodexaIndex } from "./types.js";
 import { isSubpath, normalizePath, stableId } from "./util.js";
@@ -9,6 +10,8 @@ import { runCommand } from "./command.js";
 
 const STATIC_ANALYSIS_DIR = ".codex/static-analysis";
 const CODEQL_DB_DIR = ".codex/cache/codeql-db";
+const MAX_GENERATED_SYMBOL_REPORT_BYTES = 2 * 1024 * 1024;
+const CODEXA_CODEQL_SARIF_GENERATOR = "codexa-codeql-runner";
 
 export interface StaticAnalysisOptions {
   semgrepReports?: string[];
@@ -16,6 +19,7 @@ export interface StaticAnalysisOptions {
   sarifReports?: string[];
   genericReports?: string[];
   symbolReports?: string[];
+  scipReports?: string[];
   runSemgrep?: boolean;
   semgrepConfigs?: string[];
   runCodeql?: boolean;
@@ -27,7 +31,7 @@ export interface StaticAnalysisOptions {
 }
 
 export interface StaticAnalysisReport {
-  kind: "semgrep" | "codeql" | "sarif" | "generic" | "shellcheck" | "symbol-report";
+  kind: "semgrep" | "codeql" | "sarif" | "generic" | "shellcheck" | "symbol-report" | "scip";
   source: string;
   path: string;
   copied: boolean;
@@ -68,6 +72,11 @@ export async function updateStaticAnalysisReports(repoInput: string, options: St
   }
   for (const source of options.symbolReports ?? []) {
     reports.push(await importSymbolReport(repoRoot, source));
+  }
+  const scipReports = options.scipReports ?? [];
+  if (scipReports.length > 0) {
+    const importedScipReports = await importScipReports(repoRoot, scipReports);
+    reports.push(...importedScipReports);
   }
 
   if (options.runSemgrep) {
@@ -118,7 +127,7 @@ async function importReport(repoRoot: string, kind: StaticAnalysisReport["kind"]
     };
   }
   const destination = path.join(targetDir, reportFileName(kind, source));
-  await fs.copyFile(source, destination);
+  await copyFileAtomic(source, destination);
   return {
     kind,
     source,
@@ -132,22 +141,231 @@ async function importSymbolReport(repoRoot: string, sourceInput: string): Promis
   return importReport(repoRoot, "symbol-report", sourceInput);
 }
 
+async function importScipReports(repoRoot: string, sourceInputs: string[]): Promise<StaticAnalysisReport[]> {
+  const staged: Array<{ source: string; destination: string; temp: string; ready: boolean }> = [];
+  let staleBackups: Array<{ destination: string; backup: string }> = [];
+  try {
+    for (const sourceInput of sourceInputs) {
+      const source = path.resolve(sourceInput);
+      const report = await convertScipJsonReportToSymbolReport(repoRoot, sourceInput);
+      const destination = scipReportDestination(repoRoot, sourceInput);
+      const temp = temporaryPath(destination);
+      await fs.mkdir(path.dirname(destination), { recursive: true });
+      const stagedReport = { source, destination, temp, ready: false };
+      staged.push(stagedReport);
+      await writeValidatedSymbolReportTemp(repoRoot, temp, report);
+      stagedReport.ready = true;
+    }
+    const readyReports = staged.filter((report) => report.ready);
+    staleBackups = await stageStaleGeneratedScipReports(repoRoot, readyReports.map((report) => report.destination));
+    await publishStagedFiles(readyReports);
+    await discardStagedFileBackups(staleBackups);
+    staleBackups = [];
+  } catch (error) {
+    await Promise.all(staged.map((entry) => fs.rm(entry.temp, { force: true }).catch(() => undefined)));
+    await restoreStagedFileBackups(staleBackups);
+    throw error;
+  }
+  return staged.filter((report) => report.ready).map((entry) => ({
+    kind: "scip" as const,
+    source: entry.source,
+    path: normalizePath(path.relative(repoRoot, entry.destination)),
+    copied: true
+  }));
+}
+
+function scipReportDestination(repoRoot: string, sourceInput: string): string {
+  const source = path.resolve(sourceInput);
+  return path.join(repoRoot, STATIC_ANALYSIS_DIR, reportFileName("scip", source).replace(/\.[^.]+$/i, ".symbols.json"));
+}
+
+async function stageStaleGeneratedScipReports(repoRoot: string, currentDestinations: string[]): Promise<Array<{ destination: string; backup: string }>> {
+  const targetDir = path.join(repoRoot, STATIC_ANALYSIS_DIR);
+  await fs.mkdir(targetDir, { recursive: true });
+  const keep = new Set(currentDestinations.map((destination) => path.basename(destination)));
+  const entries = await fs.readdir(targetDir).catch(() => []);
+  const staleReportCandidates = entries.filter((entry) => /^scip-.*\.symbols\.json$/u.test(entry) && !keep.has(entry)).map((entry) => path.join(targetDir, entry));
+  const backups: Array<{ destination: string; backup: string }> = [];
+  try {
+    for (const staleReport of staleReportCandidates) {
+      const staleStat = await lstatIfExists(staleReport);
+      if (staleStat && !staleStat.isFile()) {
+        throw new Error(`Stale generated SCIP report is not a file: ${normalizePath(staleReport)}`);
+      }
+    }
+    const staleReports: string[] = [];
+    for (const staleReport of staleReportCandidates) {
+      if (await isCodexaGeneratedScipSymbolReport(staleReport)) {
+        staleReports.push(staleReport);
+      }
+    }
+    for (const staleReport of staleReports) {
+      const staleStat = await lstatIfExists(staleReport);
+      if (!staleStat) {
+        continue;
+      }
+      const backup = temporaryPath(staleReport);
+      await fs.rename(staleReport, backup);
+      backups.push({ destination: staleReport, backup });
+    }
+    return backups;
+  } catch (error) {
+    await restoreStagedFileBackups(backups);
+    throw error;
+  }
+}
+
+async function isCodexaGeneratedScipSymbolReport(reportPath: string): Promise<boolean> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await fs.readFile(reportPath, "utf8"));
+  } catch {
+    return false;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return false;
+  }
+  const record = parsed as Record<string, unknown>;
+  if (record.schemaVersion !== 1 || !Array.isArray(record.symbols)) {
+    return false;
+  }
+  if (record.generatedBy === CODEXA_SCIP_SYMBOL_REPORT_GENERATOR) {
+    return true;
+  }
+  return false;
+}
+
+async function writeValidatedSymbolReportAtomic(repoRoot: string, destination: string, value: unknown): Promise<void> {
+  const temp = temporaryPath(destination);
+  try {
+    await writeValidatedSymbolReportTemp(repoRoot, temp, value);
+    await fs.rename(temp, destination);
+  } catch (error) {
+    await fs.rm(temp, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function writeValidatedSymbolReportTemp(repoRoot: string, temp: string, value: unknown): Promise<void> {
+  const content = `${JSON.stringify(value, null, 2)}\n`;
+  if (Buffer.byteLength(content, "utf8") > MAX_GENERATED_SYMBOL_REPORT_BYTES) {
+    throw new Error(`Generated symbol report exceeds ${MAX_GENERATED_SYMBOL_REPORT_BYTES} bytes: ${normalizePath(path.basename(temp))}`);
+  }
+  await fs.writeFile(temp, content, "utf8");
+  await validateCodexaSymbolReportFile(repoRoot, temp);
+}
+
+async function copyFileAtomic(source: string, destination: string): Promise<void> {
+  const temp = temporaryPath(destination);
+  try {
+    await fs.copyFile(source, temp);
+    await fs.rename(temp, destination);
+  } catch (error) {
+    await fs.rm(temp, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function writeFileAtomic(destination: string, content: string): Promise<void> {
+  const temp = temporaryPath(destination);
+  try {
+    await fs.writeFile(temp, content, "utf8");
+    await fs.rename(temp, destination);
+  } catch (error) {
+    await fs.rm(temp, { force: true }).catch(() => undefined);
+    throw error;
+  }
+}
+
+async function publishStagedFiles(entries: Array<{ temp: string; destination: string }>): Promise<void> {
+  const destinations = new Set<string>();
+  const backups: Array<{ destination: string; backup: string }> = [];
+  const published: Array<{ destination: string }> = [];
+  try {
+    for (const entry of entries) {
+      if (destinations.has(entry.destination)) {
+        throw new Error(`Duplicate static analysis report destination: ${normalizePath(entry.destination)}`);
+      }
+      destinations.add(entry.destination);
+      const tempStat = await fs.lstat(entry.temp);
+      if (!tempStat.isFile()) {
+        throw new Error(`Static analysis staged report is not a file: ${normalizePath(entry.temp)}`);
+      }
+      const destinationStat = await lstatIfExists(entry.destination);
+      if (destinationStat && !destinationStat.isFile()) {
+        throw new Error(`Static analysis report destination is not a file: ${normalizePath(entry.destination)}`);
+      }
+    }
+    for (const entry of entries) {
+      const destinationStat = await lstatIfExists(entry.destination);
+      if (!destinationStat) {
+        continue;
+      }
+      const backup = temporaryPath(entry.destination);
+      await fs.rename(entry.destination, backup);
+      backups.push({ destination: entry.destination, backup });
+    }
+    for (const entry of entries) {
+      await fs.rename(entry.temp, entry.destination);
+      published.push({ destination: entry.destination });
+    }
+    await Promise.all(backups.map((backup) => fs.rm(backup.backup, { force: true }).catch(() => undefined)));
+  } catch (error) {
+    await Promise.all(published.map((entry) => fs.rm(entry.destination, { force: true }).catch(() => undefined)));
+    await restoreStagedFileBackups(backups);
+    throw error;
+  }
+}
+
+async function discardStagedFileBackups(backups: Array<{ backup: string }>): Promise<void> {
+  await Promise.all(backups.map((backup) => fs.rm(backup.backup, { force: true }).catch(() => undefined)));
+}
+
+async function restoreStagedFileBackups(backups: Array<{ destination: string; backup: string }>): Promise<void> {
+  for (const backup of backups.reverse()) {
+    await fs.rename(backup.backup, backup.destination).catch(() => undefined);
+  }
+}
+
+async function lstatIfExists(target: string): Promise<Awaited<ReturnType<typeof fs.lstat>> | undefined> {
+  try {
+    return await fs.lstat(target);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return undefined;
+    }
+    throw error;
+  }
+}
+
+function temporaryPath(destination: string): string {
+  return `${destination}.${process.pid}.${stableId("tmp", destination, Date.now(), process.hrtime.bigint().toString())}.tmp`;
+}
+
 async function runSemgrep(repoRoot: string, configs: string[], timeoutMs: number): Promise<StaticAnalysisRun> {
   const output = path.join(repoRoot, STATIC_ANALYSIS_DIR, "semgrep.json");
+  const tempOutput = temporaryPath(output);
   await fs.mkdir(path.dirname(output), { recursive: true });
   const args = [
     "scan",
     ...configs.flatMap((config) => ["--config", config]),
     "--json",
     "--json-output",
-    output,
+    tempOutput,
     "--metrics=off",
     repoRoot
   ];
-  await runExternal("semgrep", args, { cwd: repoRoot, timeoutMs });
+  try {
+    await runExternal("semgrep", args, { cwd: repoRoot, timeoutMs });
+    await validateSemgrepReportFile(tempOutput);
+    await publishStagedFiles([{ temp: tempOutput, destination: output }]);
+  } catch (error) {
+    await fs.rm(tempOutput, { force: true }).catch(() => undefined);
+    throw error;
+  }
   return {
     tool: "semgrep",
-    command: commandForDisplay("semgrep", args),
+    command: commandForDisplay("semgrep", args.map((arg) => (arg === tempOutput ? output : arg))),
     reports: [normalizePath(path.relative(repoRoot, output))]
   };
 }
@@ -163,36 +381,104 @@ async function runCodeql(repoRoot: string, languages: string[], suite: string, t
   const createArgs = ["database", "create", dbRoot, "--db-cluster", `--language=${selected.join(",")}`, "--source-root", repoRoot, "--no-run-unnecessary-builds"];
   await runExternal("codeql", createArgs, { cwd: repoRoot, timeoutMs });
 
-  const reports: string[] = [];
-  for (const language of selected) {
-    const dbPath = await findCodeqlDatabase(dbRoot, language);
-    if (!dbPath) {
-      continue;
+  const stagedReports: Array<{ output: string; tempOutput: string; ready: boolean }> = [];
+  let staleBackups: Array<{ destination: string; backup: string }> = [];
+  try {
+    for (const language of selected) {
+      const dbPath = await findCodeqlDatabase(dbRoot, language);
+      if (!dbPath) {
+        continue;
+      }
+      const suiteLanguage = codeqlSuiteLanguage(language);
+      const output = path.join(repoRoot, STATIC_ANALYSIS_DIR, `codeql-${suiteLanguage}.sarif`);
+      const tempOutput = temporaryPath(output);
+      await fs.mkdir(path.dirname(output), { recursive: true });
+      const analyzeArgs = [
+        "database",
+        "analyze",
+        dbPath,
+        `codeql/${suiteLanguage}-queries:codeql-suites/${suiteLanguage}-${suite}.qls`,
+        "--format=sarif-latest",
+        `--output=${tempOutput}`,
+        `--sarif-category=${language}`,
+        "--download"
+      ];
+      const stagedReport = { output, tempOutput, ready: false };
+      stagedReports.push(stagedReport);
+      await runExternal("codeql", analyzeArgs, { cwd: repoRoot, timeoutMs });
+      await validateSarifReportFile(tempOutput);
+      await markCodeqlSarifReport(tempOutput);
+      stagedReport.ready = true;
     }
-    const suiteLanguage = codeqlSuiteLanguage(language);
-    const output = path.join(repoRoot, STATIC_ANALYSIS_DIR, `codeql-${suiteLanguage}.sarif`);
-    await fs.mkdir(path.dirname(output), { recursive: true });
-    const analyzeArgs = [
-      "database",
-      "analyze",
-      dbPath,
-      `codeql/${suiteLanguage}-queries:codeql-suites/${suiteLanguage}-${suite}.qls`,
-      "--format=sarif-latest",
-      `--output=${output}`,
-      `--sarif-category=${language}`,
-      "--download"
-    ];
-    await runExternal("codeql", analyzeArgs, { cwd: repoRoot, timeoutMs });
-    reports.push(normalizePath(path.relative(repoRoot, output)));
+    const readyReports = stagedReports.filter((report) => report.ready);
+    if (readyReports.length === 0) {
+      throw new Error(`CodeQL database create completed, but no matching databases were found under ${normalizePath(path.relative(repoRoot, dbRoot))}.`);
+    }
+    staleBackups = await stageStaleGeneratedCodeqlReports(repoRoot, readyReports.map((report) => report.output));
+    await publishStagedFiles(readyReports.map((report) => ({ temp: report.tempOutput, destination: report.output })));
+    await discardStagedFileBackups(staleBackups);
+    staleBackups = [];
+  } catch (error) {
+    await Promise.all(stagedReports.map((report) => fs.rm(report.tempOutput, { force: true }).catch(() => undefined)));
+    await restoreStagedFileBackups(staleBackups);
+    throw error;
   }
-  if (reports.length === 0) {
-    throw new Error(`CodeQL database create completed, but no matching databases were found under ${normalizePath(path.relative(repoRoot, dbRoot))}.`);
-  }
+  const reports = stagedReports.filter((report) => report.ready).map((report) => normalizePath(path.relative(repoRoot, report.output)));
   return {
     tool: "codeql",
     command: `${commandForDisplay("codeql", createArgs)} && codeql database analyze ...`,
     reports
   };
+}
+
+async function stageStaleGeneratedCodeqlReports(repoRoot: string, currentDestinations: string[]): Promise<Array<{ destination: string; backup: string }>> {
+  const targetDir = path.join(repoRoot, STATIC_ANALYSIS_DIR);
+  await fs.mkdir(targetDir, { recursive: true });
+  const keep = new Set(currentDestinations.map((destination) => path.basename(destination)));
+  const entries = await fs.readdir(targetDir).catch(() => []);
+  const staleReportCandidates = entries.filter((entry) => /^codeql-(?:javascript|python)\.sarif$/u.test(entry) && !keep.has(entry)).map((entry) => path.join(targetDir, entry));
+  const backups: Array<{ destination: string; backup: string }> = [];
+  try {
+    for (const staleReport of staleReportCandidates) {
+      const staleStat = await lstatIfExists(staleReport);
+      if (staleStat && !staleStat.isFile()) {
+        throw new Error(`Stale generated CodeQL report is not a file: ${normalizePath(staleReport)}`);
+      }
+    }
+    const staleReports: string[] = [];
+    for (const staleReport of staleReportCandidates) {
+      if (await isCodexaGeneratedCodeqlReport(staleReport)) {
+        staleReports.push(staleReport);
+      }
+    }
+    for (const staleReport of staleReports) {
+      const staleStat = await lstatIfExists(staleReport);
+      if (!staleStat) {
+        continue;
+      }
+      const backup = temporaryPath(staleReport);
+      await fs.rename(staleReport, backup);
+      backups.push({ destination: staleReport, backup });
+    }
+    return backups;
+  } catch (error) {
+    await restoreStagedFileBackups(backups);
+    throw error;
+  }
+}
+
+async function isCodexaGeneratedCodeqlReport(reportPath: string): Promise<boolean> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(await fs.readFile(reportPath, "utf8"));
+  } catch {
+    return false;
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return false;
+  }
+  const properties = (parsed as { properties?: unknown }).properties;
+  return Boolean(properties && typeof properties === "object" && !Array.isArray(properties) && (properties as Record<string, unknown>).generatedBy === CODEXA_CODEQL_SARIF_GENERATOR);
 }
 
 async function runShellcheck(repoRoot: string, timeoutMs: number): Promise<StaticAnalysisRun> {
@@ -214,7 +500,8 @@ async function runShellcheck(repoRoot: string, timeoutMs: number): Promise<Stati
     env: externalScannerEnv(),
     timeoutMs,
     maxBufferBytes: 16 * 1024 * 1024,
-    okExitCodes: [0, 1]
+    okExitCodes: [0, 1],
+    killProcessGroup: true
   });
   if (result.ok) {
     const parsed = parseShellcheckComments(result.stdout);
@@ -246,7 +533,8 @@ async function runExternal(command: string, args: string[], options: { cwd: stri
     env: externalScannerEnv(),
     timeoutMs: options.timeoutMs,
     maxBufferBytes: 16 * 1024 * 1024,
-    okExitCodes: [0]
+    okExitCodes: [0],
+    killProcessGroup: true
   });
   if (result.ok) {
     return;
@@ -446,7 +734,7 @@ async function writeShellcheckRiskReport(output: string, repoRoot: string, comme
       }
     ];
   });
-  await fs.writeFile(
+  await writeFileAtomic(
     output,
     `${JSON.stringify(
       {
@@ -457,23 +745,57 @@ async function writeShellcheckRiskReport(output: string, repoRoot: string, comme
       },
       null,
       2
-    )}\n`,
-    "utf8"
+    )}\n`
   );
 }
 
 function normalizeShellcheckPath(filePath: string, repoRoot: string): string | undefined {
-  if (path.isAbsolute(filePath)) {
-    if (!isSubpath(filePath, repoRoot)) {
-      return undefined;
-    }
-    return normalizePath(path.relative(repoRoot, filePath));
+  const absolutePath = path.isAbsolute(filePath) ? path.resolve(filePath) : path.resolve(repoRoot, filePath);
+  if (!isSubpath(absolutePath, repoRoot)) {
+    return undefined;
   }
-  const normalized = normalizePath(filePath);
-  if (normalized === ".." || normalized.startsWith("../") || path.isAbsolute(normalized)) {
+  const normalized = normalizePath(path.relative(repoRoot, absolutePath));
+  if (!normalized || normalized === ".." || normalized.startsWith("../") || path.isAbsolute(normalized)) {
     return undefined;
   }
   return normalized;
+}
+
+async function validateSemgrepReportFile(filePath: string): Promise<void> {
+  const parsed = await parseJsonReportFile(filePath, "Semgrep JSON report");
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Semgrep produced a malformed JSON report.");
+  }
+}
+
+async function validateSarifReportFile(filePath: string): Promise<void> {
+  const parsed = await parseJsonReportFile(filePath, "SARIF report");
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed) || !Array.isArray((parsed as { runs?: unknown }).runs)) {
+    throw new Error("CodeQL produced a malformed SARIF report.");
+  }
+}
+
+async function markCodeqlSarifReport(filePath: string): Promise<void> {
+  const parsed = await parseJsonReportFile(filePath, "SARIF report");
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("CodeQL produced a malformed SARIF report.");
+  }
+  const record = parsed as Record<string, unknown>;
+  const properties = record.properties && typeof record.properties === "object" && !Array.isArray(record.properties) ? record.properties as Record<string, unknown> : {};
+  record.properties = { ...properties, generatedBy: CODEXA_CODEQL_SARIF_GENERATOR };
+  await fs.writeFile(filePath, `${JSON.stringify(record, null, 2)}\n`, "utf8");
+}
+
+async function parseJsonReportFile(filePath: string, label: string): Promise<unknown> {
+  try {
+    const stat = await fs.lstat(filePath);
+    if (!stat.isFile()) {
+      throw new Error(`${label} is not a regular file`);
+    }
+    return JSON.parse(await fs.readFile(filePath, "utf8"));
+  } catch (error) {
+    throw new Error(`${label} is not valid JSON: ${(error as Error).message}`);
+  }
 }
 
 function stringValue(value: unknown): string | undefined {

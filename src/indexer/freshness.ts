@@ -1,6 +1,7 @@
 import path from "node:path";
 import type { RepoFreshnessFiles } from "../repo-files.js";
 import type { ExternalRiskReportDiagnostic } from "../risk-ingest.js";
+import type { ExternalSymbolReportDiagnostic } from "../symbol-report-ingest.js";
 import type { FreshnessInfo } from "../types.js";
 
 export interface RiskReportFreshnessSnapshot {
@@ -8,7 +9,12 @@ export interface RiskReportFreshnessSnapshot {
   diagnostics: ExternalRiskReportDiagnostic[];
 }
 
-export function freshnessFromStored(repo: string, current: RepoFreshnessFiles, riskReports: RiskReportFreshnessSnapshot, loaded: FreshnessInfo | null): FreshnessInfo {
+export interface SymbolReportFreshnessSnapshot {
+  reportHashes: Record<string, string>;
+  diagnostics: ExternalSymbolReportDiagnostic[];
+}
+
+export function freshnessFromStored(repo: string, current: RepoFreshnessFiles, riskReports: RiskReportFreshnessSnapshot, symbolReports: SymbolReportFreshnessSnapshot, loaded: FreshnessInfo | null): FreshnessInfo {
   if (!loaded) {
     return {
       schemaVersion: 1,
@@ -24,6 +30,9 @@ export function freshnessFromStored(repo: string, current: RepoFreshnessFiles, r
       externalRiskReportHashes: riskReports.reportHashes,
       indexedExternalRiskReportHashes: {},
       externalRiskReportDiagnostics: riskReports.diagnostics,
+      externalSymbolReportHashes: symbolReports.reportHashes,
+      indexedExternalSymbolReportHashes: {},
+      externalSymbolReportDiagnostics: symbolReports.diagnostics,
       missing: true,
       stale: true,
       reason: "missing-index",
@@ -36,9 +45,11 @@ export function freshnessFromStored(repo: string, current: RepoFreshnessFiles, r
     stableJson(current.dirtyFileHashes) !== stableJson(loaded.indexedDirtyFileHashes ?? {});
   const indexedExternalRiskReportHashes = loaded.indexedExternalRiskReportHashes ?? loaded.externalRiskReportHashes ?? {};
   const externalRiskReportsChanged = stableJson(riskReports.reportHashes) !== stableJson(indexedExternalRiskReportHashes);
+  const indexedExternalSymbolReportHashes = loaded.indexedExternalSymbolReportHashes ?? loaded.externalSymbolReportHashes ?? {};
+  const externalSymbolReportsChanged = stableJson(symbolReports.reportHashes) !== stableJson(indexedExternalSymbolReportHashes);
   const commitChanged = current.git.headCommit !== loaded.headCommit;
   const repoRootChanged = path.resolve(loaded.repoRoot) !== repo || loaded.gitRoot !== current.git.gitRoot;
-  const stale = dirtyChanged || externalRiskReportsChanged || commitChanged || repoRootChanged;
+  const stale = dirtyChanged || externalRiskReportsChanged || externalSymbolReportsChanged || commitChanged || repoRootChanged;
   return {
     ...loaded,
     repoRoot: repo,
@@ -48,6 +59,9 @@ export function freshnessFromStored(repo: string, current: RepoFreshnessFiles, r
     externalRiskReportHashes: riskReports.reportHashes,
     indexedExternalRiskReportHashes,
     externalRiskReportDiagnostics: riskReports.diagnostics,
+    externalSymbolReportHashes: symbolReports.reportHashes,
+    indexedExternalSymbolReportHashes,
+    externalSymbolReportDiagnostics: symbolReports.diagnostics,
     missing: false,
     stale,
     reason: stale
@@ -57,7 +71,9 @@ export function freshnessFromStored(repo: string, current: RepoFreshnessFiles, r
           ? "repo-root-changed"
           : externalRiskReportsChanged
             ? "external-risk-reports-changed"
-            : "dirty-files-changed"
+            : externalSymbolReportsChanged
+              ? "external-symbol-reports-changed"
+              : "dirty-files-changed"
       : loaded.reason
   };
 }

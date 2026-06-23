@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { Confidence, RiskSignalFact } from "./types.js";
-import { normalizePath, stableId } from "./util.js";
+import { isSubpath, normalizePath, stableId } from "./util.js";
 
 const RISK_REPORT_PATHS = [
   ".codex/static-analysis/risks.json",
@@ -17,12 +17,24 @@ const RISK_REPORT_PATHS = [
   "codeql.sarif",
   "semgrep.json"
 ];
+const FIXED_RISK_REPORT_PATHS = new Set(RISK_REPORT_PATHS);
 
 const RISK_REPORT_DIRS = [".codex/static-analysis", "reports/static-analysis"];
 export const MAX_RISK_REPORT_BYTES = 8 * 1024 * 1024;
 const MAX_RISK_REPORT_CANDIDATES = 250;
 const MAX_RISKS_PER_REPORT = 5_000;
 const MAX_TOTAL_EXTERNAL_RISKS = 20_000;
+
+interface ReportFile {
+  absolutePath: string;
+  stat: { size: number; mtimeMs: number };
+}
+
+interface RiskPathResolver {
+  repoRoot: string;
+  repoReal: string;
+  cache: Map<string, string | undefined>;
+}
 
 export interface ExternalRiskReportDiagnostic {
   path: string;
@@ -41,35 +53,56 @@ export async function loadExternalRiskSignals(repoRoot: string, snapshotId: stri
   return (await loadExternalRiskSignalReport(repoRoot, snapshotId, indexedAt)).risks;
 }
 
-export async function loadExternalRiskSignalReport(repoRoot: string, snapshotId: string, indexedAt: string): Promise<ExternalRiskSignalReport> {
+export async function loadExternalRiskSignalReport(
+  repoRoot: string,
+  snapshotId: string,
+  indexedAt: string,
+  knownSymbolReportPaths: Set<string> = new Set(),
+  knownRiskReportPaths: Set<string> = new Set()
+): Promise<ExternalRiskSignalReport> {
   const uniqueRisks = new Map<string, RiskSignalFact>();
   const reportHashes: Record<string, string> = {};
   const diagnostics: ExternalRiskReportDiagnostic[] = [];
-  for (const relativePath of await candidateRiskReports(repoRoot)) {
-    const absolutePath = path.join(repoRoot, relativePath);
+  const knownRiskCandidatePaths = new Set([...knownRiskReportPaths, ...knownSymbolReportPaths]);
+  const pathResolver = await createRiskPathResolver(repoRoot);
+  for (const relativePath of await candidateRiskReports(repoRoot, knownRiskCandidatePaths)) {
+    const reportFile = await reportFileUnderRepo(repoRoot, relativePath);
+    if (!reportFile) {
+      continue;
+    }
     let parsed: unknown;
     try {
-      const stat = await fs.stat(absolutePath);
-      if (!stat.isFile()) {
+      if (reportFile.stat.size > MAX_RISK_REPORT_BYTES) {
+        if (knownSymbolReportPaths.has(relativePath)) {
+          continue;
+        }
+        reportHashes[relativePath] = metadataHash(reportFile.stat);
+        diagnostics.push({ path: relativePath, reason: "report-too-large", sizeBytes: reportFile.stat.size, limitBytes: MAX_RISK_REPORT_BYTES });
         continue;
       }
-      if (stat.size > MAX_RISK_REPORT_BYTES) {
-        reportHashes[relativePath] = metadataHash(stat);
-        diagnostics.push({ path: relativePath, reason: "report-too-large", sizeBytes: stat.size, limitBytes: MAX_RISK_REPORT_BYTES });
+      const content = await fs.readFile(reportFile.absolutePath, "utf8");
+      try {
+        parsed = JSON.parse(content);
+      } catch {
+        if (!knownSymbolReportPaths.has(relativePath)) {
+          reportHashes[relativePath] = hashText(content);
+          diagnostics.push({ path: relativePath, reason: "invalid-json" });
+        }
         continue;
       }
-      const content = await fs.readFile(absolutePath, "utf8");
       reportHashes[relativePath] = hashText(content);
-      parsed = JSON.parse(content);
     } catch {
-      if (await pathExists(absolutePath)) {
+      if (!knownSymbolReportPaths.has(relativePath)) {
         diagnostics.push({ path: relativePath, reason: "invalid-json" });
       }
       continue;
     }
-    addRisksFromReport(parsed, relativePath, repoRoot, snapshotId, indexedAt, uniqueRisks, Math.min(MAX_RISKS_PER_REPORT, Math.max(0, MAX_TOTAL_EXTERNAL_RISKS - uniqueRisks.size)));
-    if (uniqueRisks.size >= MAX_TOTAL_EXTERNAL_RISKS) {
-      break;
+    if (isCodexaSymbolReportShape(parsed)) {
+      delete reportHashes[relativePath];
+      continue;
+    }
+    if (uniqueRisks.size < MAX_TOTAL_EXTERNAL_RISKS) {
+      await addRisksFromReport(parsed, relativePath, pathResolver, snapshotId, indexedAt, uniqueRisks, Math.min(MAX_RISKS_PER_REPORT, Math.max(0, MAX_TOTAL_EXTERNAL_RISKS - uniqueRisks.size)));
     }
   }
   return {
@@ -79,22 +112,44 @@ export async function loadExternalRiskSignalReport(repoRoot: string, snapshotId:
   };
 }
 
-export async function externalRiskReportSnapshot(repoRoot: string): Promise<Pick<ExternalRiskSignalReport, "reportHashes" | "diagnostics">> {
+export async function externalRiskReportSnapshot(
+  repoRoot: string,
+  knownSymbolReportPaths: Set<string> = new Set(),
+  knownRiskReportPaths: Set<string> = new Set()
+): Promise<Pick<ExternalRiskSignalReport, "reportHashes" | "diagnostics">> {
   const reportHashes: Record<string, string> = {};
   const diagnostics: ExternalRiskReportDiagnostic[] = [];
-  for (const relativePath of await candidateRiskReports(repoRoot)) {
-    const absolutePath = path.join(repoRoot, relativePath);
+  const knownRiskCandidatePaths = new Set([...knownRiskReportPaths, ...knownSymbolReportPaths]);
+  for (const relativePath of await candidateRiskReports(repoRoot, knownRiskCandidatePaths)) {
+    const reportFile = await reportFileUnderRepo(repoRoot, relativePath);
+    if (!reportFile) {
+      continue;
+    }
     try {
-      const stat = await fs.stat(absolutePath);
-      if (!stat.isFile()) {
+      if (reportFile.stat.size > MAX_RISK_REPORT_BYTES) {
+        if (knownSymbolReportPaths.has(relativePath)) {
+          continue;
+        }
+        reportHashes[relativePath] = metadataHash(reportFile.stat);
+        diagnostics.push({ path: relativePath, reason: "report-too-large", sizeBytes: reportFile.stat.size, limitBytes: MAX_RISK_REPORT_BYTES });
         continue;
       }
-      if (stat.size > MAX_RISK_REPORT_BYTES) {
-        reportHashes[relativePath] = metadataHash(stat);
-        diagnostics.push({ path: relativePath, reason: "report-too-large", sizeBytes: stat.size, limitBytes: MAX_RISK_REPORT_BYTES });
+      const content = await fs.readFile(reportFile.absolutePath, "utf8");
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(content);
+      } catch {
+        if (knownSymbolReportPaths.has(relativePath)) {
+          continue;
+        }
+        reportHashes[relativePath] = hashText(content);
+        diagnostics.push({ path: relativePath, reason: "invalid-json" });
         continue;
       }
-      reportHashes[relativePath] = hashText(await fs.readFile(absolutePath, "utf8"));
+      if (isCodexaSymbolReportShape(parsed)) {
+        continue;
+      }
+      reportHashes[relativePath] = hashText(content);
     } catch {
       continue;
     }
@@ -105,18 +160,43 @@ export async function externalRiskReportSnapshot(repoRoot: string): Promise<Pick
   };
 }
 
-async function candidateRiskReports(repoRoot: string): Promise<string[]> {
-  const candidates = new Set(RISK_REPORT_PATHS);
+async function candidateRiskReports(repoRoot: string, knownRiskReportPaths: Set<string>): Promise<string[]> {
+  const candidates = new Set([...RISK_REPORT_PATHS, ...[...knownRiskReportPaths].map((entry) => normalizePath(entry)).filter(Boolean)]);
   for (const relativeDir of RISK_REPORT_DIRS) {
     const absoluteDir = path.join(repoRoot, relativeDir);
-    for (const report of await walkReportDir(absoluteDir, relativeDir, 0, Math.max(0, MAX_RISK_REPORT_CANDIDATES - candidates.size))) {
+    for (const report of await walkReportDir(absoluteDir, relativeDir, 0, MAX_RISK_REPORT_CANDIDATES)) {
       candidates.add(report);
-      if (candidates.size >= MAX_RISK_REPORT_CANDIDATES) {
-        break;
-      }
     }
   }
-  return [...candidates].sort((a, b) => a.localeCompare(b));
+  return [...candidates].sort((a, b) => riskReportPriority(a, knownRiskReportPaths) - riskReportPriority(b, knownRiskReportPaths) || a.localeCompare(b));
+}
+
+async function reportFileUnderRepo(repoRoot: string, relativePath: string): Promise<ReportFile | undefined> {
+  const absolutePath = path.resolve(repoRoot, relativePath);
+  const repoReal = await fs.realpath(repoRoot).catch(() => "");
+  if (!repoReal || !isSubpath(absolutePath, repoRoot)) {
+    return undefined;
+  }
+  const stat = await fs.lstat(absolutePath).catch(() => null);
+  if (!stat?.isFile()) {
+    return undefined;
+  }
+  const realPath = await fs.realpath(absolutePath).catch(() => "");
+  if (!realPath || !isSubpath(realPath, repoReal)) {
+    return undefined;
+  }
+  return { absolutePath, stat: { size: Number(stat.size), mtimeMs: Number(stat.mtimeMs) } };
+}
+
+function riskReportPriority(relativePath: string, knownRiskReportPaths: Set<string>): number {
+  const normalized = normalizePath(relativePath);
+  if (FIXED_RISK_REPORT_PATHS.has(normalized)) {
+    return 0;
+  }
+  if (knownRiskReportPaths.has(normalized)) {
+    return 1;
+  }
+  return 2;
 }
 
 async function walkReportDir(absoluteDir: string, relativeDir: string, depth: number, limit: number): Promise<string[]> {
@@ -144,22 +224,35 @@ async function walkReportDir(absoluteDir: string, relativeDir: string, depth: nu
       reports.push(...(await walkReportDir(absolutePath, relativePath, depth + 1, limit - reports.length)));
       continue;
     }
-    if (entry.isFile() && /\.(json|sarif)$/i.test(entry.name)) {
+    if (entry.isFile() && /\.(json|sarif)$/i.test(entry.name) && !isSymbolReportPath(relativePath)) {
       reports.push(relativePath);
     }
   }
   return reports.sort((a, b) => a.localeCompare(b));
 }
 
-function addRisksFromReport(
+function isSymbolReportPath(relativePath: string): boolean {
+  const base = path.posix.basename(normalizePath(relativePath));
+  return base === "symbols.json" || base.endsWith(".symbols.json") || base.startsWith("symbol-report-");
+}
+
+function isCodexaSymbolReportShape(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Record<string, unknown>;
+  return record.schemaVersion === 1 && typeof record.tool === "string" && typeof record.language === "string" && Array.isArray(record.symbols);
+}
+
+async function addRisksFromReport(
   value: unknown,
   reportPath: string,
-  repoRoot: string,
+  pathResolver: RiskPathResolver,
   snapshotId: string,
   indexedAt: string,
   uniqueRisks: Map<string, RiskSignalFact>,
   limit: number
-): void {
+): Promise<void> {
   if (!value || typeof value !== "object") {
     return;
   }
@@ -178,36 +271,40 @@ function addRisksFromReport(
       uniqueRisks.set(riskDedupeKey(entry), entry);
     }
   };
-  if (Array.isArray(record.runs)) {
-    for (const run of record.runs) {
-      addRisksFromSarifRun(run, reportPath, repoRoot, snapshotId, indexedAt, uniqueRisks, remaining());
+  const runs = record.runs;
+  if (Array.isArray(runs)) {
+    for (const run of runs) {
+      await addRisksFromSarifRun(run, reportPath, pathResolver, snapshotId, indexedAt, uniqueRisks, remaining());
       if (!hasCapacity()) {
         break;
       }
     }
     return;
   }
-  if (Array.isArray(record.results)) {
-    for (const entry of record.results) {
-      push(riskFromSemgrepResult(entry, reportPath, repoRoot, snapshotId, indexedAt));
+  const results = record.results;
+  if (Array.isArray(results)) {
+    for (const entry of results) {
+      push(await riskFromSemgrepResult(entry, reportPath, pathResolver, snapshotId, indexedAt));
       if (!hasCapacity()) {
         break;
       }
     }
     return;
   }
-  if (Array.isArray(record.risks)) {
-    for (const entry of record.risks) {
-      push(riskFromGenericEntry(entry, reportPath, repoRoot, snapshotId, indexedAt));
+  const risks = record.risks;
+  if (Array.isArray(risks)) {
+    for (const entry of risks) {
+      push(await riskFromGenericEntry(entry, reportPath, pathResolver, snapshotId, indexedAt));
       if (!hasCapacity()) {
         break;
       }
     }
     return;
   }
-  if (Array.isArray(record.findings)) {
-    for (const entry of record.findings) {
-      push(riskFromGenericEntry(entry, reportPath, repoRoot, snapshotId, indexedAt));
+  const findings = record.findings;
+  if (Array.isArray(findings)) {
+    for (const entry of findings) {
+      push(await riskFromGenericEntry(entry, reportPath, pathResolver, snapshotId, indexedAt));
       if (!hasCapacity()) {
         break;
       }
@@ -215,15 +312,15 @@ function addRisksFromReport(
   }
 }
 
-function addRisksFromSarifRun(
+async function addRisksFromSarifRun(
   value: unknown,
   reportPath: string,
-  repoRoot: string,
+  pathResolver: RiskPathResolver,
   snapshotId: string,
   indexedAt: string,
   uniqueRisks: Map<string, RiskSignalFact>,
   limit: number
-): void {
+): Promise<void> {
   if (!value || typeof value !== "object") {
     return;
   }
@@ -266,7 +363,7 @@ function addRisksFromSarifRun(
         continue;
       }
       const line = numberValue(region?.startLine);
-      const normalizedPath = normalizeReportPath(filePath, repoRoot);
+      const normalizedPath = await normalizeReportPath(filePath, pathResolver);
       if (!normalizedPath) {
         continue;
       }
@@ -289,7 +386,7 @@ function addRisksFromSarifRun(
   }
 }
 
-function riskFromSemgrepResult(value: unknown, reportPath: string, repoRoot: string, snapshotId: string, indexedAt: string): RiskSignalFact[] {
+async function riskFromSemgrepResult(value: unknown, reportPath: string, pathResolver: RiskPathResolver, snapshotId: string, indexedAt: string): Promise<RiskSignalFact[]> {
   if (!value || typeof value !== "object") {
     return [];
   }
@@ -303,7 +400,7 @@ function riskFromSemgrepResult(value: unknown, reportPath: string, repoRoot: str
   const severity = stringValue(extra.severity) ?? "INFO";
   const reason = stringValue(extra.message) ?? signal;
   const line = numberValue((record.start as Record<string, unknown> | undefined)?.line);
-  const normalizedPath = normalizeReportPath(filePath, repoRoot);
+  const normalizedPath = await normalizeReportPath(filePath, pathResolver);
   if (!normalizedPath) {
     return [];
   }
@@ -324,7 +421,7 @@ function riskFromSemgrepResult(value: unknown, reportPath: string, repoRoot: str
   ];
 }
 
-function riskFromGenericEntry(value: unknown, reportPath: string, repoRoot: string, snapshotId: string, indexedAt: string): RiskSignalFact[] {
+async function riskFromGenericEntry(value: unknown, reportPath: string, pathResolver: RiskPathResolver, snapshotId: string, indexedAt: string): Promise<RiskSignalFact[]> {
   if (!value || typeof value !== "object") {
     return [];
   }
@@ -338,7 +435,7 @@ function riskFromGenericEntry(value: unknown, reportPath: string, repoRoot: stri
   const score = numberValue(record.score) ?? scoreFromSeverity(stringValue(record.severity) ?? "");
   const line = numberValue(record.line) ?? numberValue(record.startLine);
   const confidence = confidenceValue(record.confidence) ?? confidenceFromSeverity(stringValue(record.severity) ?? "");
-  const normalizedPath = normalizeReportPath(filePath, repoRoot);
+  const normalizedPath = await normalizeReportPath(filePath, pathResolver);
   if (!normalizedPath) {
     return [];
   }
@@ -373,15 +470,6 @@ function hashText(value: string): string {
 
 function metadataHash(stat: { size: number; mtimeMs: number }): string {
   return `metadata:${stat.size}:${Math.trunc(stat.mtimeMs)}`;
-}
-
-async function pathExists(filePath: string): Promise<boolean> {
-  try {
-    await fs.access(filePath);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function stringValue(value: unknown): string | undefined {
@@ -501,18 +589,43 @@ function numericString(value: unknown): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-function normalizeReportPath(value: string, repoRoot: string): string | undefined {
+async function createRiskPathResolver(repoRoot: string): Promise<RiskPathResolver> {
+  const repo = path.resolve(repoRoot);
+  return {
+    repoRoot: repo,
+    repoReal: await fs.realpath(repo).catch(() => ""),
+    cache: new Map()
+  };
+}
+
+async function normalizeReportPath(value: string, resolver: RiskPathResolver): Promise<string | undefined> {
+  if (resolver.cache.has(value)) {
+    return resolver.cache.get(value);
+  }
   let normalized = value.replace(/^file:\/\//, "");
   try {
     normalized = decodeURI(normalized);
   } catch {
     // Keep the raw path if the report contains a non-URI-encoded percent sequence.
   }
-  const repo = path.resolve(repoRoot);
+  const repo = resolver.repoRoot;
   const absolutePath = path.isAbsolute(normalized) ? path.resolve(normalized) : path.resolve(repo, normalized);
   const relative = path.relative(repo, absolutePath);
   if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    resolver.cache.set(value, undefined);
     return undefined;
   }
-  return relative.split(path.sep).join("/");
+  const real = await fs.realpath(absolutePath).catch(() => "");
+  if (!real || !resolver.repoReal || !isSubpath(real, resolver.repoReal)) {
+    resolver.cache.set(value, undefined);
+    return undefined;
+  }
+  const stat = await fs.stat(real).catch(() => null);
+  if (!stat?.isFile()) {
+    resolver.cache.set(value, undefined);
+    return undefined;
+  }
+  const result = normalizePath(path.relative(resolver.repoReal, real));
+  resolver.cache.set(value, result);
+  return result;
 }

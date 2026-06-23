@@ -8,7 +8,7 @@ import { loadOutcomeRankSignals } from "./outcome-ranking.js";
 import { loadImportAliases } from "./indexer/aliases.js";
 import { writeIndexBundle as writeIndexBundleStage } from "./indexer/artifact-writing.js";
 import { discoverIndexInputs } from "./indexer/discovery.js";
-import { applyExternalSymbolFacts, dedupeRiskSignals, riskReportParserError } from "./indexer/external-facts.js";
+import { applyExternalSymbolFacts, dedupeRiskSignals, riskReportParserError, symbolReportParserError } from "./indexer/external-facts.js";
 import { freshnessFromStored } from "./indexer/freshness.js";
 import { applyGraphStages } from "./indexer/graph-stage.js";
 import { loadPythonSemanticSourceFiles, parseRepoSources, type ParsedRepoSources, writeParseCache } from "./indexer/parsing.js";
@@ -16,7 +16,7 @@ import { runIndexPipeline, type IndexPipelineStage } from "./indexer/pipeline.js
 import { applyModules, applyRanking } from "./indexer/ranking.js";
 import { applyPythonSemanticAssist } from "./semantic/python.js";
 import { applyTypeScriptSemanticAssist } from "./semantic/typescript.js";
-import { loadExternalSymbolReportFacts } from "./symbol-report-ingest.js";
+import { externalSymbolReportSnapshot, loadExternalSymbolReportFacts } from "./symbol-report-ingest.js";
 import type {
   CodexaIndex,
   FreshnessInfo,
@@ -37,6 +37,7 @@ interface BuildIndexPipelineContext {
   indexedAt?: string;
   snapshotId?: string;
   snapshot?: RepoSnapshotFact;
+  previousFreshness?: FreshnessInfo | null;
   parsedSources?: ParsedRepoSources;
   parsed?: ParsedRepoSources["parsed"];
   aliases?: Awaited<ReturnType<typeof loadImportAliases>>;
@@ -70,7 +71,7 @@ function discoverStage(): IndexPipelineStage<BuildIndexPipelineContext> {
   return {
     name: "discover",
     async run(context) {
-      const discovered = await discoverIndexInputs(context.repoRoot);
+      const [discovered, previousFreshness] = await Promise.all([discoverIndexInputs(context.repoRoot), loadFreshnessReadOnly(context.repoRoot)]);
       const indexedAt = new Date().toISOString();
       const snapshotId = stableId("snapshot", context.repoRoot, discovered.git.headCommit, discovered.git.dirtyFiles.join("\n"), indexedAt);
       const snapshot: RepoSnapshotFact = {
@@ -85,7 +86,7 @@ function discoverStage(): IndexPipelineStage<BuildIndexPipelineContext> {
         headCommit: discovered.git.headCommit,
         dirtyFiles: discovered.git.dirtyFiles
       };
-      return { ...context, discovered, indexedAt, snapshotId, snapshot };
+      return { ...context, discovered, indexedAt, snapshotId, snapshot, previousFreshness };
     }
   };
 }
@@ -124,7 +125,10 @@ function parseStage(): IndexPipelineStage<BuildIndexPipelineContext> {
           parserErrorCount: 0,
           externalRiskReportHashes: {},
           indexedExternalRiskReportHashes: {},
-          externalRiskReportDiagnostics: []
+          externalRiskReportDiagnostics: [],
+          externalSymbolReportHashes: {},
+          indexedExternalSymbolReportHashes: {},
+          externalSymbolReportDiagnostics: []
         },
         files: parsed.map((result) => ({
           ...result.file,
@@ -155,9 +159,12 @@ function externalFactsStage(): IndexPipelineStage<BuildIndexPipelineContext> {
     name: "external-facts",
     async run(context) {
       const { discovered, indexedAt, index, snapshotId } = requireIndexContext(context, "external-facts", ["discovered", "indexedAt", "index", "snapshotId"]);
+      const knownSymbolReportPaths = knownExternalSymbolReportPaths(context.previousFreshness);
+      const knownRiskReportPaths = knownExternalRiskReportPaths(context.previousFreshness);
+      const knownExternalReportPaths = new Set([...knownSymbolReportPaths, ...knownRiskReportPaths]);
       const [externalRiskReport, externalSymbols] = await Promise.all([
-        loadExternalRiskSignalReport(context.repoRoot, snapshotId, indexedAt),
-        loadExternalSymbolReportFacts(context.repoRoot, snapshotId, indexedAt, new Set(discovered.git.dirtyFiles))
+        loadExternalRiskSignalReport(context.repoRoot, snapshotId, indexedAt, knownSymbolReportPaths, knownRiskReportPaths),
+        loadExternalSymbolReportFacts(context.repoRoot, snapshotId, indexedAt, new Set(discovered.git.dirtyFiles), knownSymbolReportPaths, knownExternalReportPaths)
       ]);
       const indexWithReports = applyExternalSymbolFacts(
         {
@@ -166,10 +173,17 @@ function externalFactsStage(): IndexPipelineStage<BuildIndexPipelineContext> {
             ...index.freshness,
             externalRiskReportHashes: externalRiskReport.reportHashes,
             indexedExternalRiskReportHashes: externalRiskReport.reportHashes,
-            externalRiskReportDiagnostics: externalRiskReport.diagnostics
+            externalRiskReportDiagnostics: externalRiskReport.diagnostics,
+            externalSymbolReportHashes: externalSymbols.reportHashes,
+            indexedExternalSymbolReportHashes: externalSymbols.reportHashes,
+            externalSymbolReportDiagnostics: externalSymbols.diagnostics
           },
           risks: dedupeRiskSignals([...index.risks, ...externalRiskReport.risks]),
-          parserErrors: [...index.parserErrors, ...externalRiskReport.diagnostics.map((diagnostic) => riskReportParserError(diagnostic, snapshotId, indexedAt))]
+          parserErrors: [
+            ...index.parserErrors,
+            ...externalRiskReport.diagnostics.map((diagnostic) => riskReportParserError(diagnostic, snapshotId, indexedAt)),
+            ...externalSymbols.diagnostics.map((diagnostic) => symbolReportParserError(diagnostic, snapshotId, indexedAt))
+          ]
         },
         externalSymbols
       );
@@ -397,25 +411,58 @@ function normalizeLoadedFreshness(freshness: Partial<FreshnessInfo>): FreshnessI
 
 export async function getFreshness(repoRoot: string, index?: CodexaIndex | null, options: { recover?: boolean } = {}): Promise<FreshnessInfo> {
   const repo = path.resolve(repoRoot);
-  const [current, riskReports] = await Promise.all([discoverRepoFreshness(repo), externalRiskReportSnapshot(repo)]);
   if (index !== undefined) {
-    return freshnessFromStored(repo, current, riskReports, index?.freshness ?? null);
+    const [current, riskReports, symbolReports] = await externalFreshnessInputs(repo, index?.freshness ?? null);
+    return freshnessFromStored(repo, current, riskReports, symbolReports, index?.freshness ?? null);
   }
 
-  const stored = await loadFreshnessReadOnly(repo);
+  const [current, stored] = await Promise.all([discoverRepoFreshness(repo), loadFreshnessReadOnly(repo)]);
   if (stored) {
-    const freshness = freshnessFromStored(repo, current, riskReports, stored);
+    const [riskReports, symbolReports] = await externalReportSnapshots(repo, knownExternalSymbolReportPaths(stored), knownExternalRiskReportPaths(stored));
+    const freshness = freshnessFromStored(repo, current, riskReports, symbolReports, stored);
     if (!freshness.stale && options.recover !== false && (await indexBundleNewerThanFreshness(repo))) {
       const loaded = await loadIndex(repo);
       if (loaded) {
-        return freshnessFromStored(repo, current, riskReports, loaded.freshness);
+        const [recoveredRiskReports, recoveredSymbolReports] = await externalReportSnapshots(repo, knownExternalSymbolReportPaths(loaded.freshness), knownExternalRiskReportPaths(loaded.freshness));
+        return freshnessFromStored(repo, current, recoveredRiskReports, recoveredSymbolReports, loaded.freshness);
       }
     }
     return freshness;
   }
 
   const loaded = options.recover === false ? null : await loadIndex(repo);
-  return freshnessFromStored(repo, current, riskReports, loaded?.freshness ?? null);
+  const [riskReports, symbolReports] = await externalReportSnapshots(repo, knownExternalSymbolReportPaths(loaded?.freshness ?? null), knownExternalRiskReportPaths(loaded?.freshness ?? null));
+  return freshnessFromStored(repo, current, riskReports, symbolReports, loaded?.freshness ?? null);
+}
+
+async function externalFreshnessInputs(
+  repo: string,
+  stored: FreshnessInfo | null
+): Promise<[
+  Awaited<ReturnType<typeof discoverRepoFreshness>>,
+  Awaited<ReturnType<typeof externalRiskReportSnapshot>>,
+  Awaited<ReturnType<typeof externalSymbolReportSnapshot>>
+]> {
+  const current = await discoverRepoFreshness(repo);
+  const [riskReports, symbolReports] = await externalReportSnapshots(repo, knownExternalSymbolReportPaths(stored), knownExternalRiskReportPaths(stored));
+  return [current, riskReports, symbolReports];
+}
+
+async function externalReportSnapshots(
+  repo: string,
+  knownSymbolReportPaths: Set<string>,
+  knownRiskReportPaths: Set<string>
+): Promise<[Awaited<ReturnType<typeof externalRiskReportSnapshot>>, Awaited<ReturnType<typeof externalSymbolReportSnapshot>>]> {
+  const knownExternalReportPaths = new Set([...knownSymbolReportPaths, ...knownRiskReportPaths]);
+  return Promise.all([externalRiskReportSnapshot(repo, knownSymbolReportPaths, knownRiskReportPaths), externalSymbolReportSnapshot(repo, knownSymbolReportPaths, knownExternalReportPaths)]);
+}
+
+function knownExternalSymbolReportPaths(freshness: FreshnessInfo | null | undefined): Set<string> {
+  return new Set(Object.keys(freshness?.indexedExternalSymbolReportHashes ?? freshness?.externalSymbolReportHashes ?? {}));
+}
+
+function knownExternalRiskReportPaths(freshness: FreshnessInfo | null | undefined): Set<string> {
+  return new Set(Object.keys(freshness?.indexedExternalRiskReportHashes ?? freshness?.externalRiskReportHashes ?? {}));
 }
 
 
