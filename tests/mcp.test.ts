@@ -528,6 +528,52 @@ describe("Codexa MCP server", () => {
     }
   });
 
+  it("falls back to active session rows when workspace defaults are invalid", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-working-invalid-default-"));
+    const outsideParent = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-outside-default-"));
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const outsideRepo = await createIndexedMcpRepo(outsideParent, "outside-repo", "outside", "outsideSymbol");
+    const activeRepo = await createIndexedMcpRepo(workspace, "active-repo", "beta", "betaSymbol");
+    const focusFile = path.join(workspace, ".codex", "WORKING.md");
+    await mkdir(path.dirname(focusFile), { recursive: true });
+    await writeFile(
+      focusFile,
+      [
+        "## Workspace Default",
+        "",
+        `- Default repo: \`${path.join(workspace, "missing-repo")}\`.`,
+        `- Default repo: \`${outsideRepo}\`.`,
+        "",
+        "## Active Sessions",
+        "",
+        "| session | agent | repo | task | status | claims | last_seen | next |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        `| codex-current | codex | ${activeRepo} | route task | active | none | now | inspect |`
+      ].join("\n"),
+      "utf8"
+    );
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-working-invalid-default-routing-test", version: "0.1.0" });
+    await client.connect(transport);
+
+    try {
+      const taskBrief = await client.callTool({ name: "task_brief", arguments: { task: "change betaSymbol", tokenBudget: 900, limit: 5 } });
+      const serialized = JSON.stringify(taskBrief);
+      expect(serialized).toContain(activeRepo);
+      expect(serialized).toContain("betaSymbol");
+      expect(serialized).not.toContain(outsideRepo);
+      expect(serialized).not.toContain("outsideSymbol");
+      expect(serialized).not.toContain("Failed to read git status");
+    } finally {
+      await client.close();
+    }
+  });
+
   it("does not treat workspace-level active project focus prose as the focused repo", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-working-prose-focus-"));
     execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });

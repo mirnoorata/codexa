@@ -419,7 +419,10 @@ async function partitionDefaultPaths(paths: string[], configuredRoot?: string): 
     const normalized = normalizeCandidatePath(candidate);
     if (normalized && (await isSamePath(normalized, configuredRoot))) {
       configuredRootPaths.push(candidate);
-    } else {
+      continue;
+    }
+    const repoRoot = normalized ? await gitRootFor(normalized) : null;
+    if (repoRoot && (await isInsideOrSamePath(repoRoot, configuredRoot))) {
       focused.push(candidate);
     }
   }
