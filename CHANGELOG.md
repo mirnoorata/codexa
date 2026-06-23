@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.5.0](https://github.com/mirnoorata/codexa/compare/v0.4.0...v0.5.0) (2026-06-23)
+
+
+### Features
+
+* **query:** add complexity review lane ([bf5de2b](https://github.com/mirnoorata/codexa/commit/bf5de2bfc7ad3efef090e068be2efdce0711bbe1))
+
+
+### Bug Fixes
+
+* **mcp:** resolve focused workspace sessions ([#64](https://github.com/mirnoorata/codexa/issues/64)) ([d732934](https://github.com/mirnoorata/codexa/commit/d73293457bf72eaa2d92c536ae3287931ee0d428))
+* **mcp:** route workspace default before active rows ([e0727ad](https://github.com/mirnoorata/codexa/commit/e0727add2b02435f3e25903a88811a3f1bfd8b29))
+* **static-analysis:** harden SCIP report ingestion ([d447faa](https://github.com/mirnoorata/codexa/commit/d447faa5c072ba932ed8872a75568a6f8d9209a6))
+* **types:** align post-edit changed entries contract ([ed190ed](https://github.com/mirnoorata/codexa/commit/ed190ed9591dd9e24d3138fb6013ffba0ddf2e85))
+
 ## [0.4.0](https://github.com/mirnoorata/codexa/compare/v0.3.0...v0.4.0) (2026-06-17)
 
 
