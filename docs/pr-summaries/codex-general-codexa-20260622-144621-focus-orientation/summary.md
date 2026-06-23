@@ -20,8 +20,8 @@ eb612e4 fix(mcp): route workspace default before active rows
 
 - npm run test -- tests/mcp.test.ts tests/cli-hooks.test.ts tests/init.test.ts: passed, 110 tests
 - npm run check: passed, including typecheck, lint, privacy, Claude integration smoke, and 364 Vitest tests
-- node dist/cli.js doctor /srv --mcp-readiness --json: passed; `/srv` resolves to the focused Codexa worktree with `mcp-routing: ok`
-- node dist/cli.js session-context /srv --task "verify patched /srv focus routing" --limit 3 --budget 1500: passed
+- node dist/cli.js doctor /path/to/workspace --mcp-readiness --json: passed; workspace root resolves to the focused Codexa worktree with `mcp-routing: ok`
+- node dist/cli.js session-context /path/to/workspace --task "verify patched workspace focus routing" --limit 3 --budget 1500: passed
 - git diff --check: passed
 - Codexa change-plan snapshot `mcp-srv-routing-post-main-20260623`: saved
 - Codexa post-edit-review for `mcp-srv-routing-post-main-20260623`: passed with Verdict: continue
@@ -29,6 +29,6 @@ eb612e4 fix(mcp): route workspace default before active rows
 
 ## Notes
 
-This fixes the ambiguous shared `/srv` board path by treating the workspace default as the unscoped focus before considering active session rows. Defaults that point at the configured root itself are still deferred behind active rows, preserving the previous fallback behavior for root-only defaults.
+This fixes the ambiguous shared workspace board path by treating the workspace default as the unscoped focus before considering active session rows. Defaults that point at the configured root itself are still deferred behind active rows, preserving the previous fallback behavior for root-only defaults.
 
-The reproduced live path now resolves `/srv` through `/srv/.codex/WORKING.md` to the focused Codexa worktree instead of reporting multiple active repos as ambiguous.
+The reproduced live path now resolves the workspace root through its `.codex/WORKING.md` file to the focused Codexa worktree instead of reporting multiple active repos as ambiguous.
