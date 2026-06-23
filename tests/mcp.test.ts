@@ -485,7 +485,7 @@ describe("Codexa MCP server", () => {
     }
   });
 
-  it("routes workspace-root task briefs from active-session rows before WORKING.md default", async () => {
+  it("routes unscoped workspace-root task briefs through WORKING.md default before active-session rows", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-working-default-"));
     execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
     const defaultRepo = await createIndexedMcpRepo(workspace, "default-repo", "alpha", "alphaSymbol");
@@ -519,9 +519,9 @@ describe("Codexa MCP server", () => {
     try {
       const taskBrief = await client.callTool({ name: "task_brief", arguments: { task: "change alphaSymbol", tokenBudget: 900, limit: 5 } });
       const serialized = JSON.stringify(taskBrief);
-      expect(serialized).toContain(activeRepo);
-      expect(serialized).toContain("betaSymbol");
-      expect(serialized).not.toContain(defaultRepo);
+      expect(serialized).toContain(defaultRepo);
+      expect(serialized).toContain("alphaSymbol");
+      expect(serialized).not.toContain(activeRepo);
       expect(serialized).not.toContain("Failed to read git status");
     } finally {
       await client.close();
@@ -570,9 +570,10 @@ describe("Codexa MCP server", () => {
     }
   });
 
-  it("routes workspace-root freshness from verified session rows before WORKING.md default", async () => {
+  it("routes unscoped workspace-root freshness through WORKING.md default before verified session rows", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-working-verified-status-"));
     execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const defaultRepo = await createIndexedMcpRepo(workspace, "default-repo", "alpha", "alphaSymbol");
     const activeRepo = await createIndexedMcpRepo(workspace, "active-repo", "beta", "betaSymbol");
     const focusFile = path.join(workspace, ".codex", "WORKING.md");
     await mkdir(path.dirname(focusFile), { recursive: true });
@@ -581,7 +582,7 @@ describe("Codexa MCP server", () => {
       [
         "## Workspace Default",
         "",
-        `- Default repo: \`${workspace}\`.`,
+        `- Default repo: \`${defaultRepo}\`.`,
         "",
         "## Active Sessions",
         "",
@@ -603,7 +604,8 @@ describe("Codexa MCP server", () => {
     try {
       const freshness = await client.callTool({ name: "freshness", arguments: {} });
       const serialized = JSON.stringify(freshness);
-      expect(serialized).toContain(activeRepo);
+      expect(serialized).toContain(defaultRepo);
+      expect(serialized).not.toContain(activeRepo);
       expect(serialized).not.toContain(`"repoRoot":"${workspace}"`);
       expect(serialized).not.toContain("Failed to read git status");
     } finally {
@@ -622,8 +624,6 @@ describe("Codexa MCP server", () => {
       focusFile,
       [
         "## Workspace Default",
-        "",
-        `- Default repo: \`${defaultRepo}\`.`,
         "",
         "## Active Sessions",
         "",

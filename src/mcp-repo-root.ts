@@ -118,7 +118,7 @@ function environmentRepoCandidates(): CandidateRepoRoot[] {
 async function* focusFileRepoCandidates(configuredRoot: string, options: McpRepoRootResolutionOptions): AsyncGenerator<CandidateRepoRoot> {
   for (const focusFile of focusFileCandidates(configuredRoot, options)) {
     const focusFilePath = path.resolve(focusFile);
-    const selection = await readFocusedRepoPaths(focusFilePath, options);
+    const selection = await readFocusedRepoPaths(focusFilePath, options, configuredRoot);
     for (const repoPath of selection.paths) {
       yield {
         path: repoPath,
@@ -142,7 +142,7 @@ function focusFileCandidates(configuredRoot: string, options: McpRepoRootResolut
   return [...new Set(candidates.map((candidate) => path.resolve(candidate)))];
 }
 
-async function readFocusedRepoPaths(focusFile: string, options: McpRepoRootResolutionOptions): Promise<FocusFileRepoSelection> {
+async function readFocusedRepoPaths(focusFile: string, options: McpRepoRootResolutionOptions, configuredRoot?: string): Promise<FocusFileRepoSelection> {
   let text: string;
   try {
     text = await fs.readFile(focusFile, "utf8");
@@ -228,12 +228,14 @@ async function readFocusedRepoPaths(focusFile: string, options: McpRepoRootResol
   if (workspaceSessionId && activeSessionRowsSeen > 0 && selectedSessionPaths.length === 0) {
     throw new Error(`Codexa MCP workspace session ${workspaceSessionId} is not active in ${path.resolve(focusFile)}`);
   }
+  const defaultPathGroups = await partitionDefaultPaths(defaultPaths, configuredRoot);
   return firstUnambiguousPriority(
     [
       { paths: selectedSessionPaths, focusReason: "selected-session", allowFallbackWhenAmbiguous: false, strict: true, workspaceSessionId },
       { paths: explicitPaths, focusReason: "explicit-focus", allowFallbackWhenAmbiguous: false, strict: false },
+      { paths: defaultPathGroups.focused, focusReason: "workspace-default", allowFallbackWhenAmbiguous: false, strict: false },
       { paths: activeSessionPaths, focusReason: "active-session", allowFallbackWhenAmbiguous: false, strict: false },
-      { paths: defaultPaths, focusReason: "workspace-default", allowFallbackWhenAmbiguous: false, strict: false }
+      { paths: defaultPathGroups.configuredRoot, focusReason: "workspace-default", allowFallbackWhenAmbiguous: false, strict: false }
     ],
     focusFile
   );
@@ -390,7 +392,7 @@ async function localWorkspaceFocusOverridesConfiguredRoot(configuredRoot: string
 
   let selection: FocusFileRepoSelection;
   try {
-    selection = await readFocusedRepoPaths(focusFile, {});
+    selection = await readFocusedRepoPaths(focusFile, {}, configuredRoot);
   } catch {
     return true;
   }
@@ -405,4 +407,21 @@ async function localWorkspaceFocusOverridesConfiguredRoot(configuredRoot: string
     }
   }
   return false;
+}
+
+async function partitionDefaultPaths(paths: string[], configuredRoot?: string): Promise<{ focused: string[]; configuredRoot: string[] }> {
+  if (!configuredRoot) {
+    return { focused: paths, configuredRoot: [] };
+  }
+  const focused: string[] = [];
+  const configuredRootPaths: string[] = [];
+  for (const candidate of paths) {
+    const normalized = normalizeCandidatePath(candidate);
+    if (normalized && (await isSamePath(normalized, configuredRoot))) {
+      configuredRootPaths.push(candidate);
+    } else {
+      focused.push(candidate);
+    }
+  }
+  return { focused, configuredRoot: configuredRootPaths };
 }

@@ -1123,6 +1123,36 @@ describe("Codexa hook CLI", () => {
     expect(selectedData.mcpReadiness.toolSurface.uncatalogedRegisteredTools).toEqual([]);
     expect(selectedData.mcpReadiness.latestEval).toBeNull();
 
+    const unscoped = spawnSync(process.execPath, [cli, "doctor", workspace, "--mcp-readiness", "--json"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: { ...process.env, SESSION_ID: "unrelated-helper-session" }
+    });
+    expect(unscoped.status).toBe(0);
+    const unscopedData = JSON.parse(unscoped.stdout) as {
+      repoRoot: string;
+      mcpReadiness: { routing: { activeRepoRoot: string; source: string; focusReason: string } };
+    };
+    expect(unscopedData.repoRoot).toBe(defaultRepo);
+    expect(unscopedData.mcpReadiness.routing).toMatchObject({
+      activeRepoRoot: defaultRepo,
+      source: "workspace-focus-file",
+      focusReason: "workspace-default"
+    });
+
+    await writeFile(
+      path.join(workspace, ".codex", "WORKING.md"),
+      [
+        "## Active Sessions",
+        "",
+        "| session | agent | repo | task | status | claims | last_seen | next |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        `| codex-target | codex | ${selectedRepo} | target task | active | none | now | inspect |`,
+        `| codex-other | codex | ${otherRepo} | other task | active | none | now | inspect |`
+      ].join("\n"),
+      "utf8"
+    );
+
     const ambiguous = spawnSync(process.execPath, [cli, "doctor", workspace, "--mcp-readiness", "--json"], {
       cwd: process.cwd(),
       encoding: "utf8",
