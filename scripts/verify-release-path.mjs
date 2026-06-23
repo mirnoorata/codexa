@@ -58,7 +58,7 @@ requireText(".github/workflows/npm-publish.yml", [
   "contents: read",
   "id-token: write",
   "permissions:",
-  "actions/checkout@v6",
+  "actions/checkout@v7",
   "ref: ${{ github.event.release.tag_name }}",
   "fetch-depth: 0",
   "actions/setup-node@v6",
