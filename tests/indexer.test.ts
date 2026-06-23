@@ -1089,8 +1089,10 @@ describe("Codexa indexer", () => {
 
   it("dedupes external risks before applying the total cap so duplicate reports do not starve later findings", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-risk-dedupe-cap-"));
+    await mkdirp(path.join(repo, "src"));
     await mkdirp(path.join(repo, ".codex/static-analysis"));
     await mkdirp(path.join(repo, "reports/static-analysis"));
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
     const duplicateRisks = Array.from({ length: 6000 }, () => ({ path: "src/app.ts", signal: "duplicate", reason: "same", score: 1 }));
     await writeFile(path.join(repo, ".codex/static-analysis/risks.json"), JSON.stringify({ risks: duplicateRisks }), "utf8");
     await writeFile(path.join(repo, "reports/static-analysis/risks.json"), JSON.stringify({ risks: [{ path: "src/app.ts", signal: "unique-late", reason: "late", score: 3 }] }), "utf8");
@@ -1099,6 +1101,33 @@ describe("Codexa indexer", () => {
 
     expect(risks.some((risk) => risk.signal === "duplicate")).toBe(true);
     expect(risks.some((risk) => risk.signal === "unique-late")).toBe(true);
+  });
+
+  it("drops external risk findings for missing files and symlink escapes", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-risk-realpath-"));
+    const outside = await mkdtemp(path.join(os.tmpdir(), "codexa-risk-realpath-outside-"));
+    await mkdirp(path.join(repo, "src"));
+    await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
+    await writeFile(path.join(outside, "outside.ts"), "export const outside = true;\n", "utf8");
+    await symlink(path.join(outside, "outside.ts"), path.join(repo, "src/outside-link.ts"));
+    await writeFile(
+      path.join(repo, ".codex/static-analysis/risks.json"),
+      JSON.stringify({
+        risks: [
+          { path: "src/app.ts", signal: "kept-risk", reason: "real file", score: 3 },
+          { path: "src/missing.ts", signal: "missing-risk", reason: "missing file", score: 9 },
+          { path: "src/outside-link.ts", signal: "symlink-risk", reason: "symlink escape", score: 9 }
+        ]
+      }),
+      "utf8"
+    );
+
+    const risks = await loadExternalRiskSignals(repo, "snapshot", "2026-05-31T00:00:00.000Z");
+
+    expect(risks.some((risk) => risk.signal === "kept-risk" && risk.path === "src/app.ts")).toBe(true);
+    expect(risks.some((risk) => risk.signal === "missing-risk")).toBe(false);
+    expect(risks.some((risk) => risk.signal === "symlink-risk")).toBe(false);
   });
 
   it("does not let .codex risk report candidates crowd out reports/static-analysis custom risks", async () => {
@@ -1469,7 +1498,9 @@ describe("Codexa indexer", () => {
 
   it("dedupes external risks within a report before applying the per-report cap", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-risk-same-report-dedupe-cap-"));
+    await mkdirp(path.join(repo, "src"));
     await mkdirp(path.join(repo, ".codex/static-analysis"));
+    await writeFile(path.join(repo, "src/app.ts"), "export function app() { return 1 }\n", "utf8");
     const duplicateRisks = Array.from({ length: 6000 }, () => ({ path: "src/app.ts", signal: "duplicate", reason: "same", score: 1 }));
     await writeFile(path.join(repo, ".codex/static-analysis/risks.json"), JSON.stringify({ risks: [...duplicateRisks, { path: "src/app.ts", signal: "unique-same-report", reason: "late", score: 3 }] }), "utf8");
 

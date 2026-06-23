@@ -30,6 +30,12 @@ interface ReportFile {
   stat: { size: number; mtimeMs: number };
 }
 
+interface RiskPathResolver {
+  repoRoot: string;
+  repoReal: string;
+  cache: Map<string, string | undefined>;
+}
+
 export interface ExternalRiskReportDiagnostic {
   path: string;
   reason: "report-too-large" | "invalid-json";
@@ -58,6 +64,7 @@ export async function loadExternalRiskSignalReport(
   const reportHashes: Record<string, string> = {};
   const diagnostics: ExternalRiskReportDiagnostic[] = [];
   const knownRiskCandidatePaths = new Set([...knownRiskReportPaths, ...knownSymbolReportPaths]);
+  const pathResolver = await createRiskPathResolver(repoRoot);
   for (const relativePath of await candidateRiskReports(repoRoot, knownRiskCandidatePaths)) {
     const reportFile = await reportFileUnderRepo(repoRoot, relativePath);
     if (!reportFile) {
@@ -95,7 +102,7 @@ export async function loadExternalRiskSignalReport(
       continue;
     }
     if (uniqueRisks.size < MAX_TOTAL_EXTERNAL_RISKS) {
-      addRisksFromReport(parsed, relativePath, repoRoot, snapshotId, indexedAt, uniqueRisks, Math.min(MAX_RISKS_PER_REPORT, Math.max(0, MAX_TOTAL_EXTERNAL_RISKS - uniqueRisks.size)));
+      await addRisksFromReport(parsed, relativePath, pathResolver, snapshotId, indexedAt, uniqueRisks, Math.min(MAX_RISKS_PER_REPORT, Math.max(0, MAX_TOTAL_EXTERNAL_RISKS - uniqueRisks.size)));
     }
   }
   return {
@@ -237,15 +244,15 @@ function isCodexaSymbolReportShape(value: unknown): boolean {
   return record.schemaVersion === 1 && typeof record.tool === "string" && typeof record.language === "string" && Array.isArray(record.symbols);
 }
 
-function addRisksFromReport(
+async function addRisksFromReport(
   value: unknown,
   reportPath: string,
-  repoRoot: string,
+  pathResolver: RiskPathResolver,
   snapshotId: string,
   indexedAt: string,
   uniqueRisks: Map<string, RiskSignalFact>,
   limit: number
-): void {
+): Promise<void> {
   if (!value || typeof value !== "object") {
     return;
   }
@@ -264,36 +271,40 @@ function addRisksFromReport(
       uniqueRisks.set(riskDedupeKey(entry), entry);
     }
   };
-  if (Array.isArray(record.runs)) {
-    for (const run of record.runs) {
-      addRisksFromSarifRun(run, reportPath, repoRoot, snapshotId, indexedAt, uniqueRisks, remaining());
+  const runs = record.runs;
+  if (Array.isArray(runs)) {
+    for (const run of runs) {
+      await addRisksFromSarifRun(run, reportPath, pathResolver, snapshotId, indexedAt, uniqueRisks, remaining());
       if (!hasCapacity()) {
         break;
       }
     }
     return;
   }
-  if (Array.isArray(record.results)) {
-    for (const entry of record.results) {
-      push(riskFromSemgrepResult(entry, reportPath, repoRoot, snapshotId, indexedAt));
+  const results = record.results;
+  if (Array.isArray(results)) {
+    for (const entry of results) {
+      push(await riskFromSemgrepResult(entry, reportPath, pathResolver, snapshotId, indexedAt));
       if (!hasCapacity()) {
         break;
       }
     }
     return;
   }
-  if (Array.isArray(record.risks)) {
-    for (const entry of record.risks) {
-      push(riskFromGenericEntry(entry, reportPath, repoRoot, snapshotId, indexedAt));
+  const risks = record.risks;
+  if (Array.isArray(risks)) {
+    for (const entry of risks) {
+      push(await riskFromGenericEntry(entry, reportPath, pathResolver, snapshotId, indexedAt));
       if (!hasCapacity()) {
         break;
       }
     }
     return;
   }
-  if (Array.isArray(record.findings)) {
-    for (const entry of record.findings) {
-      push(riskFromGenericEntry(entry, reportPath, repoRoot, snapshotId, indexedAt));
+  const findings = record.findings;
+  if (Array.isArray(findings)) {
+    for (const entry of findings) {
+      push(await riskFromGenericEntry(entry, reportPath, pathResolver, snapshotId, indexedAt));
       if (!hasCapacity()) {
         break;
       }
@@ -301,15 +312,15 @@ function addRisksFromReport(
   }
 }
 
-function addRisksFromSarifRun(
+async function addRisksFromSarifRun(
   value: unknown,
   reportPath: string,
-  repoRoot: string,
+  pathResolver: RiskPathResolver,
   snapshotId: string,
   indexedAt: string,
   uniqueRisks: Map<string, RiskSignalFact>,
   limit: number
-): void {
+): Promise<void> {
   if (!value || typeof value !== "object") {
     return;
   }
@@ -352,7 +363,7 @@ function addRisksFromSarifRun(
         continue;
       }
       const line = numberValue(region?.startLine);
-      const normalizedPath = normalizeReportPath(filePath, repoRoot);
+      const normalizedPath = await normalizeReportPath(filePath, pathResolver);
       if (!normalizedPath) {
         continue;
       }
@@ -375,7 +386,7 @@ function addRisksFromSarifRun(
   }
 }
 
-function riskFromSemgrepResult(value: unknown, reportPath: string, repoRoot: string, snapshotId: string, indexedAt: string): RiskSignalFact[] {
+async function riskFromSemgrepResult(value: unknown, reportPath: string, pathResolver: RiskPathResolver, snapshotId: string, indexedAt: string): Promise<RiskSignalFact[]> {
   if (!value || typeof value !== "object") {
     return [];
   }
@@ -389,7 +400,7 @@ function riskFromSemgrepResult(value: unknown, reportPath: string, repoRoot: str
   const severity = stringValue(extra.severity) ?? "INFO";
   const reason = stringValue(extra.message) ?? signal;
   const line = numberValue((record.start as Record<string, unknown> | undefined)?.line);
-  const normalizedPath = normalizeReportPath(filePath, repoRoot);
+  const normalizedPath = await normalizeReportPath(filePath, pathResolver);
   if (!normalizedPath) {
     return [];
   }
@@ -410,7 +421,7 @@ function riskFromSemgrepResult(value: unknown, reportPath: string, repoRoot: str
   ];
 }
 
-function riskFromGenericEntry(value: unknown, reportPath: string, repoRoot: string, snapshotId: string, indexedAt: string): RiskSignalFact[] {
+async function riskFromGenericEntry(value: unknown, reportPath: string, pathResolver: RiskPathResolver, snapshotId: string, indexedAt: string): Promise<RiskSignalFact[]> {
   if (!value || typeof value !== "object") {
     return [];
   }
@@ -424,7 +435,7 @@ function riskFromGenericEntry(value: unknown, reportPath: string, repoRoot: stri
   const score = numberValue(record.score) ?? scoreFromSeverity(stringValue(record.severity) ?? "");
   const line = numberValue(record.line) ?? numberValue(record.startLine);
   const confidence = confidenceValue(record.confidence) ?? confidenceFromSeverity(stringValue(record.severity) ?? "");
-  const normalizedPath = normalizeReportPath(filePath, repoRoot);
+  const normalizedPath = await normalizeReportPath(filePath, pathResolver);
   if (!normalizedPath) {
     return [];
   }
@@ -578,18 +589,43 @@ function numericString(value: unknown): number | undefined {
   return Number.isFinite(parsed) ? parsed : undefined;
 }
 
-function normalizeReportPath(value: string, repoRoot: string): string | undefined {
+async function createRiskPathResolver(repoRoot: string): Promise<RiskPathResolver> {
+  const repo = path.resolve(repoRoot);
+  return {
+    repoRoot: repo,
+    repoReal: await fs.realpath(repo).catch(() => ""),
+    cache: new Map()
+  };
+}
+
+async function normalizeReportPath(value: string, resolver: RiskPathResolver): Promise<string | undefined> {
+  if (resolver.cache.has(value)) {
+    return resolver.cache.get(value);
+  }
   let normalized = value.replace(/^file:\/\//, "");
   try {
     normalized = decodeURI(normalized);
   } catch {
     // Keep the raw path if the report contains a non-URI-encoded percent sequence.
   }
-  const repo = path.resolve(repoRoot);
+  const repo = resolver.repoRoot;
   const absolutePath = path.isAbsolute(normalized) ? path.resolve(normalized) : path.resolve(repo, normalized);
   const relative = path.relative(repo, absolutePath);
   if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    resolver.cache.set(value, undefined);
     return undefined;
   }
-  return relative.split(path.sep).join("/");
+  const real = await fs.realpath(absolutePath).catch(() => "");
+  if (!real || !resolver.repoReal || !isSubpath(real, resolver.repoReal)) {
+    resolver.cache.set(value, undefined);
+    return undefined;
+  }
+  const stat = await fs.stat(real).catch(() => null);
+  if (!stat?.isFile()) {
+    resolver.cache.set(value, undefined);
+    return undefined;
+  }
+  const result = normalizePath(path.relative(resolver.repoReal, real));
+  resolver.cache.set(value, result);
+  return result;
 }
