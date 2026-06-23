@@ -1,0 +1,71 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 1543 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(Change Summary) Tj T*
+() Tj T*
+(- Project: codexa) Tj T*
+(- Worktree session: codexa-ponytail-complexity-20260621) Tj T*
+(- Branch: codex/general/codexa-codexa-ponytail-complexity-20260621) Tj T*
+(- Base: main) Tj T*
+(- Primary commit: 2b5a89f) Tj T*
+(- Subject: feat\(query\): add complexity review lane) Tj T*
+() Tj T*
+(Changed Files) Tj T*
+() Tj T*
+(2b5a89f feat\(query\): add complexity review lane) Tj T*
+(.../codexa-complexity-review-lane-2026-06-21.md    | 148 ++++++++++++) Tj T*
+(src/mcp/compaction.ts                              |   5 +) Tj T*
+(src/query/change-plan.ts                           |  11 +) Tj T*
+(src/query/complexity.ts                            | 268 +++++++++++++++++++++) Tj T*
+(src/query/post-edit.ts                             |  12 +) Tj T*
+(src/types.ts                                       |  26 ++) Tj T*
+(tests/indexer.test.ts                              |  88 ++++++-) Tj T*
+(tests/mcp.test.ts                                  |  48 ++++) Tj T*
+(8 files changed, 604 insertions\(+\), 2 deletions\(-\)) Tj T*
+(create mode 100644 docs/plans/codexa-complexity-review-lane-2026-06-21.md) Tj T*
+(create mode 100644 src/query/complexity.ts) Tj T*
+() Tj T*
+(Verification) Tj T*
+() Tj T*
+(- git diff --check: passed) Tj T*
+(- npm run check: passed) Tj T*
+(- Codexa not wired: no .codex/config.toml) Tj T*
+(- git diff --cached --check: passed) Tj T*
+(- staged safety scan: passed) Tj T*
+() Tj T*
+(Notes) Tj T*
+() Tj T*
+(- No extra notes supplied by the finishing agent.) Tj T*
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000185 00000 n 
+0000000311 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1905
+%%EOF

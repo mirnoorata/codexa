@@ -328,12 +328,14 @@ describe("Codexa hook CLI", () => {
     const cli = path.resolve(process.cwd(), "dist/cli.js");
     const preEdit = spawnSync(process.execPath, [cli, "hook-pre-edit", workspace], {
       cwd: process.cwd(),
-      encoding: "utf8"
+      encoding: "utf8",
+      env: { ...process.env, SESSION_ID: "unrelated-helper-session" }
     });
 
     expect(preEdit.status).toBe(0);
     expect(preEdit.stdout).toContain("Codexa: change-plan snapshot check unavailable:");
     expect(preEdit.stdout).toContain("Codexa MCP workspace focus is ambiguous");
+    expect(preEdit.stdout).not.toContain("workspace session unrelated-helper-session is not active");
     expect(preEdit.stdout).not.toContain("Codexa: no change-plan snapshot is available");
   });
 
@@ -1123,7 +1125,8 @@ describe("Codexa hook CLI", () => {
 
     const ambiguous = spawnSync(process.execPath, [cli, "doctor", workspace, "--mcp-readiness", "--json"], {
       cwd: process.cwd(),
-      encoding: "utf8"
+      encoding: "utf8",
+      env: { ...process.env, SESSION_ID: "unrelated-helper-session" }
     });
     expect(ambiguous.status).toBe(1);
     const ambiguousData = JSON.parse(ambiguous.stdout) as {
@@ -1137,6 +1140,7 @@ describe("Codexa hook CLI", () => {
       source: "unresolved"
     });
     expect(ambiguousData.mcpReadiness.routing.error).toContain("Codexa MCP workspace focus is ambiguous");
+    expect(ambiguousData.mcpReadiness.routing.error).not.toContain("unrelated-helper-session");
     expect(ambiguousData.checks).toContainEqual(expect.objectContaining({ name: "mcp-routing", status: "fail" }));
   });
 
@@ -1168,7 +1172,8 @@ describe("Codexa hook CLI", () => {
     const cli = path.resolve(process.cwd(), "dist/cli.js");
     const doctor = spawnSync(process.execPath, [cli, "doctor", workspace, "--mcp-readiness", "--json"], {
       cwd: process.cwd(),
-      encoding: "utf8"
+      encoding: "utf8",
+      env: { ...process.env, SESSION_ID: "unrelated-helper-session" }
     });
 
     expect(doctor.status).toBe(0);

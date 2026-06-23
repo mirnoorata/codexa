@@ -366,6 +366,21 @@ function buildChangePlanPacket() {
     quality: { level: "medium" },
     requiredWorkflowChecks: seq(25, (index) => ({ target: `workflow-${index}` })),
     requiredDependencyChecks: seq(35, (index) => ({ target: `dependency-${index}` })),
+    complexityReview: {
+      schemaVersion: 1,
+      phase: "plan",
+      status: "review",
+      blocking: false,
+      summary: "14 complexity signals need review.",
+      items: seq(14, (index) => ({
+        kind: "scope",
+        severity: index % 2 === 0 ? "review" : "watch",
+        message: `complexity item ${index}`,
+        paths: seq(10, (pathIndex) => `src/complexity-${index}-${pathIndex}.ts`),
+        rationale: `rationale ${index}`
+      })),
+      invariants: seq(10, (index) => `invariant ${index}`)
+    },
     snapshot: {
       taskId: "snap-1",
       createdAt: "2026-04-11T00:00:00.000Z",
@@ -507,6 +522,89 @@ describe("Codexa MCP server", () => {
       expect(serialized).toContain(activeRepo);
       expect(serialized).toContain("betaSymbol");
       expect(serialized).not.toContain(defaultRepo);
+      expect(serialized).not.toContain("Failed to read git status");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("does not treat workspace-level active project focus prose as the focused repo", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-working-prose-focus-"));
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const activeRepo = await createIndexedMcpRepo(workspace, "active-repo", "beta", "betaSymbol");
+    const focusFile = path.join(workspace, ".codex", "WORKING.md");
+    await mkdir(path.dirname(focusFile), { recursive: true });
+    await writeFile(
+      focusFile,
+      [
+        "## Workspace Default",
+        "",
+        `- Default repo: \`${workspace}\`.`,
+        `- Active project focus: workspace-level \`${workspace}\` helper/protocol maintenance.`,
+        "",
+        "## Active Sessions",
+        "",
+        "| session | agent | repo | task | status | claims | last_seen | next |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        `| codex-current | codex | ${activeRepo} | route task | active | none | now | inspect |`
+      ].join("\n"),
+      "utf8"
+    );
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-working-prose-focus-routing-test", version: "0.1.0" });
+    await client.connect(transport);
+
+    try {
+      const freshness = await client.callTool({ name: "freshness", arguments: {} });
+      const serialized = JSON.stringify(freshness);
+      expect(serialized).toContain(activeRepo);
+      expect(serialized).not.toContain(`"repoRoot":"${workspace}"`);
+      expect(serialized).not.toContain("Failed to read git status");
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("routes workspace-root freshness from verified session rows before WORKING.md default", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-working-verified-status-"));
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const activeRepo = await createIndexedMcpRepo(workspace, "active-repo", "beta", "betaSymbol");
+    const focusFile = path.join(workspace, ".codex", "WORKING.md");
+    await mkdir(path.dirname(focusFile), { recursive: true });
+    await writeFile(
+      focusFile,
+      [
+        "## Workspace Default",
+        "",
+        `- Default repo: \`${workspace}\`.`,
+        "",
+        "## Active Sessions",
+        "",
+        "| session | agent | repo | task | status | claims | last_seen | next |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        `| codex-current | codex | ${activeRepo} | verified task | verified | none | now | inspect |`
+      ].join("\n"),
+      "utf8"
+    );
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-working-verified-status-test", version: "0.1.0" });
+    await client.connect(transport);
+
+    try {
+      const freshness = await client.callTool({ name: "freshness", arguments: {} });
+      const serialized = JSON.stringify(freshness);
+      expect(serialized).toContain(activeRepo);
+      expect(serialized).not.toContain(`"repoRoot":"${workspace}"`);
       expect(serialized).not.toContain("Failed to read git status");
     } finally {
       await client.close();
@@ -1359,6 +1457,21 @@ describe("Codexa MCP server", () => {
         waivedVerification: Array.from({ length: 35 }, (_, index) => ({ status: "waived", evidence: [`waiver ${index}`] })),
         workflowChecks: Array.from({ length: 25 }, (_, index) => ({ target: `workflow ${index}` })),
         dependencyChecks: Array.from({ length: 35 }, (_, index) => ({ target: `dependency ${index}` })),
+        complexityReview: {
+          schemaVersion: 1,
+          phase: "post-edit",
+          status: "review",
+          blocking: false,
+          summary: "11 complexity signals need review.",
+          items: Array.from({ length: 11 }, (_, index) => ({
+            kind: "scope",
+            severity: index % 2 === 0 ? "review" : "watch",
+            message: `complexity item ${index}`,
+            paths: Array.from({ length: 10 }, (_, pathIndex) => `src/complexity-${index}-${pathIndex}.ts`),
+            rationale: `rationale ${index}`
+          })),
+          invariants: Array.from({ length: 9 }, (_, index) => `invariant ${index}`)
+        },
       snapshot: {
           plannedFiles: Array.from({ length: 45 }, (_, index) => `src/planned-${index}.ts`),
           requiredWorkflowCheckCount: 41,
@@ -1400,6 +1513,13 @@ describe("Codexa MCP server", () => {
       waivedVerification: Array<unknown>;
       workflowChecks: Array<unknown>;
       dependencyChecks: Array<unknown>;
+      complexityReview?: {
+        status?: string;
+        blocking?: boolean;
+        items: Array<{ paths?: unknown[] }>;
+        invariants: unknown[];
+        truncation?: { items?: { total: number; returned: number }; invariants?: { total: number; returned: number } };
+      };
       verificationProvenance?: typeof CURRENT_VERIFICATION_PROVENANCE;
       truncation?: {
         changedSinceSnapshot?: { total: number; returned: number };
@@ -1453,6 +1573,11 @@ describe("Codexa MCP server", () => {
     expect(data.waivedVerification).toHaveLength(30);
     expect(data.workflowChecks).toHaveLength(20);
     expect(data.dependencyChecks).toHaveLength(30);
+    expect(data.complexityReview).toMatchObject({ status: "review", blocking: false });
+    expect(data.complexityReview?.items).toHaveLength(8);
+    expect(data.complexityReview?.items[0]?.paths).toHaveLength(8);
+    expect(data.complexityReview?.invariants).toHaveLength(6);
+    expect(data.complexityReview?.truncation).toMatchObject({ items: { total: 11, returned: 8 }, invariants: { total: 9, returned: 6 } });
     expect(data.snapshot?.plannedFiles).toHaveLength(40);
     expect(data.snapshot?.requiredWorkflowCheckCount).toBe(41);
     expect(data.snapshot?.requiredDependencyCheckCount).toBe(42);
@@ -1621,6 +1746,7 @@ describe("Codexa MCP server", () => {
       plannedEditTargets?: unknown[];
       tests?: unknown[];
       snapshot?: { taskId?: string; plannedEditTargets?: unknown[]; plannedFiles?: unknown[]; plannedTests?: unknown[]; requiredWorkflowCheckCount?: number; requiredDependencyCheckCount?: number };
+      complexityReview?: { status?: string; blocking?: boolean; items: unknown[]; invariants: unknown[]; truncation?: { items?: { total: number; returned: number }; invariants?: { total: number; returned: number } } };
       truncation?: Record<string, { total: number; returned: number }>;
       mcp: { mode: string; returnedBytes: number; targetBytes: number; hardBudgetEnforced?: boolean; budgetCompaction?: string };
     };
@@ -1648,6 +1774,11 @@ describe("Codexa MCP server", () => {
     expect(data.files?.length).toBeGreaterThan(0);
     expect(data.plannedEditTargets?.length).toBeGreaterThan(0);
     expect(data.tests?.length).toBeGreaterThan(0);
+    expect(data.complexityReview).toMatchObject({ status: "review", blocking: false });
+    expect(data.complexityReview?.items.length).toBeGreaterThanOrEqual(4);
+    expect(data.complexityReview?.items.length).toBeLessThanOrEqual(8);
+    expect(data.complexityReview?.invariants).toHaveLength(6);
+    expect(data.complexityReview?.truncation).toMatchObject({ items: { total: 14, returned: data.complexityReview?.items.length }, invariants: { total: 10, returned: 6 } });
     expect(data.snapshot?.taskId).toBe("snap-1");
     expect(data.snapshot?.plannedFiles?.length).toBeGreaterThan(0);
     expect(data.snapshot?.plannedTests?.length).toBeGreaterThan(0);

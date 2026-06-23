@@ -558,6 +558,30 @@ export interface PostEditOutcomeData extends QueryObject {
   verificationProvenance?: VerificationProvenance;
 }
 
+export type ComplexityReviewPhase = "plan" | "post-edit";
+export type ComplexityReviewStatus = "lean" | "review";
+export type ComplexityReviewItemKind = "yagni" | "stdlib" | "native" | "existing-dependency" | "abstraction" | "scope" | "verification" | "delete";
+export type ComplexityReviewItemSeverity = "info" | "watch" | "review";
+
+export interface ComplexityReviewItem extends QueryObject {
+  kind: ComplexityReviewItemKind;
+  severity: ComplexityReviewItemSeverity;
+  message: string;
+  paths?: string[];
+  replacement?: string;
+  rationale: string;
+}
+
+export interface ComplexityReviewData extends QueryObject {
+  schemaVersion: 1;
+  phase: ComplexityReviewPhase;
+  status: ComplexityReviewStatus;
+  blocking: false;
+  summary: string;
+  items: ComplexityReviewItem[];
+  invariants: string[];
+}
+
 export type QueryResultMode =
   | "context_pack"
   | "task_brief"
@@ -653,6 +677,7 @@ export interface ChangePlanData extends BaseQueryData {
   recipes?: string[];
   requiredWorkflowChecks?: TaskSnapshotRequiredCheck[];
   requiredDependencyChecks?: TaskSnapshotRequiredCheck[];
+  complexityReview?: ComplexityReviewData;
   snapshot?: TaskSnapshot | QueryObject;
 }
 
@@ -664,7 +689,7 @@ export interface PostEditReviewData extends BaseQueryData {
   completionAuthority?: "complete" | "tests_required" | "advisory_inspect" | "blocking_inspect" | "replan_required";
   files?: string[];
   reviewTargets?: string[];
-  changedSinceSnapshot?: string[];
+  changedSinceSnapshot?: ChangedFileEntry[];
   changedGroups?: CompactDiffImpactGroup[];
   resolvedBaselineFiles?: string[];
   unplannedEditedFiles?: string[];
@@ -699,6 +724,7 @@ export interface PostEditReviewData extends BaseQueryData {
   workflows?: WorkflowTraceFact[];
   workflowChecks?: TaskSnapshotRequiredCheck[];
   dependencyChecks?: TaskSnapshotRequiredCheck[];
+  complexityReview?: ComplexityReviewData;
   driftReasons?: string[];
   nextActions?: string[];
   snapshotLoad?: SnapshotLoadData;

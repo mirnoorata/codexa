@@ -7,6 +7,7 @@ import { getGitState } from "../src/git.js";
 import { buildIndex, buildIndexLocked, getFreshness, loadIndex } from "../src/indexer.js";
 import { MAX_INDEXED_SOURCE_BYTES } from "../src/repo-files.js";
 import { validateChangePlanTargetCandidate } from "../src/query/change-plan.js";
+import { postEditDecision } from "../src/query/post-edit/decision.js";
 import { postEditReviewWithTrustedRunnerReports } from "../src/query/post-edit.js";
 import { loadExternalRiskSignals, MAX_RISK_REPORT_BYTES } from "../src/risk-ingest.js";
 import { recordSessionMemory } from "../src/session-memory.js";
@@ -2876,10 +2877,94 @@ describe("Codexa indexer", () => {
 
     const plan = await changePlanQuery(repo, { task: "Change route normalization safely", files: ["service/helpers.py"], diff: false, limit: 6 }, { autoRefresh: false });
     expect(plan.text).toContain("Codexa change plan");
-    expect((plan.data as { editReadiness?: { editable: boolean; status: string }; targetCandidates?: unknown[] }).editReadiness).toMatchObject({ editable: true, status: "edit-ready" });
-    expect((plan.data as { targetCandidates?: unknown[] }).targetCandidates).toEqual([]);
+    const planData = plan.data as {
+      editReadiness?: { editable: boolean; status: string };
+      targetCandidates?: unknown[];
+      complexityReview?: { status: string; blocking: boolean; invariants: string[] };
+    };
+    expect(planData.editReadiness).toMatchObject({ editable: true, status: "edit-ready" });
+    expect(planData.targetCandidates).toEqual([]);
+    expect(planData.complexityReview).toMatchObject({ status: "lean", blocking: false });
+    expect(planData.complexityReview?.invariants.some((invariant) => invariant.includes("security"))).toBe(true);
+    expect(plan.text).toContain("Complexity review:");
     expect(plan.text).toContain("Read first:");
     expect(plan.text).toContain("tests/test_app.py");
+  });
+
+  it("adds advisory complexity review signals to change plans for manifest-scoped edits", async () => {
+    const repo = await createFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+
+    const plan = await changePlanQuery(
+      repo,
+      {
+        task: "Add a package helper dependency only if needed",
+        files: ["package.json"],
+        diff: false,
+        limit: 6
+      },
+      { autoRefresh: false }
+    );
+
+    const data = plan.data as {
+      complexityReview?: {
+        status: string;
+        blocking: boolean;
+        items: Array<{ kind: string; severity: string; paths?: string[]; message: string }>;
+      };
+    };
+    expect(plan.text).toContain("Complexity review:");
+    expect(data.complexityReview).toMatchObject({ status: "review", blocking: false });
+    expect(data.complexityReview?.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "existing-dependency",
+          severity: "review",
+          paths: expect.arrayContaining(["package.json"])
+        })
+      ])
+    );
+  });
+
+  it("adds advisory complexity review signals to post-edit reviews for manifest changes", async () => {
+    const repo = await createFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+    await changePlanQuery(
+      repo,
+      {
+        task: "Change package manifest only if needed",
+        files: ["package.json"],
+        diff: false,
+        limit: 6,
+        saveSnapshot: true,
+        taskId: "manifest-complexity-review"
+      },
+      { autoRefresh: false }
+    );
+    const manifestPath = path.join(repo, "package.json");
+    const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as { dependencies: Record<string, string> };
+    manifest.dependencies.leftpad = "^1.3.0";
+    await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, "utf8");
+
+    const review = await postEditReviewQuery(repo, { taskId: "manifest-complexity-review", ranCommands: ["npm test"], persistOutcome: false }, { autoRefresh: true });
+    const data = review.data as {
+      complexityReview?: {
+        status: string;
+        blocking: boolean;
+        items: Array<{ kind: string; severity: string; paths?: string[]; message: string }>;
+      };
+    };
+    expect(review.text).toContain("Complexity review:");
+    expect(data.complexityReview).toMatchObject({ status: "review", blocking: false });
+    expect(data.complexityReview?.items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          kind: "existing-dependency",
+          severity: "review",
+          paths: expect.arrayContaining(["package.json"])
+        })
+      ])
+    );
   });
 
   it("saves task snapshots and reports post-edit drift against the actual dirty tree", async () => {
@@ -3364,6 +3449,52 @@ describe("Codexa indexer", () => {
       expect(data.inspectMode).toBe("advisory");
       expect(data.completionAuthority).toBe("advisory_inspect");
       expect(data.driftReasons.some((reason) => reason.includes("used latest snapshot second-helper-edit without an explicit taskId"))).toBe(true);
+    });
+
+    it("keeps verified non-source unindexed post-edit drift advisory", () => {
+      type DecisionInput = Parameters<typeof postEditDecision>[0];
+      const mediumQuality: DecisionInput["quality"] = {
+        level: "medium",
+        recommendation: "Use explicit verification and inspect advisory gaps.",
+        reasons: ["non-source file has no symbol ranges"],
+        counts: { authoritative: 1, derived: 0, heuristic: 0, fallback: 0 }
+      };
+      const baseInput = (unindexedEditedFiles: string[]): DecisionInput => ({
+        snapshot: { taskId: "style-css" } as NonNullable<DecisionInput["snapshot"]>,
+        loadedSnapshot: {},
+        snapshotAmbiguity: undefined,
+        worktreeDegradationReasons: [],
+        headChanged: false,
+        unplannedEditedFiles: [],
+        unplannedChangedSymbols: [],
+        unindexedEditedFiles,
+        symbolDeltas: [],
+        riskDeltas: [],
+        workflowChecks: [],
+        dependencyChecks: [],
+        degradedSnapshotTests: [],
+        quality: mediumQuality,
+        riskEscalations: [],
+        waivedVerification: [],
+        hasActualEditedFiles: true,
+        testsNotRun: [],
+        hasTestVerificationAccounting: true,
+        noVerificationProofForEditedFiles: false,
+        implicitBaseline: false
+      });
+
+      const cssDecision = postEditDecision(baseInput(["web/src/styles.css"]));
+      expect(cssDecision.verdict).toBe("inspect");
+      expect(cssDecision.inspectMode).toBe("advisory");
+      expect(cssDecision.completionAuthority).toBe("advisory_inspect");
+      expect(cssDecision.inspectReasons).toEqual(expect.arrayContaining(["edited non-source files lack symbol ranges", "context quality is medium"]));
+      expect(cssDecision.inspectReasons).not.toContain("source-like edited files are not indexed");
+      expect(cssDecision.driftReasons).toContain("1 changed-since-snapshot file(s) lack indexed source/symbol context");
+
+      const sourceLikeDecision = postEditDecision(baseInput(["web/src/App.vue"]));
+      expect(sourceLikeDecision.inspectMode).toBe("blocking");
+      expect(sourceLikeDecision.completionAuthority).toBe("blocking_inspect");
+      expect(sourceLikeDecision.inspectReasons).toContain("source-like edited files are not indexed");
     });
 
     it("does not continue edited files when no verification was recommended or reported", async () => {
