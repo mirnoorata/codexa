@@ -1,0 +1,74 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 2029 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(Change Summary) Tj T*
+() Tj T*
+(- Project: codexa) Tj T*
+(- Worktree: /srv/worktree/codexa/codex/20260624-094437-focus-orientation) Tj T*
+(- Branch: codex/general/codexa-20260624-094437-focus-orientation) Tj T*
+(- Base: main) Tj T*
+(- Primary commit: 373fb78) Tj T*
+(- Subject: fix\(mcp\): isolate workspace session routing) Tj T*
+() Tj T*
+(Changed Files) Tj T*
+() Tj T*
+(373fb78 fix\(mcp\): isolate workspace session routing) Tj T*
+(src/cli.ts              |   9 +++-) Tj T*
+(src/mcp-repo-root.ts    |  58 +++++++++++++++++++++---) Tj T*
+(tests/cli-hooks.test.ts |  59 ++++++++++++++++++++----) Tj T*
+(tests/mcp.test.ts       | 116 ++++++++++++++++++++++++++++++++++++++++++------) Tj T*
+(4 files changed, 212 insertions\(+\), 30 deletions\(-\)) Tj T*
+() Tj T*
+(Verification) Tj T*
+() Tj T*
+(- git diff --check: passed) Tj T*
+(- npm run check: passed) Tj T*
+(- Codexa not wired: no .codex/config.toml) Tj T*
+(- git diff --cached --check: passed) Tj T*
+(- staged safety scan: passed) Tj T*
+() Tj T*
+(Notes) Tj T*
+() Tj T*
+(Adversarial hardening resolved two routing defects: unscoped shared workspace roots now fail) Tj T*
+(closed when shared focus conflicts with active session rows, and selected workspace sessions) Tj T*
+(must match an active row before any shared focus/default fallback is considered. CLI query) Tj T*
+(commands now keep explicit git repo arguments authoritative even when focus-worktree) Tj T*
+(environment variables are exported.\\n\\nAdditional Codexa evidence: change-plan and test-plan) Tj T*
+(ran through CODEXAWORKSPACESESSION for this worktree; post-edit-review remained inspect) Tj T*
+(because src/cli.ts was added during the second adversarial finding after the initial) Tj T*
+(snapshot, while targeted tests and required dependency checks were accounted for.\\n\\nManual) Tj T*
+(live probes also verified unscoped /srv fails closed, --workspace-session routes to this) Tj T*
+(Codexa worktree, and explicit /srv/codexa status remains pinned under focus env.) Tj T*
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000185 00000 n 
+0000000311 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+2391
+%%EOF
