@@ -185,6 +185,45 @@ describe("Codexa hook CLI", () => {
     expect(brief.stdout).not.toContain("Failed to read git status");
   });
 
+  it("keeps explicit query CLI git repos authoritative when workspace session env is set", async () => {
+    const workspace = await trackedTmpDir("codexa-query-explicit-env-");
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const explicitRepo = await createWorkspaceGitRepo(workspace, "explicit-repo", "explicitRouteSymbol");
+    const focusedRepo = await createWorkspaceGitRepo(workspace, "focused-repo", "focusedRouteSymbol");
+    await mkdir(path.join(workspace, ".codex"), { recursive: true });
+    const focusFile = path.join(workspace, ".codex", "WORKING.md");
+    await writeFile(
+      focusFile,
+      [
+        "## Active Sessions",
+        "",
+        "| session | agent | repo | task | status | claims | last_seen | next |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        `| codex-focused | codex | ${focusedRepo} | focused task | active | none | now | inspect |`
+      ].join("\n"),
+      "utf8"
+    );
+    const cli = path.resolve(process.cwd(), "dist/cli.js");
+    const indexed = spawnSync(process.execPath, [cli, "index", explicitRepo], {
+      cwd: process.cwd(),
+      encoding: "utf8"
+    });
+    expect(indexed.status).toBe(0);
+
+    const brief = spawnSync(process.execPath, [cli, "brief", explicitRepo, "--task", "change explicitRouteSymbol", "--limit", "2", "--budget", "700"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: testEnv({ CODEXA_WORKSPACE_FOCUS_FILE: focusFile, CODEXA_WORKSPACE_SESSION: "codex-focused" })
+    });
+
+    expect(brief.status).toBe(0);
+    expect(brief.stdout).toContain(`Repo: ${explicitRepo}`);
+    expect(brief.stdout).toContain("explicitRouteSymbol");
+    expect(brief.stdout).not.toContain(focusedRepo);
+    expect(brief.stdout).not.toContain("focusedRouteSymbol");
+    expect(brief.stderr).toBe("");
+  });
+
   it("routes workspace-root edit hooks through the focused repository", async () => {
     const workspace = await trackedTmpDir("codexa-edit-hooks-focused-");
     const repo = path.join(workspace, "repo");
@@ -1128,17 +1167,21 @@ describe("Codexa hook CLI", () => {
       encoding: "utf8",
       env: { ...process.env, SESSION_ID: "unrelated-helper-session" }
     });
-    expect(unscoped.status).toBe(0);
+    expect(unscoped.status).toBe(1);
     const unscopedData = JSON.parse(unscoped.stdout) as {
       repoRoot: string;
-      mcpReadiness: { routing: { activeRepoRoot: string; source: string; focusReason: string } };
+      checks: Array<{ name: string; status: string }>;
+      mcpReadiness: { routing: { activeRepoRoot: string | null; source: string; error: string } };
     };
-    expect(unscopedData.repoRoot).toBe(defaultRepo);
+    expect(unscopedData.repoRoot).toBe(workspace);
     expect(unscopedData.mcpReadiness.routing).toMatchObject({
-      activeRepoRoot: defaultRepo,
-      source: "workspace-focus-file",
-      focusReason: "workspace-default"
+      activeRepoRoot: null,
+      source: "unresolved"
     });
+    expect(unscopedData.mcpReadiness.routing.error).toContain("shared focus");
+    expect(unscopedData.mcpReadiness.routing.error).toContain("conflicts with active session repos");
+    expect(unscopedData.mcpReadiness.routing.error).not.toContain("unrelated-helper-session");
+    expect(unscopedData.checks).toContainEqual(expect.objectContaining({ name: "mcp-routing", status: "fail" }));
 
     await writeFile(
       path.join(workspace, ".codex", "WORKING.md"),
@@ -1178,7 +1221,6 @@ describe("Codexa hook CLI", () => {
     const workspace = await trackedTmpDir("codexa-doctor-configured-workspace-");
     execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
     const focusedRepo = await createWorkspaceGitRepo(workspace, "focused-repo", "focused");
-    const otherRepo = await createWorkspaceGitRepo(workspace, "other-repo", "other");
     await mkdir(path.join(workspace, ".codex"), { recursive: true });
     await writeFile(path.join(workspace, ".codex", "config.toml"), "[features]\nhooks = true\n", "utf8");
     await writeFile(
@@ -1193,8 +1235,7 @@ describe("Codexa hook CLI", () => {
         "",
         "| session | agent | repo | task | status | claims | last_seen | next |",
         "| --- | --- | --- | --- | --- | --- | --- | --- |",
-        `| codex-focused | codex | ${focusedRepo} | focused task | active | none | now | inspect |`,
-        `| codex-other | codex | ${otherRepo} | other task | active | none | now | inspect |`
+        `| codex-focused | codex | ${focusedRepo} | focused task | active | none | now | inspect |`
       ].join("\n"),
       "utf8"
     );

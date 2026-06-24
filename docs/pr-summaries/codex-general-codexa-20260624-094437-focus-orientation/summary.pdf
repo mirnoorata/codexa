@@ -1,0 +1,80 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 2067 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(Change Summary) Tj T*
+() Tj T*
+(- Project: codexa) Tj T*
+(- Worktree: isolated fresh Codexa worktree) Tj T*
+(- Branch: codex/general/codexa-20260624-094437-focus-orientation) Tj T*
+(- Base: main) Tj T*
+(- Primary commit: 373fb78) Tj T*
+(- Subject: fix\(mcp\): isolate workspace session routing) Tj T*
+() Tj T*
+(Changed Files) Tj T*
+() Tj T*
+(373fb78 fix\(mcp\): isolate workspace session routing) Tj T*
+( src/cli.ts | 9 +++-) Tj T*
+( src/mcp-repo-root.ts | 58 +++++++++++++++++++++---) Tj T*
+( tests/cli-hooks.test.ts | 59 ++++++++++++++++++++----) Tj T*
+( tests/mcp.test.ts | 116 ++++++++++++++++++++++++++++++++++++++++++------) Tj T*
+( 4 files changed, 212 insertions\(+\), 30 deletions\(-\)) Tj T*
+() Tj T*
+(Verification) Tj T*
+() Tj T*
+(- git diff --check: passed) Tj T*
+(- npm run check: passed) Tj T*
+(- Codexa not wired: no .codex/config.toml) Tj T*
+(- git diff --cached --check: passed) Tj T*
+(- staged safety scan: passed) Tj T*
+() Tj T*
+(Notes) Tj T*
+() Tj T*
+(Adversarial hardening resolved two routing defects: unscoped shared workspace) Tj T*
+(roots now fail closed when shared focus conflicts with active session rows, and) Tj T*
+(selected workspace sessions must match an active row before any shared) Tj T*
+(focus/default fallback is considered. CLI query commands now keep explicit git) Tj T*
+(repo arguments authoritative even when focus-worktree environment variables are) Tj T*
+(exported.) Tj T*
+() Tj T*
+(Additional Codexa evidence: change-plan and test-plan ran through) Tj T*
+(CODEXA_WORKSPACE_SESSION for this worktree; post-edit-review remained inspect) Tj T*
+(because src/cli.ts was added during the second adversarial finding after the) Tj T*
+(initial snapshot, while targeted tests and required dependency checks were) Tj T*
+(accounted for.) Tj T*
+() Tj T*
+(Manual live probes also verified the shared workspace root fails closed when) Tj T*
+(unscoped, --workspace-session routes to this Codexa worktree, and an explicit) Tj T*
+(canonical Codexa repo status command remains pinned under focus env.) Tj T*
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000185 00000 n 
+0000000311 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+2429
+%%EOF
