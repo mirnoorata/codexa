@@ -1,7 +1,7 @@
 # Change Summary
 
 - Project: `codexa`
-- Worktree: `/srv/worktree/codexa/codex/20260624-094437-focus-orientation`
+- Worktree: isolated fresh Codexa worktree
 - Branch: `codex/general/codexa-20260624-094437-focus-orientation`
 - Base: `main`
 - Primary commit: `373fb78`
@@ -39,6 +39,6 @@ because src/cli.ts was added during the second adversarial finding after the
 initial snapshot, while targeted tests and required dependency checks were
 accounted for.
 
-Manual live probes also verified unscoped /srv fails closed,
---workspace-session routes to this Codexa worktree, and explicit /srv/codexa
-status remains pinned under focus env.
+Manual live probes also verified the shared workspace root fails closed when
+unscoped, --workspace-session routes to this Codexa worktree, and an explicit
+canonical Codexa repo status command remains pinned under focus env.

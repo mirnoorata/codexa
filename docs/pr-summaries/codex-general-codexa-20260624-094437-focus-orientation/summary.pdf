@@ -12,7 +12,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
 endobj
 5 0 obj
-<< /Length 2069 >>
+<< /Length 2067 >>
 stream
 BT
 /F1 10 Tf
@@ -21,7 +21,7 @@ BT
 (Change Summary) Tj T*
 () Tj T*
 (- Project: codexa) Tj T*
-(- Worktree: /srv/worktree/codexa/codex/20260624-094437-focus-orientation) Tj T*
+(- Worktree: isolated fresh Codexa worktree) Tj T*
 (- Branch: codex/general/codexa-20260624-094437-focus-orientation) Tj T*
 (- Base: main) Tj T*
 (- Primary commit: 373fb78) Tj T*
@@ -30,11 +30,11 @@ BT
 (Changed Files) Tj T*
 () Tj T*
 (373fb78 fix\(mcp\): isolate workspace session routing) Tj T*
-(src/cli.ts              |   9 +++-) Tj T*
-(src/mcp-repo-root.ts    |  58 +++++++++++++++++++++---) Tj T*
-(tests/cli-hooks.test.ts |  59 ++++++++++++++++++++----) Tj T*
-(tests/mcp.test.ts       | 116 ++++++++++++++++++++++++++++++++++++++++++------) Tj T*
-(4 files changed, 212 insertions\(+\), 30 deletions\(-\)) Tj T*
+( src/cli.ts | 9 +++-) Tj T*
+( src/mcp-repo-root.ts | 58 +++++++++++++++++++++---) Tj T*
+( tests/cli-hooks.test.ts | 59 ++++++++++++++++++++----) Tj T*
+( tests/mcp.test.ts | 116 ++++++++++++++++++++++++++++++++++++++++++------) Tj T*
+( 4 files changed, 212 insertions\(+\), 30 deletions\(-\)) Tj T*
 () Tj T*
 (Verification) Tj T*
 () Tj T*
@@ -54,14 +54,14 @@ BT
 (exported.) Tj T*
 () Tj T*
 (Additional Codexa evidence: change-plan and test-plan ran through) Tj T*
-(CODEXAWORKSPACESESSION for this worktree; post-edit-review remained inspect) Tj T*
+(CODEXA_WORKSPACE_SESSION for this worktree; post-edit-review remained inspect) Tj T*
 (because src/cli.ts was added during the second adversarial finding after the) Tj T*
 (initial snapshot, while targeted tests and required dependency checks were) Tj T*
 (accounted for.) Tj T*
 () Tj T*
-(Manual live probes also verified unscoped /srv fails closed,) Tj T*
-(--workspace-session routes to this Codexa worktree, and explicit /srv/codexa) Tj T*
-(status remains pinned under focus env.) Tj T*
+(Manual live probes also verified the shared workspace root fails closed when) Tj T*
+(unscoped, --workspace-session routes to this Codexa worktree, and an explicit) Tj T*
+(canonical Codexa repo status command remains pinned under focus env.) Tj T*
 ET
 endstream
 endobj
@@ -76,5 +76,5 @@ xref
 trailer
 << /Size 6 /Root 1 0 R >>
 startxref
-2431
+2429
 %%EOF
