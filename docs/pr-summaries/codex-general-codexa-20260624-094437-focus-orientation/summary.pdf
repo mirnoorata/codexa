@@ -12,7 +12,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
 endobj
 5 0 obj
-<< /Length 2029 >>
+<< /Length 2069 >>
 stream
 BT
 /F1 10 Tf
@@ -46,16 +46,22 @@ BT
 () Tj T*
 (Notes) Tj T*
 () Tj T*
-(Adversarial hardening resolved two routing defects: unscoped shared workspace roots now fail) Tj T*
-(closed when shared focus conflicts with active session rows, and selected workspace sessions) Tj T*
-(must match an active row before any shared focus/default fallback is considered. CLI query) Tj T*
-(commands now keep explicit git repo arguments authoritative even when focus-worktree) Tj T*
-(environment variables are exported.\\n\\nAdditional Codexa evidence: change-plan and test-plan) Tj T*
-(ran through CODEXAWORKSPACESESSION for this worktree; post-edit-review remained inspect) Tj T*
-(because src/cli.ts was added during the second adversarial finding after the initial) Tj T*
-(snapshot, while targeted tests and required dependency checks were accounted for.\\n\\nManual) Tj T*
-(live probes also verified unscoped /srv fails closed, --workspace-session routes to this) Tj T*
-(Codexa worktree, and explicit /srv/codexa status remains pinned under focus env.) Tj T*
+(Adversarial hardening resolved two routing defects: unscoped shared workspace) Tj T*
+(roots now fail closed when shared focus conflicts with active session rows, and) Tj T*
+(selected workspace sessions must match an active row before any shared) Tj T*
+(focus/default fallback is considered. CLI query commands now keep explicit git) Tj T*
+(repo arguments authoritative even when focus-worktree environment variables are) Tj T*
+(exported.) Tj T*
+() Tj T*
+(Additional Codexa evidence: change-plan and test-plan ran through) Tj T*
+(CODEXAWORKSPACESESSION for this worktree; post-edit-review remained inspect) Tj T*
+(because src/cli.ts was added during the second adversarial finding after the) Tj T*
+(initial snapshot, while targeted tests and required dependency checks were) Tj T*
+(accounted for.) Tj T*
+() Tj T*
+(Manual live probes also verified unscoped /srv fails closed,) Tj T*
+(--workspace-session routes to this Codexa worktree, and explicit /srv/codexa) Tj T*
+(status remains pinned under focus env.) Tj T*
 ET
 endstream
 endobj
@@ -70,5 +76,5 @@ xref
 trailer
 << /Size 6 /Root 1 0 R >>
 startxref
-2391
+2431
 %%EOF

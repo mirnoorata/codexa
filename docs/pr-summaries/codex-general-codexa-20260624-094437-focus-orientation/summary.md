@@ -26,4 +26,19 @@
 
 ## Notes
 
-Adversarial hardening resolved two routing defects: unscoped shared workspace roots now fail closed when shared focus conflicts with active session rows, and selected workspace sessions must match an active row before any shared focus/default fallback is considered. CLI query commands now keep explicit git repo arguments authoritative even when focus-worktree environment variables are exported.\n\nAdditional Codexa evidence: change-plan and test-plan ran through CODEXA_WORKSPACE_SESSION for this worktree; post-edit-review remained inspect because src/cli.ts was added during the second adversarial finding after the initial snapshot, while targeted tests and required dependency checks were accounted for.\n\nManual live probes also verified unscoped /srv fails closed, --workspace-session routes to this Codexa worktree, and explicit /srv/codexa status remains pinned under focus env.
+Adversarial hardening resolved two routing defects: unscoped shared workspace
+roots now fail closed when shared focus conflicts with active session rows, and
+selected workspace sessions must match an active row before any shared
+focus/default fallback is considered. CLI query commands now keep explicit git
+repo arguments authoritative even when focus-worktree environment variables are
+exported.
+
+Additional Codexa evidence: change-plan and test-plan ran through
+CODEXA_WORKSPACE_SESSION for this worktree; post-edit-review remained inspect
+because src/cli.ts was added during the second adversarial finding after the
+initial snapshot, while targeted tests and required dependency checks were
+accounted for.
+
+Manual live probes also verified unscoped /srv fails closed,
+--workspace-session routes to this Codexa worktree, and explicit /srv/codexa
+status remains pinned under focus env.
