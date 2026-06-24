@@ -10,7 +10,7 @@ import { runDoctor } from "./doctor.js";
 import { initializeProject, sessionStartSummary } from "./init.js";
 import { runLiveIndexer, type LiveIndexEvent } from "./live-index.js";
 import { serveMcp, serveMcpHttp, type McpTransportKind } from "./mcp.js";
-import { resolveMcpRepoRoot } from "./mcp-repo-root.js";
+import { resolveMcpRepoRoot, shouldPreferConfiguredRepoRoot } from "./mcp-repo-root.js";
 import { buildSemanticIndex, semanticProviderFromValue, type SemanticProviderKind } from "./semantic-retrieval.js";
 import { updateStaticAnalysisReports } from "./static-analysis.js";
 import { recordAdvisoryHookEvent, runPostEditHook, runPreEditHook } from "./cli/hooks.js";
@@ -1117,7 +1117,12 @@ function printQuery(result: { text: string }) {
 }
 
 async function resolveQueryRepoRoot(repo: string): Promise<string> {
-  return (await resolveMcpRepoRoot(path.resolve(repo))).repoRoot;
+  const configuredRoot = path.resolve(repo);
+  return (
+    await resolveMcpRepoRoot(configuredRoot, {
+      preferConfiguredRoot: await shouldPreferConfiguredRepoRoot(configuredRoot)
+    })
+  ).repoRoot;
 }
 
 function invokedCliName(): string {
