@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.5.1](https://github.com/mirnoorata/codexa/compare/v0.5.0...v0.5.1) (2026-06-24)
+
+
+### Bug Fixes
+
+* **mcp:** isolate workspace session routing ([c2645d6](https://github.com/mirnoorata/codexa/commit/c2645d6653421ea8f782ea3a967e347b1f8925fe))
+
 ## [0.5.0](https://github.com/mirnoorata/codexa/compare/v0.4.0...v0.5.0) (2026-06-23)
 
 
