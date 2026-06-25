@@ -225,14 +225,6 @@ async function readFocusedRepoPaths(focusFile: string, options: McpRepoRootResol
     throw new Error(`Codexa MCP workspace session ${workspaceSessionId} is not active in ${path.resolve(focusFile)}`);
   }
   const defaultPathGroups = await partitionDefaultPaths(defaultPaths, configuredRoot);
-  if (!workspaceSessionId) {
-    await assertUnscopedFocusDoesNotConflictWithActiveSessions({
-      focusFile,
-      configuredRoot,
-      globalFocusPaths: [...explicitPaths, ...defaultPathGroups.focused],
-      activeSessionPaths
-    });
-  }
   return firstUnambiguousPriority(
     [
       { paths: selectedSessionPaths, focusReason: "selected-session", allowFallbackWhenAmbiguous: false, strict: true, workspaceSessionId },
@@ -243,48 +235,6 @@ async function readFocusedRepoPaths(focusFile: string, options: McpRepoRootResol
     ],
     focusFile
   );
-}
-
-async function assertUnscopedFocusDoesNotConflictWithActiveSessions(input: {
-  focusFile: string;
-  configuredRoot?: string;
-  globalFocusPaths: string[];
-  activeSessionPaths: string[];
-}): Promise<void> {
-  if (!input.configuredRoot || input.activeSessionPaths.length === 0 || input.globalFocusPaths.length === 0) {
-    return;
-  }
-  const [globalRoots, activeRoots] = await Promise.all([
-    validWorkspaceRepoRoots(input.globalFocusPaths, input.configuredRoot),
-    validWorkspaceRepoRoots(input.activeSessionPaths, input.configuredRoot)
-  ]);
-  if (globalRoots.length === 0 || activeRoots.length === 0) {
-    return;
-  }
-  if (samePathSet(globalRoots, activeRoots)) {
-    return;
-  }
-  throw new Error(
-    `Codexa MCP workspace focus is ambiguous in ${path.resolve(input.focusFile)}: shared focus ${globalRoots.join(", ")} conflicts with active session repos ${activeRoots.join(", ")}. Pass --workspace-session <session> or set CODEXA_WORKSPACE_SESSION for this MCP server.`
-  );
-}
-
-async function validWorkspaceRepoRoots(paths: string[], configuredRoot: string): Promise<string[]> {
-  const roots: string[] = [];
-  for (const candidatePath of paths) {
-    const repoRoot = await validatedRepoRoot({ path: candidatePath, source: "workspace-focus-file" });
-    if (!repoRoot || !(await isInsideOrSamePath(repoRoot, configuredRoot))) {
-      continue;
-    }
-    roots.push(repoRoot);
-  }
-  return uniquePaths(roots.map((root) => path.resolve(root)));
-}
-
-function samePathSet(left: string[], right: string[]): boolean {
-  const leftSet = new Set(left);
-  const rightSet = new Set(right);
-  return leftSet.size === rightSet.size && [...leftSet].every((entry) => rightSet.has(entry));
 }
 
 function emptyFocusFileSelection(): FocusFileRepoSelection {
