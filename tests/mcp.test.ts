@@ -485,7 +485,7 @@ describe("Codexa MCP server", () => {
     }
   });
 
-  it("fails closed when an unscoped workspace default conflicts with active-session rows", async () => {
+  it("routes an unscoped workspace default before active-session rows", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-working-default-"));
     execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
     const defaultRepo = await createIndexedMcpRepo(workspace, "default-repo", "alpha", "alphaSymbol");
@@ -519,13 +519,10 @@ describe("Codexa MCP server", () => {
     try {
       const taskBrief = await client.callTool({ name: "task_brief", arguments: { task: "change alphaSymbol", tokenBudget: 900, limit: 5 } });
       const serialized = JSON.stringify(taskBrief);
-      expect(taskBrief.isError).toBe(true);
-      expect(serialized).toContain("shared focus");
-      expect(serialized).toContain("conflicts with active session repos");
-      expect(serialized).toContain("--workspace-session");
+      expect(taskBrief.isError).not.toBe(true);
       expect(serialized).toContain(defaultRepo);
-      expect(serialized).toContain(activeRepo);
-      expect(serialized).not.toContain("alphaSymbol");
+      expect(serialized).toContain("alphaSymbol");
+      expect(serialized).not.toContain("betaSymbol");
     } finally {
       await client.close();
     }
@@ -619,7 +616,51 @@ describe("Codexa MCP server", () => {
     }
   });
 
-  it("fails closed when workspace default conflicts with verified live session rows", async () => {
+  it("keeps workspace-root defaults below ambiguous active-session rows", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-working-root-default-"));
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const firstRepo = await createIndexedMcpRepo(workspace, "first-repo", "alpha", "alphaSymbol");
+    const secondRepo = await createIndexedMcpRepo(workspace, "second-repo", "beta", "betaSymbol");
+    const focusFile = path.join(workspace, ".codex", "WORKING.md");
+    await mkdir(path.dirname(focusFile), { recursive: true });
+    await writeFile(
+      focusFile,
+      [
+        "## Workspace Default",
+        "",
+        `- Default repo: \`${workspace}\`.`,
+        "",
+        "## Active Sessions",
+        "",
+        "| session | agent | repo | task | status | claims | last_seen | next |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        `| codex-first | codex | ${firstRepo} | first task | active | none | now | inspect |`,
+        `| codex-second | codex | ${secondRepo} | second task | active | none | now | inspect |`
+      ].join("\n"),
+      "utf8"
+    );
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-working-root-default-ambiguity-test", version: "0.1.0" });
+    await client.connect(transport);
+
+    try {
+      const taskBrief = await client.callTool({ name: "task_brief", arguments: { task: "change alphaSymbol", tokenBudget: 900, limit: 5 } });
+      const serialized = JSON.stringify(taskBrief);
+      expect(taskBrief.isError).toBe(true);
+      expect(serialized).toContain("Codexa MCP workspace focus is ambiguous");
+      expect(serialized).toContain(firstRepo);
+      expect(serialized).toContain(secondRepo);
+    } finally {
+      await client.close();
+    }
+  });
+
+  it("routes workspace default before verified live session rows", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-working-verified-status-"));
     execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
     const defaultRepo = await createIndexedMcpRepo(workspace, "default-repo", "alpha", "alphaSymbol");
@@ -653,12 +694,9 @@ describe("Codexa MCP server", () => {
     try {
       const freshness = await client.callTool({ name: "freshness", arguments: {} });
       const serialized = JSON.stringify(freshness);
-      expect(freshness.isError).toBe(true);
-      expect(serialized).toContain("shared focus");
-      expect(serialized).toContain("conflicts with active session repos");
-      expect(serialized).toContain("--workspace-session");
+      expect(freshness.isError).not.toBe(true);
       expect(serialized).toContain(defaultRepo);
-      expect(serialized).toContain(activeRepo);
+      expect(serialized).not.toContain(activeRepo);
     } finally {
       await client.close();
     }
@@ -891,7 +929,7 @@ describe("Codexa MCP server", () => {
     }
   });
 
-  it("fails closed when active project focus conflicts with another active session", async () => {
+  it("routes active project focus before another active session", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-configured-workspace-conflict-"));
     execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
     const currentRepo = await createIndexedMcpRepo(workspace, "current-repo", "current", "currentSymbol");
@@ -930,12 +968,10 @@ describe("Codexa MCP server", () => {
     try {
       const taskBrief = await client.callTool({ name: "task_brief", arguments: { task: "change currentSymbol", tokenBudget: 900, limit: 5 } });
       const serialized = JSON.stringify(taskBrief);
-      expect(taskBrief.isError).toBe(true);
-      expect(serialized).toContain("shared focus");
-      expect(serialized).toContain("conflicts with active session repos");
+      expect(taskBrief.isError).not.toBe(true);
       expect(serialized).toContain(currentRepo);
-      expect(serialized).toContain(otherRepo);
-      expect(serialized).toContain("--workspace-session");
+      expect(serialized).toContain("currentSymbol");
+      expect(serialized).not.toContain("otherSymbol");
     } finally {
       await client.close();
     }

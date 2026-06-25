@@ -1167,21 +1167,19 @@ describe("Codexa hook CLI", () => {
       encoding: "utf8",
       env: { ...process.env, SESSION_ID: "unrelated-helper-session" }
     });
-    expect(unscoped.status).toBe(1);
+    expect(unscoped.status).toBe(0);
     const unscopedData = JSON.parse(unscoped.stdout) as {
       repoRoot: string;
-      checks: Array<{ name: string; status: string }>;
-      mcpReadiness: { routing: { activeRepoRoot: string | null; source: string; error: string } };
+      mcpReadiness: { routing: { configuredRoot: string; activeRepoRoot: string; focusReason: string; source: string; error?: string } };
     };
-    expect(unscopedData.repoRoot).toBe(workspace);
+    expect(unscopedData.repoRoot).toBe(defaultRepo);
     expect(unscopedData.mcpReadiness.routing).toMatchObject({
-      activeRepoRoot: null,
-      source: "unresolved"
+      configuredRoot: workspace,
+      activeRepoRoot: defaultRepo,
+      focusReason: "workspace-default",
+      source: "workspace-focus-file"
     });
-    expect(unscopedData.mcpReadiness.routing.error).toContain("shared focus");
-    expect(unscopedData.mcpReadiness.routing.error).toContain("conflicts with active session repos");
-    expect(unscopedData.mcpReadiness.routing.error).not.toContain("unrelated-helper-session");
-    expect(unscopedData.checks).toContainEqual(expect.objectContaining({ name: "mcp-routing", status: "fail" }));
+    expect(unscopedData.mcpReadiness.routing.error).toBeUndefined();
 
     await writeFile(
       path.join(workspace, ".codex", "WORKING.md"),
