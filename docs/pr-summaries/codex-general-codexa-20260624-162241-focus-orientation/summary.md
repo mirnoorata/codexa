@@ -25,9 +25,9 @@ ac16904 fix(mcp): prefer focused workspace routing
 
 ## Verification
 
-- `rtk npm run build`: passed
-- `rtk npx vitest run tests/mcp.test.ts tests/cli-hooks.test.ts tests/init.test.ts`: passed, 3 files and 115 tests
-- `rtk npm run check`: passed, including typecheck, source hygiene, privacy, Claude integration smokes, build, and 369 Vitest tests
+- `npm run build`: passed
+- `npx vitest run tests/mcp.test.ts tests/cli-hooks.test.ts tests/init.test.ts`: passed, 3 files and 115 tests
+- `npm run check`: passed, including typecheck, source hygiene, privacy, Claude integration smokes, build, and 369 Vitest tests
 - Codexa `change-plan`: saved snapshot `codexa-workspace-default-routing-20260624`
 - Codexa `post-edit-review`: verdict `continue`, no drift, all recommended tests accounted for
 - Codexa `test-plan`: recommended `tests/mcp.test.ts`, `tests/init.test.ts`, and `tests/cli-hooks.test.ts`

@@ -12,7 +12,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
 endobj
 5 0 obj
-<< /Length 2271 >>
+<< /Length 2259 >>
 stream
 BT
 /F1 10 Tf
@@ -48,11 +48,11 @@ BT
 () Tj T*
 (Verification) Tj T*
 () Tj T*
-(- rtk npm run build: passed) Tj T*
-(- rtk npx vitest run tests/mcp.test.ts tests/cli-hooks.test.ts tests/init.test.ts: passed, 3) Tj T*
+(- npm run build: passed) Tj T*
+(- npx vitest run tests/mcp.test.ts tests/cli-hooks.test.ts tests/init.test.ts: passed, 3) Tj T*
 (files and 115 tests) Tj T*
-(- rtk npm run check: passed, including typecheck, source hygiene, privacy, Claude) Tj T*
-(integration smokes, build, and 369 Vitest tests) Tj T*
+(- npm run check: passed, including typecheck, source hygiene, privacy, Claude integration) Tj T*
+(smokes, build, and 369 Vitest tests) Tj T*
 (- Codexa change-plan: saved snapshot codexa-workspace-default-routing-20260624) Tj T*
 (- Codexa post-edit-review: verdict continue, no drift, all recommended tests accounted for) Tj T*
 (- Codexa test-plan: recommended tests/mcp.test.ts, tests/init.test.ts, and tests/cli-) Tj T*
@@ -80,5 +80,5 @@ xref
 trailer
 << /Size 6 /Root 1 0 R >>
 startxref
-2633
+2621
 %%EOF
