@@ -1,0 +1,84 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 2271 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(Change Summary) Tj T*
+() Tj T*
+(- Project: codexa) Tj T*
+(- Worktree: isolated Codexa worktree) Tj T*
+(- Branch: codex/general/codexa-20260624-162241-focus-orientation) Tj T*
+(- Base: main) Tj T*
+(- Primary commit: ac16904) Tj T*
+(- Subject: fix\(mcp\): prefer focused workspace routing) Tj T*
+() Tj T*
+(Changed Files) Tj T*
+() Tj T*
+(ac16904 fix\(mcp\): prefer focused workspace routing) Tj T*
+() Tj T*
+(- src/mcp-repo-root.ts) Tj T*
+(- tests/cli-hooks.test.ts) Tj T*
+(- tests/mcp.test.ts) Tj T*
+() Tj T*
+(3 files changed, 63 insertions\(+\), 79 deletions\(-\)) Tj T*
+() Tj T*
+(Summary) Tj T*
+() Tj T*
+(- Removed the extra unscoped conflict guard so a selected session, explicit focus, or) Tj T*
+(focused workspace default can route Codexa before unrelated active-session rows.) Tj T*
+(- Kept active-session ambiguity fail-closed when the workspace default is the configured) Tj T*
+(root itself.) Tj T*
+(- Updated MCP and CLI readiness tests for default focus, active project focus, verified live) Tj T*
+(rows, and root-default ambiguity behavior.) Tj T*
+() Tj T*
+(Verification) Tj T*
+() Tj T*
+(- rtk npm run build: passed) Tj T*
+(- rtk npx vitest run tests/mcp.test.ts tests/cli-hooks.test.ts tests/init.test.ts: passed, 3) Tj T*
+(files and 115 tests) Tj T*
+(- rtk npm run check: passed, including typecheck, source hygiene, privacy, Claude) Tj T*
+(integration smokes, build, and 369 Vitest tests) Tj T*
+(- Codexa change-plan: saved snapshot codexa-workspace-default-routing-20260624) Tj T*
+(- Codexa post-edit-review: verdict continue, no drift, all recommended tests accounted for) Tj T*
+(- Codexa test-plan: recommended tests/mcp.test.ts, tests/init.test.ts, and tests/cli-) Tj T*
+(hooks.test.ts) Tj T*
+(- Live readiness probes: session-start and MCP readiness doctor routed the workspace root to) Tj T*
+(the focused Codexa checkout) Tj T*
+() Tj T*
+(Review Notes) Tj T*
+() Tj T*
+(Adversarial review focused on routing precedence, stale active rows, workspace-root) Tj T*
+(fallback, and privacy-sensitive PR artifacts. The additional hardening test locks the root-) Tj T*
+(default safeguard so future default-focus changes cannot silently route back to the) Tj T*
+(workspace root when multiple active project rows are present.) Tj T*
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000185 00000 n 
+0000000311 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+2633
+%%EOF
