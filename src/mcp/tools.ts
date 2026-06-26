@@ -578,6 +578,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
       inputSchema: {
         task: z.string().optional(),
         taskId: z.string().optional(),
+        files: z.array(z.string()).max(20).optional(),
         diff: z.boolean().optional(),
         changeType: changeTypeSchema.optional(),
         tokenBudget: z.number().int().min(600).max(8000).optional(),
@@ -595,6 +596,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
             ...toolQueryOptions(input),
             task: input.task,
             taskId: input.taskId,
+            files: input.files,
             diff: input.diff ?? true,
             changeType: input.changeType as ChangeType | undefined,
             tokenBudget: input.tokenBudget,

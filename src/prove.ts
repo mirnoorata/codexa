@@ -37,6 +37,7 @@ export interface ProveOptions extends QueryOptions {
   task?: string;
   diff?: boolean;
   changeType?: ChangeType;
+  files?: string[];
   tokenBudget?: number;
   taskId?: string;
   ranTests?: string[];
@@ -64,6 +65,7 @@ export interface ProveReportedVerification {
 
 export interface ProveData {
   mode: "proof_card";
+  actionability: string;
   task: string;
   repoRoot: string;
   verificationProvenance: VerificationProvenance;
@@ -125,12 +127,13 @@ export async function proveQuery(repoRoot: string, options: ProveOptions = {}): 
   const session = await createQuerySession(repo, options);
   const [focus, testPlan, snapshotLoad, policies] = await Promise.all([
     focusBriefQuery(session, { task, diff, tokenBudget: Math.min(options.tokenBudget ?? 1800, 3000), limit: 8 }, options),
-    testPlanQuery(session, diff, { ...options, changeType: options.changeType ?? "unknown" }),
+    testPlanQuery(session, diff, { ...options, files: options.files, changeType: options.changeType ?? "unknown" }),
     loadTaskSnapshot(repo, options.taskId),
     loadPolicyPack(repo)
   ]);
   const focusData = asRecord(focus.data);
   const testData = asRecord(testPlan.data);
+  const actionability = typeof testData.actionability === "string" ? testData.actionability : "verify";
   const changedFiles = stringArray(testData.changedFiles);
   const worktree = worktreeFromData(focusData.worktree, changedFiles, stringArray(focusData.worktreeDegradationReasons));
   const snapshot = snapshotSummary(snapshotLoad.snapshot, {
@@ -160,11 +163,13 @@ export async function proveQuery(repoRoot: string, options: ProveOptions = {}): 
     snapshot,
     policies,
     reported,
+    testPlanActionability: actionability,
     focusGaps: stringArray(focusData.gaps),
     testGaps: stringArray(testData.gaps)
   });
   const data: ProveData = {
     mode: "proof_card",
+    actionability,
     task,
     repoRoot: repo,
     verificationProvenance: VERIFICATION_PROVENANCE,
@@ -422,6 +427,7 @@ function proofGaps(input: {
   snapshot: ProveData["snapshot"];
   policies: PolicyPackSummary;
   reported: ProveReportedVerification;
+  testPlanActionability: string;
   focusGaps: string[];
   testGaps: string[];
 }): string[] {
@@ -431,6 +437,7 @@ function proofGaps(input: {
     ...(input.snapshot.status === "missing" ? [`no saved change-plan snapshot${input.snapshot.reason ? `: ${input.snapshot.reason}` : ""}`] : []),
     ...(input.snapshot.status === "blocked" ? [`latest change-plan snapshot blocked${input.snapshot.reason ? `: ${input.snapshot.reason}` : ""}`] : []),
     ...(input.policies.missing.length > 0 ? [`policy pack missing: ${input.policies.missing.join(", ")}`] : []),
+    ...(input.testPlanActionability === "needs_target" ? ["test plan needs target files or a dirty diff"] : []),
     ...(input.reported.hasEvidence && input.reported.coverage.length === 0 && (input.reported.ranCommands.length > 0 || input.reported.ranCommandReports.length > 0)
       ? ["reported commands earned no classifier-backed verification coverage"]
       : []),

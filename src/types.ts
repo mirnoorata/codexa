@@ -760,6 +760,7 @@ export interface TestPlanData extends BaseQueryData {
 
 export interface ProofCardData extends BaseQueryData {
   mode: "proof_card";
+  actionability?: string;
   repoRoot?: string;
   freshness?: QueryObject;
   readFirst?: QueryObject[];

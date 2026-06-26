@@ -1149,6 +1149,7 @@ describe("Codexa MCP server", () => {
     expect(testPlanSchema).toContain("files");
     expect(testPlanSchema).toContain("changeType");
     const proofCardSchema = JSON.stringify(tools.tools.find((tool) => tool.name === "proof_card")?.inputSchema);
+    expect(proofCardSchema).toContain("files");
     expect(proofCardSchema).toContain("ranCommandReports");
     expect(proofCardSchema).toContain("waivers");
     expect(tools.tools.find((tool) => tool.name === "impact")?.annotations?.readOnlyHint).toBe(false);
@@ -1276,6 +1277,23 @@ describe("Codexa MCP server", () => {
     const targetedTestPlanData = targetedTestPlan.structuredContent as { actionability?: string; data?: { targetFiles?: string[] } };
     expect(targetedTestPlanData.actionability).toBe("verify");
     expect(targetedTestPlanData.data?.targetFiles).toEqual(["src/index.ts"]);
+
+    const cleanProofCard = await client.callTool({ name: "proof_card", arguments: { diff: false } });
+    const cleanProofCardData = cleanProofCard.structuredContent as {
+      actionability?: string;
+      data?: { actionability?: string; verification?: { tests?: unknown[]; recommendedCommands?: unknown[] }; gaps?: string[] };
+    };
+    expect(cleanProofCardData.actionability).toBe("needs_target");
+    expect(cleanProofCardData.data?.actionability).toBe("needs_target");
+    expect(cleanProofCardData.data?.verification?.tests).toEqual([]);
+    expect(cleanProofCardData.data?.verification?.recommendedCommands).toEqual([]);
+    expect(cleanProofCardData.data?.gaps).toContain("test plan needs target files or a dirty diff");
+
+    const targetedProofCard = await client.callTool({ name: "proof_card", arguments: { files: ["src/index.ts"], diff: false } });
+    const targetedProofCardData = targetedProofCard.structuredContent as { actionability?: string; data?: { actionability?: string; verification?: { tests?: unknown[] } } };
+    expect(targetedProofCardData.actionability).toBe("verify");
+    expect(targetedProofCardData.data?.actionability).toBe("verify");
+    expect(targetedProofCardData.data?.verification?.tests?.length).toBeGreaterThan(0);
 
     await writeFile(path.join(repo, "src/index.ts"), "export function changedSymbol() { return 2 }\n", "utf8");
     const dirtyFreshness = await client.callTool({ name: "freshness", arguments: {} });

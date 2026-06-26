@@ -776,6 +776,7 @@ function compactProofCardData(data: ProofCardData): McpCompactionResult {
   const reported = isRecord(verification?.reported) ? verification.reported : undefined;
   const compacted = {
     mode: data.mode,
+    actionability: data.actionability,
     task: data.task,
     repoRoot: data.repoRoot,
     freshness: data.freshness,

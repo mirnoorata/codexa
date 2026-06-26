@@ -448,6 +448,7 @@ program
   .option("--diff", "include current dirty git diff", true)
   .option("--no-diff", "ignore current dirty git diff")
   .option("--change-type <type>", "change type: style, api, behavior, rename, delete, unknown", parseChangeType, "unknown")
+  .option("--file <path...>", "target file path for proof-card verification; repeat or pass multiple paths")
   .option("--budget <tokens>", "approximate token budget", parseIntOption, 1800)
   .option("--ran-test <test...>", "test file or direct test reference already run; repeat or pass multiple values")
   .option("--ran-command <command...>", "verification command already run; repeat or pass multiple values")
@@ -458,12 +459,13 @@ program
   .option("--auto-refresh", "refresh a stale or missing index before proving", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before proving")
   .description("Print a compact proof card: freshness, read-first files, plan snapshot, verification preview, reported evidence, policy pack, and gaps.")
-  .action(async (repo: string, opts: { task?: string; taskId?: string; diff: boolean; changeType: ChangeType; budget: number; ranTest?: string[]; ranCommand?: string[]; ranCommandReport?: string[]; waiveCheck?: string[]; waiver?: string[]; json?: boolean; autoRefresh: boolean }) => {
+  .action(async (repo: string, opts: { task?: string; taskId?: string; diff: boolean; changeType: ChangeType; file?: string[]; budget: number; ranTest?: string[]; ranCommand?: string[]; ranCommandReport?: string[]; waiveCheck?: string[]; waiver?: string[]; json?: boolean; autoRefresh: boolean }) => {
     const result = await proveQuery(await resolveQueryRepoRoot(repo), {
       task: opts.task,
       taskId: opts.taskId,
       diff: opts.diff,
       changeType: opts.changeType,
+      files: opts.file,
       tokenBudget: opts.budget,
       ranTests: opts.ranTest,
       ranCommands: opts.ranCommand,

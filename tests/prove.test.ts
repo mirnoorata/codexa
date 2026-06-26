@@ -81,6 +81,7 @@ describe("Codexa proof cards", () => {
         task: "change widget behavior",
         taskId: "prove-test",
         changeType: "behavior",
+        files: ["src/widget.ts"],
         autoRefresh: false
       });
       const data = result.data as ProveData;
@@ -88,12 +89,43 @@ describe("Codexa proof cards", () => {
       expect(result.text).toContain("Codexa proof card");
       expect(result.text).toContain("Snapshot: loaded prove-test");
       expect(result.text).toContain("Local policies:");
+      expect(data.actionability).toBe("verify");
       expect(data.freshness.stale).toBe(false);
       expect(data.snapshot.status).toBe("loaded");
       expect(data.snapshot.plannedEditTargets).toContain("src/widget.ts");
       expect(data.policies.policies.map((policy) => policy.kind).sort()).toEqual(["complexity", "security", "verification"]);
       expect(data.nextCommands.some((command) => command.includes("post-edit-review"))).toBe(true);
       expect(data.verification.tests.some((test) => test.path === "tests/widget.test.ts")).toBe(true);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("preserves test-plan needs_target actionability when no proof scope exists", async () => {
+    const repo = await createProofFixtureRepo();
+    try {
+      await buildIndexLocked({ repoRoot: repo, writeArtifacts: true });
+
+      const unscoped = await proveQuery(repo, {
+        task: "prove clean repo",
+        diff: false,
+        autoRefresh: false
+      });
+      const unscopedData = unscoped.data as ProveData;
+      expect(unscopedData.actionability).toBe("needs_target");
+      expect(unscopedData.verification.tests).toEqual([]);
+      expect(unscopedData.verification.recommendedCommands).toEqual([]);
+      expect(unscopedData.gaps).toContain("test plan needs target files or a dirty diff");
+
+      const scoped = await proveQuery(repo, {
+        task: "prove clean repo",
+        diff: false,
+        files: ["src/widget.ts"],
+        autoRefresh: false
+      });
+      const scopedData = scoped.data as ProveData;
+      expect(scopedData.actionability).toBe("verify");
+      expect(scopedData.verification.tests.some((test) => test.path === "tests/widget.test.ts")).toBe(true);
     } finally {
       await rm(repo, { recursive: true, force: true });
     }
