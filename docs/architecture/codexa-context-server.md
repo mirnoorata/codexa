@@ -93,6 +93,7 @@ codexa impact <repo> --file <path>
 codexa impact <repo> --symbol <symbol_id>
 codexa diff-impact <repo>
 codexa test-plan <repo> --diff
+codexa test-plan <repo> --file <path>
 codexa brief <repo> --task <task>
 codexa context-pack <repo> --task <task>
 codexa focus-brief <repo> --task <task>

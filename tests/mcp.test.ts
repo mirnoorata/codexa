@@ -1144,6 +1144,7 @@ describe("Codexa MCP server", () => {
     const changePlanSchema = JSON.stringify(tools.tools.find((tool) => tool.name === "change_plan")?.inputSchema);
     expect(changePlanSchema).toContain("followCandidate");
     const testPlanSchema = JSON.stringify(tools.tools.find((tool) => tool.name === "test_plan")?.inputSchema);
+    expect(testPlanSchema).toContain("files");
     expect(testPlanSchema).toContain("changeType");
     expect(tools.tools.find((tool) => tool.name === "impact")?.annotations?.readOnlyHint).toBe(false);
     expect(tools.tools.find((tool) => tool.name === "freshness")?.annotations?.readOnlyHint).toBe(true);
@@ -1258,6 +1259,18 @@ describe("Codexa MCP server", () => {
 
     const repoMap = await client.callTool({ name: "repo_map", arguments: { limit: 3 } });
     expect(JSON.stringify(repoMap)).toContain("src/index.ts");
+
+    const cleanTestPlan = await client.callTool({ name: "test_plan", arguments: { diff: true } });
+    const cleanTestPlanData = cleanTestPlan.structuredContent as { actionability?: string; data?: { tests?: unknown[]; verificationCommands?: unknown[] } };
+    expect(cleanTestPlanData.actionability).toBe("needs_target");
+    expect(cleanTestPlanData.data?.tests).toEqual([]);
+    expect(cleanTestPlanData.data?.verificationCommands).toEqual([]);
+    expect(JSON.stringify(cleanTestPlan)).toContain("No targeted test plan");
+
+    const targetedTestPlan = await client.callTool({ name: "test_plan", arguments: { files: ["src/index.ts"], diff: false } });
+    const targetedTestPlanData = targetedTestPlan.structuredContent as { actionability?: string; data?: { targetFiles?: string[] } };
+    expect(targetedTestPlanData.actionability).toBe("verify");
+    expect(targetedTestPlanData.data?.targetFiles).toEqual(["src/index.ts"]);
 
     await writeFile(path.join(repo, "src/index.ts"), "export function changedSymbol() { return 2 }\n", "utf8");
     const dirtyFreshness = await client.callTool({ name: "freshness", arguments: {} });

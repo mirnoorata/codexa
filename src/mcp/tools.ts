@@ -297,7 +297,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
   defineTool(
     "test_plan",
     {
-      inputSchema: { diff: z.boolean().optional(), changeType: changeTypeSchema.optional() },
+      inputSchema: { files: z.array(z.string()).max(20).optional(), diff: z.boolean().optional(), changeType: changeTypeSchema.optional() },
       outputSchema,
       annotations: memoryWrite
     },
@@ -306,6 +306,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
         (session) =>
           testPlanQuery(session, input.diff ?? true, {
             ...queryOptions,
+            files: input.files,
             changeType: input.changeType as ChangeType | undefined
           }),
         { toolName: "test_plan", input }

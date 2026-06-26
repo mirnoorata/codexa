@@ -143,13 +143,16 @@ export function derivedEntriesForTool(
         : [])
     ];
   }
-    if (toolName === "test_plan") {
-      const testCount = Array.isArray(record.tests) ? record.tests.length : 0;
-      const ledgerCounts = ledgerStatusCounts(record.verificationLedgerPreview);
-      const commandCount = arrayLength(record.verificationCommands);
-      const testsNotRun = arrayLength(record.testsNotRun);
-      const provenanceVersion = verificationProvenanceVersion(record.verificationProvenance);
-    return [
+	    if (toolName === "test_plan") {
+	      const testCount = Array.isArray(record.tests) ? record.tests.length : 0;
+	      const ledgerCounts = ledgerStatusCounts(record.verificationLedgerPreview);
+	      const commandCount = arrayLength(record.verificationCommands);
+	      const testsNotRun = arrayLength(record.testsNotRun);
+	      const provenanceVersion = verificationProvenanceVersion(record.verificationProvenance);
+      if (record.actionability === "needs_target" || (testCount === 0 && commandCount === 0 && ledgerCounts.total === 0)) {
+        return [];
+      }
+	    return [
       {
         kind: "verification",
         key: `verification:test_plan:${stableId("test-plan", scope.tests.join("\n"), scope.files.join("\n")).slice(0, 16)}`,

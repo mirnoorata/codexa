@@ -619,9 +619,30 @@ describe("session memory storage", () => {
       index
     });
 
+    await recordViewedMemoryForTool({
+      repoRoot: repo,
+      taskId: "task-outcome",
+      toolName: "test_plan",
+      result: {
+        freshness,
+        text: "No targeted test plan",
+        data: {
+          mode: "test_plan",
+          actionability: "needs_target",
+          tests: [],
+          verificationCommands: [],
+          verificationLedgerPreview: [],
+          verificationProvenance: CURRENT_VERIFICATION_PROVENANCE,
+          testsNotRun: []
+        }
+      } satisfies QueryResult,
+      index
+    });
+
       const memory = await readSessionMemory({ repoRoot: repo, taskId: "task-outcome", freshness, limit: 20 });
       expect(memory.memory.verification.some((entry) => entry.summary.includes("post_edit_review verdict continue; 0 drift reason(s); 0 test(s) still unaccounted for; ledger 1/2 covered"))).toBe(true);
       expect(memory.memory.verification.some((entry) => entry.summary.includes("test_plan recommended 1 test target(s), 1 verification command(s); preview would cover 1/1 ledger item(s) if run"))).toBe(true);
+      expect(memory.memory.verification.some((entry) => entry.summary.includes("test_plan recommended 0 test target(s)"))).toBe(false);
     expect(memory.memory.verification.some((entry) => entry.details?.includes(`verificationLedgerVersion=${CURRENT_VERIFICATION_PROVENANCE.verificationLedgerVersion}`))).toBe(true);
       expect(memory.memory.decisions[0]?.details).toContain("No drift detected against the saved snapshot.");
       expect(memory.memory.verification.some((entry) => entry.scope.refs.some((ref) => ref.kind === "outcome" && ref.id === "outcome-1"))).toBe(true);

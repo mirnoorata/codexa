@@ -572,15 +572,18 @@ program
 program
   .command("test-plan")
   .argument("<repo>", "repository root")
+  .option("--file <path...>", "target file path; repeat or pass multiple paths")
   .option("--diff", "use current dirty git diff", true)
+  .option("--no-diff", "ignore current dirty git diff")
   .option("--change-type <type>", "change type: style, api, behavior, rename, delete, unknown", parseChangeType, "unknown")
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
   .description("Recommend targeted tests.")
-  .action(async (repo: string, opts: { diff: boolean; changeType: ChangeType; autoRefresh: boolean }) =>
+  .action(async (repo: string, opts: { file?: string[]; diff: boolean; changeType: ChangeType; autoRefresh: boolean }) =>
     printQuery(
       await testPlanQuery(await resolveQueryRepoRoot(repo), opts.diff, {
         autoRefresh: opts.autoRefresh,
+        files: opts.file,
         changeType: opts.changeType
       })
     )

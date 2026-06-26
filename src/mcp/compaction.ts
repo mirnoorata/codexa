@@ -771,6 +771,10 @@ function compactTestPlanData(data: TestPlanData): McpCompactionResult {
   const limit = createArrayLimiter();
   const compacted = {
     mode: data.mode ?? "test_plan",
+    actionability: data.actionability,
+    targetFiles: limit("targetFiles", data.targetFiles, 40),
+    unindexedTargetFiles: limit("unindexedTargetFiles", data.unindexedTargetFiles, 40),
+    rejectedTargetFiles: limit("rejectedTargetFiles", data.rejectedTargetFiles, 40),
     changedFiles: limit("changedFiles", data.changedFiles, 40),
     changedEntries: limit("changedEntries", data.changedEntries, 40, compactChangedEntry),
     changedSymbols: limit("changedSymbols", data.changedSymbols, 40, compactSymbolLike),

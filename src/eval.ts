@@ -278,6 +278,20 @@ function projectScenarios(repo: string, options: QueryOptions): EvalScenario[] {
     }
   });
 
+  scenarios.push({
+    id: "project-no-scope-test-plan",
+    suite: "project",
+    description: "A test plan without a dirty diff or explicit files should ask for a target instead of emitting broad verification work.",
+    repoRoot: repo,
+    baselineCommand: ["git", "status", "--short"],
+    codexa: async () => testPlanQuery(repo, false, queryOptions),
+    oracle: {
+      maxTextChars: 1000,
+      maxTestCount: 0,
+      maxFalsePositiveFiles: 0
+    }
+  });
+
   scenarios.push(...historicalProjectScenarios(repo, queryOptions));
   return scenarios;
 }

@@ -122,6 +122,8 @@ If you are unsure what to run, ask for a targeted test plan:
 
 ```bash
 codexa test-plan /path/to/project --diff
+# or, when you already know the target file:
+codexa test-plan /path/to/project --file src/index.ts
 ```
 
 The same flow is available through MCP tools inside an agent host:
