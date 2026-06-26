@@ -59,12 +59,19 @@ try {
   assertIncludes(help.stdout, "Usage: codexa", "installed help should use the codexa binary name");
 
   createFixtureRepo(targetRepo);
-  const init = run(codexa, ["init", targetRepo], {
+  const init = run(codexa, ["init", targetRepo, "--policy-pack"], {
     cwd: consumerRoot,
     label: "installed codexa init",
     timeoutMs: 60_000
   });
   assertIncludes(init.stdout, "Codexa initialized", "init should complete from installed package");
+  assertIncludes(init.stdout, "Policy pack:", "init --policy-pack should report local policies");
+  for (const policyFile of ["verification.json", "complexity.json", "security.json"]) {
+    const fullPath = path.join(targetRepo, ".codex", "policies", policyFile);
+    if (!existsSync(fullPath)) {
+      throw new Error(`init --policy-pack did not create ${fullPath}`);
+    }
+  }
 
   const status = run(codexa, ["status", targetRepo], {
     cwd: consumerRoot,

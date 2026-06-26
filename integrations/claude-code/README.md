@@ -84,8 +84,7 @@ as the marketplace source.
 For a repo that should be ready for both proof cards and Claude hook guidance:
 
 ```bash
-codexa init <repo> --claude-md
-codexa policy-init <repo>
+codexa init <repo> --claude-md --policy-pack
 ```
 
 ### Quick, supported path (persistent)

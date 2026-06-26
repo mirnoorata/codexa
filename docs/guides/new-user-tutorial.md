@@ -7,12 +7,11 @@ repository without sending source code to a hosted indexing service.
 ## What you will do
 
 1. Install Codexa.
-2. Wire Codexa into one local repository.
-3. Add optional local policy defaults.
-4. Check that the index and MCP server are ready.
-5. Run the normal plan, edit, review, and verification loop for a small change.
-6. Print a proof card for the final handoff.
-7. Know where to look when setup is not ready.
+2. Wire Codexa into one local repository, including optional local policy defaults.
+3. Check that the index and MCP server are ready.
+4. Run the normal plan, edit, review, and verification loop for a small change.
+5. Print a proof card for the final handoff.
+6. Know where to look when setup is not ready.
 
 ## Before you start
 
@@ -51,13 +50,13 @@ codexa --version
 For Codex CLI, initialize the target repository:
 
 ```bash
-codexa init /path/to/project
+codexa init /path/to/project --policy-pack
 ```
 
 For Claude Code, add `--claude` so Codexa also writes a repo-root `.mcp.json`:
 
 ```bash
-codexa init /path/to/project --claude
+codexa init /path/to/project --claude --policy-pack
 ```
 
 `codexa init` writes Codexa MCP configuration and hook files for the target
@@ -65,20 +64,14 @@ repo, then builds the first `.codex/codebase/` index. It does not edit your
 source files. Generated Codexa artifacts live under `.codex/codebase/` and
 `.codex/cache/`.
 
-## 3. Add local policies
-
-Write the default local policy pack:
-
-```bash
-codexa policy-init /path/to/project
-```
-
-This creates `.codex/policies/verification.json`,
+With `--policy-pack`, init also creates `.codex/policies/verification.json`,
 `.codex/policies/complexity.json`, and `.codex/policies/security.json`. These
 files are plain JSON consumed by `codexa prove`; they are not executable and
-Codexa does not overwrite them on later runs unless you pass `--force`.
+Codexa does not overwrite them on later init runs. For an already wired repo,
+run `codexa policy-init /path/to/project`; pass `--force` only when you
+intentionally want to replace existing policy files.
 
-## 4. Check readiness
+## 3. Check readiness
 
 Start every new session with:
 
@@ -101,7 +94,7 @@ codexa doctor /path/to/project
 Use `doctor` when the agent cannot see Codexa tools, the MCP server is not
 starting, hooks did not run, or freshness looks wrong.
 
-## 5. Use the everyday edit loop
+## 4. Use the everyday edit loop
 
 Codexa is most useful when it brackets real edits. For a small issue such as
 "rename this CLI option in the docs and help text", use this loop:
@@ -148,7 +141,7 @@ session_context -> search(if target unclear) -> task_brief ->
 change_plan(saveSnapshot) -> post_edit_review -> test_plan -> proof_card
 ```
 
-## 6. Print a proof card
+## 5. Print a proof card
 
 When you need a compact handoff, run:
 
@@ -161,7 +154,7 @@ snapshot status, verification commands that would cover the change if run,
 reported verification evidence, local policy status, trust posture, and
 remaining gaps.
 
-## 7. What success looks like
+## 6. What success looks like
 
 After the loop, you should be able to answer four questions with evidence:
 

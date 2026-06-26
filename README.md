@@ -98,9 +98,8 @@ npm link
 Wire Codexa into another repository:
 
 ```bash
-codexa init /path/to/project            # Codex CLI: .codex/config.toml + hooks
-codexa init /path/to/project --claude   # also writes a repo-root .mcp.json for Claude Code
-codexa policy-init /path/to/project     # optional local proof/governance defaults
+codexa init /path/to/project --policy-pack            # Codex CLI: .codex/config.toml + hooks + local proof policies
+codexa init /path/to/project --claude --policy-pack   # also writes a repo-root .mcp.json for Claude Code
 codexa session-start /path/to/project
 codexa prove /path/to/project --task "make this change safely"
 ```
@@ -162,9 +161,10 @@ It reports:
 
 `codexa policy-init /path/to/project` writes a small local policy pack under
 `.codex/policies/` (`verification.json`, `complexity.json`, `security.json`).
-The files are plain JSON, are not executable, and are consumed by `codexa
-prove` as bounded local evidence. Re-running `policy-init` does not overwrite
-existing policy files unless `--force` is passed.
+`codexa init /path/to/project --policy-pack` creates the same pack during
+initial setup. The files are plain JSON, are not executable, and are consumed
+by `codexa prove` as bounded local evidence. Neither init nor `policy-init`
+overwrite existing policy files unless `policy-init --force` is passed.
 
 ## Works with any MCP host
 

@@ -5,6 +5,7 @@ import { renderCodexUseContract } from "./codex-contract.js";
 import { buildIndexLocked } from "./indexer.js";
 import { CORE_PROFILE_TOOL_NAMES, PRIMARY_CODEX_LOOP } from "./mcp-tool-catalog.js";
 import { resolveMcpRepoRoot } from "./mcp-repo-root.js";
+import { assertPolicyPackWritable, initializePolicyPack, type PolicyPackInitResult } from "./policy-pack.js";
 import { statusQuery } from "./queries.js";
 import { CODEXA_VERSION } from "./version.js";
 
@@ -22,6 +23,7 @@ export interface InitOptions {
   agentsMd?: boolean;
   claudeMd?: boolean;
   claude?: boolean;
+  policyPack?: boolean;
 }
 
 export interface InitResult {
@@ -31,6 +33,7 @@ export interface InitResult {
   agentsMdPath: string | null;
   claudeMdPath: string | null;
   claudeMcpPath: string | null;
+  policyPack: PolicyPackInitResult | null;
   serverName: string;
   launchNote: string | null;
   indexed: {
@@ -104,6 +107,9 @@ export async function initializeProject(repoInput: string | undefined, options: 
   const toolProfile = options.toolProfile ?? detectExistingToolProfile(await readTextIfExists(configPath)) ?? "core";
   const autoRefresh = options.autoRefresh ?? true;
 
+  if (options.policyPack) {
+    await assertPolicyPackWritable(repoRoot);
+  }
   await mkdir(codexDir, { recursive: true });
   const keepHooksFeature = writeHooks
     ? true
@@ -140,6 +146,7 @@ export async function initializeProject(repoInput: string | undefined, options: 
     options.index === false
       ? null
       : summarizeIndex(await buildIndexLocked({ repoRoot, writeArtifacts: true }));
+  const policyPack = options.policyPack ? await initializePolicyPack(repoRoot) : null;
 
   return {
     repoRoot,
@@ -148,6 +155,7 @@ export async function initializeProject(repoInput: string | undefined, options: 
     agentsMdPath,
     claudeMdPath,
     claudeMcpPath,
+    policyPack,
     serverName,
     launchNote: launch.pinnedNpx
       ? `Codexa CLI resolved inside the evictable npx cache; generated configs pin "npx -y @mirnoorata/codexa@${CODEXA_VERSION}" instead of the cache path.`
@@ -367,7 +375,7 @@ async function upsertManagedDoc(repoRoot: string, fileName: string, serverName: 
     "",
     "- Orient: call `session_context` at session start; `search` when the target is unclear.",
     "- Before non-trivial edits: `task_brief`, then `change_plan` with `saveSnapshot=true`.",
-    "- After edits: `post_edit_review` with the commands that actually ran; finish with `test_plan`.",
+    "- After edits: `post_edit_review` with the commands that actually ran; finish with `test_plan` and `proof_card`.",
     "- Inspect: `impact` before API/rename/delete changes; `callers`/`callees` for graph evidence.",
     "",
     "Each tool description states its output cost; prefer the cheapest sufficient tool.",

@@ -69,6 +69,7 @@ program
   .option("--agents-md", "write a managed Codexa workflow block into the repo's AGENTS.md (Codex)", false)
   .option("--claude-md", "write a managed Codexa workflow block into the repo's CLAUDE.md (Claude Code)", false)
   .option("--claude", "write the codexa MCP server entry into the repo's .mcp.json for Claude Code", false)
+  .option("--policy-pack", "also create the default local proof policy pack without overwriting existing policy files", false)
   .description("Initialize Codexa for a project so future Codex sessions discover it automatically.")
   .action(
     async (
@@ -83,6 +84,7 @@ program
         agentsMd: boolean;
         claudeMd: boolean;
         claude: boolean;
+        policyPack: boolean;
       }
     ) => {
       const result = await initializeProject(repo, {
@@ -94,7 +96,8 @@ program
         toolProfile: opts.tools,
         agentsMd: opts.agentsMd,
         claudeMd: opts.claudeMd,
-        claude: opts.claude
+        claude: opts.claude,
+        policyPack: opts.policyPack
       });
       console.log(`Codexa initialized for ${result.repoRoot}`);
       console.log(`Config: ${result.configPath}`);
@@ -109,6 +112,11 @@ program
       }
       if (result.claudeMcpPath) {
         console.log(`Claude Code MCP config: ${result.claudeMcpPath}`);
+      }
+      if (result.policyPack) {
+        console.log(`Policy pack: ${result.policyPack.directory}`);
+        console.log(`Policy written: ${result.policyPack.written.join(", ") || "none"}`);
+        console.log(`Policy skipped: ${result.policyPack.skipped.join(", ") || "none"}`);
       }
       if (result.launchNote) {
         console.log(result.launchNote);

@@ -150,6 +150,17 @@ describe("runCommand", () => {
     expect(help.stdout).toContain("policy-init");
   });
 
+  it("advertises policy-pack creation on init", async () => {
+    const help = await runCommand(process.execPath, [path.resolve("dist/cli.js"), "init", "--help"], {
+      timeoutMs: 2_000,
+      maxBufferBytes: 32 * 1024
+    });
+
+    expect(help.ok).toBe(true);
+    expect(help.stdout).toContain("--policy-pack");
+    expect(help.stdout).toContain("local proof policy pack");
+  });
+
   it("advertises reported verification evidence flags on proof cards", async () => {
     const help = await runCommand(process.execPath, [path.resolve("dist/cli.js"), "prove", "--help"], {
       timeoutMs: 2_000,

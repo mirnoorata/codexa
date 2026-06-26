@@ -52,6 +52,7 @@ describe("Codexa proof cards", () => {
       const policyPack = await loadPolicyPack(repo);
       expect(policyPack.policies.map((policy) => policy.kind)).not.toContain("security");
       expect(policyPack.warnings.join("\n")).toContain("security.json is a symlink; ignored");
+      await expect(initializePolicyPack(repo)).rejects.toThrow(/not a regular file/u);
       await expect(initializePolicyPack(repo, { force: true })).rejects.toThrow(/not a regular file/u);
     } finally {
       await rm(repo, { recursive: true, force: true });

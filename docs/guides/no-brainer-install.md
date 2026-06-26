@@ -34,8 +34,7 @@ For Codex CLI:
 
 ```bash
 npm install -g @mirnoorata/codexa
-codexa init /path/to/project --agents-md
-codexa policy-init /path/to/project
+codexa init /path/to/project --agents-md --policy-pack
 codexa prove /path/to/project --task "make this change safely"
 ```
 
@@ -49,8 +48,7 @@ For Claude Code with hooks and slash commands:
 Then in the target repo:
 
 ```bash
-codexa init /path/to/project --claude-md
-codexa policy-init /path/to/project
+codexa init /path/to/project --claude-md --policy-pack
 ```
 
 Inside Claude Code, run:
@@ -64,8 +62,7 @@ Inside Claude Code, run:
 For Claude Code MCP-only mode, skip the plugin and run:
 
 ```bash
-codexa init /path/to/project --claude
-codexa policy-init /path/to/project
+codexa init /path/to/project --claude --policy-pack
 ```
 
 Use the plugin or `--claude`, not both, so Claude does not register two Codexa

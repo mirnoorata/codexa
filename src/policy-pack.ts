@@ -98,7 +98,7 @@ const DEFAULT_POLICY_PACK: Record<PolicyKind, CodexaPolicyFileV1> = {
 
 export async function initializePolicyPack(repoRoot: string, options: { force?: boolean } = {}): Promise<PolicyPackInitResult> {
   const repo = path.resolve(repoRoot);
-  await assertExistingDirectory(repo);
+  await assertPolicyPackWritable(repo);
   const directory = path.join(repo, POLICY_PACK_DIR);
   await mkdir(directory, { recursive: true });
   const written: string[] = [];
@@ -107,17 +107,31 @@ export async function initializePolicyPack(repoRoot: string, options: { force?: 
     const relativePath = policyRelativePath(kind);
     const target = path.join(repo, relativePath);
     const state = await policyTargetState(target);
+    if (state.exists && !state.regularFile) {
+      throw new Error(`${relativePath} exists but is not a regular file; refusing to overwrite`);
+    }
     if (state.exists && !options.force) {
       skipped.push(relativePath);
       continue;
-    }
-    if (state.exists && !state.regularFile) {
-      throw new Error(`${relativePath} exists but is not a regular file; refusing to overwrite`);
     }
     await atomicJsonWrite(target, DEFAULT_POLICY_PACK[kind]);
     written.push(relativePath);
   }
   return { directory: POLICY_PACK_DIR, written, skipped };
+}
+
+export async function assertPolicyPackWritable(repoRoot: string): Promise<void> {
+  const repo = path.resolve(repoRoot);
+  await assertExistingDirectory(repo);
+  await assertDirectoryIfExists(path.join(repo, ".codex"), ".codex");
+  await assertDirectoryIfExists(path.join(repo, POLICY_PACK_DIR), POLICY_PACK_DIR);
+  for (const kind of POLICY_KINDS) {
+    const relativePath = policyRelativePath(kind);
+    const state = await policyTargetState(path.join(repo, relativePath));
+    if (state.exists && !state.regularFile) {
+      throw new Error(`${relativePath} exists but is not a regular file; refusing to overwrite`);
+    }
+  }
 }
 
 export async function loadPolicyPack(repoRoot: string): Promise<PolicyPackSummary> {
@@ -244,8 +258,48 @@ async function policyTargetState(filePath: string): Promise<{ exists: boolean; r
   try {
     const info = await lstat(filePath);
     return { exists: true, regularFile: info.isFile() };
-  } catch {
-    return { exists: false, regularFile: false };
+  } catch (error) {
+    if (isNodeError(error) && (error.code === "ENOENT" || error.code === "ENOTDIR")) {
+      return { exists: false, regularFile: false };
+    }
+    throw error;
+  }
+}
+
+async function pathExists(filePath: string): Promise<boolean> {
+  try {
+    await lstat(filePath);
+    return true;
+  } catch (error) {
+    if (isNodeError(error) && (error.code === "ENOENT" || error.code === "ENOTDIR")) {
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function assertDirectoryIfExists(filePath: string, label: string): Promise<void> {
+  if (!(await pathExists(filePath))) {
+    return;
+  }
+  const info = await lstat(filePath);
+  if (info.isSymbolicLink()) {
+    throw new Error(`${label} is a symlink; refusing to write policy pack`);
+  }
+  if (!info.isDirectory()) {
+    throw new Error(`${label} exists but is not a directory; refusing to write policy pack`);
+  }
+  await assertWritableExistingDirectory(filePath, label);
+}
+
+async function assertWritableExistingDirectory(filePath: string, label: string): Promise<void> {
+  const probe = path.join(filePath, `.codexa-policy-write-probe-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
+  try {
+    await writeFile(probe, "", { flag: "wx" });
+  } catch (error) {
+    throw new Error(`${label} is not writable; refusing to write policy pack: ${errorMessage(error)}`);
+  } finally {
+    await rm(probe, { force: true });
   }
 }
 
@@ -263,4 +317,8 @@ async function assertExistingDirectory(filePath: string): Promise<void> {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error;
 }
