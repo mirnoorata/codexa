@@ -1,0 +1,87 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 2533 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(Change Summary) Tj T*
+() Tj T*
+(- Project: codexa) Tj T*
+(- Worktree: isolated codexa worktree) Tj T*
+(- Branch: codex/review/codexa-codexa-value-audit-20260626) Tj T*
+(- Base: main) Tj T*
+(- Primary commit: 893d343) Tj T*
+(- Subject: fix\(test-plan\): require explicit verification scope) Tj T*
+() Tj T*
+(Summary) Tj T*
+() Tj T*
+(Codexa testplan now requires a real verification scope instead of inventing) Tj T*
+(work from ranked repository files. It accepts explicit target files through CLI) Tj T*
+(and MCP, validates unsafe or unindexed targets as gaps, and returns) Tj T*
+(needstarget with no tests or commands when there is no diff and no explicit) Tj T*
+(target.) Tj T*
+() Tj T*
+(The change also aligns docs, generated guidance, eval scoring, and session) Tj T*
+(memory so targetless no-op plans do not become durable verification noise.) Tj T*
+() Tj T*
+(Changed Areas) Tj T*
+() Tj T*
+(- src/query/test-plan.ts: target-aware scope selection and no-target behavior.) Tj T*
+(- src/mcp/tools.ts, src/cli.ts, src/types.ts, src/mcp/compaction.ts:) Tj T*
+(public contract and structured output updates.) Tj T*
+(- src/eval.ts, src/eval/scoring.ts, src/eval/types.ts: eval guardrail for) Tj T*
+(clean/no-scope test plans.) Tj T*
+(- src/session-memory/derivation.ts: suppress no-op targetless test-plan memory.) Tj T*
+(- README.md, docs/architecture/codexa-context-server.md,) Tj T*
+(docs/guides/new-user-tutorial.md, src/artifacts.ts: guidance now points) Tj T*
+(agents to explicit files before verification planning.) Tj T*
+(- tests/: regression coverage for query, MCP, eval, and session-memory paths.) Tj T*
+(- docs/plans/codexa-target-aware-test-plan-2026-06-26.md: saved root-cause) Tj T*
+(plan and adversarial hardening review.) Tj T*
+() Tj T*
+(Verification) Tj T*
+() Tj T*
+(- npm run check: passed.) Tj T*
+(- npm run eval:ci: passed, 21 scenarios, score 1, rawRgBetter 0.) Tj T*
+(- CLI clean/no-target probe: returned needstarget, 0 tests, 0 commands.) Tj T*
+(- CLI explicit target probe: returned a scoped plan for src/query/test-plan.ts.) Tj T*
+(- Invalid-target dirty-tree probe: rejected ../outside.ts and did not fall) Tj T*
+(back to dirty diff tests.) Tj T*
+(- Final Codexa clean test-plan: fresh, targetless, no invented work.) Tj T*
+() Tj T*
+(Review Notes) Tj T*
+() Tj T*
+(- The branch is intentionally one functional commit plus this summary artifact) Tj T*
+(commit.) Tj T*
+(- Generated local Codexa cache and codebase artifacts are ignored and are not) Tj T*
+(part of the PR.) Tj T*
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000185 00000 n 
+0000000311 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+2895
+%%EOF
