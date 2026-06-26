@@ -13,6 +13,8 @@ import { serveMcp, serveMcpHttp, type McpTransportKind } from "./mcp.js";
 import { resolveMcpRepoRoot, shouldPreferConfiguredRepoRoot } from "./mcp-repo-root.js";
 import { buildSemanticIndex, semanticProviderFromValue, type SemanticProviderKind } from "./semantic-retrieval.js";
 import { updateStaticAnalysisReports } from "./static-analysis.js";
+import { initializePolicyPack } from "./policy-pack.js";
+import { proveQuery } from "./prove.js";
 import { recordAdvisoryHookEvent, runPostEditHook, runPreEditHook } from "./cli/hooks.js";
 import {
   contextPackQuery,
@@ -416,6 +418,43 @@ program
     if (!result.ok) {
       process.exitCode = 1;
     }
+  });
+
+program
+  .command("policy-init")
+  .argument("[repo]", "repository root; defaults to the current directory", process.cwd())
+  .option("--force", "overwrite existing .codex/policies/*.json files", false)
+  .description("Write the default local Codexa policy pack consumed by proof cards.")
+  .action(async (repo: string, opts: { force: boolean }) => {
+    const result = await initializePolicyPack(path.resolve(repo), { force: opts.force });
+    console.log(`Codexa policy pack: ${result.directory}`);
+    console.log(`Written: ${result.written.join(", ") || "none"}`);
+    console.log(`Skipped: ${result.skipped.join(", ") || "none"}`);
+  });
+
+program
+  .command("prove")
+  .argument("[repo]", "repository root; defaults to the current directory", process.cwd())
+  .option("--task <task>", "task description to shape the proof card")
+  .option("--task-id <id>", "saved change-plan task id to bind proof to")
+  .option("--diff", "include current dirty git diff", true)
+  .option("--no-diff", "ignore current dirty git diff")
+  .option("--change-type <type>", "change type: style, api, behavior, rename, delete, unknown", parseChangeType, "unknown")
+  .option("--budget <tokens>", "approximate token budget", parseIntOption, 1800)
+  .option("--json", "emit structured JSON")
+  .option("--auto-refresh", "refresh a stale or missing index before proving", true)
+  .option("--no-auto-refresh", "do not refresh a stale or missing index before proving")
+  .description("Print a compact proof card: freshness, read-first files, plan snapshot, verification credit preview, policy pack, and gaps.")
+  .action(async (repo: string, opts: { task?: string; taskId?: string; diff: boolean; changeType: ChangeType; budget: number; json?: boolean; autoRefresh: boolean }) => {
+    const result = await proveQuery(await resolveQueryRepoRoot(repo), {
+      task: opts.task,
+      taskId: opts.taskId,
+      diff: opts.diff,
+      changeType: opts.changeType,
+      tokenBudget: opts.budget,
+      autoRefresh: opts.autoRefresh
+    });
+    console.log(opts.json ? JSON.stringify(result.data, null, 2) : result.text);
   });
 
 program

@@ -156,6 +156,27 @@ else
   fail "brief passes the full task string through --task, preserving spaces" "rc=$LAST_RC stdout='$LAST_STDOUT'"
 fi
 
+# ---------- prove ----------
+section "prove.sh"
+
+run_cmd "prove.sh" "" "$REPO"
+if [[ $LAST_RC -eq 0 ]] && printf '%s' "$LAST_STDOUT" | grep -Fxq "ARG: prove" \
+   && printf '%s' "$LAST_STDOUT" | grep -Fxq "ARG: --diff"; then
+  pass "prove with no arguments prints a repo proof card"
+else
+  fail "prove with no arguments prints a repo proof card" "rc=$LAST_RC stdout='$LAST_STDOUT'"
+fi
+
+PROVE_TASK="fix behavior; rm -rf /"
+run_cmd "prove.sh" "$PROVE_TASK" "$REPO"
+if [[ $LAST_RC -eq 0 ]] && printf '%s' "$LAST_STDOUT" | grep -Fxq "ARG: prove" \
+   && printf '%s' "$LAST_STDOUT" | grep -Fxq "ARG: $PROVE_TASK" \
+   && ! printf '%s' "$LAST_STDOUT" | grep -q "^rm: "; then
+  pass "prove treats the full argument string as task text"
+else
+  fail "prove treats the full argument string as task text" "rc=$LAST_RC stdout='$LAST_STDOUT'"
+fi
+
 # ---------- plan ----------
 section "plan.sh"
 

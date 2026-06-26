@@ -139,6 +139,17 @@ describe("runCommand", () => {
     expect(help.stdout).toContain("Import risk and symbol/code-intelligence reports");
   });
 
+  it("advertises proof cards and local policy packs in CLI help", async () => {
+    const help = await runCommand(process.execPath, [path.resolve("dist/cli.js"), "--help"], {
+      timeoutMs: 2_000,
+      maxBufferBytes: 32 * 1024
+    });
+
+    expect(help.ok).toBe(true);
+    expect(help.stdout).toContain("prove");
+    expect(help.stdout).toContain("policy-init");
+  });
+
   it("passes SCIP report arguments through the static-analysis CLI", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-cli-scip-"));
     await mkdir(path.join(repo, "src"), { recursive: true });

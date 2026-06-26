@@ -8,9 +8,11 @@ repository without sending source code to a hosted indexing service.
 
 1. Install Codexa.
 2. Wire Codexa into one local repository.
-3. Check that the index and MCP server are ready.
-4. Run the normal plan, edit, review, and verification loop for a small change.
-5. Know where to look when setup is not ready.
+3. Add optional local policy defaults.
+4. Check that the index and MCP server are ready.
+5. Run the normal plan, edit, review, and verification loop for a small change.
+6. Print a proof card for the final handoff.
+7. Know where to look when setup is not ready.
 
 ## Before you start
 
@@ -63,7 +65,20 @@ repo, then builds the first `.codex/codebase/` index. It does not edit your
 source files. Generated Codexa artifacts live under `.codex/codebase/` and
 `.codex/cache/`.
 
-## 3. Check readiness
+## 3. Add local policies
+
+Write the default local policy pack:
+
+```bash
+codexa policy-init /path/to/project
+```
+
+This creates `.codex/policies/verification.json`,
+`.codex/policies/complexity.json`, and `.codex/policies/security.json`. These
+files are plain JSON consumed by `codexa prove`; they are not executable and
+Codexa does not overwrite them on later runs unless you pass `--force`.
+
+## 4. Check readiness
 
 Start every new session with:
 
@@ -86,7 +101,7 @@ codexa doctor /path/to/project
 Use `doctor` when the agent cannot see Codexa tools, the MCP server is not
 starting, hooks did not run, or freshness looks wrong.
 
-## 4. Use the everyday edit loop
+## 5. Use the everyday edit loop
 
 Codexa is most useful when it brackets real edits. For a small issue such as
 "rename this CLI option in the docs and help text", use this loop:
@@ -133,7 +148,19 @@ session_context -> search(if target unclear) -> task_brief ->
 change_plan(saveSnapshot) -> post_edit_review -> test_plan
 ```
 
-## 5. What success looks like
+## 6. Print a proof card
+
+When you need a compact handoff, run:
+
+```bash
+codexa prove /path/to/project --task "rename this CLI option in docs and help text" --diff
+```
+
+The proof card reports freshness, dirty-tree state, read-first files, saved
+snapshot status, verification commands that would earn credit, local policy
+status, trust posture, and remaining gaps.
+
+## 7. What success looks like
 
 After the loop, you should be able to answer four questions with evidence:
 
@@ -179,3 +206,5 @@ commands back to `post-edit-review`.
 - Read [Contributing](../../CONTRIBUTING.md) before opening a PR.
 - Read [Codex SessionStart Hook](codex-sessionstart-hook.md) to understand the
   startup and edit hooks that `codexa init` writes.
+- Read [No-Brainer Install Guide](no-brainer-install.md) to choose the best
+  Codex or Claude Code install path.

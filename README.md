@@ -7,6 +7,10 @@ Codexa is an edit-lifecycle governance layer for AI coding agents — plan
 conformance, drift review, and verification crediting — built on a local,
 deterministic codebase map.
 
+If Codex or Claude Code is the editor, Codexa is the proof layer: it shows what
+the agent read, what plan it saved, what changed, which checks would earn
+verification credit, and which gaps still need an honest handoff.
+
 In plain English: it reads a repository, builds a compact index of the files,
 symbols, imports, tests, risks, and workflows it can prove, then gives Codex,
 Claude Code, or another MCP client small evidence-backed packets before and
@@ -96,11 +100,15 @@ Wire Codexa into another repository:
 ```bash
 codexa init /path/to/project            # Codex CLI: .codex/config.toml + hooks
 codexa init /path/to/project --claude   # also writes a repo-root .mcp.json for Claude Code
+codexa policy-init /path/to/project     # optional local proof/governance defaults
 codexa session-start /path/to/project
+codexa prove /path/to/project --task "make this change safely"
 ```
 
 For a start-to-finish first setup, see the
 [new user tutorial](https://github.com/mirnoorata/codexa/blob/main/docs/guides/new-user-tutorial.md).
+For a host-focused install choice, see
+[No-Brainer Install Guide](https://github.com/mirnoorata/codexa/blob/main/docs/guides/no-brainer-install.md).
 
 After `codexa init`, the target repository gets a repo-local `.codex/config.toml`
 entry that lets Codex discover the Codexa MCP server automatically, and with
@@ -134,6 +142,30 @@ npx -y @mirnoorata/codexa serve /path/to/project --auto-refresh
 Codexa is also listed in the official MCP registry as
 `io.github.mirnoorata/codexa` for MCP clients that discover servers there.
 
+## Proof cards and policy packs
+
+`codexa prove` is the compact "should I trust this agent handoff?" view:
+
+```bash
+codexa prove /path/to/project --task "change auth timeout behavior" --diff
+```
+
+It reports:
+
+- index freshness and current dirty-tree state;
+- read-first files selected from the task and graph context;
+- saved `change-plan` snapshot status, including planned edit targets and
+  planned tests when a snapshot exists;
+- verification commands and ledger preview using the same command-credit rules
+  as `post-edit-review`;
+- local policy-pack status and remaining proof gaps.
+
+`codexa policy-init /path/to/project` writes a small local policy pack under
+`.codex/policies/` (`verification.json`, `complexity.json`, `security.json`).
+The files are plain JSON, are not executable, and are consumed by `codexa
+prove` as bounded local evidence. Re-running `policy-init` does not overwrite
+existing policy files unless `--force` is passed.
+
 ## Works with any MCP host
 
 Codexa is deterministic and model-agnostic — its core indexing, ranking, and
@@ -149,6 +181,13 @@ that discovers it through the MCP registry. There is no per-model integration to
 host, and Codexa is the host's context server. (The one exception is the
 opt-in, off-by-default semantic lane, which can call a configured embedding
 provider such as OpenAI — see [Optional Lanes](#optional-lanes).)
+
+| Host | Best install | What Codexa adds | Notes |
+| --- | --- | --- | --- |
+| Codex CLI | `codexa init <repo>` | Repo-local MCP config, SessionStart, pre/post edit hooks, proof cards | Best default path. |
+| Claude Code | Claude plugin under `integrations/claude-code/` or `codexa init <repo> --claude` | Same MCP engine plus SessionStart, PreToolUse, Stop hook, slash commands including `/codexa-prove` | Use plugin or `.mcp.json`, not both. |
+| Other local MCP hosts | MCP registry entry or `codexa serve <repo>` | Query-only codebase context, impact, drift review, test plans | Host must run where the repo is accessible. |
+| Managed cloud agents | Self-hosted sandbox with Codexa on loopback | Local proof layer without exposing a public Codexa server | Public remote HTTP is intentionally not shipped. |
 
 Token discipline is built in: every tool description states its typical output
 cost, structured results are budget-compacted with truncation records naming

@@ -602,7 +602,8 @@ export type QueryResultMode =
   | "workflow_path"
   | "placeholder_report"
   | "session_memory"
-  | "freshness";
+  | "freshness"
+  | "proof_card";
 
 export interface BaseQueryData {
   mode: QueryResultMode;
