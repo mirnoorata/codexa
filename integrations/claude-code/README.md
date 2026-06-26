@@ -61,7 +61,7 @@ They do not maintain a separate index, ranking layer, planner, or source-editing
 path. The primary Codexa path stays:
 
 ```text
-session_context -> task_brief -> change_plan(saveSnapshot) -> post_edit_review -> test_plan
+session_context -> task_brief -> change_plan(saveSnapshot) -> post_edit_review -> test_plan -> proof_card
 ```
 
 Use `symbol_context`, `impact`, `callers`, and `callees` when Claude needs to

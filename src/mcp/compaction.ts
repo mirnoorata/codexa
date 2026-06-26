@@ -1,7 +1,7 @@
 import { CURRENT_VERIFICATION_PROVENANCE } from "../types.js";
 import { asCodexaQueryData, asPostEditReviewData } from "../query-data.js";
 import { compactComplexityReview } from "../query/complexity.js";
-import type { ChangePlanData, CodexaQueryData, ContextPacketData, FocusBriefData, FreshnessInfo, PostEditReviewData, QueryResult, TestPlanData } from "../types.js";
+import type { ChangePlanData, CodexaQueryData, ContextPacketData, FocusBriefData, FreshnessInfo, PostEditReviewData, ProofCardData, QueryResult, TestPlanData } from "../types.js";
 
 const DEFAULT_MCP_STRUCTURED_DATA_TARGET_BYTES = 96_000;
 const MIN_MCP_STRUCTURED_DATA_TARGET_BYTES = 4_000;
@@ -118,6 +118,9 @@ function compactMcpDataByMode(data: CodexaQueryData): McpCompactionResult | unde
   }
   if (data.mode === "test_plan") {
     return compactTestPlanData(data);
+  }
+  if (data.mode === "proof_card") {
+    return compactProofCardData(data);
   }
   return undefined;
 }
@@ -765,6 +768,63 @@ function compactTargetCandidate(value: unknown): unknown {
     nextChangePlanArgs: value.nextChangePlanArgs,
     rawSearchQueries: limitArray(value.rawSearchQueries, 4)
   };
+}
+
+function compactProofCardData(data: ProofCardData): McpCompactionResult {
+  const limit = createArrayLimiter();
+  const verification = isRecord(data.verification) ? data.verification : undefined;
+  const reported = isRecord(verification?.reported) ? verification.reported : undefined;
+  const compacted = {
+    mode: data.mode,
+    task: data.task,
+    repoRoot: data.repoRoot,
+    freshness: data.freshness,
+    worktree: data.worktree,
+    readFirst: limit("readFirst", data.readFirst, 12),
+    snapshot: compactGenericValue(data.snapshot, { arrayLimit: 24, objectKeyLimit: 32, maxDepth: 5 }, limit.truncation, "snapshot"),
+    verification: verification
+      ? {
+          recommendedCommands: limit("verification.recommendedCommands", verification.recommendedCommands, 20),
+          commandPlan: limit("verification.commandPlan", verification.commandPlan, 30, compactVerificationPlan),
+          ledgerPreview: limit("verification.ledgerPreview", verification.ledgerPreview, 60, compactVerificationLedgerEntry),
+          tests: limit("verification.tests", verification.tests, 30, compactTestRecommendation),
+          reported: reported
+            ? {
+                hasEvidence: reported.hasEvidence,
+                ranTests: limit("verification.reported.ranTests", reported.ranTests, 30),
+                ranCommands: Array.isArray(reported.ranCommands)
+                  ? limit(
+                      "verification.reported.ranCommands",
+                      reported.ranCommands.map((command) => (typeof command === "string" ? redactMcpText(command) : command)),
+                      30
+                    )
+                  : reported.ranCommands,
+                ranCommandReports: compactCommandReportList(reported.ranCommandReports, 30),
+                waivedChecks: limit("verification.reported.waivedChecks", reported.waivedChecks, 30),
+                waivers: limit("verification.reported.waivers", reported.waivers, 30),
+                coverage: limit("verification.reported.coverage", reported.coverage, 40, compactVerificationCoverage),
+                commandEnvelopes: compactCommandEnvelopeList(reported.commandEnvelopes, 30),
+                commandPlan: limit("verification.reported.commandPlan", reported.commandPlan, 30, compactVerificationPlan),
+                ledger: limit("verification.reported.ledger", reported.ledger, 60, compactVerificationLedgerEntry),
+                waivedVerification: limit("verification.reported.waivedVerification", reported.waivedVerification, 30, compactVerificationLedgerEntry),
+                testsNotRun: limit("verification.reported.testsNotRun", reported.testsNotRun, 30, compactTestRecommendation),
+                verificationProvenance: reported.verificationProvenance ?? data.verificationProvenance ?? CURRENT_VERIFICATION_PROVENANCE
+              }
+            : reported
+        }
+      : data.verification,
+    policies: compactGenericValue(data.policies, { arrayLimit: 12, objectKeyLimit: 24, maxDepth: 5 }, limit.truncation, "policies"),
+    verificationProvenance: data.verificationProvenance ?? CURRENT_VERIFICATION_PROVENANCE,
+    trustPosture: limit("trustPosture", data.trustPosture, 12),
+    gaps: limit("gaps", data.gaps, 30),
+    nextCommands: limit("nextCommands", data.nextCommands, 12),
+    sessionMemory: data.sessionMemory,
+    nextTools: compactNextTools(data.nextTools, limit.truncation),
+    systemMessage: stringValue(data.systemMessage),
+    runtime: data.runtime,
+    truncation: Object.keys(limit.truncation).length > 0 ? limit.truncation : undefined
+  };
+  return { data: compacted, truncation: limit.truncation, compacted: true };
 }
 
 function compactTestPlanData(data: TestPlanData): McpCompactionResult {

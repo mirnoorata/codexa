@@ -16,8 +16,8 @@ needs evidence, not confidence theater:
 - **Verification proof:** reported commands earn credit only through Codexa's
   shared command classifier; masked or non-running commands fail closed.
 - **Install proof:** `codexa prove` summarizes freshness, read-first files,
-  snapshot status, verification credit preview, local policies, trust posture,
-  and gaps in one packet.
+  snapshot status, verification preview, reported command/test evidence,
+  local policies, trust posture, and gaps in one packet.
 - **Local trust boundary:** core paths are local, deterministic, model-free,
   and query-only over MCP.
 
@@ -86,7 +86,8 @@ servers.
 - Deep parsing is strongest for TypeScript, JavaScript, and Python; other
   languages benefit from shallow facts or imported symbol/risk reports.
 - Codexa does not execute arbitrary test suites by default; AutoVerify is
-  opt-in and bounded. The proof card previews what would earn credit.
+  opt-in and bounded. The proof card previews what would earn credit and
+  separately classifies reported verification evidence.
 - No cloud team dashboard exists. The durable artifact is local `.codex/`
   evidence and ordinary git history.
 - Codexa is not a refactoring engine. It tells an agent what to read, plan,

@@ -1,6 +1,6 @@
-import type { ChangePlanData, CodexaQueryData, ContextPacketData, FocusBriefData, PostEditReviewData, QueryResultMode, TestPlanData } from "./types.js";
+import type { ChangePlanData, CodexaQueryData, ContextPacketData, FocusBriefData, PostEditReviewData, ProofCardData, QueryResultMode, TestPlanData } from "./types.js";
 
-const typedCompactionModes = new Set<QueryResultMode>(["context_pack", "task_brief", "focus_brief", "session_context", "change_plan", "post_edit_review", "test_plan"]);
+const typedCompactionModes = new Set<QueryResultMode>(["context_pack", "task_brief", "focus_brief", "session_context", "change_plan", "post_edit_review", "test_plan", "proof_card"]);
 
 export function asCodexaQueryData(value: unknown, inferredMode?: string): CodexaQueryData | undefined {
   const record = queryRecord(value);
@@ -25,6 +25,8 @@ export function asCodexaQueryData(value: unknown, inferredMode?: string): Codexa
       return isPostEditReviewData(data) ? (data as PostEditReviewData) : undefined;
     case "test_plan":
       return isTestPlanData(data) ? (data as TestPlanData) : undefined;
+    case "proof_card":
+      return isProofCardData(data) ? (data as ProofCardData) : undefined;
     default:
       return undefined;
   }
@@ -112,6 +114,10 @@ function isTestPlanData(value: Record<string, unknown>): boolean {
     "verificationLedger",
     "testsNotRun"
   ]);
+}
+
+function isProofCardData(value: Record<string, unknown>): boolean {
+  return arraysOrUndefined(value, ["readFirst", "trustPosture", "nextCommands", "gaps"]);
 }
 
 function arraysOrUndefined(value: Record<string, unknown>, keys: string[]): boolean {

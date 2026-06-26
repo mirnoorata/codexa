@@ -156,8 +156,8 @@ It reports:
 - read-first files selected from the task and graph context;
 - saved `change-plan` snapshot status, including planned edit targets and
   planned tests when a snapshot exists;
-- verification commands and ledger preview using the same command-credit rules
-  as `post-edit-review`;
+- verification commands, ledger preview, and reported commands/tests/reports
+  classified with the same command-credit rules as `post-edit-review`;
 - local policy-pack status and remaining proof gaps.
 
 `codexa policy-init /path/to/project` writes a small local policy pack under
@@ -251,14 +251,16 @@ Use Codexa as a guardrail around code changes:
    the saved snapshot, reports drift, and tells you whether to continue, run
    tests, inspect, or replan.
 
-6. Finish with a test plan if verification is unclear.
+6. Finish with a test plan and proof card.
    `test_plan` recommends targeted commands and shows what they would cover.
+   `proof_card` / `prove` binds the handoff to freshness, a saved plan
+   snapshot, local policies, and reported verification evidence.
 
 Primary MCP loop:
 
 ```text
 session_context -> search(if target unclear) -> task_brief ->
-change_plan(saveSnapshot) -> post_edit_review -> test_plan
+change_plan(saveSnapshot) -> post_edit_review -> test_plan -> proof_card
 ```
 
 ## What Codexa Builds

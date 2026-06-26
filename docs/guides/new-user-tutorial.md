@@ -145,7 +145,7 @@ The same flow is available through MCP tools inside an agent host:
 
 ```text
 session_context -> search(if target unclear) -> task_brief ->
-change_plan(saveSnapshot) -> post_edit_review -> test_plan
+change_plan(saveSnapshot) -> post_edit_review -> test_plan -> proof_card
 ```
 
 ## 6. Print a proof card
@@ -157,8 +157,9 @@ codexa prove /path/to/project --task "rename this CLI option in docs and help te
 ```
 
 The proof card reports freshness, dirty-tree state, read-first files, saved
-snapshot status, verification commands that would earn credit, local policy
-status, trust posture, and remaining gaps.
+snapshot status, verification commands that would cover the change if run,
+reported verification evidence, local policy status, trust posture, and
+remaining gaps.
 
 ## 7. What success looks like
 

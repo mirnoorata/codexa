@@ -98,6 +98,20 @@ export const MCP_TOOL_REGISTRY = [
     readOnly: false,
     useWhen: "Select verification for explicit files, the current diff, or after post_edit_review has provided a review scope.",
     avoidWhen: "You need proof that tests ran; recommendations are not execution evidence.",
+    nextToolUse: ["proof_card"]
+  },
+  {
+    name: "proof_card",
+    title: "Codexa proof card",
+    description:
+      "Final proof packet: freshness, saved plan snapshot, local policies, recommended verification, and reported command/test evidence classified by the shared verification ledger. Does not execute commands. Medium output.",
+    tier: "primary",
+    phase: "verify",
+    cost: "medium",
+    writeEffects: "session-memory-auto",
+    readOnly: false,
+    useWhen: "Before final response or handoff; pass commands/tests/reports/waivers that actually ran so proof is ledger-backed, not just a preview.",
+    avoidWhen: "Before choosing verification; use test_plan first for recommendations.",
     nextToolUse: []
   },
   {
@@ -312,7 +326,7 @@ export const CORE_PROFILE_TOOL_NAMES = Object.freeze([...PRIMARY_MCP_TOOL_NAMES,
 export const ADVANCED_MCP_TOOL_NAMES = Object.freeze(MCP_TOOL_REGISTRY.filter((tool) => tool.tier === "advanced").map((tool) => tool.name));
 export const SOURCE_CONTEXT_MCP_TOOL_NAMES = Object.freeze(MCP_TOOL_REGISTRY.filter((tool) => tool.writeEffects === "index-cache-if-auto-refresh").map((tool) => tool.name));
 export const MEMORY_RECORDING_MCP_TOOL_NAMES = Object.freeze(MCP_TOOL_REGISTRY.filter((tool) => tool.writeEffects === "session-memory-auto").map((tool) => tool.name));
-export const PRIMARY_CODEX_LOOP = "session_context -> search(if target unclear) -> task_brief -> change_plan(saveSnapshot) -> post_edit_review -> test_plan";
+export const PRIMARY_CODEX_LOOP = "session_context -> search(if target unclear) -> task_brief -> change_plan(saveSnapshot) -> post_edit_review -> test_plan -> proof_card";
 export const NO_SOURCE_MUTATION_CONTRACT = "Codexa MCP tools may write Codexa cache artifacts, but must not mutate source files.";
 
 export function mcpToolRegistryEntry(name: string): McpToolRegistryEntry | undefined {

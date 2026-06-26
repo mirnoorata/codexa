@@ -758,7 +758,20 @@ export interface TestPlanData extends BaseQueryData {
   testsNotRun?: TestRecommendation[];
 }
 
-export type CodexaQueryData = ContextPacketData | FocusBriefData | ChangePlanData | PostEditReviewData | TestPlanData;
+export interface ProofCardData extends BaseQueryData {
+  mode: "proof_card";
+  repoRoot?: string;
+  freshness?: QueryObject;
+  readFirst?: QueryObject[];
+  snapshot?: QueryObject;
+  verification?: QueryObject;
+  policies?: QueryObject;
+  trustPosture?: string[];
+  nextCommands?: string[];
+  gaps?: string[];
+}
+
+export type CodexaQueryData = ContextPacketData | FocusBriefData | ChangePlanData | PostEditReviewData | TestPlanData | ProofCardData;
 
 export type ChangeType = "style" | "api" | "behavior" | "rename" | "delete" | "unknown";
 

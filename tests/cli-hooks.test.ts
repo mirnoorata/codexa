@@ -1092,8 +1092,8 @@ describe("Codexa hook CLI", () => {
     expect(doctorText.stdout).toContain("Latest hook: session-start ok");
     expect(doctorText.stdout).toContain("MCP readiness:");
     expect(doctorText.stdout).toContain("typed envelope: yes");
-    expect(doctorText.stdout).toContain("primary tools: session_context, search, task_brief, change_plan, post_edit_review, test_plan");
-    expect(doctorText.stdout).toContain("registered tools: 20");
+    expect(doctorText.stdout).toContain("primary tools: session_context, search, task_brief, change_plan, post_edit_review, test_plan, proof_card");
+    expect(doctorText.stdout).toContain("registered tools: 21");
     expect(doctorText.stdout).toContain("catalog/server parity: ok");
     expect(doctorText.stdout).toContain("source mutation tools: none");
     expect(doctorText.stdout).toContain("latest eval: pass score=1.000 suite=synthetic seed=unit-doctor");
@@ -1152,10 +1152,10 @@ describe("Codexa hook CLI", () => {
       workspaceSessionId: "codex-target"
     });
     expect(selectedData.mcpReadiness.routing.warnings).toEqual([]);
-    expect(selectedData.mcpReadiness.toolSurface.primaryTools).toEqual(["session_context", "search", "task_brief", "change_plan", "post_edit_review", "test_plan"]);
+    expect(selectedData.mcpReadiness.toolSurface.primaryTools).toEqual(["session_context", "search", "task_brief", "change_plan", "post_edit_review", "test_plan", "proof_card"]);
     expect(selectedData.mcpReadiness.toolSurface.sourceMutationTools).toEqual([]);
     expect(selectedData.mcpReadiness.toolSurface.registeredTools).toEqual(
-      expect.arrayContaining(["session_context", "task_brief", "change_plan", "post_edit_review", "test_plan", "search", "workflow_path"])
+      expect.arrayContaining(["session_context", "task_brief", "change_plan", "post_edit_review", "test_plan", "proof_card", "search", "workflow_path"])
     );
     expect(selectedData.mcpReadiness.toolSurface.registrationSource).toBe("src/mcp/tool-registry.ts");
     expect(selectedData.mcpReadiness.toolSurface.unregisteredCatalogTools).toEqual([]);

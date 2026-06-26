@@ -150,6 +150,19 @@ describe("runCommand", () => {
     expect(help.stdout).toContain("policy-init");
   });
 
+  it("advertises reported verification evidence flags on proof cards", async () => {
+    const help = await runCommand(process.execPath, [path.resolve("dist/cli.js"), "prove", "--help"], {
+      timeoutMs: 2_000,
+      maxBufferBytes: 32 * 1024
+    });
+
+    expect(help.ok).toBe(true);
+    expect(help.stdout).toContain("--ran-test <test...>");
+    expect(help.stdout).toContain("--ran-command <command...>");
+    expect(help.stdout).toContain("--ran-command-report <json...>");
+    expect(help.stdout).toContain("--waiver <json...>");
+  });
+
   it("passes SCIP report arguments through the static-analysis CLI", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-cli-scip-"));
     await mkdir(path.join(repo, "src"), { recursive: true });

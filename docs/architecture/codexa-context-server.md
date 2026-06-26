@@ -551,7 +551,7 @@ never mutate source files.
 The MCP handshake reports the `package.json` version and server-level
 instructions. Those instructions surface the primary Codexa loop
 (`session_context -> search(if target unclear) -> task_brief ->
-change_plan(saveSnapshot) -> post_edit_review -> test_plan`), the source
+change_plan(saveSnapshot) -> post_edit_review -> test_plan -> proof_card`), the source
 mutation prohibition, semantic-search conditions, per-tool output-cost hints
 (each tool description states compact/medium/large), and the expectation that
 heuristic-heavy packets are verified against source before editing. Structured

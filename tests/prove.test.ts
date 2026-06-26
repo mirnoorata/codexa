@@ -97,6 +97,125 @@ describe("Codexa proof cards", () => {
       await rm(repo, { recursive: true, force: true });
     }
   });
+
+  it("classifies reported verification evidence without treating preview as proof", async () => {
+    const repo = await createProofFixtureRepo();
+    const outside = await mkdtemp(path.join(os.tmpdir(), "codexa-prove-outside-"));
+    try {
+      await buildIndexLocked({ repoRoot: repo, writeArtifacts: true });
+      const result = await proveQuery(repo, {
+        task: "change widget behavior",
+        changeType: "behavior",
+        autoRefresh: false,
+        ranCommandReports: [
+          {
+            command: "npm test",
+            cwd: repo,
+            packageManager: "npm",
+            packageRoot: ".",
+            scriptName: "test",
+            args: [],
+            exitCode: 0,
+            durationMs: 12,
+            stdoutSummary: `vitest passed outside ${outside}`
+          }
+        ]
+      });
+      const data = result.data as ProveData;
+      const serializedReported = JSON.stringify(data.verification.reported);
+
+      expect(result.text).toContain("Verification preview (not proof until reported):");
+      expect(result.text).toContain("Reported verification ledger:");
+      expect(data.verification.reported.hasEvidence).toBe(true);
+      expect(data.verification.ledgerPreview.some((entry) => entry.status === "would_cover")).toBe(true);
+      expect(data.verification.reported.ledger.some((entry) => entry.target === "tests/widget.test.ts" && entry.status === "covered")).toBe(true);
+      expect(data.verification.reported.testsNotRun.map((test) => test.path)).not.toContain("tests/widget.test.ts");
+      expect(data.verification.reported.commandEnvelopes[0]).toMatchObject({ command: "npm test", cwd: "<repo>", packageManager: "npm", scriptName: "test" });
+      expect(serializedReported).not.toContain(outside);
+      expect(serializedReported).toContain("<abs-path>");
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("does not credit failed reports and records explicit waivers as waivers", async () => {
+    const repo = await createProofFixtureRepo();
+    try {
+      await buildIndexLocked({ repoRoot: repo, writeArtifacts: true });
+      const failed = await proveQuery(repo, {
+        task: "change widget behavior",
+        changeType: "behavior",
+        autoRefresh: false,
+        ranCommandReports: [{ command: "npm test", cwd: repo, exitCode: 1, stderrSummary: "test failed" }]
+      });
+      const failedData = failed.data as ProveData;
+      expect(failedData.verification.reported.ledger.some((entry) => entry.target === "tests/widget.test.ts" && entry.status === "covered")).toBe(false);
+      expect(failedData.verification.reported.testsNotRun.map((test) => test.path)).toContain("tests/widget.test.ts");
+      expect(failedData.gaps).toContain("reported verification missing: tests/widget.test.ts");
+
+      const waived = await proveQuery(repo, {
+        task: "change widget behavior",
+        changeType: "behavior",
+        autoRefresh: false,
+        waivers: [{ kind: "test", target: "tests/widget.test.ts", reason: "manual browser regression" }]
+      });
+      const waivedData = waived.data as ProveData;
+      expect(waivedData.verification.reported.ledger.some((entry) => entry.target === "tests/widget.test.ts" && entry.status === "waived")).toBe(true);
+      expect(waivedData.verification.reported.waivedVerification.some((entry) => entry.target === "tests/widget.test.ts" && entry.waiverReason === "manual browser regression")).toBe(true);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("includes missing snapshot-required workflow checks in the proof ledger", async () => {
+    const repo = await createProofFixtureRepo();
+    try {
+      await buildIndexLocked({ repoRoot: repo, writeArtifacts: true });
+      await changePlanQuery(
+        repo,
+        {
+          task: "change widget behavior",
+          files: ["src/widget.ts"],
+          saveSnapshot: true,
+          taskId: "prove-required-check",
+          changeType: "behavior"
+        },
+        { autoRefresh: false }
+      );
+      const snapshotPath = path.join(repo, ".codex/cache/codexa-tasks/prove-required-check.json");
+      const snapshot = JSON.parse(await readFile(snapshotPath, "utf8")) as {
+        requiredWorkflowChecks?: unknown[];
+      };
+      snapshot.requiredWorkflowChecks = [
+        {
+          kind: "workflow",
+          target: "release-gate",
+          reason: "Release gate must be checked before final handoff",
+          evidenceTier: "derived",
+          confidence: "derived",
+          paths: ["src/widget.ts"]
+        }
+      ];
+      await writeFile(snapshotPath, JSON.stringify(snapshot, null, 2), "utf8");
+
+      const result = await proveQuery(repo, {
+        task: "change widget behavior",
+        taskId: "prove-required-check",
+        changeType: "behavior",
+        autoRefresh: false
+      });
+      const data = result.data as ProveData;
+
+      expect(data.verification.reported.ledger).toEqual(
+        expect.arrayContaining([expect.objectContaining({ kind: "workflow", target: "release-gate", status: "missing" })])
+      );
+      expect(data.gaps).toContain("reported verification missing: workflow release-gate");
+      expect(result.text).toContain("missing: workflow release-gate");
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
 });
 
 async function createProofFixtureRepo(): Promise<string> {

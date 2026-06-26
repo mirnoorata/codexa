@@ -4,17 +4,33 @@ import { loadPolicyPack, type PolicyPackSummary } from "./policy-pack.js";
 import { loadTaskSnapshot } from "./task-snapshots.js";
 import { freshnessBanner } from "./query/runtime.js";
 import { createQuerySession } from "./query/session.js";
+import { evaluateRequiredChecks } from "./query/required-checks.js";
+import { formatVerificationCoverage, formatVerificationLedger, verificationCommandPlan, verificationEvidenceForCommandReports, verificationLedgerForPostEdit } from "./query/verification.js";
+import {
+  sanitizeCommandEnvelopeForDisplay,
+  sanitizeCommandReportForDisplay,
+  sanitizeCommandText,
+  sanitizeCoverageForDisplay,
+  sanitizeLedgerForDisplay
+} from "./query/verification-display.js";
 import type {
   ChangeType,
+  CodexaIndex,
   FreshnessInfo,
   QueryOptions,
   QueryResult,
   RefreshInfo,
   TaskSnapshot,
   TestRecommendation,
+  VerificationCommandEnvelope,
+  VerificationCommandReport,
   VerificationCommandPlanEntry,
-  VerificationLedgerEntry
+  VerificationCoverage,
+  VerificationLedgerEntry,
+  VerificationProvenance,
+  VerificationWaiver
 } from "./types.js";
+import { CURRENT_VERIFICATION_PROVENANCE as VERIFICATION_PROVENANCE } from "./types.js";
 import { limitText, uniqueSorted } from "./util.js";
 
 export interface ProveOptions extends QueryOptions {
@@ -23,12 +39,34 @@ export interface ProveOptions extends QueryOptions {
   changeType?: ChangeType;
   tokenBudget?: number;
   taskId?: string;
+  ranTests?: string[];
+  ranCommands?: string[];
+  ranCommandReports?: VerificationCommandReport[];
+  waivedChecks?: string[];
+  waivers?: VerificationWaiver[];
+}
+
+export interface ProveReportedVerification {
+  hasEvidence: boolean;
+  ranTests: string[];
+  ranCommands: string[];
+  ranCommandReports: VerificationCommandReport[];
+  waivedChecks: string[];
+  waivers: VerificationWaiver[];
+  coverage: VerificationCoverage[];
+  commandEnvelopes: VerificationCommandEnvelope[];
+  commandPlan: VerificationCommandPlanEntry[];
+  ledger: VerificationLedgerEntry[];
+  waivedVerification: VerificationLedgerEntry[];
+  testsNotRun: TestRecommendation[];
+  verificationProvenance: VerificationProvenance;
 }
 
 export interface ProveData {
   mode: "proof_card";
   task: string;
   repoRoot: string;
+  verificationProvenance: VerificationProvenance;
   freshness: {
     stale: boolean;
     reason: string;
@@ -59,6 +97,7 @@ export interface ProveData {
     commandPlan: VerificationCommandPlanEntry[];
     ledgerPreview: VerificationLedgerEntry[];
     tests: TestRecommendation[];
+    reported: ProveReportedVerification;
   };
   policies: PolicyPackSummary;
   gaps: string[];
@@ -104,11 +143,23 @@ export async function proveQuery(repoRoot: string, options: ProveOptions = {}): 
   const commandPlan = verificationCommandPlanFromData(testData.verificationCommandPlan);
   const ledgerPreview = verificationLedgerFromData(testData.verificationLedgerPreview);
   const tests = testRecommendationsFromData(testData.tests);
+  const reported = reportedVerificationData({
+    repoRoot: repo,
+    index: session.index,
+    snapshot: snapshotLoad.snapshot,
+    tests,
+    ranTests: options.ranTests ?? [],
+    ranCommands: options.ranCommands ?? [],
+    ranCommandReports: options.ranCommandReports ?? [],
+    waivedChecks: options.waivedChecks ?? [],
+    waivers: options.waivers ?? []
+  });
   const gaps = proofGaps({
     freshness: session.freshness,
     worktree,
     snapshot,
     policies,
+    reported,
     focusGaps: stringArray(focusData.gaps),
     testGaps: stringArray(testData.gaps)
   });
@@ -116,6 +167,7 @@ export async function proveQuery(repoRoot: string, options: ProveOptions = {}): 
     mode: "proof_card",
     task,
     repoRoot: repo,
+    verificationProvenance: VERIFICATION_PROVENANCE,
     freshness: freshnessData(session.freshness),
     worktree,
     readFirst,
@@ -124,7 +176,8 @@ export async function proveQuery(repoRoot: string, options: ProveOptions = {}): 
       recommendedCommands,
       commandPlan,
       ledgerPreview,
-      tests
+      tests,
+      reported
     },
     policies,
     gaps,
@@ -156,11 +209,20 @@ function renderProofCard(data: ProveData, freshness: FreshnessInfo, refresh: Ref
     "Read first:",
     ...formatReadFirst(data.readFirst),
     "",
-    "Verification to earn credit:",
+    "Verification preview (not proof until reported):",
     ...formatCommands(data.verification.recommendedCommands),
     "",
     "Verification ledger preview:",
-    ...formatLedger(data.verification.ledgerPreview),
+    ...formatVerificationLedger(data.verification.ledgerPreview),
+    "",
+    "Reported verification evidence:",
+    ...formatReportedEvidence(data.verification.reported),
+    "",
+    "Reported verification coverage:",
+    ...formatVerificationCoverage(data.verification.reported.coverage),
+    "",
+    "Reported verification ledger:",
+    ...formatReportedLedger(data.verification.reported),
     "",
     "Local policies:",
     ...formatPolicies(data.policies),
@@ -242,6 +304,68 @@ function worktreeFromData(value: unknown, changedFiles: string[], fallbackDegrad
   };
 }
 
+function reportedVerificationData(input: {
+  repoRoot: string;
+  index: CodexaIndex;
+  snapshot?: TaskSnapshot;
+  tests: TestRecommendation[];
+  ranTests: string[];
+  ranCommands: string[];
+  ranCommandReports: VerificationCommandReport[];
+  waivedChecks: string[];
+  waivers: VerificationWaiver[];
+}): ProveReportedVerification {
+  const hasEvidence =
+    input.ranTests.length > 0 || input.ranCommands.length > 0 || input.ranCommandReports.length > 0 || input.waivedChecks.length > 0 || input.waivers.length > 0;
+  const checkCoverage = verificationEvidenceForCommandReports(input.index, input.ranCommands, input.ranCommandReports, input.repoRoot).coverage;
+  const checkContext = {
+    editPaths: input.snapshot?.plannedEditTargets ?? [],
+    reviewTargets: input.snapshot?.plannedFiles ?? input.snapshot?.plannedEditTargets ?? [],
+    selectedFiles: [],
+    workflows: [],
+    affectedEdges: [],
+    affectedTests: [],
+    tests: input.tests,
+    ranTests: input.ranTests,
+    verificationCoverage: checkCoverage
+  };
+  const workflowChecks = evaluateRequiredChecks(input.snapshot?.requiredWorkflowChecks ?? [], checkContext);
+  const dependencyChecks = evaluateRequiredChecks(input.snapshot?.requiredDependencyChecks ?? [], checkContext);
+  const verification = verificationLedgerForPostEdit({
+    index: input.index,
+    tests: input.tests,
+    ranTests: input.ranTests,
+    ranCommands: input.ranCommands,
+    ranCommandReports: input.ranCommandReports,
+    waivedChecks: input.waivedChecks,
+    waivers: input.waivers,
+    repoRoot: input.repoRoot,
+    workflowChecks,
+    dependencyChecks
+  });
+  const coverage = verification.coverage.map((entry) => sanitizeCoverageForDisplay(entry, input.repoRoot));
+  const ledger = verification.ledger.map((entry) => sanitizeLedgerForDisplay(entry, input.repoRoot));
+  return {
+    hasEvidence,
+    ranTests: input.ranTests.map((test) => sanitizeCommandText(test, input.repoRoot)),
+    ranCommands: input.ranCommands.map((command) => sanitizeCommandText(command, input.repoRoot)),
+    ranCommandReports: input.ranCommandReports.map((report) => sanitizeCommandReportForDisplay(report, input.repoRoot)),
+    waivedChecks: input.waivedChecks.map((check) => sanitizeCommandText(check, input.repoRoot)),
+    waivers: input.waivers.map((waiver) => ({
+      kind: waiver.kind,
+      target: sanitizeCommandText(waiver.target, input.repoRoot),
+      reason: sanitizeCommandText(waiver.reason, input.repoRoot)
+    })),
+    coverage,
+    commandEnvelopes: verification.commandEnvelopes.map((envelope) => sanitizeCommandEnvelopeForDisplay(envelope, input.repoRoot)),
+    commandPlan: verificationCommandPlan(coverage),
+    ledger,
+    waivedVerification: ledger.filter((entry) => entry.status === "waived"),
+    testsNotRun: verification.testsNotRun,
+    verificationProvenance: VERIFICATION_PROVENANCE
+  };
+}
+
 function verificationCommandPlanFromData(value: unknown): VerificationCommandPlanEntry[] {
   if (!Array.isArray(value)) {
     return [];
@@ -297,6 +421,7 @@ function proofGaps(input: {
   worktree: ProveData["worktree"];
   snapshot: ProveData["snapshot"];
   policies: PolicyPackSummary;
+  reported: ProveReportedVerification;
   focusGaps: string[];
   testGaps: string[];
 }): string[] {
@@ -306,6 +431,13 @@ function proofGaps(input: {
     ...(input.snapshot.status === "missing" ? [`no saved change-plan snapshot${input.snapshot.reason ? `: ${input.snapshot.reason}` : ""}`] : []),
     ...(input.snapshot.status === "blocked" ? [`latest change-plan snapshot blocked${input.snapshot.reason ? `: ${input.snapshot.reason}` : ""}`] : []),
     ...(input.policies.missing.length > 0 ? [`policy pack missing: ${input.policies.missing.join(", ")}`] : []),
+    ...(input.reported.hasEvidence && input.reported.coverage.length === 0 && (input.reported.ranCommands.length > 0 || input.reported.ranCommandReports.length > 0)
+      ? ["reported commands earned no classifier-backed verification coverage"]
+      : []),
+    ...(input.reported.hasEvidence ? input.reported.testsNotRun.map((test) => `reported verification missing: ${test.path}`) : []),
+    ...input.reported.ledger
+      .filter((entry) => entry.status === "missing" && entry.kind !== "test")
+      .map((entry) => `reported verification missing: ${entry.kind} ${entry.target}`),
     ...input.policies.warnings,
     ...input.focusGaps,
     ...input.testGaps
@@ -359,14 +491,33 @@ function formatCommands(commands: string[]): string[] {
   return commands.slice(0, 12).map((command) => `- ${command}`);
 }
 
-function formatLedger(ledger: VerificationLedgerEntry[]): string[] {
-  if (ledger.length === 0) {
-    return ["- none yet; report actual commands to post-edit-review after running them"];
+function formatReportedEvidence(reported: ProveReportedVerification): string[] {
+  if (!reported.hasEvidence) {
+    return ["- none supplied; pass --ran-command, --ran-test, --ran-command-report, --waive-check, or --waiver after verification runs"];
   }
-  return ledger.slice(0, 12).map((entry) => {
-    const command = entry.command ? `; command ${entry.command}` : "";
-    return `- ${entry.status}: ${entry.kind} ${entry.target}${command}`;
-  });
+  const lines = [
+    ...reported.ranTests.slice(0, 12).map((test) => `- ran test: ${test}`),
+    ...reported.ranCommands.slice(0, 12).map((command) => `- ran command: ${command}`),
+    ...reported.ranCommandReports.slice(0, 12).map((report) => `- command report: ${formatCommandReport(report)}`),
+    ...reported.waivedChecks.slice(0, 12).map((target) => `- legacy waiver: ${target}`),
+    ...reported.waivers.slice(0, 12).map((waiver) => `- waiver: ${waiver.kind} ${waiver.target}; ${waiver.reason}`)
+  ];
+  return lines.length > 0 ? lines : ["- evidence supplied, but no displayable entries after sanitization"];
+}
+
+function formatReportedLedger(reported: ProveReportedVerification): string[] {
+  if (!reported.hasEvidence && reported.ledger.length === 0) {
+    return ["- none; preview above shows what reported commands would need to cover"];
+  }
+  return formatVerificationLedger(reported.ledger);
+}
+
+function formatCommandReport(report: VerificationCommandReport): string {
+  const status = report.exitCode === undefined ? "exit unknown" : `exit ${report.exitCode}`;
+  const cwd = report.cwd ? `; cwd ${report.cwd}` : "";
+  const duration = report.durationMs === undefined ? "" : `; ${report.durationMs}ms`;
+  const summary = report.outputSummary ?? report.stderrSummary ?? report.stdoutSummary;
+  return `${report.command} (${status}${cwd}${duration}${summary ? `; ${summary}` : ""})`;
 }
 
 function formatPolicies(policies: PolicyPackSummary): string[] {

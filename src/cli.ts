@@ -441,17 +441,27 @@ program
   .option("--no-diff", "ignore current dirty git diff")
   .option("--change-type <type>", "change type: style, api, behavior, rename, delete, unknown", parseChangeType, "unknown")
   .option("--budget <tokens>", "approximate token budget", parseIntOption, 1800)
+  .option("--ran-test <test...>", "test file or direct test reference already run; repeat or pass multiple values")
+  .option("--ran-command <command...>", "verification command already run; repeat or pass multiple values")
+  .option("--ran-command-report <json...>", "structured command report JSON with command, cwd, packageManager, workspace/packageRoot/packageName, scriptName, args, exitCode, durationMs, and output summaries")
+  .option("--waive-check <target...>", "legacy test-target waiver shortcut; use --waiver for workflow/dependency checks")
+  .option("--waiver <json...>", "structured verification waiver JSON: {\"kind\":\"test\",\"target\":\"tests/foo.test.ts\",\"reason\":\"manual check\"}")
   .option("--json", "emit structured JSON")
   .option("--auto-refresh", "refresh a stale or missing index before proving", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before proving")
-  .description("Print a compact proof card: freshness, read-first files, plan snapshot, verification credit preview, policy pack, and gaps.")
-  .action(async (repo: string, opts: { task?: string; taskId?: string; diff: boolean; changeType: ChangeType; budget: number; json?: boolean; autoRefresh: boolean }) => {
+  .description("Print a compact proof card: freshness, read-first files, plan snapshot, verification preview, reported evidence, policy pack, and gaps.")
+  .action(async (repo: string, opts: { task?: string; taskId?: string; diff: boolean; changeType: ChangeType; budget: number; ranTest?: string[]; ranCommand?: string[]; ranCommandReport?: string[]; waiveCheck?: string[]; waiver?: string[]; json?: boolean; autoRefresh: boolean }) => {
     const result = await proveQuery(await resolveQueryRepoRoot(repo), {
       task: opts.task,
       taskId: opts.taskId,
       diff: opts.diff,
       changeType: opts.changeType,
       tokenBudget: opts.budget,
+      ranTests: opts.ranTest,
+      ranCommands: opts.ranCommand,
+      ranCommandReports: parseCommandReportOptions(opts.ranCommandReport),
+      waivedChecks: opts.waiveCheck,
+      waivers: parseWaiverOptions(opts.waiver),
       autoRefresh: opts.autoRefresh
     });
     console.log(opts.json ? JSON.stringify(result.data, null, 2) : result.text);

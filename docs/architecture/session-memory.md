@@ -363,8 +363,8 @@ Session memory protocol:
    `saveSnapshot: true`; session memory does not replace snapshots.
 5. After editing, call `post_edit_review`; Codexa auto-records the compact
    outcome summary.
-6. Before final response, call `test_plan` or account for why no targeted tests
-   apply.
+6. Before final response, call `test_plan`, then `proof_card` with reported
+   verification evidence or account for why no targeted tests apply.
 
 Codexa auto-records bounded `viewed` entries for context it returns. Do not log
 views manually.
