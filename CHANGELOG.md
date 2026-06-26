@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.6.0](https://github.com/mirnoorata/codexa/compare/v0.5.1...v0.6.0) (2026-06-26)
+
+
+### Features
+
+* add Codexa proof-card install workflow ([6954597](https://github.com/mirnoorata/codexa/commit/69545973beb2b4e4bef6dcd04ab69c9a5fbde327))
+
+
+### Bug Fixes
+
+* **mcp:** prefer focused workspace routing ([c985e18](https://github.com/mirnoorata/codexa/commit/c985e1843af633c1f306142733cd7207b6bf8ab1))
+* **test-plan:** require explicit verification scope ([b35a5bf](https://github.com/mirnoorata/codexa/commit/b35a5bf8bf7e5fd52c371da074bbaa8639fcc434))
+
 ## [0.5.1](https://github.com/mirnoorata/codexa/compare/v0.5.0...v0.5.1) (2026-06-24)
 
 
