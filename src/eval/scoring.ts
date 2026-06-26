@@ -105,6 +105,9 @@ export function scoreScenario(scenario: EvalScenario, result: QueryResult, basel
   if (scenario.oracle.maxFalsePositiveFiles !== undefined && falsePositiveFiles.length > scenario.oracle.maxFalsePositiveFiles) {
     failures.push(`false-positive files ${falsePositiveFiles.length} > ${scenario.oracle.maxFalsePositiveFiles}`);
   }
+  if (scenario.oracle.maxTestCount !== undefined && tests.length > scenario.oracle.maxTestCount) {
+    failures.push(`test count ${tests.length} > ${scenario.oracle.maxTestCount}`);
+  }
   for (const expectedCall of scenario.oracle.expectedCodexaCalls ?? []) {
     if (!actualCallTrace.includes(expectedCall)) {
       failures.push(`expected Codexa call missing from trace: ${expectedCall}`);

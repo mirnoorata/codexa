@@ -31,6 +31,7 @@ export interface EvalOracle {
   maxTextChars?: number;
   maxDataBytes?: number;
   maxFalsePositiveFiles?: number;
+  maxTestCount?: number;
   minFileRecall?: number;
   minChangedFileRecall?: number;
   minTestRecall?: number;

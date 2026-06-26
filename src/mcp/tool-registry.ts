@@ -90,13 +90,13 @@ export const MCP_TOOL_REGISTRY = [
   {
     name: "test_plan",
     title: "Codexa test plan",
-    description: "Which tests to run: recommend targeted tests and verification commands for the current diff or top-ranked files. Recommendations only, not execution evidence. Compact output.",
+    description: "Which tests to run: recommend targeted tests and verification commands for explicit target files or the current diff. Returns needs_target instead of inventing work when no scope exists. Recommendations only, not execution evidence. Compact output.",
     tier: "primary",
     phase: "verify",
     cost: "compact",
     writeEffects: "session-memory-auto",
     readOnly: false,
-    useWhen: "Select verification for the current diff or after post_edit_review.",
+    useWhen: "Select verification for explicit files, the current diff, or after post_edit_review has provided a review scope.",
     avoidWhen: "You need proof that tests ran; recommendations are not execution evidence.",
     nextToolUse: []
   },

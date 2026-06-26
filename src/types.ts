@@ -737,6 +737,10 @@ export interface PostEditReviewData extends BaseQueryData {
 
 export interface TestPlanData extends BaseQueryData {
   mode: "test_plan";
+  actionability?: string;
+  targetFiles?: string[];
+  unindexedTargetFiles?: string[];
+  rejectedTargetFiles?: string[];
   changedFiles?: string[];
   changedEntries?: ChangedFileEntry[];
   changedSymbols?: CompactChangedSymbol[];

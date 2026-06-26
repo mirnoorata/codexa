@@ -1919,6 +1919,22 @@ describe("Codexa indexer", () => {
   it("returns impact and test-plan evidence for mixed repos", async () => {
     const repo = await createFixtureRepo();
     await buildIndex({ repoRoot: repo });
+    const cleanPlan = await testPlanQuery(repo, true, { autoRefresh: false });
+    const cleanPlanData = cleanPlan.data as { actionability?: string; tests?: unknown[]; verificationCommands?: unknown[] };
+    expect(cleanPlan.text).toContain("No targeted test plan");
+    expect(cleanPlan.text).not.toContain("top-ranked files");
+    expect(cleanPlanData.actionability).toBe("needs_target");
+    expect(cleanPlanData.tests).toEqual([]);
+    expect(cleanPlanData.verificationCommands).toEqual([]);
+
+    const targetPlan = await testPlanQuery(repo, false, { autoRefresh: false, files: ["service/helpers.py"] });
+    const targetPlanData = targetPlan.data as { actionability?: string; targetFiles?: string[]; tests?: Array<{ path: string }> };
+    expect(targetPlanData.actionability).toBe("verify");
+    expect(targetPlanData.targetFiles).toEqual(["service/helpers.py"]);
+    expect(targetPlanData.tests?.map((test) => test.path)).toContain("tests/test_app.py");
+    expect(targetPlan.text).toContain("Test plan for 1 target file");
+    expect(targetPlan.text).toContain("tests/test_app.py");
+
     await writeFile(path.join(repo, "service/helpers.py"), "def normalize(value):\n    return value.strip().lower()\n", "utf8");
 
     const impact = await impactQuery(repo, { file: "service/helpers.py" }, { autoRefresh: true });

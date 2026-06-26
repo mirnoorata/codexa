@@ -236,6 +236,20 @@ describe("Codexa eval benchmark", () => {
     expect(scored.failures.join("\n")).toContain("structured data size");
   });
 
+  it("fails scenarios that emit too many test recommendations", () => {
+    const scored = scoreStructuredOutputForTest(
+      fakeQueryResult("No scoped plan should not still recommend tests.", {
+        tests: [{ path: "tests/unscoped.test.ts" }]
+      }),
+      {
+        maxTestCount: 0
+      }
+    );
+
+    expect(scored.passed).toBe(false);
+    expect(scored.failures.join("\n")).toContain("test count 1 > 0");
+  });
+
   it("extracts flattened post-edit verification signals without requiring a nested outcome wrapper", () => {
     const scored = scoreStructuredOutputForTest(
       fakeQueryResult("post-edit packet", {

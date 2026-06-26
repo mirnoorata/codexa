@@ -238,9 +238,10 @@ function renderConventions(index: CodexaIndex): string {
 - Use \`session_memory\` to recall or explicitly save session-local working
   memory. Auto-recorded \`viewed\` entries are Codexa-derived; agent claims stay
   agent-asserted and must not be promoted into codebase facts.
-- Use \`focus_brief\` for broad natural-language tasks before falling back to
-  top-ranked files. Use \`workflow_path\` for route/job/process changes and
-  \`dependency_path\` for explicit source-to-target relationship questions.
+- Use \`focus_brief\` for broad natural-language tasks, then narrow with
+  \`search\`, \`repo_map\`, or explicit files before verification planning. Use
+  \`workflow_path\` for route/job/process changes and \`dependency_path\` for
+  explicit source-to-target relationship questions.
 - Rule signals cover queue/run lifecycle, generator-node invariants,
   manifest/adapter contracts, managed output, frontend polling, and
   release/service-control boundaries when those facts are present.

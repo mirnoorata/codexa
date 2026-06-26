@@ -267,7 +267,7 @@ writes are allowed; source-file mutation is not exposed through MCP tools.
 | `codexa explain <repo> --symbol name` | Explain a symbol neighborhood. |
 | `codexa impact <repo> --file path` | Estimate blast radius for a file or symbol. |
 | `codexa diff-impact <repo>` | Summarize current dirty worktree impact. |
-| `codexa test-plan <repo> --diff` | Recommend targeted tests for current changes. |
+| `codexa test-plan <repo> --diff` | Recommend targeted tests for current changes. Use `--file path` when there is no dirty diff but you already know the target. |
 | `codexa brief <repo> --task "..."` | Get the default read-first packet before editing. |
 | `codexa context-pack <repo> --task "..."` | Get a larger task-shaped context packet. |
 | `codexa focus-brief <repo> --task "..."` | Orient around a broad project question. |
