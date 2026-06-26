@@ -32,7 +32,7 @@ export interface ServeMcpHttpOptions {
 
 const MCP_SERVER_INSTRUCTIONS = [
   `Codexa is a Codex-native codebase context and edit-safety server. Loop: ${PRIMARY_CODEX_LOOP}.`,
-  "Target unclear -> search first. Before edits -> change_plan(saveSnapshot=true). After edits -> post_edit_review with the commands that actually ran. Before final response -> test_plan.",
+  "Target unclear -> search first. Before edits -> change_plan(saveSnapshot=true). After edits -> post_edit_review with the commands that actually ran. Before final response -> test_plan, then proof_card with reported evidence.",
   "Each tool description states its typical output cost (compact/medium/large); prefer the cheapest sufficient tool. Tools refresh stale Codexa artifacts automatically when auto-refresh is enabled.",
   `Trust rules: ${NO_SOURCE_MUTATION_CONTRACT} Semantic retrieval is used only when configured; verify heuristic-heavy packets against source before editing.`,
   "Structured results are budget-compacted with truncation records naming dropped fields. Hosts with small MCP result limits can set CODEXA_MCP_STRUCTURED_BUDGET_BYTES."

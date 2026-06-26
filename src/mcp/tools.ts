@@ -23,6 +23,7 @@ import {
   testPlanQuery,
   workflowPathQuery
 } from "../queries.js";
+import { proveQuery } from "../prove.js";
 import type { QueryOptions, QueryResult, SessionMemoryInput } from "../types.js";
 import type { QuerySession } from "../query/session.js";
 import { RAW_SEARCH_EXPLICIT_PATTERN_LIMIT } from "../query/raw-search.js";
@@ -174,6 +175,33 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
     sessionMemoryScope: sessionMemoryScopeSchema,
     sessionMemoryEvidence: sessionMemoryEvidenceSchema
   } = options.schemas;
+  const ranCommandReportSchema = z.object({
+    command: z.string().min(1),
+    cwd: z.string().optional(),
+    packageManager: z.string().optional(),
+    workspace: z.string().optional(),
+    packageRoot: z.string().optional(),
+    packageName: z.string().optional(),
+    scriptName: z.string().optional(),
+    args: z.array(z.string()).max(80).optional(),
+    exitCode: z.number().int().nonnegative().optional(),
+    durationMs: z.number().nonnegative().optional(),
+    stdoutSummary: z.string().max(1000).optional(),
+    stderrSummary: z.string().max(1000).optional(),
+    outputSummary: z.string().max(1000).optional()
+  });
+  const verificationWaiverSchema = z.object({
+    kind: z.enum(["test", "workflow", "dependency"]),
+    target: z.string(),
+    reason: z.string()
+  });
+  const verificationEvidenceSchema = {
+    ranTests: z.array(z.string()).max(30).optional(),
+    ranCommands: z.array(z.string()).max(30).optional(),
+    ranCommandReports: z.array(ranCommandReportSchema).max(30).optional(),
+    waivedChecks: z.array(z.string()).max(30).optional(),
+    waivers: z.array(verificationWaiverSchema).max(30).optional()
+  } satisfies z.ZodRawShape;
 
   defineTool(
     "freshness",
@@ -534,39 +562,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
         tokenBudget: z.number().int().min(600).max(10000).optional(),
         limit: z.number().int().positive().max(30).optional(),
         includeSnippets: z.boolean().optional(),
-        ranTests: z.array(z.string()).max(30).optional(),
-        ranCommands: z.array(z.string()).max(30).optional(),
-        ranCommandReports: z
-          .array(
-            z.object({
-              command: z.string().min(1),
-              cwd: z.string().optional(),
-              packageManager: z.string().optional(),
-              workspace: z.string().optional(),
-              packageRoot: z.string().optional(),
-              packageName: z.string().optional(),
-              scriptName: z.string().optional(),
-              args: z.array(z.string()).max(80).optional(),
-              exitCode: z.number().int().nonnegative().optional(),
-              durationMs: z.number().nonnegative().optional(),
-              stdoutSummary: z.string().max(1000).optional(),
-              stderrSummary: z.string().max(1000).optional(),
-              outputSummary: z.string().max(1000).optional()
-            })
-          )
-          .max(30)
-          .optional(),
-        waivedChecks: z.array(z.string()).max(30).optional(),
-        waivers: z
-          .array(
-            z.object({
-              kind: z.enum(["test", "workflow", "dependency"]),
-              target: z.string(),
-              reason: z.string()
-            })
-          )
-          .max(30)
-          .optional(),
+        ...verificationEvidenceSchema,
         ...responseFormatSchema,
         ...semanticQuerySchema
       },
@@ -574,6 +570,44 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
       annotations: memoryWrite
     },
     async (input) => runTool((session) => postEditReviewQuery(session, { ...input, persistOutcome: false }, toolQueryOptions(input)), { toolName: "post_edit_review", input })
+  );
+
+  defineTool(
+    "proof_card",
+    {
+      inputSchema: {
+        task: z.string().optional(),
+        taskId: z.string().optional(),
+        files: z.array(z.string()).max(20).optional(),
+        diff: z.boolean().optional(),
+        changeType: changeTypeSchema.optional(),
+        tokenBudget: z.number().int().min(600).max(8000).optional(),
+        ...verificationEvidenceSchema,
+        ...responseFormatSchema,
+        ...semanticQuerySchema
+      },
+      outputSchema,
+      annotations: memoryWrite
+    },
+    async (input) =>
+      runTool(
+        (session) =>
+          proveQuery(session.repoRoot, {
+            ...toolQueryOptions(input),
+            task: input.task,
+            taskId: input.taskId,
+            files: input.files,
+            diff: input.diff ?? true,
+            changeType: input.changeType as ChangeType | undefined,
+            tokenBudget: input.tokenBudget,
+            ranTests: input.ranTests,
+            ranCommands: input.ranCommands,
+            ranCommandReports: input.ranCommandReports,
+            waivedChecks: input.waivedChecks,
+            waivers: input.waivers
+          }),
+        { toolName: "proof_card", input }
+      )
   );
   assertMcpToolRegistrationCoverage([...toolDefinitions.keys()]);
   for (const toolName of MCP_TOOL_NAMES) {

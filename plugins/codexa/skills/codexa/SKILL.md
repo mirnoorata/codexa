@@ -10,7 +10,7 @@ Use this skill when a task involves understanding, editing, reviewing, or verify
 ## Operating Rules
 
 1. Resolve the active repository first. If the repo has `.codex/config.toml`, use the project-local Codexa MCP server. If the MCP server is unavailable, run the equivalent `codexa` CLI command from the repository.
-2. Primary Codexa path: `session_context -> search(if target unclear) -> task_brief -> change_plan(saveSnapshot) -> post_edit_review -> test_plan`.
+2. Primary Codexa path: `session_context -> search(if target unclear) -> task_brief -> change_plan(saveSnapshot) -> post_edit_review -> test_plan -> proof_card`.
 3. For broad tasks, call `session_context` first. If the target is unclear or `actionability` says `needs_target`, `raw_search_better`, or `raw_search_sufficient`, use first-class `search` or ask for an explicit target before planning edits.
 4. For code edits, debugging, reviews, or non-trivial refactors, call `search` first when the target is unclear; otherwise call `task_brief` before reading or editing source.
 5. For symbol-level changes, call `symbol_context` or `impact` when you need callers, callees, implementations, tests, risks, edge evidence, or the next exact Codexa tool.
@@ -38,6 +38,7 @@ codexa impact . --symbol "<symbol_or_stable_id>"
 codexa change-plan . --task "<task>" --save-snapshot --task-id "<task_id>"
 codexa post-edit-review . --task-id "<task_id>" --ran-command "<command>"
 codexa test-plan .
+codexa prove . --task "<task>" --task-id "<task_id>" --ran-command "<command>"
 codexa serve . --transport http --host 127.0.0.1 --port 8729
 ```
 

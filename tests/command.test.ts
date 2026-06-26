@@ -139,6 +139,41 @@ describe("runCommand", () => {
     expect(help.stdout).toContain("Import risk and symbol/code-intelligence reports");
   });
 
+  it("advertises proof cards and local policy packs in CLI help", async () => {
+    const help = await runCommand(process.execPath, [path.resolve("dist/cli.js"), "--help"], {
+      timeoutMs: 2_000,
+      maxBufferBytes: 32 * 1024
+    });
+
+    expect(help.ok).toBe(true);
+    expect(help.stdout).toContain("prove");
+    expect(help.stdout).toContain("policy-init");
+  });
+
+  it("advertises policy-pack creation on init", async () => {
+    const help = await runCommand(process.execPath, [path.resolve("dist/cli.js"), "init", "--help"], {
+      timeoutMs: 2_000,
+      maxBufferBytes: 32 * 1024
+    });
+
+    expect(help.ok).toBe(true);
+    expect(help.stdout).toContain("--policy-pack");
+    expect(help.stdout).toContain("local proof policy pack");
+  });
+
+  it("advertises reported verification evidence flags on proof cards", async () => {
+    const help = await runCommand(process.execPath, [path.resolve("dist/cli.js"), "prove", "--help"], {
+      timeoutMs: 2_000,
+      maxBufferBytes: 32 * 1024
+    });
+
+    expect(help.ok).toBe(true);
+    expect(help.stdout).toContain("--ran-test <test...>");
+    expect(help.stdout).toContain("--ran-command <command...>");
+    expect(help.stdout).toContain("--ran-command-report <json...>");
+    expect(help.stdout).toContain("--waiver <json...>");
+  });
+
   it("passes SCIP report arguments through the static-analysis CLI", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-cli-scip-"));
     await mkdir(path.join(repo, "src"), { recursive: true });

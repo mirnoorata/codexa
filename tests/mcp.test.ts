@@ -418,7 +418,7 @@ describe("Codexa MCP server", () => {
   it("keeps the primary MCP happy path small and demotes graph/workflow tools", () => {
     const primaryTools = MCP_TOOL_CATALOG.filter((tool) => tool.tier === "primary").map((tool) => tool.name);
 
-    expect(primaryTools).toEqual(["session_context", "search", "task_brief", "change_plan", "post_edit_review", "test_plan"]);
+    expect(primaryTools).toEqual(["session_context", "search", "task_brief", "change_plan", "post_edit_review", "test_plan", "proof_card"]);
     expect(MCP_TOOL_CATALOG.find((tool) => tool.name === "workflow_path")).toMatchObject({ tier: "advanced" });
     expect(MCP_TOOL_CATALOG.find((tool) => tool.name === "change_plan")).toMatchObject({
       useWhen: expect.stringContaining("saveSnapshot=true"),
@@ -435,7 +435,8 @@ describe("Codexa MCP server", () => {
       expect.arrayContaining([
         expect.objectContaining({ name: "change_plan", title: "Codexa change plan", description: expect.stringContaining("saveSnapshot=true") }),
         expect.objectContaining({ name: "search", title: "Codexa hybrid semantic search", description: expect.stringContaining("Search the codebase") }),
-        expect.objectContaining({ name: "post_edit_review", title: "Codexa post-edit review", description: expect.stringContaining("Review code changes for drift") })
+        expect.objectContaining({ name: "post_edit_review", title: "Codexa post-edit review", description: expect.stringContaining("Review code changes for drift") }),
+        expect.objectContaining({ name: "proof_card", title: "Codexa proof card", description: expect.stringContaining("Final proof packet") })
       ])
     );
   });
@@ -1118,7 +1119,8 @@ describe("Codexa MCP server", () => {
         "dependency_path",
         "workflow_path",
         "change_plan",
-        "post_edit_review"
+        "post_edit_review",
+        "proof_card"
       ])
     );
     const contextTool = tools.tools.find((tool) => tool.name === "context_pack");
@@ -1146,6 +1148,10 @@ describe("Codexa MCP server", () => {
     const testPlanSchema = JSON.stringify(tools.tools.find((tool) => tool.name === "test_plan")?.inputSchema);
     expect(testPlanSchema).toContain("files");
     expect(testPlanSchema).toContain("changeType");
+    const proofCardSchema = JSON.stringify(tools.tools.find((tool) => tool.name === "proof_card")?.inputSchema);
+    expect(proofCardSchema).toContain("files");
+    expect(proofCardSchema).toContain("ranCommandReports");
+    expect(proofCardSchema).toContain("waivers");
     expect(tools.tools.find((tool) => tool.name === "impact")?.annotations?.readOnlyHint).toBe(false);
     expect(tools.tools.find((tool) => tool.name === "freshness")?.annotations?.readOnlyHint).toBe(true);
 
@@ -1271,6 +1277,23 @@ describe("Codexa MCP server", () => {
     const targetedTestPlanData = targetedTestPlan.structuredContent as { actionability?: string; data?: { targetFiles?: string[] } };
     expect(targetedTestPlanData.actionability).toBe("verify");
     expect(targetedTestPlanData.data?.targetFiles).toEqual(["src/index.ts"]);
+
+    const cleanProofCard = await client.callTool({ name: "proof_card", arguments: { diff: false } });
+    const cleanProofCardData = cleanProofCard.structuredContent as {
+      actionability?: string;
+      data?: { actionability?: string; verification?: { tests?: unknown[]; recommendedCommands?: unknown[] }; gaps?: string[] };
+    };
+    expect(cleanProofCardData.actionability).toBe("needs_target");
+    expect(cleanProofCardData.data?.actionability).toBe("needs_target");
+    expect(cleanProofCardData.data?.verification?.tests).toEqual([]);
+    expect(cleanProofCardData.data?.verification?.recommendedCommands).toEqual([]);
+    expect(cleanProofCardData.data?.gaps).toContain("test plan needs target files or a dirty diff");
+
+    const targetedProofCard = await client.callTool({ name: "proof_card", arguments: { files: ["src/index.ts"], diff: false } });
+    const targetedProofCardData = targetedProofCard.structuredContent as { actionability?: string; data?: { actionability?: string; verification?: { tests?: unknown[] } } };
+    expect(targetedProofCardData.actionability).toBe("verify");
+    expect(targetedProofCardData.data?.actionability).toBe("verify");
+    expect(targetedProofCardData.data?.verification?.tests?.length).toBeGreaterThan(0);
 
     await writeFile(path.join(repo, "src/index.ts"), "export function changedSymbol() { return 2 }\n", "utf8");
     const dirtyFreshness = await client.callTool({ name: "freshness", arguments: {} });
@@ -1458,6 +1481,42 @@ describe("Codexa MCP server", () => {
     expect(postEditData.outcome?.waivedChecks).toEqual([]);
     expect(postEditData.outcome?.verificationCoverage?.length).toBeGreaterThan(0);
     expect(postEditData.outcome?.verificationLedger?.length).toBeGreaterThan(0);
+
+    const proofCard = await client.callTool({
+      name: "proof_card",
+      arguments: {
+        taskId: "mcp-changed-symbol",
+        ranCommandReports: [{ command: "npm test", cwd: repo, packageManager: "npm", packageRoot: ".", scriptName: "test", args: [], exitCode: 0, durationMs: 50, stdoutSummary: "vitest passed" }]
+      }
+    });
+    expect(JSON.stringify(proofCard)).toContain("Codexa proof card");
+    expect(JSON.stringify(proofCard)).toContain("Reported verification ledger");
+    const proofEnvelope = proofCard.structuredContent as {
+      mode?: string;
+      actionability?: string;
+      data: {
+        mode?: string;
+        verification?: {
+          reported?: {
+            hasEvidence?: boolean;
+            commandEnvelopes?: Array<{ command?: string; cwd?: string; scriptName?: string; source?: string }>;
+            ledger?: Array<{ status?: string; target?: string; evidence?: string[] }>;
+            verificationProvenance?: typeof CURRENT_VERIFICATION_PROVENANCE;
+          };
+        };
+        verificationProvenance?: typeof CURRENT_VERIFICATION_PROVENANCE;
+      };
+      toolPolicy?: { name?: string; phase?: string; readOnly?: boolean };
+    };
+    expect(proofEnvelope.mode).toBe("proof_card");
+    expect(proofEnvelope.actionability).toBe("verify");
+    expect(proofEnvelope.toolPolicy).toMatchObject({ name: "proof_card", phase: "verify", readOnly: false });
+    expect(proofEnvelope.data.mode).toBe("proof_card");
+    expect(proofEnvelope.data.verificationProvenance).toEqual(CURRENT_VERIFICATION_PROVENANCE);
+    expect(proofEnvelope.data.verification?.reported?.hasEvidence).toBe(true);
+    expect(proofEnvelope.data.verification?.reported?.verificationProvenance).toEqual(CURRENT_VERIFICATION_PROVENANCE);
+    expect(proofEnvelope.data.verification?.reported?.commandEnvelopes?.[0]).toMatchObject({ command: "npm test", cwd: "<repo>", scriptName: "test", source: "reported" });
+    expect(proofEnvelope.data.verification?.reported?.ledger?.some((entry) => entry.status === "covered" && entry.evidence?.some((item) => item.includes("npm test")))).toBe(true);
 
     const unverifiedPostEdit = await client.callTool({
       name: "post_edit_review",
@@ -2528,7 +2587,7 @@ describe("Codexa MCP server", () => {
     }
   });
 
-  it("marks semantic OpenAI-capable MCP tools as open-world, including post_edit_review", async () => {
+  it("marks semantic OpenAI-capable MCP tools as open-world, including post_edit_review and proof_card", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-semantic-openworld-"));
     execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
     await mkdir(path.join(repo, "src"), { recursive: true });
@@ -2551,8 +2610,11 @@ describe("Codexa MCP server", () => {
     expect(tools.tools.find((tool) => tool.name === "search")?.annotations?.openWorldHint).toBe(true);
     expect(tools.tools.find((tool) => tool.name === "change_plan")?.annotations?.openWorldHint).toBe(true);
     expect(tools.tools.find((tool) => tool.name === "post_edit_review")?.annotations?.openWorldHint).toBe(true);
+    expect(tools.tools.find((tool) => tool.name === "proof_card")?.annotations?.openWorldHint).toBe(true);
     const postEditSchema = JSON.stringify(tools.tools.find((tool) => tool.name === "post_edit_review")?.inputSchema);
     expect(postEditSchema).toContain("semanticProvider");
+    const proofCardSchema = JSON.stringify(tools.tools.find((tool) => tool.name === "proof_card")?.inputSchema);
+    expect(proofCardSchema).toContain("semanticProvider");
     await client.close();
   });
 

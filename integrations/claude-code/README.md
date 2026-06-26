@@ -42,6 +42,7 @@ Slash commands available to Claude:
 | ------------------ | ------------------------------------ |
 | `/codexa-status`   | `codexa status <repo>`               |
 | `/codexa-brief`    | `codexa brief <repo> --diff`         |
+| `/codexa-prove`    | `codexa prove <repo> --diff`         |
 | `/codexa-plan`     | `codexa change-plan --save-snapshot` |
 | `/codexa-review`   | `codexa post-edit-review`            |
 | `/codexa-impact`   | `codexa impact` / `diff-impact`      |
@@ -60,7 +61,7 @@ They do not maintain a separate index, ranking layer, planner, or source-editing
 path. The primary Codexa path stays:
 
 ```text
-session_context -> task_brief -> change_plan(saveSnapshot) -> post_edit_review -> test_plan
+session_context -> task_brief -> change_plan(saveSnapshot) -> post_edit_review -> test_plan -> proof_card
 ```
 
 Use `symbol_context`, `impact`, `callers`, and `callees` when Claude needs to
@@ -79,6 +80,12 @@ the shared Codexa MCP/CLI contract.
 Treat `codexa/integrations/` as a local Claude Code plugin marketplace. It
 ships inside the npm package, so both a git checkout and an npm install work
 as the marketplace source.
+
+For a repo that should be ready for both proof cards and Claude hook guidance:
+
+```bash
+codexa init <repo> --claude-md --policy-pack
+```
 
 ### Quick, supported path (persistent)
 

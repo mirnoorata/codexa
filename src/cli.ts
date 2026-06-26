@@ -13,6 +13,8 @@ import { serveMcp, serveMcpHttp, type McpTransportKind } from "./mcp.js";
 import { resolveMcpRepoRoot, shouldPreferConfiguredRepoRoot } from "./mcp-repo-root.js";
 import { buildSemanticIndex, semanticProviderFromValue, type SemanticProviderKind } from "./semantic-retrieval.js";
 import { updateStaticAnalysisReports } from "./static-analysis.js";
+import { initializePolicyPack } from "./policy-pack.js";
+import { proveQuery } from "./prove.js";
 import { recordAdvisoryHookEvent, runPostEditHook, runPreEditHook } from "./cli/hooks.js";
 import {
   contextPackQuery,
@@ -67,6 +69,7 @@ program
   .option("--agents-md", "write a managed Codexa workflow block into the repo's AGENTS.md (Codex)", false)
   .option("--claude-md", "write a managed Codexa workflow block into the repo's CLAUDE.md (Claude Code)", false)
   .option("--claude", "write the codexa MCP server entry into the repo's .mcp.json for Claude Code", false)
+  .option("--policy-pack", "also create the default local proof policy pack without overwriting existing policy files", false)
   .description("Initialize Codexa for a project so future Codex sessions discover it automatically.")
   .action(
     async (
@@ -81,6 +84,7 @@ program
         agentsMd: boolean;
         claudeMd: boolean;
         claude: boolean;
+        policyPack: boolean;
       }
     ) => {
       const result = await initializeProject(repo, {
@@ -92,7 +96,8 @@ program
         toolProfile: opts.tools,
         agentsMd: opts.agentsMd,
         claudeMd: opts.claudeMd,
-        claude: opts.claude
+        claude: opts.claude,
+        policyPack: opts.policyPack
       });
       console.log(`Codexa initialized for ${result.repoRoot}`);
       console.log(`Config: ${result.configPath}`);
@@ -107,6 +112,11 @@ program
       }
       if (result.claudeMcpPath) {
         console.log(`Claude Code MCP config: ${result.claudeMcpPath}`);
+      }
+      if (result.policyPack) {
+        console.log(`Policy pack: ${result.policyPack.directory}`);
+        console.log(`Policy written: ${result.policyPack.written.join(", ") || "none"}`);
+        console.log(`Policy skipped: ${result.policyPack.skipped.join(", ") || "none"}`);
       }
       if (result.launchNote) {
         console.log(result.launchNote);
@@ -416,6 +426,55 @@ program
     if (!result.ok) {
       process.exitCode = 1;
     }
+  });
+
+program
+  .command("policy-init")
+  .argument("[repo]", "repository root; defaults to the current directory", process.cwd())
+  .option("--force", "overwrite existing .codex/policies/*.json files", false)
+  .description("Write the default local Codexa policy pack consumed by proof cards.")
+  .action(async (repo: string, opts: { force: boolean }) => {
+    const result = await initializePolicyPack(path.resolve(repo), { force: opts.force });
+    console.log(`Codexa policy pack: ${result.directory}`);
+    console.log(`Written: ${result.written.join(", ") || "none"}`);
+    console.log(`Skipped: ${result.skipped.join(", ") || "none"}`);
+  });
+
+program
+  .command("prove")
+  .argument("[repo]", "repository root; defaults to the current directory", process.cwd())
+  .option("--task <task>", "task description to shape the proof card")
+  .option("--task-id <id>", "saved change-plan task id to bind proof to")
+  .option("--diff", "include current dirty git diff", true)
+  .option("--no-diff", "ignore current dirty git diff")
+  .option("--change-type <type>", "change type: style, api, behavior, rename, delete, unknown", parseChangeType, "unknown")
+  .option("--file <path...>", "target file path for proof-card verification; repeat or pass multiple paths")
+  .option("--budget <tokens>", "approximate token budget", parseIntOption, 1800)
+  .option("--ran-test <test...>", "test file or direct test reference already run; repeat or pass multiple values")
+  .option("--ran-command <command...>", "verification command already run; repeat or pass multiple values")
+  .option("--ran-command-report <json...>", "structured command report JSON with command, cwd, packageManager, workspace/packageRoot/packageName, scriptName, args, exitCode, durationMs, and output summaries")
+  .option("--waive-check <target...>", "legacy test-target waiver shortcut; use --waiver for workflow/dependency checks")
+  .option("--waiver <json...>", "structured verification waiver JSON: {\"kind\":\"test\",\"target\":\"tests/foo.test.ts\",\"reason\":\"manual check\"}")
+  .option("--json", "emit structured JSON")
+  .option("--auto-refresh", "refresh a stale or missing index before proving", true)
+  .option("--no-auto-refresh", "do not refresh a stale or missing index before proving")
+  .description("Print a compact proof card: freshness, read-first files, plan snapshot, verification preview, reported evidence, policy pack, and gaps.")
+  .action(async (repo: string, opts: { task?: string; taskId?: string; diff: boolean; changeType: ChangeType; file?: string[]; budget: number; ranTest?: string[]; ranCommand?: string[]; ranCommandReport?: string[]; waiveCheck?: string[]; waiver?: string[]; json?: boolean; autoRefresh: boolean }) => {
+    const result = await proveQuery(await resolveQueryRepoRoot(repo), {
+      task: opts.task,
+      taskId: opts.taskId,
+      diff: opts.diff,
+      changeType: opts.changeType,
+      files: opts.file,
+      tokenBudget: opts.budget,
+      ranTests: opts.ranTest,
+      ranCommands: opts.ranCommand,
+      ranCommandReports: parseCommandReportOptions(opts.ranCommandReport),
+      waivedChecks: opts.waiveCheck,
+      waivers: parseWaiverOptions(opts.waiver),
+      autoRefresh: opts.autoRefresh
+    });
+    console.log(opts.json ? JSON.stringify(result.data, null, 2) : result.text);
   });
 
 program

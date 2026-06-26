@@ -13,6 +13,16 @@ import { normalizeSearchText } from "./search.js";
 import { formatTestRecommendations, narrowTestRecommendationsByChangeType, recommendTests, uniqueTests } from "./tests.js";
 import { findFile, normalizeInputPaths, resolveFileTarget, resolveSymbolTarget } from "./targets.js";
 import { formatVerificationCoverage, formatVerificationLedger, verificationEvidenceForCommandReports, verificationLedgerForPostEdit } from "./verification.js";
+import {
+  sanitizeCommandEnvelopeForDisplay,
+  sanitizeCommandReportForDisplay,
+  sanitizeCommandText,
+  sanitizeCoverageForDisplay,
+  sanitizeLedgerForDisplay,
+  sanitizeSummary,
+  type DisplayCommandReport
+} from "./verification-display.js";
+import { evaluateRequiredChecks } from "./required-checks.js";
 import { isCodexaControlPath, formatChangedEntry } from "./worktree.js";
 import { postEditDecision } from "./post-edit/decision.js";
 import { postEditDirtyScope } from "./post-edit/dirty-scope.js";
@@ -41,7 +51,6 @@ import type {
   QueryResult,
   SymbolFact,
   TaskSnapshot,
-  TaskSnapshotRequiredCheck,
   TaskSnapshotRiskFile,
   TaskSnapshotSymbol,
   TestRecommendation,
@@ -57,8 +66,6 @@ import { limitText, stableId, uniqueSorted } from "../util.js";
 interface PostEditReviewInternalInput {
   trustedRunnerReports?: AutoVerifyCommandReport[];
 }
-
-type DisplayCommandReport = VerificationCommandReport & { runner?: AutoVerifyReportRunner };
 
 export async function postEditReviewQuery(
   sessionInput: QuerySessionInput,
@@ -775,95 +782,6 @@ function formatModifiedSymbols(modifiedSymbols: string[], modifiedPublicSymbols:
   return [`- ${modifiedSymbols.slice(0, 12).join(", ")}${modifiedSymbols.length > 12 ? ", ..." : ""}${publicSuffix}`];
 }
 
-function evaluateRequiredChecks(
-  checks: TaskSnapshotRequiredCheck[],
-  input: {
-    editPaths: string[];
-    reviewTargets: string[];
-    selectedFiles: string[];
-    workflows: WorkflowTraceFact[];
-    affectedEdges: GraphEdgeFact[];
-    affectedTests: string[];
-    tests: TestRecommendation[];
-    ranTests: string[];
-    verificationCoverage: VerificationCoverage[];
-  }
-): PostEditCheckResult[] {
-  if (checks.length === 0) {
-    return [];
-  }
-  const editSet = new Set(input.editPaths);
-  const reviewSet = new Set(input.reviewTargets);
-  const selectedSet = new Set(input.selectedFiles);
-  const affectedTestSet = new Set(input.affectedTests);
-  const workflowTitles = new Set(input.workflows.map((workflow) => workflow.title));
-  const edgePaths = new Set(input.affectedEdges.flatMap((edge) => [edge.fromPath, edge.toPath]).filter((filePath): filePath is string => Boolean(filePath)));
-  return checks.map((check) => {
-    const relevant = input.editPaths.length === 0 || check.paths.some((filePath) => editSet.has(filePath) || reviewSet.has(filePath));
-    const evidencePaths = check.paths.filter((filePath) => !editSet.has(filePath));
-    const hasNonEditedEvidence = evidencePaths.some((filePath) => edgePaths.has(filePath) || selectedSet.has(filePath) || affectedTestSet.has(filePath));
-    if (!relevant) {
-      return { ...check, status: "not_applicable" };
-    }
-    const covered =
-      check.kind === "workflow"
-        ? workflowTitles.has(check.target) && hasNonEditedEvidence
-        : hasNonEditedEvidence || dependencyCheckCoveredByVerification(check, input);
-    return { ...check, status: covered ? "covered" : "missing" };
-  });
-}
-
-function dependencyCheckCoveredByVerification(
-  check: TaskSnapshotRequiredCheck,
-  input: {
-    tests: TestRecommendation[];
-    ranTests: string[];
-    verificationCoverage: VerificationCoverage[];
-  }
-): boolean {
-  const checkPaths = check.paths.map(normalizePathLike);
-  const testPaths = check.paths.filter(isTestPath);
-  if (
-    testPaths.some((testPath) =>
-      input.ranTests.some((ranTest) => normalizePathLike(ranTest) === normalizePathLike(testPath)) ||
-      input.verificationCoverage.some((coverage) => coverage.kind === (testPath.endsWith(".py") ? "python-tests" : "javascript-tests") && coverageCoversPath(coverage, testPath))
-    )
-  ) {
-    return true;
-  }
-    const sourcePaths = check.paths.filter((filePath) => !isTestPath(filePath));
-    return input.verificationCoverage.some((coverage) => {
-      if (coverage.targetPath) {
-        return checkPaths.includes(normalizePathLike(coverage.targetPath)) && coverageKindCompatibleWithSourcePath(coverage.kind, coverage.targetPath);
-      }
-      return sourcePaths.some((filePath) => coverageKindCompatibleWithSourcePath(coverage.kind, filePath) && coverageCoversPath(coverage, filePath));
-    });
-  }
-
-function coverageKindCompatibleWithSourcePath(kind: VerificationCoverage["kind"], filePath: string): boolean {
-  const normalized = normalizePathLike(filePath).toLowerCase();
-  if (normalized.endsWith(".py")) {
-    return kind === "python-tests";
-  }
-  if (/\.(?:cjs|cts|js|jsx|mjs|mts|ts|tsx)$/u.test(normalized)) {
-    return kind === "build" || kind === "typescript-syntax" || kind === "javascript-tests";
-  }
-  return kind === "build";
-}
-
-function coverageCoversPath(coverage: VerificationCoverage, filePath: string): boolean {
-  const normalizedPath = normalizePathLike(filePath);
-  if (coverage.targetPath) {
-    return normalizePathLike(coverage.targetPath) === normalizedPath;
-  }
-  const normalizedScope = normalizePathLike(coverage.scope ?? ".");
-  return normalizedScope === "." || normalizedPath === normalizedScope || normalizedPath.startsWith(`${normalizedScope}/`);
-}
-
-function normalizePathLike(value: string): string {
-  return value.replace(/\\/gu, "/").replace(/^\.\//u, "").replace(/\/+/gu, "/");
-}
-
 function formatCheckResults(checks: PostEditCheckResult[]): string[] {
   if (checks.length === 0) {
     return ["- none saved in the task snapshot"];
@@ -1007,162 +925,6 @@ function autoVerifySnapshotDigest(snapshot: TaskSnapshot): string {
 function absoluteSubpath(candidate: string, parent: string): boolean {
   const relative = path.relative(path.resolve(parent), path.resolve(candidate));
   return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
-}
-
-function sanitizeCommandReportForDisplay(report: DisplayCommandReport, repoRoot: string): DisplayCommandReport {
-  return {
-    ...report,
-    command: sanitizeCommandText(report.command, repoRoot),
-    cwd: sanitizePathField(report.cwd, repoRoot),
-    packageManager: sanitizeSummary(report.packageManager, repoRoot),
-    workspace: sanitizeSummary(report.workspace, repoRoot),
-    packageRoot: sanitizePathField(report.packageRoot, repoRoot),
-    packageName: sanitizeSummary(report.packageName, repoRoot),
-    scriptName: sanitizeSummary(report.scriptName, repoRoot),
-    stdoutSummary: sanitizeSummary(report.stdoutSummary, repoRoot),
-    stderrSummary: sanitizeSummary(report.stderrSummary, repoRoot),
-    outputSummary: sanitizeSummary(report.outputSummary, repoRoot),
-    args: sanitizeCommandArgs(report.args, repoRoot),
-    runner: sanitizeRunnerForDisplay(report.runner, repoRoot)
-  };
-}
-
-function sanitizeRunnerForDisplay(runner: AutoVerifyReportRunner | undefined, repoRoot: string): AutoVerifyReportRunner | undefined {
-  if (!runner) {
-    return undefined;
-  }
-  return {
-    ...runner,
-    cwdRealpath: sanitizePathField(runner.cwdRealpath, repoRoot) ?? runner.cwdRealpath,
-    targetRealpaths: runner.targetRealpaths.map((target) => sanitizePathField(target, repoRoot) ?? target),
-    allowedBy: runner.allowedBy.map((reason) => sanitizeSummary(reason, repoRoot) ?? reason),
-    skippedReason: sanitizeSummary(runner.skippedReason, repoRoot)
-  };
-}
-
-function sanitizeCommandEnvelopeForDisplay(envelope: VerificationCommandEnvelope, repoRoot: string): VerificationCommandEnvelope {
-  return {
-    ...envelope,
-    command: sanitizeCommandText(envelope.command, repoRoot),
-    cwd: sanitizePathField(envelope.cwd, repoRoot),
-    packageManager: sanitizeSummary(envelope.packageManager, repoRoot),
-    workspace: sanitizeSummary(envelope.workspace, repoRoot),
-    packageRoot: sanitizePathField(envelope.packageRoot, repoRoot),
-    packageName: sanitizeSummary(envelope.packageName, repoRoot),
-    scriptName: sanitizeSummary(envelope.scriptName, repoRoot),
-    stdoutSummary: sanitizeSummary(envelope.stdoutSummary, repoRoot),
-    stderrSummary: sanitizeSummary(envelope.stderrSummary, repoRoot),
-    outputSummary: sanitizeSummary(envelope.outputSummary, repoRoot),
-    args: sanitizeCommandArgs(envelope.args, repoRoot) ?? []
-  };
-}
-
-function sanitizeCoverageForDisplay(entry: VerificationCoverage, repoRoot: string): VerificationCoverage {
-  return {
-    ...entry,
-    command: sanitizeCommandText(entry.command, repoRoot),
-    source: sanitizeSummary(entry.source, repoRoot) ?? entry.source,
-    scope: sanitizePathField(entry.scope, repoRoot),
-    targetPath: sanitizePathField(entry.targetPath, repoRoot),
-    details: entry.details.map((detail) => sanitizeSummary(detail, repoRoot) ?? "").filter(Boolean),
-    outputSummary: sanitizeSummary(entry.outputSummary, repoRoot),
-    commandEnvelope: entry.commandEnvelope ? sanitizeCommandEnvelopeForDisplay(entry.commandEnvelope, repoRoot) : undefined
-  };
-}
-
-function sanitizeLedgerForDisplay(entry: VerificationLedgerEntry, repoRoot: string): VerificationLedgerEntry {
-  return {
-    ...entry,
-    command: entry.command ? sanitizeCommandText(entry.command, repoRoot) : undefined,
-    evidence: entry.evidence.map((item) => sanitizeSummary(item, repoRoot) ?? "").filter(Boolean)
-  };
-}
-
-function sanitizeCommandText(value: string, repoRoot: string): string {
-  return sanitizeSummary(value, repoRoot) ?? "";
-}
-
-function sanitizeSummary(value: string | undefined, repoRoot: string): string | undefined {
-  const clean = redactSecretText(value)
-    ?.replaceAll(repoRoot, "<repo>")
-    .replace(/__outside_repo__:[^\s;|)]+/gu, "__outside_repo__:<outside-repo>")
-    .replace(/(^|[\s([,{])\/[^\s;|)\]'",]+/gu, "$1<abs-path>")
-    .replace(/(^|[\s([,{])(?:\.\.?\/)[^\s;|)\]'",]+/gu, "$1<rel-path>")
-    .replace(/\s+/gu, " ")
-    .trim();
-  if (!clean) {
-    return undefined;
-  }
-  return clean.length > 500 ? `${clean.slice(0, 497)}...` : clean;
-}
-
-function sanitizeCommandArgs(args: string[] | undefined, repoRoot: string): string[] | undefined {
-  if (!args) {
-    return undefined;
-  }
-  let redactNext = false;
-  return args.map((arg) => {
-    if (redactNext) {
-      redactNext = false;
-      return "<redacted>";
-    }
-    if (isSecretFlag(arg) && !arg.includes("=")) {
-      redactNext = true;
-      return sanitizeSummary(arg, repoRoot) ?? "";
-    }
-    return sanitizeSummary(redactSecretArg(arg), repoRoot) ?? "";
-  });
-}
-
-function redactSecretText(value: string | undefined): string | undefined {
-  return value
-    ?.replace(/(^|[\s([,{])((?:--?[a-z0-9-]*(?:token|secret|password|passwd|pwd|api[-_]?key|access[-_]?key|auth|credential|cookie)[a-z0-9-]*)(?:=|\s+))([^\s;|)\]'",]+)/giu, "$1$2<redacted>")
-    .replace(/(\b[A-Z_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|PWD|API_?KEY|ACCESS_?KEY|AUTH|CREDENTIAL|COOKIE)[A-Z0-9_]*=)([^\s;|)\]'",]+)/gu, "$1<redacted>")
-    .replace(/\b(Bearer)\s+[A-Za-z0-9._~+/-]+=*/giu, "$1 <redacted>");
-}
-
-function redactSecretArg(value: string): string {
-  if (/^Bearer\s+/iu.test(value)) {
-    return "Bearer <redacted>";
-  }
-  if (isSecretFlag(value) && value.includes("=")) {
-    return value.replace(/=.*/u, "=<redacted>");
-  }
-  if (/^(?:[A-Z_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|PWD|API_?KEY|ACCESS_?KEY|AUTH|CREDENTIAL|COOKIE)[A-Z0-9_]*)=/iu.test(value)) {
-    return value.replace(/=.*/u, "=<redacted>");
-  }
-  return value;
-}
-
-function isSecretFlag(value: string): boolean {
-  return /^--?[a-z0-9-]*(?:token|secret|password|passwd|pwd|api-?key|access-?key|auth|credential|cookie)[a-z0-9-]*(?:=.*)?$/iu.test(value);
-}
-
-function sanitizePathField(value: string | undefined, repoRoot: string): string | undefined {
-  if (!value) {
-    return undefined;
-  }
-  if (value.startsWith("__outside_repo__:")) {
-    return "__outside_repo__:<outside-repo>";
-  }
-  if (value === "." || value === "./") {
-    return ".";
-  }
-  if (value === ".." || value.startsWith("../")) {
-    return "<outside-repo>";
-  }
-  if (value.startsWith("./")) {
-    const relative = normalizePathLike(value);
-    return relative === "." ? "." : `<repo>/${relative}`;
-  }
-  if (path.isAbsolute(value)) {
-    const relative = path.relative(repoRoot, value);
-    if (relative === "") {
-      return "<repo>";
-    }
-    return !relative.startsWith("..") && !path.isAbsolute(relative) ? `<repo>/${relative.split(path.sep).join("/")}` : "<outside-repo>";
-  }
-  return sanitizeSummary(value, repoRoot);
 }
 
 function formatCommandReport(report: VerificationCommandReport): string {

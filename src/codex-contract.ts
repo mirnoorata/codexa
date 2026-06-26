@@ -37,7 +37,7 @@ changes. Do not treat it as an unbounded graph dump.
 2. Any code edit, debug, or review task: call \`search\` first when the target is unclear; otherwise call \`task_brief\` with the user's exact task and known files/symbols.
 3. Before editing concrete files: call \`change_plan\` with \`saveSnapshot: true\` and keep the returned task id.
 4. After editing: call \`post_edit_review\` as the go-to review gate with the saved task id and tests run.
-5. Before final response: call \`test_plan\` or account for why no targeted tests apply.
+5. Before final response: call \`test_plan\`, then \`proof_card\` with reported commands/tests or account for why no targeted tests apply.
 6. Route, job, queue, adapter, manifest, or runtime behavior: call \`workflow_path\`.
 7. API, rename, delete, or exported contract change: call \`callers\`, \`callees\`, or \`dependency_path\`.
 

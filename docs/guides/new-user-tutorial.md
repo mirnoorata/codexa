@@ -7,10 +7,11 @@ repository without sending source code to a hosted indexing service.
 ## What you will do
 
 1. Install Codexa.
-2. Wire Codexa into one local repository.
+2. Wire Codexa into one local repository, including optional local policy defaults.
 3. Check that the index and MCP server are ready.
 4. Run the normal plan, edit, review, and verification loop for a small change.
-5. Know where to look when setup is not ready.
+5. Print a proof card for the final handoff.
+6. Know where to look when setup is not ready.
 
 ## Before you start
 
@@ -49,19 +50,26 @@ codexa --version
 For Codex CLI, initialize the target repository:
 
 ```bash
-codexa init /path/to/project
+codexa init /path/to/project --policy-pack
 ```
 
 For Claude Code, add `--claude` so Codexa also writes a repo-root `.mcp.json`:
 
 ```bash
-codexa init /path/to/project --claude
+codexa init /path/to/project --claude --policy-pack
 ```
 
 `codexa init` writes Codexa MCP configuration and hook files for the target
 repo, then builds the first `.codex/codebase/` index. It does not edit your
 source files. Generated Codexa artifacts live under `.codex/codebase/` and
 `.codex/cache/`.
+
+With `--policy-pack`, init also creates `.codex/policies/verification.json`,
+`.codex/policies/complexity.json`, and `.codex/policies/security.json`. These
+files are plain JSON consumed by `codexa prove`; they are not executable and
+Codexa does not overwrite them on later init runs. For an already wired repo,
+run `codexa policy-init /path/to/project`; pass `--force` only when you
+intentionally want to replace existing policy files.
 
 ## 3. Check readiness
 
@@ -130,10 +138,23 @@ The same flow is available through MCP tools inside an agent host:
 
 ```text
 session_context -> search(if target unclear) -> task_brief ->
-change_plan(saveSnapshot) -> post_edit_review -> test_plan
+change_plan(saveSnapshot) -> post_edit_review -> test_plan -> proof_card
 ```
 
-## 5. What success looks like
+## 5. Print a proof card
+
+When you need a compact handoff, run:
+
+```bash
+codexa prove /path/to/project --task "rename this CLI option in docs and help text" --diff
+```
+
+The proof card reports freshness, dirty-tree state, read-first files, saved
+snapshot status, verification commands that would cover the change if run,
+reported verification evidence, local policy status, trust posture, and
+remaining gaps.
+
+## 6. What success looks like
 
 After the loop, you should be able to answer four questions with evidence:
 
@@ -179,3 +200,5 @@ commands back to `post-edit-review`.
 - Read [Contributing](../../CONTRIBUTING.md) before opening a PR.
 - Read [Codex SessionStart Hook](codex-sessionstart-hook.md) to understand the
   startup and edit hooks that `codexa init` writes.
+- Read [No-Brainer Install Guide](no-brainer-install.md) to choose the best
+  Codex or Claude Code install path.

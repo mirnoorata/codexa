@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -16,6 +16,7 @@ describe("Codexa project init", () => {
     expect(result.repoRoot).toBe(repo);
     expect(result.serverName).toMatch(/^codexa-codexa-init-/u);
     expect(result.indexed?.files).toBeGreaterThan(0);
+    expect(result.policyPack).toBeNull();
 
     const config = await readFile(path.join(repo, ".codex/config.toml"), "utf8");
     expect(config).toContain("[features]");
@@ -39,12 +40,75 @@ describe("Codexa project init", () => {
 
     const freshness = await readFile(path.join(repo, ".codex/codebase/freshness.json"), "utf8");
     expect(JSON.parse(freshness).stale).toBe(false);
+    await expect(readFile(path.join(repo, ".codex/policies/verification.json"), "utf8")).rejects.toThrow();
 
     const summary = await sessionStartSummary(repo, false);
     expect(summary).toContain(`Codexa context for ${repo}`);
     expect(summary).toContain("Codexa MCP is ready");
-    expect(summary).toContain("primary loop session_context -> search(if target unclear) -> task_brief -> change_plan(saveSnapshot) -> post_edit_review -> test_plan");
+    expect(summary).toContain("primary loop session_context -> search(if target unclear) -> task_brief -> change_plan(saveSnapshot) -> post_edit_review -> test_plan -> proof_card");
     expect(summary).not.toContain("broad task -> focus_brief/session_context");
+  });
+
+  it("can create the local policy pack during init without overwriting existing policy files", async () => {
+    const repo = await createInitRepo();
+    const first = await initializeProject(repo, {
+      cliPath: "/opt/codexa/dist/cli.js",
+      index: false,
+      policyPack: true
+    });
+
+    expect(first.policyPack?.written).toEqual([
+      ".codex/policies/verification.json",
+      ".codex/policies/complexity.json",
+      ".codex/policies/security.json"
+    ]);
+    const verificationPath = path.join(repo, ".codex/policies/verification.json");
+    const verification = await readFile(verificationPath, "utf8");
+    await writeFile(verificationPath, verification.replace("Require evidence-backed verification", "Require team-specific verification"), "utf8");
+
+    const second = await initializeProject(repo, {
+      cliPath: "/opt/codexa/dist/cli.js",
+      index: false,
+      policyPack: true
+    });
+
+    expect(second.policyPack?.written).toEqual([]);
+    expect(second.policyPack?.skipped).toContain(".codex/policies/verification.json");
+    expect(await readFile(verificationPath, "utf8")).toContain("Require team-specific verification");
+  });
+
+  it("rejects unsafe policy-pack targets before init writes config", async () => {
+    const repo = await createInitRepo();
+    await mkdir(path.join(repo, ".codex/policies/verification.json"), { recursive: true });
+
+    await expect(
+      initializeProject(repo, {
+        cliPath: "/opt/codexa/dist/cli.js",
+        index: false,
+        policyPack: true
+      })
+    ).rejects.toThrow(/not a regular file/u);
+    await expect(readFile(path.join(repo, ".codex/config.toml"), "utf8")).rejects.toThrow();
+  });
+
+  it("rejects unwritable policy directories before init writes config", async () => {
+    const repo = await createInitRepo();
+    const policyDir = path.join(repo, ".codex/policies");
+    await mkdir(policyDir, { recursive: true });
+    await chmod(policyDir, 0o500);
+
+    try {
+      await expect(
+        initializeProject(repo, {
+          cliPath: "/opt/codexa/dist/cli.js",
+          index: false,
+          policyPack: true
+        })
+      ).rejects.toThrow(/not writable|permission|EACCES/u);
+      await expect(readFile(path.join(repo, ".codex/config.toml"), "utf8")).rejects.toThrow();
+    } finally {
+      await chmod(policyDir, 0o700).catch(() => undefined);
+    }
   });
 
   it("writes the core tool profile and managed AGENTS.md block when requested", async () => {
