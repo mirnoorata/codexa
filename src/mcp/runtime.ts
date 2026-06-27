@@ -7,6 +7,7 @@ import type { QueryOptions, QueryResult } from "../types.js";
 
 export interface McpRuntime {
   resolveActiveRepoRoot(): Promise<string>;
+  resolveActiveRepoRootResolution(): Promise<McpRepoRootResolution>;
   createQuerySession(activeRepoRoot: string): Promise<QuerySession>;
 }
 
@@ -22,7 +23,7 @@ export function createMcpRuntime({ configuredRepoRoot, queryOptions, preferConfi
   let indexStateInflight: { repoRoot: string; promise: Promise<QuerySessionIndexState> } | undefined;
   let activeResolution: McpRepoRootResolution | undefined;
 
-  const resolveActiveRepoRoot = async (): Promise<string> => {
+  const resolveActiveRepoRootResolution = async (): Promise<McpRepoRootResolution> => {
     const resolution = await resolveMcpRepoRoot(configuredRepoRoot, {
       workspaceFocusFile: queryOptions.workspaceFocusFile,
       workspaceSessionId: queryOptions.workspaceSessionId,
@@ -40,7 +41,11 @@ export function createMcpRuntime({ configuredRepoRoot, queryOptions, preferConfi
         console.error(`codexa MCP resolved ${resolution.configuredRoot} to focused repo ${resolution.repoRoot} via ${via}`);
       }
     }
-    return resolution.repoRoot;
+    return resolution;
+  };
+
+  const resolveActiveRepoRoot = async (): Promise<string> => {
+    return (await resolveActiveRepoRootResolution()).repoRoot;
   };
 
   const loadIndexState = async (activeRepoRoot: string): Promise<QuerySessionIndexState> => {
@@ -73,6 +78,7 @@ export function createMcpRuntime({ configuredRepoRoot, queryOptions, preferConfi
 
   return {
     resolveActiveRepoRoot,
+    resolveActiveRepoRootResolution,
     async createQuerySession(activeRepoRoot: string): Promise<QuerySession> {
       const state = await loadIndexState(activeRepoRoot);
       return createQuerySessionFromIndexState(activeRepoRoot, state, queryOptions);
@@ -87,9 +93,12 @@ export async function notifyResourceListChangedAfterRefresh(server: McpServer, s
   await Promise.resolve(server.sendResourceListChanged());
 }
 
-export function withSessionRuntime(result: QueryResult, session: QuerySession): QueryResult {
+export function withSessionRuntime(result: QueryResult, session: QuerySession, resolution?: McpRepoRootResolution): QueryResult {
   const runtime = {
     repoRoot: session.repoRoot,
+    routingSource: resolution?.source,
+    focusReason: resolution?.focusReason,
+    workspaceSessionId: resolution?.workspaceSessionId,
     indexLoaded: Boolean(session.index),
     freshness: session.freshness.reason,
     stale: session.freshness.stale,
@@ -122,6 +131,18 @@ export function withSessionRuntime(result: QueryResult, session: QuerySession): 
     ...result,
     text,
     data
+  };
+}
+
+export function withRoutingRuntime(result: QueryResult, resolution: McpRepoRootResolution): QueryResult {
+  return {
+    ...result,
+    data: addRuntimeData(result.data, {
+      repoRoot: resolution.repoRoot,
+      routingSource: resolution.source,
+      focusReason: resolution.focusReason,
+      workspaceSessionId: resolution.workspaceSessionId
+    })
   };
 }
 

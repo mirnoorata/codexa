@@ -44,6 +44,8 @@ const ACTIVE_PROJECT_FOCUS_DIRECT_PATH_PATTERN = /\bactive\s+project\s+focus\s*:
 const COMPACT_PROJECT_LINE_PATTERN = /^\s*(?:[-*]\s*)?project\s*:\s*(?:`([^`]+)`|([^\r\n#]+))/iu;
 const HEADING_PATTERN = /^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/u;
 const INACTIVE_SESSION_STATUSES = new Set(["done", "stale", "parked", "merged", "superseded", "removed", "shipped", "shipped+live", "live", "released", "closed", "abandoned"]);
+const TERMINAL_SESSION_STATUS_TOKENS = new Set(["done", "stale", "parked", "merged", "superseded", "removed", "shipped", "released", "closed", "abandoned"]);
+const ACTIVE_SESSION_STATUS_TOKENS = new Set(["active", "dirty", "open", "pr", "review", "verified", "wip"]);
 
 export async function shouldPreferConfiguredRepoRoot(configuredRootInput: string, options: McpRepoRootResolutionOptions = {}): Promise<boolean> {
   const configuredRoot = path.resolve(configuredRootInput);
@@ -228,12 +230,13 @@ async function readFocusedRepoPaths(focusFile: string, options: McpRepoRootResol
   return firstUnambiguousPriority(
     [
       { paths: selectedSessionPaths, focusReason: "selected-session", allowFallbackWhenAmbiguous: false, strict: true, workspaceSessionId },
-      { paths: explicitPaths, focusReason: "explicit-focus", allowFallbackWhenAmbiguous: false, strict: false },
-      { paths: defaultPathGroups.focused, focusReason: "workspace-default", allowFallbackWhenAmbiguous: false, strict: false },
+      { paths: explicitPaths, focusReason: "explicit-focus", allowFallbackWhenAmbiguous: false, strict: false, conflictPaths: [...defaultPathGroups.focused, ...activeSessionPaths] },
+      { paths: defaultPathGroups.focused, focusReason: "workspace-default", allowFallbackWhenAmbiguous: false, strict: false, conflictPaths: [...explicitPaths, ...activeSessionPaths] },
       { paths: activeSessionPaths, focusReason: "active-session", allowFallbackWhenAmbiguous: false, strict: false },
       { paths: defaultPathGroups.configuredRoot, focusReason: "workspace-default", allowFallbackWhenAmbiguous: false, strict: false }
     ],
-    focusFile
+    focusFile,
+    configuredRoot
   );
 }
 
@@ -264,16 +267,18 @@ function uniquePaths(paths: string[]): string[] {
   return [...new Set(paths)];
 }
 
-function firstUnambiguousPriority(
+async function firstUnambiguousPriority(
   groups: Array<{
     paths: string[];
     focusReason: McpRepoRootResolution["focusReason"];
     allowFallbackWhenAmbiguous: boolean;
     strict: boolean;
     workspaceSessionId?: string;
+    conflictPaths?: string[];
   }>,
-  focusFile: string
-): FocusFileRepoSelection {
+  focusFile: string,
+  configuredRoot?: string
+): Promise<FocusFileRepoSelection> {
   let deferredAmbiguity: { focusReason: McpRepoRootResolution["focusReason"]; paths: string[] } | null = null;
   const warnings: string[] = [];
   for (const group of groups) {
@@ -290,6 +295,12 @@ function firstUnambiguousPriority(
       }
       throw new Error(`Codexa MCP workspace focus is ambiguous in ${path.resolve(focusFile)}: ${normalized.join(", ")}`);
     }
+    const conflictingWorkspaceRoots = group.conflictPaths ? await conflictingWorkspaceRepoRoots(normalized[0], group.conflictPaths, configuredRoot) : [];
+    if (conflictingWorkspaceRoots.length > 0) {
+      throw new Error(
+        `Codexa MCP workspace focus is ambiguous in ${path.resolve(focusFile)}: ${uniquePaths([normalized[0], ...conflictingWorkspaceRoots]).join(", ")}. Set CODEXA_WORKSPACE_SESSION or pass --workspace-session to select the current session.`
+      );
+    }
     return {
       paths,
       focusReason: group.focusReason,
@@ -302,6 +313,24 @@ function firstUnambiguousPriority(
     throw new Error(`Codexa MCP workspace focus is ambiguous in ${path.resolve(focusFile)}: ${deferredAmbiguity.paths.join(", ")}`);
   }
   return { paths: [], strict: false, warnings };
+}
+
+async function conflictingWorkspaceRepoRoots(candidatePath: string, conflictPaths: string[], configuredRoot?: string): Promise<string[]> {
+  const candidateRepoRoot = await validatedRepoRoot({ path: candidatePath, source: "workspace-focus-file" });
+  if (!candidateRepoRoot || (configuredRoot && !(await isInsideOrSamePath(candidateRepoRoot, configuredRoot)))) {
+    return [];
+  }
+  const conflicts: string[] = [];
+  for (const conflictPath of uniquePaths(conflictPaths)) {
+    const conflictRepoRoot = await validatedRepoRoot({ path: conflictPath, source: "workspace-focus-file" });
+    if (!conflictRepoRoot || (configuredRoot && !(await isInsideOrSamePath(conflictRepoRoot, configuredRoot)))) {
+      continue;
+    }
+    if (!(await isSamePath(conflictRepoRoot, candidateRepoRoot))) {
+      conflicts.push(conflictRepoRoot);
+    }
+  }
+  return uniquePaths(conflicts.map((entry) => path.resolve(entry)));
 }
 
 function markdownTableCells(line: string): string[] | null {
@@ -321,7 +350,20 @@ function isMarkdownSeparatorRow(cells: string[]): boolean {
 
 function isActiveSessionStatus(status: string | undefined): boolean {
   const normalized = String(status ?? "").trim().toLowerCase();
-  return Boolean(normalized) && normalized !== "status" && !INACTIVE_SESSION_STATUSES.has(normalized);
+  if (!normalized || normalized === "status") {
+    return false;
+  }
+  if (INACTIVE_SESSION_STATUSES.has(normalized)) {
+    return false;
+  }
+  const tokens = normalized.split(/[^a-z0-9]+/u).filter(Boolean);
+  if (tokens.some((token) => TERMINAL_SESSION_STATUS_TOKENS.has(token))) {
+    return false;
+  }
+  if (tokens.some((token) => ACTIVE_SESSION_STATUS_TOKENS.has(token))) {
+    return true;
+  }
+  return !tokens.some((token) => INACTIVE_SESSION_STATUSES.has(token));
 }
 
 function normalizeCandidatePath(candidate: string): string | null {
@@ -418,6 +460,10 @@ async function partitionDefaultPaths(paths: string[], configuredRoot?: string): 
       continue;
     }
     const repoRoot = normalized ? await gitRootFor(normalized) : null;
+    if (repoRoot && (await isSamePath(repoRoot, configuredRoot))) {
+      configuredRootPaths.push(candidate);
+      continue;
+    }
     if (repoRoot && (await isInsideOrSamePath(repoRoot, configuredRoot))) {
       focused.push(candidate);
     }

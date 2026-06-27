@@ -14,7 +14,7 @@ import { compactMcpResult, conciseText } from "./mcp/compaction.js";
 import { createMcpOutputSchema, safeQuery, toToolResult, type McpToolPolicyOptions } from "./mcp/envelope.js";
 import { registerWorkflowPrompts } from "./mcp/prompts.js";
 import { registerArtifactResources } from "./mcp/resources.js";
-import { createMcpRuntime, notifyResourceListChangedAfterRefresh, withSessionRuntime } from "./mcp/runtime.js";
+import { createMcpRuntime, notifyResourceListChangedAfterRefresh, withRoutingRuntime, withSessionRuntime } from "./mcp/runtime.js";
 import { withAutoRecordedSessionMemory } from "./mcp/session-memory.js";
 import { registerMcpTools, type McpOptionalQueryInput } from "./mcp/tools.js";
 import { CORE_PROFILE_TOOL_NAMES, NO_SOURCE_MUTATION_CONTRACT, PRIMARY_CODEX_LOOP } from "./mcp-tool-catalog.js";
@@ -270,11 +270,12 @@ async function createCodexaMcpServer(repoRoot: string, options: QueryOptions): P
     const toolName = typeof toolContext === "string" ? toolContext : toolContext.toolName;
     const toolInput = typeof toolContext === "string" ? undefined : toolContext.input;
     const autoRecord = typeof toolContext === "string" || toolContext.autoRecord === false ? undefined : toolContext;
-    const activeRepoRoot = await mcpRuntime.resolveActiveRepoRoot();
+    const activeResolution = await mcpRuntime.resolveActiveRepoRootResolution();
+    const activeRepoRoot = activeResolution.repoRoot;
     return toToolResult(
       await safeQuery(async () => {
         const session = await mcpRuntime.createQuerySession(activeRepoRoot);
-        const rawResult = withSessionRuntime(await producer(session), session);
+        const rawResult = withSessionRuntime(await producer(session), session, activeResolution);
         const memoryResult = autoRecord && autoRecordSessionMemory ? await withAutoRecordedSessionMemory(session, rawResult, autoRecord.toolName, autoRecord.input) : rawResult;
         const responseFormat = toolInput?.responseFormat === "concise" ? ("concise" as const) : undefined;
         let result = compactMcpResult(memoryResult, responseFormat ? { format: responseFormat } : undefined);
@@ -316,8 +317,12 @@ async function createCodexaMcpServer(repoRoot: string, options: QueryOptions): P
     toolQueryOptions,
     runTool,
     runFreshnessTool: async () => {
-      const activeRepoRoot = await mcpRuntime.resolveActiveRepoRoot();
-      return toToolResult(await safeQuery(() => statusQuery(activeRepoRoot, { recover: false }), activeRepoRoot), "freshness", policyOptions);
+      const activeResolution = await mcpRuntime.resolveActiveRepoRootResolution();
+      return toToolResult(
+        await safeQuery(async () => withRoutingRuntime(await statusQuery(activeResolution.repoRoot, { recover: false }), activeResolution), activeResolution.repoRoot),
+        "freshness",
+        policyOptions
+      );
     }
   });
 
