@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.7.0](https://github.com/mirnoorata/codexa/compare/v0.6.0...v0.7.0) (2026-06-28)
+
+
+### Features
+
+* **retrieval:** add graph packet exports ([e55ff6b](https://github.com/mirnoorata/codexa/commit/e55ff6b26fa01ee23658a94fc186a2da5d9c3196))
+* **retrieval:** add relational packets for ranked context ([3741598](https://github.com/mirnoorata/codexa/commit/3741598d5e7664baa078b6789b8c54a2e579e8dc))
+
+
+### Bug Fixes
+
+* **mcp:** fail closed on ambiguous workspace routing ([e466f27](https://github.com/mirnoorata/codexa/commit/e466f2728a7d365753d2481474774bb136423873))
+
 ## [0.6.0](https://github.com/mirnoorata/codexa/compare/v0.5.1...v0.6.0) (2026-06-26)
 
 
