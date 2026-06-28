@@ -8,7 +8,7 @@
       "name": "codexa",
       "source": "./claude-code",
       "description": "Codexa for Claude Code. MCP server exposes evidence-backed repo context tools; SessionStart injects repo context, PreToolUse saves an implicit pre-edit baseline, Stop runs the post-edit drift review and surfaces blocking drift to the model. Slash commands wrap the codexa CLI.",
-      "version": "0.6.0",
+      "version": "0.7.0",
       "category": "development",
       "tags": [
         "codexa",
