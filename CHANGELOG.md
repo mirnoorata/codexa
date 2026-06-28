@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.1](https://github.com/mirnoorata/codexa/compare/v0.7.0...v0.7.1) (2026-06-28)
+
+
+### Bug Fixes
+
+* **cli:** route focused workspace sessions explicitly ([924c3bc](https://github.com/mirnoorata/codexa/commit/924c3bca1babb87e64d129f487a30c25b209bfcb))
+
 ## [0.7.0](https://github.com/mirnoorata/codexa/compare/v0.6.0...v0.7.0) (2026-06-28)
 
 

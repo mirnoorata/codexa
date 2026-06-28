@@ -1,6 +1,6 @@
 {
   "name": "@mirnoorata/codexa",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "mcpName": "io.github.mirnoorata/codexa",
   "description": "Codex-native codebase intelligence context compiler and query-only MCP server.",
   "keywords": [
