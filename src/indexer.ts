@@ -229,7 +229,7 @@ function rankingStage(): IndexPipelineStage<BuildIndexPipelineContext> {
     async run(context) {
       const { discovered, index } = requireIndexContext(context, "rank", ["discovered", "index"]);
       const outcomeSignals = await loadOutcomeRankSignals(context.repoRoot, discovered.git.headCommit, new Set(index.files.map((file) => file.path)));
-      return { ...context, index: applyModules(applyRanking(index, discovered.git.churnByPath, outcomeSignals)) };
+      return { ...context, index: applyRanking(index, discovered.git.churnByPath, outcomeSignals) };
     }
   };
 }
@@ -239,7 +239,7 @@ function graphStage(): IndexPipelineStage<BuildIndexPipelineContext> {
     name: "graph",
     run(context) {
       const { externalSymbols, index } = requireIndexContext(context, "graph", ["externalSymbols", "index"]);
-      return { ...context, index: applyGraphStages(index, externalSymbols.graphEdges) };
+      return { ...context, index: applyModules(applyGraphStages(index, externalSymbols.graphEdges)) };
     }
   };
 }

@@ -1,5 +1,5 @@
 import { moduleNameForPath } from "../language.js";
-import type { CodexaIndex, FileFact, ModuleClusterFact } from "../types.js";
+import type { CodexaIndex, Confidence, FileFact, ModuleClusterFact, RiskSignalFact, SymbolFact, WorkflowTraceFact } from "../types.js";
 import { stableId, uniqueSorted } from "../util.js";
 import type { OutcomeRankSignals } from "../outcome-ranking.js";
 
@@ -64,11 +64,26 @@ export function applyModules(index: CodexaIndex): CodexaIndex {
     files.push(file);
     byModule.set(name, files);
   }
+  const fileRank = new Map(index.files.map((file) => [file.path, file.rank]));
 
   const modules: ModuleClusterFact[] = [...byModule.entries()]
     .map(([name, files]) => {
+      const filePaths = new Set(files.map((file) => file.path));
       const rank = files.reduce((sum, file) => sum + file.rank, 0);
-      const topFiles = files.slice(0, 5).map((file) => file.path).join(", ");
+      const topFiles = [...files].sort((a, b) => b.rank - a.rank || a.path.localeCompare(b.path)).slice(0, 8).map((file) => file.path);
+      const topSymbols = topModuleSymbols(index.symbols, filePaths, fileRank).slice(0, 12);
+      const workflows = topModuleWorkflows(index.workflows, filePaths).slice(0, 10);
+      const tests = topModuleTests(index, filePaths, workflows).slice(0, 12);
+      const risks = topModuleRisks(index.risks, filePaths).slice(0, 10);
+      const relatedGraphEdges = index.graphEdges.filter((edge) => (edge.fromPath && filePaths.has(edge.fromPath)) || (edge.toPath && filePaths.has(edge.toPath)));
+      const crossModuleRelationCount = relatedGraphEdges.filter(
+        (edge) => edge.fromPath && edge.toPath && moduleNameForPath(edge.fromPath) !== moduleNameForPath(edge.toPath)
+      ).length;
+      const evidenceCounts = confidenceCounts([
+        ...relatedGraphEdges.map((edge) => edge.confidence),
+        ...workflows.map((workflow) => workflow.confidence),
+        ...risks.map((risk) => risk.confidence)
+      ]);
       return {
         id: stableId("module", name),
         type: "ModuleCluster" as const,
@@ -78,13 +93,104 @@ export function applyModules(index: CodexaIndex): CodexaIndex {
         indexedAt: index.snapshot.indexedAt,
         name,
         files: uniqueSorted(files.map((file) => file.path)),
-        summary: `${name} contains ${files.length} indexed files. Top files: ${topFiles || "none"}.`,
-        rank
+        summary: summarizeModuleCluster({
+          name,
+          fileCount: files.length,
+          topFiles,
+          topSymbols: topSymbols.map((symbol) => symbol.qualifiedName),
+          workflows: workflows.map((workflow) => workflow.title),
+          tests,
+          risks: risks.map((risk) => `${risk.signal} at ${risk.path}`),
+          relationCount: relatedGraphEdges.length,
+          crossModuleRelationCount
+        }),
+        rank,
+        clusterKind: "path" as const,
+        topFiles,
+        topSymbols: topSymbols.map((symbol) => symbol.qualifiedName),
+        workflows: workflows.map((workflow) => workflow.title),
+        tests,
+        risks: risks.map((risk) => `${risk.signal} at ${risk.path}`),
+        relationCount: relatedGraphEdges.length,
+        crossModuleRelationCount,
+        evidenceCounts,
+        truncation: {
+          files: { total: files.length, returned: topFiles.length },
+          symbols: { total: topModuleSymbols(index.symbols, filePaths, fileRank).length, returned: topSymbols.length },
+          workflows: { total: topModuleWorkflows(index.workflows, filePaths).length, returned: workflows.length },
+          tests: { total: topModuleTests(index, filePaths, workflows).length, returned: tests.length },
+          risks: { total: topModuleRisks(index.risks, filePaths).length, returned: risks.length }
+        }
       };
     })
     .sort((a, b) => b.rank - a.rank || a.name.localeCompare(b.name));
 
   return { ...index, modules };
+}
+
+function topModuleSymbols(symbols: SymbolFact[], filePaths: Set<string>, fileRank: Map<string, number>): SymbolFact[] {
+  return symbols
+    .filter((symbol) => filePaths.has(symbol.path))
+    .sort(
+      (a, b) =>
+        symbolSummaryScore(b, fileRank) - symbolSummaryScore(a, fileRank) ||
+        a.path.localeCompare(b.path) ||
+        (a.range?.startLine ?? 0) - (b.range?.startLine ?? 0) ||
+        a.qualifiedName.localeCompare(b.qualifiedName)
+    );
+}
+
+function symbolSummaryScore(symbol: SymbolFact, fileRank: Map<string, number>): number {
+  const kindBoost = ["route", "class", "function", "method", "node"].includes(symbol.kind) ? 3 : 0;
+  return (fileRank.get(symbol.path) ?? 0) + (symbol.exported ? 4 : 0) + kindBoost;
+}
+
+function topModuleWorkflows(workflows: WorkflowTraceFact[], filePaths: Set<string>): WorkflowTraceFact[] {
+  return workflows
+    .filter((workflow) => filePaths.has(workflow.entryPath) || workflow.relatedFiles.some((filePath) => filePaths.has(filePath)))
+    .sort((a, b) => b.rank - a.rank || a.title.localeCompare(b.title));
+}
+
+function topModuleTests(index: CodexaIndex, filePaths: Set<string>, workflows: WorkflowTraceFact[]): string[] {
+  return uniqueSorted([
+    ...workflows.flatMap((workflow) => workflow.tests),
+    ...index.testEdges
+      .filter((edge) => filePaths.has(edge.path) || (edge.targetPath ? filePaths.has(edge.targetPath) : false))
+      .map((edge) => edge.path)
+  ]);
+}
+
+function topModuleRisks(risks: RiskSignalFact[], filePaths: Set<string>): RiskSignalFact[] {
+  return risks
+    .filter((risk) => filePaths.has(risk.path))
+    .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path) || (a.range?.startLine ?? 0) - (b.range?.startLine ?? 0) || a.signal.localeCompare(b.signal));
+}
+
+function confidenceCounts(confidences: Confidence[]): Partial<Record<Confidence, number>> {
+  const counts: Partial<Record<Confidence, number>> = {};
+  for (const confidence of confidences) {
+    counts[confidence] = (counts[confidence] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function summarizeModuleCluster(input: {
+  name: string;
+  fileCount: number;
+  topFiles: string[];
+  topSymbols: string[];
+  workflows: string[];
+  tests: string[];
+  risks: string[];
+  relationCount: number;
+  crossModuleRelationCount: number;
+}): string {
+  const topFiles = input.topFiles.slice(0, 4).join(", ") || "none";
+  const symbols = input.topSymbols.slice(0, 5).join(", ") || "none";
+  const workflows = input.workflows.slice(0, 3).join(", ") || "none";
+  const tests = input.tests.slice(0, 3).join(", ") || "none";
+  const risks = input.risks.slice(0, 3).join(", ") || "none";
+  return `${input.name} contains ${input.fileCount} indexed file(s). Read first: ${topFiles}. Top symbols: ${symbols}. Workflows: ${workflows}. Tests: ${tests}. Relations: ${input.relationCount} total, ${input.crossModuleRelationCount} cross-module. Risks: ${risks}.`;
 }
 
 const TRANSITIVE_RANK_DAMPING = 0.85;

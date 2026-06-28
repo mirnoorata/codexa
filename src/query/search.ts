@@ -8,7 +8,7 @@ import { nextTool } from "./next-tools.js";
 import { ensureQuerySession, type QuerySessionInput } from "./session.js";
 import { formatTestRecommendations, recommendTests } from "./tests.js";
 import { findFile } from "./targets.js";
-import { retrieveForTask, type RetrievalMatch } from "../retrieval.js";
+import { retrieveForTask, type RetrievalAnchor, type RetrievalMatch, type RetrievalResult } from "../retrieval.js";
 import { semanticOptionsFromQueryOptions, type SemanticRetrievalSummary } from "../semantic-retrieval.js";
 import type { CodexaIndex, FileFact, QueryOptions, QueryResult, SymbolFact, UsageSiteFact } from "../types.js";
 import { limitText, uniqueSorted } from "../util.js";
@@ -115,6 +115,7 @@ export async function searchQuery(
   ).slice(0, limit);
   const tests = recommendTests(index, searchFiles.map((file) => file.path), repoRoot).slice(0, 10);
   const rawFileCount = raw.files.length;
+  const rawExactHitCount = raw.hits.length;
   const quality = assessContextQuality({
     freshness,
     gaps: indexGaps(index, freshness),
@@ -139,6 +140,7 @@ export async function searchQuery(
   });
   const searchDiscipline = searchDisciplineLine(raw);
   const actionability = raw.sufficient ? "raw_search_sufficient" : actionabilityFromSearchVerdict(retrieval.intentConfidence.verdict);
+  const rawAnchorLine = formatRawExactAnchorLine(rawExactHitCount, retrieval);
   const nextTools = [
     interpreted.symbols.length === 1 ? nextTool("symbol_context", "one symbol matched; inspect its proof-carrying neighborhood", { symbol: interpreted.symbols[0].id, depth: 1 }) : undefined,
     interpreted.symbols.length > 1 ? nextTool("symbol_context", "multiple symbols matched; rerun with an exact symbol id", { symbol: interpreted.symbols[0].id, depth: 1 }) : undefined,
@@ -156,6 +158,7 @@ export async function searchQuery(
     `Actionability: ${actionability}`,
     retrieval.diagnostics.length > 0 ? `Retrieval diagnostics: ${retrieval.diagnostics.join("; ")}` : undefined,
     searchDiscipline,
+    rawAnchorLine,
     "",
     raw.patterns.length > 1 ? "Raw hits (multi-pattern):" : "Raw hits:",
     ...(queryInput.includeRaw ?? true
@@ -164,6 +167,9 @@ export async function searchQuery(
     "",
     "Codexa hybrid targets:",
     ...searchFiles.map((file) => `- ${file.path}: rank ${file.rank.toFixed(2)}; ${interpreted.reasons.get(file.path)?.join("; ") ?? "match"}`),
+    "",
+    "Relational packets:",
+    ...formatRelationalPackets(retrieval),
     "",
     "Likely tests:",
     ...formatTestRecommendations(tests),
@@ -180,12 +186,19 @@ export async function searchQuery(
 	      mode: "search",
       patterns: raw.patterns,
       searchDiscipline,
+      rawExactHitCount,
+      rawExactFileCount: rawFileCount,
       raw,
       semantic: retrieval.semantic,
       files: searchFiles,
       symbols: interpreted.symbols,
       usageSites: interpreted.usageSites,
       retrieval,
+      rankedAnchors: retrieval.anchors,
+      relationalPackets: {
+        processGroups: retrieval.processGroups,
+        clusterGroups: retrieval.clusterGroups
+      },
       intentConfidence: retrieval.intentConfidence,
       packetVerdict: retrieval.intentConfidence.verdict,
       actionability,
@@ -199,6 +212,39 @@ export async function searchQuery(
 	      session: { warnings: session.warnings, provenance: session.provenance }
     }
   };
+}
+
+function formatRawExactAnchorLine(rawExactHitCount: number, retrieval: RetrievalResult): string {
+  const anchor = retrieval.anchors[0];
+  if (!anchor) {
+    return `Raw exact hits: ${rawExactHitCount}; ranked anchor: none.`;
+  }
+  const location = anchor.line ? `${anchor.path}:${anchor.line}` : anchor.path;
+  const laneText = anchor.lanes.length > 0 ? anchor.lanes.join("+") : "none";
+  return `Raw exact hits: ${rawExactHitCount}; ranked anchor: ${anchor.kind} ${anchor.label} at ${location}; lanes ${laneText}; confidence ${anchor.confidence}.`;
+}
+
+function formatRelationalPackets(retrieval: RetrievalResult): string[] {
+  const lines: string[] = [];
+  for (const anchor of retrieval.anchors.slice(0, 3)) {
+    lines.push(`- anchor ${formatAnchor(anchor)}; score ${anchor.score.toFixed(2)}; lanes ${anchor.lanes.join("+") || "none"}`);
+  }
+  for (const group of retrieval.processGroups.slice(0, 3)) {
+    lines.push(
+      `- process ${group.title}: ${group.processKind ?? group.workflowKind}; score ${group.normalizedScore.toFixed(2)}; matched ${group.matchedFiles.slice(0, 4).join(", ") || "none"}; tests ${group.tests.slice(0, 3).join(", ") || "none"}`
+    );
+  }
+  for (const group of retrieval.clusterGroups.slice(0, 3)) {
+    lines.push(
+      `- cluster ${group.name}: score ${group.score.toFixed(2)}; files ${group.topFiles.slice(0, 4).join(", ") || "none"}; symbols ${group.topSymbols.slice(0, 4).join(", ") || "none"}`
+    );
+  }
+  return lines.length > 0 ? lines : ["- no relational packets matched"];
+}
+
+function formatAnchor(anchor: RetrievalAnchor): string {
+  const location = anchor.line ? `${anchor.path}:${anchor.line}` : anchor.path;
+  return `${anchor.kind} ${anchor.label} at ${location}`;
 }
 
 function formatSemanticLaneSummary(semantic: SemanticRetrievalSummary): string {

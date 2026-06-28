@@ -12,6 +12,7 @@ import type {
   WorkflowStep,
   WorkflowTraceFact
 } from "./types.js";
+import { moduleNameForPath } from "./language.js";
 import { rankLog2, stableId, uniqueSorted } from "./util.js";
 
 export interface GraphTarget {
@@ -725,6 +726,13 @@ function workflowFact(
     summary: string;
   }
 ): WorkflowTraceFact {
+  const entrySymbol = input.entrySymbolId ? index.symbols.find((symbol) => symbol.id === input.entrySymbolId) : undefined;
+  const relatedModules = uniqueSorted(input.relatedFiles.filter((filePath) => !isTestLikePath(filePath)).map((filePath) => moduleNameForPath(filePath)));
+  const terminalFiles = terminalWorkflowFiles(input.steps, input.entryPath);
+  const stepCounts = countWorkflowSteps(input.steps);
+  const evidenceCounts = countStepEvidence(input.steps);
+  const entryScore = workflowEntryScore(input.workflowKind, input.entryPath, entrySymbol, input.steps);
+  const processKind = relatedModules.length > 1 ? "cross-module-process" : input.steps.length > 1 ? "intra-module-process" : "entry-process";
   return {
     id: stableId("workflow", input.workflowKind, input.entryPath, input.entrySymbolId, input.title),
     type: "WorkflowTrace",
@@ -740,9 +748,80 @@ function workflowFact(
     relatedFiles: input.relatedFiles,
     tests: input.tests,
     steps: input.steps,
-    summary: input.summary,
-    rank: input.rank
+    summary: enrichWorkflowSummary(input.summary, {
+      processKind,
+      entryScore
+    }),
+    rank: input.rank,
+    processKind,
+    entryScore,
+    terminalFiles,
+    relatedModules,
+    stepCounts,
+    evidenceCounts,
+    truncation: {
+      relatedFiles: { total: input.relatedFiles.length, returned: Math.min(input.relatedFiles.length, 40) },
+      tests: { total: input.tests.length, returned: Math.min(input.tests.length, 20) },
+      steps: { total: input.steps.length, returned: Math.min(input.steps.length, 16) }
+    }
   };
+}
+
+function terminalWorkflowFiles(steps: WorkflowStep[], entryPath: string): string[] {
+  const sourceFiles = new Set(steps.map((step) => step.path));
+  const targetFiles = uniqueSorted(
+    steps
+      .filter((step) => step.kind !== "test" && step.kind !== "risk")
+      .flatMap((step) => [step.targetPath, step.path])
+      .filter((filePath): filePath is string => typeof filePath === "string" && !isTestLikePath(filePath))
+  );
+  const terminalTargets = targetFiles.filter((filePath) => filePath !== entryPath && !sourceFiles.has(filePath));
+  const terminal = terminalTargets.length > 0 ? terminalTargets : targetFiles.filter((filePath) => filePath !== entryPath);
+  return terminal.slice(0, 8);
+}
+
+function countWorkflowSteps(steps: WorkflowStep[]): Partial<Record<WorkflowStep["kind"], number>> {
+  const counts: Partial<Record<WorkflowStep["kind"], number>> = {};
+  for (const step of steps) {
+    counts[step.kind] = (counts[step.kind] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function countStepEvidence(steps: WorkflowStep[]): Partial<Record<Confidence, number>> {
+  const counts: Partial<Record<Confidence, number>> = {};
+  for (const step of steps) {
+    counts[step.confidence] = (counts[step.confidence] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function workflowEntryScore(kind: WorkflowTraceFact["workflowKind"], entryPath: string, entrySymbol: SymbolFact | undefined, steps: WorkflowStep[]): number {
+  let score = kind === "route" ? 52 : kind === "job" ? 48 : kind === "manifest" ? 42 : kind === "test" ? 30 : 24;
+  if (entrySymbol?.exported) {
+    score += 10;
+  }
+  if (entrySymbol?.decorators.some((decorator) => /(route|get|post|put|patch|delete|task|job|worker|handler)/i.test(decorator))) {
+    score += 12;
+  }
+  if (entrySymbol && /\b(route|handler|controller|main|run|start|worker|job|execute|process)\b/i.test(entrySymbol.qualifiedName)) {
+    score += 8;
+  }
+  if (/(^|\/)(api|routes?|controllers?|server|app|jobs?|workers?|packages?|manifests?)(\/|\.|$)/i.test(entryPath)) {
+    score += 8;
+  }
+  score += Math.min(10, Math.max(0, steps.length - 1));
+  return Math.min(100, score);
+}
+
+function enrichWorkflowSummary(
+  summary: string,
+  input: {
+    processKind: WorkflowTraceFact["processKind"];
+    entryScore: number;
+  }
+): string {
+  return `${summary} Process packet: ${input.processKind}; entry score ${input.entryScore}.`;
 }
 
 function workflowConfidence(steps: WorkflowStep[]): Confidence {
