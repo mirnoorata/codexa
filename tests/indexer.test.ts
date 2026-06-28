@@ -261,6 +261,28 @@ describe("Codexa indexer", () => {
     expect(index.graphEdges.some((edge) => edge.edgeKind === "TEST_COVERS_WORKFLOW" && edge.fromPath === "tests/test_app.py" && edge.toPath === "service/app.py")).toBe(true);
     expect(index.workflows.some((workflow) => workflow.title.includes("route route_thing") && workflow.relatedFiles.includes("service/helpers.py"))).toBe(true);
     expect(index.workflows.some((workflow) => workflow.title.includes("route route_thing") && workflow.relatedFiles.includes("web/src/api-client.ts"))).toBe(true);
+    const routeThingWorkflow = index.workflows.find((workflow) => workflow.title.includes("route route_thing"));
+    expect(routeThingWorkflow?.processKind).toBe("cross-module-process");
+    expect(routeThingWorkflow?.entryScore).toBeGreaterThan(0);
+    expect(routeThingWorkflow?.terminalFiles).toEqual(expect.arrayContaining(["service/adapters/media.py", "service/helpers.py"]));
+    expect(routeThingWorkflow?.relatedModules).toEqual(expect.arrayContaining(["service", "web/src"]));
+    expect(routeThingWorkflow?.stepCounts?.entry).toBe(1);
+    const serviceModule = index.modules.find((module) => module.name === "service");
+    expect(serviceModule?.clusterKind).toBe("path");
+    expect(serviceModule?.summary).toContain("Top symbols:");
+    expect(serviceModule?.topSymbols).toEqual(expect.arrayContaining(["route_thing"]));
+    expect(serviceModule?.workflows?.some((workflow) => workflow.includes("route route_thing"))).toBe(true);
+    expect(serviceModule?.relationCount ?? 0).toBeGreaterThan(0);
+    expect(serviceModule?.crossModuleRelationCount ?? 0).toBeGreaterThan(0);
+    expect(serviceModule?.sourceModules).toEqual(expect.arrayContaining(["service"]));
+    expect(serviceModule?.evidenceProfile?.symbolSources).toBeTruthy();
+    expect(serviceModule?.summarySource).toBe("deterministic");
+    expect(serviceModule?.summaryPrompt).toContain("using only cited files");
+    const functionalModule = index.modules.find((module) => module.clusterKind === "functional" && module.workflows?.some((workflow) => workflow.includes("route route_thing")));
+    expect(functionalModule?.files).toEqual(expect.arrayContaining(["service/app.py", "service/helpers.py"]));
+    expect(functionalModule?.sourceModules).toEqual(expect.arrayContaining(["service"]));
+    expect(functionalModule?.communityScore ?? 0).toBeGreaterThan(0);
+    expect(functionalModule?.summaryPrompt).toContain("using only cited files");
     expect(index.files.every((file) => Number.isFinite(file.rank))).toBe(true);
     expect(index.risks.some((risk) => risk.path === "src/ops.ts" && risk.signal === "sarif-shell")).toBe(true);
     expect(index.risks.some((risk) => risk.path.startsWith("..") || path.isAbsolute(risk.path))).toBe(false);
@@ -1640,13 +1662,35 @@ describe("Codexa indexer", () => {
 
     const readme = await readFile(path.join(repo, ".codex/codebase/README.md"), "utf8");
     const contract = await readFile(path.join(repo, ".codex/codebase/codex-contract.md"), "utf8");
+    const relationalPackets = await readFile(path.join(repo, ".codex/codebase/relational-packets.md"), "utf8");
+    const relationalPacketsJson = JSON.parse(await readFile(path.join(repo, ".codex/codebase/relational-packets.json"), "utf8"));
+    const relationalGraphJson = JSON.parse(await readFile(path.join(repo, ".codex/codebase/relational-graph.json"), "utf8"));
+    const summaryPrompts = (await readFile(path.join(repo, ".codex/codebase/packet-summary-prompts.ndjson"), "utf8"))
+      .trim()
+      .split("\n")
+      .map((line) => JSON.parse(line));
     const facts = await readFile(path.join(repo, ".codex/codebase/facts.ndjson"), "utf8");
     expect(readme).toContain("Codexa Codebase Context");
+    expect(readme).toContain("relational-packets.md");
+    expect(readme).toContain("relational-packets.json");
     expect(readme).not.toContain(repo);
     expect(contract).toContain("Codexa Codex Contract");
     expect(contract).toContain("change_plan");
     expect(contract).toContain("post_edit_review");
     expect(contract).not.toContain(repo);
+    expect(relationalPackets).toContain("# Relational Packets");
+    expect(relationalPackets).toContain("Process packet:");
+    expect(relationalPackets).toContain("## Cluster Packets");
+    expect(relationalPackets).toContain("packet-summary-prompts.ndjson");
+    expect(relationalPacketsJson.schemaVersion).toBe(1);
+    expect(relationalPacketsJson.processPackets.some((packet: { title: string }) => packet.title.includes("route route_thing"))).toBe(true);
+    expect(relationalPacketsJson.clusterPackets.some((packet: { clusterKind: string; summaryPrompt?: string }) => packet.clusterKind === "functional" && packet.summaryPrompt?.includes("using only cited files"))).toBe(true);
+    expect(JSON.stringify(relationalPacketsJson)).not.toContain(repo);
+    expect(relationalGraphJson.schemaVersion).toBe(1);
+    expect(relationalGraphJson.nodes.some((node: { type: string; clusterKind?: string }) => node.type === "module" && node.clusterKind === "functional")).toBe(true);
+    expect(relationalGraphJson.edges.some((edge: { kind: string }) => edge.kind === "CONTAINS")).toBe(true);
+    expect(JSON.stringify(relationalGraphJson)).not.toContain(repo);
+    expect(summaryPrompts.some((prompt: { kind: string; prompt: string }) => prompt.kind === "module" && prompt.prompt.includes("using only cited files"))).toBe(true);
     expect(facts.trim().split("\n").every((line) => JSON.parse(line))).toBe(true);
 
     await writeFile(path.join(repo, "src/util.ts"), "export function helper() { return 2 }\n", "utf8");

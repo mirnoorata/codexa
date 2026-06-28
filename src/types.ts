@@ -243,6 +243,19 @@ export interface WorkflowStep {
   reason: string;
 }
 
+export type PacketSummarySource = "deterministic" | "external" | "llm-ready";
+
+export interface PacketEvidenceProfile {
+  symbolSources?: Partial<Record<FactSource, number>>;
+  edgeSources?: Partial<Record<FactSource, number>>;
+  edgeConfidence?: Partial<Record<Confidence, number>>;
+  workflowConfidence?: Partial<Record<Confidence, number>>;
+  riskConfidence?: Partial<Record<Confidence, number>>;
+  staticAnalysisSymbolCount?: number;
+  lspSymbolCount?: number;
+  deterministicSymbolCount?: number;
+}
+
 export interface WorkflowTraceFact extends BaseFact {
   type: "WorkflowTrace";
   workflowKind: "route" | "job" | "test" | "manifest" | "module";
@@ -254,6 +267,20 @@ export interface WorkflowTraceFact extends BaseFact {
   steps: WorkflowStep[];
   summary: string;
   rank: number;
+  processKind?: "entry-process" | "intra-module-process" | "cross-module-process";
+  entryScore?: number;
+  terminalFiles?: string[];
+  relatedModules?: string[];
+  stepCounts?: Partial<Record<WorkflowStep["kind"], number>>;
+  evidenceCounts?: Partial<Record<Confidence, number>>;
+  evidenceProfile?: PacketEvidenceProfile;
+  summarySource?: PacketSummarySource;
+  summaryPrompt?: string;
+  truncation?: {
+    relatedFiles?: { total: number; returned: number };
+    tests?: { total: number; returned: number };
+    steps?: { total: number; returned: number };
+  };
 }
 
 export interface ModuleClusterFact extends BaseFact {
@@ -262,6 +289,27 @@ export interface ModuleClusterFact extends BaseFact {
   files: string[];
   summary: string;
   rank: number;
+  clusterKind?: "path" | "functional";
+  sourceModules?: string[];
+  communityScore?: number;
+  topFiles?: string[];
+  topSymbols?: string[];
+  workflows?: string[];
+  tests?: string[];
+  risks?: string[];
+  relationCount?: number;
+  crossModuleRelationCount?: number;
+  evidenceCounts?: Partial<Record<Confidence, number>>;
+  evidenceProfile?: PacketEvidenceProfile;
+  summarySource?: PacketSummarySource;
+  summaryPrompt?: string;
+  truncation?: {
+    files?: { total: number; returned: number };
+    symbols?: { total: number; returned: number };
+    workflows?: { total: number; returned: number };
+    tests?: { total: number; returned: number };
+    risks?: { total: number; returned: number };
+  };
 }
 
 export interface RiskSignalFact extends BaseFact {
