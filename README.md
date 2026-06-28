@@ -12,9 +12,10 @@ the agent read, what plan it saved, what changed, which checks would earn
 verification credit, and which gaps still need an honest handoff.
 
 In plain English: it reads a repository, builds a compact index of the files,
-symbols, imports, tests, risks, and workflows it can prove, then gives Codex,
-Claude Code, or another MCP client small evidence-backed packets before and
-after edits. It is meant to help an agent answer questions like:
+symbols, imports, tests, risks, workflows, process traces, and graph clusters it
+can prove, then gives Codex, Claude Code, or another MCP client small
+evidence-backed packets before and after edits. It is meant to help an agent
+answer questions like:
 
 - What should I read first?
 - What could this change break?
@@ -27,7 +28,7 @@ MCP. It is a context compiler, query server, and verification guide.
 
 ## Why Codexa
 
-Three capabilities are deliberately hard to find elsewhere:
+Four capabilities are deliberately hard to find elsewhere:
 
 - **A drift loop.** `change_plan` snapshots per-file hashes plus symbol and
   risk baselines before editing; `post_edit_review` diffs the real dirty tree
@@ -44,6 +45,11 @@ Three capabilities are deliberately hard to find elsewhere:
   this detects structural exit-masking in *reported* commands — it cannot
   detect a wholesale fabricated report. The opt-in AutoVerify lane exists for
   execution-backed evidence.
+- **Graph-aware relational packets.** v0.7.0 precomputes bounded process
+  packets, functional module clusters, graph-view exports, and opt-in summary
+  prompts. `search` now reports raw exact-hit counts beside Codexa-ranked
+  anchors, so a "zero grep hits" task can still surface one ranked symbol or
+  file target plus related process and cluster context.
 - **A fail-closed eval.** The eval harness runs real `rg`/`git` baselines and
   fails a scenario outright if the raw baseline does the job better. The
   archived v0.2.0 release run passed 20/20 scenarios with packets averaging
@@ -140,6 +146,13 @@ npx -y @mirnoorata/codexa serve /path/to/project --auto-refresh
 
 Codexa is also listed in the official MCP registry as
 `io.github.mirnoorata/codexa` for MCP clients that discover servers there.
+
+For shared workspace launches such as `codexa serve /srv`, Codexa can route to
+the active project recorded in `.codex/WORKING.md`. Selected session rows win;
+conflicting active focus, workspace default, or active-session evidence fails
+closed instead of silently choosing the wrong repo. Use
+`CODEXA_WORKSPACE_SESSION=<session>` or `--workspace-session <session>` when
+serving a shared workspace root with multiple live workers.
 
 ## Proof cards and policy packs
 
@@ -272,6 +285,10 @@ repo's `.codex/codebase/` directory:
 .codex/codebase/README.md
 .codex/codebase/codex-contract.md
 .codex/codebase/repo-map.md
+.codex/codebase/relational-packets.md
+.codex/codebase/relational-packets.json
+.codex/codebase/relational-graph.json
+.codex/codebase/packet-summary-prompts.ndjson
 .codex/codebase/risk-map.md
 .codex/codebase/placeholder-map.md
 .codex/codebase/test-map.md
@@ -287,6 +304,10 @@ repo's `.codex/codebase/` directory:
 For lay readers, these are the maps and checklists Codex reads. For engineers,
 the durable machine-readable index is `index.json` plus `facts.ndjson`; the
 Markdown files are compact human/agent-facing projections of the same facts.
+`relational-packets.md` is the read-first graph packet view for process traces
+and module clusters; the JSON companions are bounded machine-readable exports
+for tools and graph visualizers. `packet-summary-prompts.ndjson` contains
+explicit opt-in prompt records only — indexing does not call a model.
 
 Generated cache and working state live under `.codex/cache/`. Codexa-owned cache
 writes are allowed; source-file mutation is not exposed through MCP tools.
@@ -384,7 +405,8 @@ Pipeline:
 5. Resolve imports, usage sites, aliases, test edges, and graph links.
 6. Rank files/modules with centrality, usage, churn, tests, dirty risk, and
    bounded outcome signals.
-7. Build typed graph edges and workflow traces.
+7. Build typed graph edges, workflow traces, functional clusters, and
+   relational packet exports.
 8. Record freshness, parser errors, and dirty hashes.
 9. Publish artifacts atomically.
 
@@ -442,8 +464,9 @@ barrel. Implementations live under `src/query/`.
 
 Key query modules:
 
-- `search.ts`: repo maps, raw/BM25/exact/symbol/semantic search, and target
-  discovery.
+- `search.ts`: repo maps, raw/BM25/exact/symbol/semantic search, target
+  discovery, raw-exact-vs-ranked anchor reporting, and relational process /
+  cluster packet selection.
 - `context.ts`: `context_pack`, `task_brief`, `focus_brief`, and
   `session_context`.
 - `impact.ts`: file/symbol blast-radius expansion and verification recipes.
