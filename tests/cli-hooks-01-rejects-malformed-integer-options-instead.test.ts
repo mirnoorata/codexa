@@ -289,6 +289,49 @@ it("routes workspace-root query CLI commands through an explicit workspace sessi
     expect(brief.stdout).not.toContain("otherQuerySymbol");
 });
 
+it("routes workspace-root proof cards through an explicit workspace session flag", async () => {
+    const workspace = await trackedTmpDir("codexa-prove-explicit-session-");
+    const repoA = await createWorkspaceGitRepo(workspace, "repo-a", "selectedProofSymbol");
+    const repoB = await createWorkspaceGitRepo(workspace, "repo-b", "otherProofSymbol");
+    await mkdir(path.join(workspace, ".codex"), { recursive: true });
+    const focusFile = path.join(workspace, ".codex", "WORKING.md");
+    await writeFile(
+      focusFile,
+      [
+        "## Active Sessions",
+        "",
+        "| session | agent | repo | task | status | claims | last_seen | next |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        `| session-a | codex | ${repoA} | task a | active | none | now | inspect |`,
+        `| session-b | codex | ${repoB} | task b | active | none | now | inspect |`
+      ].join("\n"),
+      "utf8"
+    );
+    const cli = path.resolve(process.cwd(), "dist/cli.js");
+    const indexed = spawnSync(process.execPath, [cli, "index", repoA], {
+      cwd: process.cwd(),
+      encoding: "utf8"
+    });
+    expect(indexed.status).toBe(0);
+
+    const prove = spawnSync(
+      process.execPath,
+      [cli, "prove", workspace, "--task", "prove selectedProofSymbol", "--budget", "700", "--workspace-focus-file", focusFile, "--workspace-session", "session-a"],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: testEnv()
+      }
+    );
+
+    expect(prove.status).toBe(0);
+    expect(prove.stderr).toBe("");
+    expect(prove.stdout).toContain(`Repo: ${repoA}`);
+    expect(prove.stdout).toContain("selectedProofSymbol");
+    expect(prove.stdout).not.toContain(repoB);
+    expect(prove.stdout).not.toContain("otherProofSymbol");
+});
+
 it("routes workspace-root edit hooks through the focused repository", async () => {
     const workspace = await trackedTmpDir("codexa-edit-hooks-focused-");
     const repo = path.join(workspace, "repo");
