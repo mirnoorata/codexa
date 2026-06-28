@@ -1,7 +1,7 @@
 import path from "node:path";
 import { isTestPath, moduleNameForPath } from "./language.js";
 import { semanticLaneEntriesForQuery, type SemanticQueryOptions, type SemanticRetrievalSummary } from "./semantic-retrieval.js";
-import type { CodexaIndex, FileFact, GraphEdgeFact, WorkflowTraceFact } from "./types.js";
+import type { CodexaIndex, Confidence, FileFact, GraphEdgeFact, ModuleClusterFact, SymbolFact, WorkflowTraceFact } from "./types.js";
 import { rankLog2, uniqueSorted } from "./util.js";
 
 export type TaskIntent =
@@ -42,6 +42,52 @@ export interface RetrievalMatch {
   lanes: Partial<Record<RetrievalLane, number>>;
 }
 
+export interface RetrievalAnchor {
+  kind: "symbol" | "file";
+  label: string;
+  path: string;
+  line?: number;
+  symbolId?: string;
+  score: number;
+  lanes: RetrievalLane[];
+  confidence: Confidence;
+  reasons: string[];
+}
+
+export interface RetrievalProcessGroup {
+  workflowId: string;
+  title: string;
+  workflowKind: WorkflowTraceFact["workflowKind"];
+  processKind?: WorkflowTraceFact["processKind"];
+  score: number;
+  normalizedScore: number;
+  entryPath: string;
+  entryScore?: number;
+  matchedFiles: string[];
+  terminalFiles: string[];
+  tests: string[];
+  reasons: string[];
+  confidence: Confidence;
+}
+
+export interface RetrievalClusterGroup {
+  name: string;
+  clusterKind?: ModuleClusterFact["clusterKind"];
+  score: number;
+  rank: number;
+  summary: string;
+  matchedFiles: string[];
+  topFiles: string[];
+  topSymbols: string[];
+  workflows: string[];
+  tests: string[];
+  risks: string[];
+  relationCount?: number;
+  crossModuleRelationCount?: number;
+  confidence: Confidence;
+  reasons: string[];
+}
+
 export interface RetrievalResult {
   query: string;
   intents: TaskIntent[];
@@ -49,6 +95,9 @@ export interface RetrievalResult {
   matches: RetrievalMatch[];
   workflows: WorkflowTraceFact[];
   modules: Array<{ name: string; score: number; files: string[]; reasons: string[] }>;
+  anchors: RetrievalAnchor[];
+  processGroups: RetrievalProcessGroup[];
+  clusterGroups: RetrievalClusterGroup[];
   broad: boolean;
   intentConfidence: IntentConfidence;
   diagnostics: string[];
@@ -215,10 +264,13 @@ export async function retrieveForTask(index: CodexaIndex, query: string, limit =
     .filter((match) => allowDecoys || !isDecoyLikePath(match.file.path))
     .slice(0, limit);
   const modules = rankModules(index, matches, terms).slice(0, Math.max(3, Math.min(8, limit)));
+  const anchors = buildRetrievalAnchors(index, matches, query, Math.max(4, Math.min(12, limit)));
+  const processGroups = buildProcessGroups(workflows, matches).slice(0, Math.max(3, Math.min(8, limit)));
+  const clusterGroups = buildClusterGroups(index, modules, matches).slice(0, Math.max(3, Math.min(8, limit)));
   const broad = rawTerms.length <= 2 || intents.includes("architecture") || intents.includes("workflow");
   const intentConfidence = analyzeIntentConfidence(query, intents, terms, matches, workflows, broad);
   const diagnostics = uniqueSorted([...retrievalDiagnostics(index, matches, workflows, broad, intentConfidence), ...semanticResult.summary.diagnostics.map((diagnostic) => `semantic: ${diagnostic}`)]);
-  return { query, intents, terms, matches, workflows, modules, broad, intentConfidence, diagnostics, semantic: semanticResult.summary };
+  return { query, intents, terms, matches, workflows, modules, anchors, processGroups, clusterGroups, broad, intentConfidence, diagnostics, semantic: semanticResult.summary };
 }
 
 function retrievalRuntimeForIndex(index: CodexaIndex): RetrievalRuntime {
@@ -875,6 +927,125 @@ function rankModules(index: CodexaIndex, matches: RetrievalMatch[], terms: strin
       reasons: [...entry.reasons].sort().slice(0, 6)
     }))
     .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+}
+
+function buildRetrievalAnchors(index: CodexaIndex, matches: RetrievalMatch[], query: string, limit: number): RetrievalAnchor[] {
+  const matchByPath = new Map(matches.map((match) => [match.file.path, match]));
+  const allowTests = /\b(test|tests|spec|pytest|vitest|coverage|verification)\b/i.test(query);
+  const symbolAnchors = index.symbols
+    .filter((symbol) => matchByPath.has(symbol.path))
+    .filter((symbol) => allowTests || (!isTestPath(symbol.path) && symbol.kind !== "test" && symbol.kind !== "fixture"))
+    .map((symbol) => {
+      const match = matchByPath.get(symbol.path)!;
+      const queryScore = Math.max(matchScore(query, symbol.name), matchScore(query, symbol.qualifiedName));
+      const score = match.score + queryScore * 1.8 + symbolAnchorBoost(symbol);
+      return {
+        kind: "symbol" as const,
+        label: symbol.qualifiedName,
+        path: symbol.path,
+        line: symbol.range?.startLine,
+        symbolId: symbol.id,
+        score,
+        lanes: activeLanes(match.lanes),
+        confidence: symbol.confidence,
+        reasons: uniqueSorted([`ranked symbol ${symbol.qualifiedName}`, ...match.reasons]).slice(0, 8)
+      };
+    })
+    .filter((anchor) => anchor.score > 0)
+    .sort((a, b) => b.score - a.score || a.path.localeCompare(b.path) || (a.line ?? 0) - (b.line ?? 0))
+    .slice(0, limit);
+  if (symbolAnchors.length > 0) {
+    return symbolAnchors;
+  }
+  return matches
+    .filter((match) => allowTests || (!match.file.test && !isTestPath(match.file.path)))
+    .slice(0, limit)
+    .map((match) => ({
+      kind: "file" as const,
+      label: match.file.path,
+      path: match.file.path,
+      score: match.score,
+      lanes: activeLanes(match.lanes),
+      confidence: match.file.confidence,
+      reasons: uniqueSorted(["ranked file anchor", ...match.reasons]).slice(0, 8)
+    }));
+}
+
+function symbolAnchorBoost(symbol: SymbolFact): number {
+  const kindBoost = ["route", "class", "function", "method", "node"].includes(symbol.kind) ? 4 : 0;
+  return (symbol.exported ? 5 : 0) + kindBoost;
+}
+
+function buildProcessGroups(workflows: WorkflowTraceFact[], matches: RetrievalMatch[]): RetrievalProcessGroup[] {
+  const matchScoreByPath = new Map(matches.map((match) => [match.file.path, match.score]));
+  return workflows
+    .map((workflow) => {
+      const workflowFiles = uniqueSorted([
+        workflow.entryPath,
+        ...workflow.relatedFiles,
+        ...workflow.steps.flatMap((step) => [step.path, step.targetPath].filter((filePath): filePath is string => typeof filePath === "string"))
+      ]);
+      const matchedFiles = workflowFiles.filter((filePath) => matchScoreByPath.has(filePath));
+      const matchScore = matchedFiles.reduce((sum, filePath) => sum + (matchScoreByPath.get(filePath) ?? 0), 0);
+      const score = matchScore + rankLog2(workflow.rank) * 0.4 + (workflow.entryScore ?? 0) * 0.04;
+      const stepCount = Math.max(1, workflow.steps.length);
+      return {
+        workflowId: workflow.id,
+        title: workflow.title,
+        workflowKind: workflow.workflowKind,
+        processKind: workflow.processKind,
+        score,
+        normalizedScore: score / Math.sqrt(stepCount),
+        entryPath: workflow.entryPath,
+        entryScore: workflow.entryScore,
+        matchedFiles: matchedFiles.slice(0, 16),
+        terminalFiles: (workflow.terminalFiles ?? []).slice(0, 8),
+        tests: workflow.tests.slice(0, 8),
+        reasons: uniqueSorted([
+          workflow.processKind ? `process ${workflow.processKind}` : undefined,
+          matchedFiles.length > 0 ? `${matchedFiles.length} matched file(s)` : undefined,
+          workflow.entryScore ? `entry score ${workflow.entryScore}` : undefined
+        ].filter((reason): reason is string => typeof reason === "string")),
+        confidence: workflow.confidence
+      };
+    })
+    .filter((group) => group.score > 0)
+    .sort((a, b) => b.normalizedScore - a.normalizedScore || b.score - a.score || a.title.localeCompare(b.title));
+}
+
+function buildClusterGroups(index: CodexaIndex, modules: RetrievalResult["modules"], matches: RetrievalMatch[]): RetrievalClusterGroup[] {
+  const moduleByName = new Map(index.modules.map((module) => [module.name, module]));
+  const matchScoreByPath = new Map(matches.map((match) => [match.file.path, match.score]));
+  return modules
+    .map((moduleMatch) => {
+      const module = moduleByName.get(moduleMatch.name);
+      const files = module?.files ?? moduleMatch.files;
+      const matchedFiles = files.filter((filePath) => matchScoreByPath.has(filePath)).sort((a, b) => (matchScoreByPath.get(b) ?? 0) - (matchScoreByPath.get(a) ?? 0) || a.localeCompare(b));
+      return {
+        name: moduleMatch.name,
+        clusterKind: module?.clusterKind,
+        score: moduleMatch.score + (module?.rank ?? 0) * 0.01,
+        rank: module?.rank ?? moduleMatch.score,
+        summary: module?.summary ?? `${moduleMatch.name} matched ${moduleMatch.files.length} file(s).`,
+        matchedFiles: matchedFiles.slice(0, 16),
+        topFiles: (module?.topFiles ?? files).slice(0, 8),
+        topSymbols: (module?.topSymbols ?? []).slice(0, 12),
+        workflows: (module?.workflows ?? []).slice(0, 8),
+        tests: (module?.tests ?? []).slice(0, 8),
+        risks: (module?.risks ?? []).slice(0, 8),
+        relationCount: module?.relationCount,
+        crossModuleRelationCount: module?.crossModuleRelationCount,
+        confidence: module?.confidence ?? "heuristic",
+        reasons: uniqueSorted(moduleMatch.reasons.length > 0 ? moduleMatch.reasons : ["cluster contains ranked retrieval matches"]).slice(0, 8)
+      };
+    })
+    .filter((group) => group.score > 0)
+    .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
+}
+
+function activeLanes(lanes: RetrievalMatch["lanes"]): RetrievalLane[] {
+  const order: RetrievalLane[] = ["exact", "symbol", "semantic", "bm25", "workflow", "test", "dirty", "graph"];
+  return order.filter((lane) => (lanes[lane] ?? 0) > 0);
 }
 
 function tokenize(value: string): string[] {

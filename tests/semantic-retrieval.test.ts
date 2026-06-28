@@ -128,7 +128,18 @@ describe("semantic retrieval lane", () => {
       const search = await searchQuery(repo, { query: "fix renewal lifecycle invoice behavior", limit: 5 }, { ...semanticQueryOptions, autoRefresh: false });
       expect(search.text).toContain("Hybrid semantic search:");
       expect(search.text).toContain("Semantic lane: ok");
+      expect(search.text).toContain("Raw exact hits: 0; ranked anchor:");
       expect(search.text).toContain("Codexa hybrid targets:");
+      expect(search.text).toContain("Relational packets:");
+      const searchData = search.data as {
+        rawExactHitCount: number;
+        rankedAnchors: Array<{ kind: string; path: string; label: string; lanes: string[] }>;
+        relationalPackets: { clusterGroups: Array<{ name: string; topSymbols: string[] }> };
+      };
+      expect(searchData.rawExactHitCount).toBe(0);
+      expect(searchData.rankedAnchors.some((anchor) => anchor.kind === "symbol" && anchor.path === "src/domain/processor.ts" && anchor.label === "runDomainProcess")).toBe(true);
+      expect(searchData.rankedAnchors.find((anchor) => anchor.path === "src/domain/processor.ts")?.lanes).toContain("semantic");
+      expect(searchData.relationalPackets.clusterGroups.some((group) => group.name === "src")).toBe(true);
     } finally {
       if (embedderDir) {
         await rm(embedderDir, { recursive: true, force: true });

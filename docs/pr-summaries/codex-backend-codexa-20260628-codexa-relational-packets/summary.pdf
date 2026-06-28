@@ -1,0 +1,74 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 1677 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(Change Summary) Tj T*
+() Tj T*
+(- Project: codexa) Tj T*
+(- Worktree: isolated codexa worktree) Tj T*
+(- Branch: codex/backend/codexa-20260628-codexa-relational-packets) Tj T*
+(- Base: main) Tj T*
+(- Primary commit: 1957685) Tj T*
+(- Subject: feat\(retrieval\): add relational packets for ranked context) Tj T*
+() Tj T*
+(Changed Files) Tj T*
+() Tj T*
+(1957685 feat\(retrieval\): add relational packets for ranked context) Tj T*
+(src/artifacts.ts                 |  67 +++++++++++++++) Tj T*
+(src/graph.ts                     |  83 ++++++++++++++++++-) Tj T*
+(src/indexer.ts                   |   4 +-) Tj T*
+(src/indexer/ranking.ts           | 114 ++++++++++++++++++++++++-) Tj T*
+(src/query/search.ts              |  48 ++++++++++-) Tj T*
+(src/retrieval.ts                 | 175 ++++++++++++++++++++++++++++++++++++++-) Tj T*
+(src/types.ts                     |  27 ++++++) Tj T*
+(tests/indexer.test.ts            |  18 ++++) Tj T*
+(tests/semantic-retrieval.test.ts |  11 +++) Tj T*
+(9 files changed, 536 insertions\(+\), 11 deletions\(-\)) Tj T*
+() Tj T*
+(Verification) Tj T*
+() Tj T*
+(- git diff --check: passed) Tj T*
+(- npm run check: passed) Tj T*
+(- git diff --check: passed) Tj T*
+(- Codexa post-edit-review: local artifact recorded) Tj T*
+(- Codexa test-plan: local artifact recorded) Tj T*
+(- git diff --cached --check: passed) Tj T*
+(- staged safety scan: passed) Tj T*
+() Tj T*
+(Notes) Tj T*
+() Tj T*
+(Adds deterministic process and cluster packets to Codexa indexing and retrieval so zero-) Tj T*
+(exact-hit searches can still surface ranked symbol, workflow, and module anchors without) Tj T*
+(adding a new graph database.) Tj T*
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000185 00000 n 
+0000000311 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+2039
+%%EOF

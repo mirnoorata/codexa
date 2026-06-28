@@ -254,6 +254,17 @@ export interface WorkflowTraceFact extends BaseFact {
   steps: WorkflowStep[];
   summary: string;
   rank: number;
+  processKind?: "entry-process" | "intra-module-process" | "cross-module-process";
+  entryScore?: number;
+  terminalFiles?: string[];
+  relatedModules?: string[];
+  stepCounts?: Partial<Record<WorkflowStep["kind"], number>>;
+  evidenceCounts?: Partial<Record<Confidence, number>>;
+  truncation?: {
+    relatedFiles?: { total: number; returned: number };
+    tests?: { total: number; returned: number };
+    steps?: { total: number; returned: number };
+  };
 }
 
 export interface ModuleClusterFact extends BaseFact {
@@ -262,6 +273,22 @@ export interface ModuleClusterFact extends BaseFact {
   files: string[];
   summary: string;
   rank: number;
+  clusterKind?: "path" | "functional";
+  topFiles?: string[];
+  topSymbols?: string[];
+  workflows?: string[];
+  tests?: string[];
+  risks?: string[];
+  relationCount?: number;
+  crossModuleRelationCount?: number;
+  evidenceCounts?: Partial<Record<Confidence, number>>;
+  truncation?: {
+    files?: { total: number; returned: number };
+    symbols?: { total: number; returned: number };
+    workflows?: { total: number; returned: number };
+    tests?: { total: number; returned: number };
+    risks?: { total: number; returned: number };
+  };
 }
 
 export interface RiskSignalFact extends BaseFact {

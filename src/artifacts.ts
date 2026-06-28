@@ -13,6 +13,7 @@ export async function writeArtifacts(index: CodexaIndex, outputDir: string): Pro
     fs.writeFile(path.join(outputDir, "README.md"), renderReadme(index), "utf8"),
     fs.writeFile(path.join(outputDir, "codex-contract.md"), renderCodexUseContract(index.freshness), "utf8"),
     fs.writeFile(path.join(outputDir, "repo-map.md"), renderRepoMap(index), "utf8"),
+    fs.writeFile(path.join(outputDir, "relational-packets.md"), renderRelationalPackets(index), "utf8"),
     fs.writeFile(path.join(outputDir, "risk-map.md"), renderRiskMap(index), "utf8"),
     fs.writeFile(path.join(outputDir, "placeholder-map.md"), renderPlaceholderMap(index), "utf8"),
     fs.writeFile(path.join(outputDir, "test-map.md"), renderTestMap(index), "utf8"),
@@ -61,6 +62,8 @@ dirty-diff review, and targeted test planning.
 Use \`search\` as the first-class target-discovery surface when a task is
 ambiguous; it combines raw hits, semantic retrieval when configured, Codexa
 ranking, likely tests, and gaps before \`task_brief\`.
+Read \`relational-packets.md\` when exact grep misses but the task likely maps
+to a process, symbol neighborhood, or module cluster.
 Read \`codex-contract.md\` first when a new Codex session needs the automatic-use
 rules without loading broader maps.
 
@@ -97,6 +100,57 @@ ${rankSymbols(index)
   .slice(0, 80)
   .map((symbol) => `- \`${symbol.qualifiedName}\` (${symbol.kind}, ${symbol.language}) at \`${formatPathLine(symbol.path, symbol.range?.startLine)}\``)
   .join("\n")}
+`;
+}
+
+function renderRelationalPackets(index: CodexaIndex): string {
+  return `# Relational Packets
+
+These generated packets summarize process traces and graph-aware module
+clusters precomputed at index time. They are read-first guidance, not proof;
+verify the cited source paths before editing.
+
+## Process Packets
+
+${index.workflows
+  .slice(0, 60)
+  .map(
+    (workflow) => `### ${workflow.title}
+
+- Kind: ${workflow.workflowKind}
+- Process: ${workflow.processKind ?? "unknown"}
+- Entry score: ${workflow.entryScore ?? 0}
+- Confidence: ${workflow.confidence}
+- Entry: \`${formatPathLine(workflow.entryPath, workflow.range?.startLine)}\`
+- Terminals: ${(workflow.terminalFiles ?? []).slice(0, 8).map((file) => `\`${file}\``).join(", ") || "none"}
+- Modules: ${(workflow.relatedModules ?? []).slice(0, 8).join(", ") || "none"}
+- Tests: ${workflow.tests.slice(0, 8).map((file) => `\`${file}\``).join(", ") || "none"}
+
+${workflow.summary}
+`
+  )
+  .join("\n") || "- none detected"}
+
+## Cluster Packets
+
+${index.modules
+  .slice(0, 60)
+  .map(
+    (module) => `### ${module.name}
+
+- Kind: ${module.clusterKind ?? "path"}
+- Rank: ${module.rank.toFixed(2)}
+- Relations: ${module.relationCount ?? 0} total, ${module.crossModuleRelationCount ?? 0} cross-module
+- Read first: ${(module.topFiles ?? module.files).slice(0, 8).map((file) => `\`${file}\``).join(", ") || "none"}
+- Symbols: ${(module.topSymbols ?? []).slice(0, 8).map((symbol) => `\`${symbol}\``).join(", ") || "none"}
+- Workflows: ${(module.workflows ?? []).slice(0, 6).join(", ") || "none"}
+- Tests: ${(module.tests ?? []).slice(0, 6).map((file) => `\`${file}\``).join(", ") || "none"}
+- Risks: ${(module.risks ?? []).slice(0, 6).join(", ") || "none"}
+
+${module.summary}
+`
+  )
+  .join("\n") || "- none detected"}
 `;
 }
 
@@ -264,7 +318,11 @@ ${index.workflows
 - Kind: ${workflow.workflowKind}
 - Confidence: ${workflow.confidence}
 - Rank: ${workflow.rank.toFixed(2)}
+- Process: ${workflow.processKind ?? "unknown"}
+- Entry score: ${workflow.entryScore ?? 0}
 - Entry: \`${formatPathLine(workflow.entryPath, workflow.range?.startLine)}\`
+- Terminals: ${(workflow.terminalFiles ?? []).slice(0, 8).map((file) => `\`${file}\``).join(", ") || "none"}
+- Modules: ${(workflow.relatedModules ?? []).slice(0, 8).join(", ") || "none"}
 - Related files: ${workflow.relatedFiles.slice(0, 8).map((file) => `\`${file}\``).join(", ") || "none"}
 - Tests: ${workflow.tests.slice(0, 8).map((file) => `\`${file}\``).join(", ") || "none"}
 
@@ -352,6 +410,15 @@ function renderModule(index: CodexaIndex, module: ModuleClusterFact): string {
   return `# Module: ${module.name}
 
 ${module.summary}
+
+## Packet Summary
+
+- Kind: ${module.clusterKind ?? "path"}
+- Relations: ${module.relationCount ?? 0} total, ${module.crossModuleRelationCount ?? 0} cross-module
+- Top symbols: ${(module.topSymbols ?? []).slice(0, 8).map((symbol) => `\`${symbol}\``).join(", ") || "none"}
+- Workflows: ${(module.workflows ?? []).slice(0, 6).join(", ") || "none"}
+- Tests: ${(module.tests ?? []).slice(0, 6).map((file) => `\`${file}\``).join(", ") || "none"}
+- Risks: ${(module.risks ?? []).slice(0, 6).join(", ") || "none"}
 
 ## Read First
 
