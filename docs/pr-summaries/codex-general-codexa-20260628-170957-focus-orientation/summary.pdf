@@ -12,7 +12,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
 endobj
 5 0 obj
-<< /Length 1625 >>
+<< /Length 2091 >>
 stream
 BT
 /F1 10 Tf
@@ -25,6 +25,7 @@ BT
 (- Branch: codex/general/codexa-20260628-170957-focus-orientation) Tj T*
 (- Base: main) Tj T*
 (- Primary commit: 44217cd) Tj T*
+(- Review fix commit: 39ed7ec) Tj T*
 (- Subject: fix\(cli\): route focused workspace sessions explicitly) Tj T*
 () Tj T*
 (Changed Files) Tj T*
@@ -37,6 +38,11 @@ BT
 (...jects-malformed-integer-options-instead.test.ts |  80 ++++++++++++-) Tj T*
 (5 files changed, 188 insertions\(+\), 71 deletions\(-\)) Tj T*
 () Tj T*
+(39ed7ec fix\(cli\): route proof and eval workspace sessions) Tj T*
+(src/cli.ts                                         | 12 ++++--) Tj T*
+(...jects-malformed-integer-options-instead.test.ts | 43 ++++++++++++++++++++++) Tj T*
+(2 files changed, 51 insertions\(+\), 4 deletions\(-\)) Tj T*
+() Tj T*
 (Verification) Tj T*
 () Tj T*
 (- git diff --check: passed) Tj T*
@@ -44,6 +50,8 @@ BT
 (- git diff --check: passed) Tj T*
 (- Codexa session-start workspace-session routing smoke: passed) Tj T*
 (- Codexa brief workspace-session routing smoke: passed) Tj T*
+(- Codexa proof-card workspace-session routing smoke: passed) Tj T*
+(- focused CLI workspace routing regression test: passed) Tj T*
 (- Codexa post-edit-review: local artifact recorded) Tj T*
 (- Codexa test-plan: local artifact recorded) Tj T*
 (- git diff --cached --check: passed) Tj T*
@@ -68,5 +76,5 @@ xref
 trailer
 << /Size 6 /Root 1 0 R >>
 startxref
-1988
+2454
 %%EOF
