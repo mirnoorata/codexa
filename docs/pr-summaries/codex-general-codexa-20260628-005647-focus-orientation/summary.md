@@ -17,8 +17,8 @@
 
 - git diff --check: passed
 - git diff --check: passed
-- PATH=/home/q/.nvm/versions/node/v22.22.2/bin:$PATH npm run privacy: passed
-- PATH=/home/q/.nvm/versions/node/v22.22.2/bin:$PATH npm run package:hygiene: passed
+- npm run privacy: passed
+- npm run package:hygiene: passed
 - docs-only waiver: no test command required
 - Codexa post-edit-review: local artifact recorded
 - Codexa test-plan: local artifact recorded
@@ -28,4 +28,9 @@
 
 ## Notes
 
-Updates the README to cover the shipped v0.7.0 graph-aware relational packets, generated packet artifacts, raw-exact-vs-ranked search behavior, and fail-closed workspace-root routing guidance.\n\nVerification:\n- git diff --check\n- npm run privacy\n- npm run package:hygiene
+Updates the README to cover the shipped v0.7.0 graph-aware relational packets, generated packet artifacts, raw-exact-vs-ranked search behavior, and fail-closed workspace-root routing guidance.
+
+Verification:
+- git diff --check
+- npm run privacy
+- npm run package:hygiene
