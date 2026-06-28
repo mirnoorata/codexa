@@ -12,7 +12,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
 endobj
 5 0 obj
-<< /Length 2363 >>
+<< /Length 1677 >>
 stream
 BT
 /F1 10 Tf
@@ -44,14 +44,7 @@ BT
 (Verification) Tj T*
 () Tj T*
 (- git diff --check: passed) Tj T*
-(- PATH=/home/q/.nvm/versions/node/v22.22.2/bin:/home/q/.local/bin:/home/q/bin:/home/q/.nvm/v) Tj T*
-(ersions/node/v22.22.2/lib/nodemodules/@openai/codex/nodemodules/@openai/codex-) Tj T*
-(linux-x64/vendor/x8664-unknown-linux-musl/codex-path:/home/q/.codex/tmp/arg0/codex-arg0L1EfY) Tj T*
-(A:/home/q/.cargo/bin:/home/q/.local/bin:/home/q/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bi) Tj T*
-(n:/bin:/usr/sbin:/sbin:/home/q/.local/bin:/home/q/bin:/home/q/google-cloud-sdk/bin:/srv/apex) Tj T*
-(coder/bin:/home/q/.cargo/bin:/home/q/bin:/home/q/.nvm/versions/node/v22.22.2/bin:/usr/local/) Tj T*
-(sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin npm) Tj T*
-(run check: passed) Tj T*
+(- npm run check: passed) Tj T*
 (- git diff --check: passed) Tj T*
 (- Codexa post-edit-review: local artifact recorded) Tj T*
 (- Codexa test-plan: local artifact recorded) Tj T*
@@ -77,5 +70,5 @@ xref
 trailer
 << /Size 6 /Root 1 0 R >>
 startxref
-2725
+2039
 %%EOF

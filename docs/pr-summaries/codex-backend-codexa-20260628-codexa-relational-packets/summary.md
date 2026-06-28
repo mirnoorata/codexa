@@ -24,7 +24,7 @@
 ## Verification
 
 - git diff --check: passed
-- PATH=/home/q/.nvm/versions/node/v22.22.2/bin:/home/q/.local/bin:/home/q/bin:/home/q/.nvm/versions/node/v22.22.2/lib/node_modules/@openai/codex/node_modules/@openai/codex-linux-x64/vendor/x86_64-unknown-linux-musl/codex-path:/home/q/.codex/tmp/arg0/codex-arg0L1EfYA:/home/q/.cargo/bin:/home/q/.local/bin:/home/q/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/home/q/.local/bin:/home/q/bin:/home/q/google-cloud-sdk/bin:/srv/apexcoder/bin:/home/q/.cargo/bin:/home/q/bin:/home/q/.nvm/versions/node/v22.22.2/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:/usr/games:/usr/local/games:/snap/bin npm run check: passed
+- npm run check: passed
 - git diff --check: passed
 - Codexa post-edit-review: local artifact recorded
 - Codexa test-plan: local artifact recorded
