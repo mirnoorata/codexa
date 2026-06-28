@@ -2,7 +2,7 @@ import path from "node:path";
 import { parseAutonomyMode } from "../autonomy.js";
 import type { LiveIndexEvent } from "../live-index.js";
 import type { McpTransportKind } from "../mcp.js";
-import { resolveMcpRepoRoot, shouldPreferConfiguredRepoRoot } from "../mcp-repo-root.js";
+import { resolveMcpRepoRoot, shouldPreferConfiguredRepoRoot, type McpRepoRootResolutionOptions } from "../mcp-repo-root.js";
 import { semanticProviderFromValue, type SemanticProviderKind } from "../semantic-retrieval.js";
 import type { ChangeType, QueryOptions, SessionMemoryInput, VerificationCommandReport, VerificationWaiver } from "../types.js";
 
@@ -10,13 +10,22 @@ export function printQuery(result: { text: string }) {
   console.log(result.text);
 }
 
-export async function resolveQueryRepoRoot(repo: string): Promise<string> {
+export async function resolveQueryRepoRoot(repo: string, opts: CliQueryOptions = {}): Promise<string> {
   const configuredRoot = path.resolve(repo);
+  const routingOptions = workspaceRoutingOptionsFromCli(opts);
   return (
     await resolveMcpRepoRoot(configuredRoot, {
-      preferConfiguredRoot: await shouldPreferConfiguredRepoRoot(configuredRoot)
+      ...routingOptions,
+      preferConfiguredRoot: await shouldPreferConfiguredRepoRoot(configuredRoot, routingOptions)
     })
   ).repoRoot;
+}
+
+function workspaceRoutingOptionsFromCli(opts: CliQueryOptions): McpRepoRootResolutionOptions {
+  return {
+    workspaceFocusFile: opts.workspaceFocusFile ? path.resolve(opts.workspaceFocusFile) : undefined,
+    workspaceSessionId: opts.workspaceSession
+  };
 }
 
 export function invokedCliName(): string {

@@ -43,6 +43,12 @@ export interface InitResult {
   } | null;
 }
 
+export interface SessionStartOptions {
+  autoRefresh?: boolean;
+  workspaceFocusFile?: string;
+  workspaceSessionId?: string;
+}
+
 interface LaunchSpec {
   command: string;
   args: string[];
@@ -164,20 +170,34 @@ export async function initializeProject(repoInput: string | undefined, options: 
   };
 }
 
-export async function sessionStartSummary(repoInput: string | undefined, includeContext: boolean, autoRefresh = false): Promise<string> {
+export async function sessionStartSummary(repoInput: string | undefined, includeContext: boolean, options: boolean | SessionStartOptions = false): Promise<string> {
   const configuredRoot = path.resolve(repoInput ?? process.cwd());
+  const sessionOptions = typeof options === "boolean" ? { autoRefresh: options } : options;
+  const autoRefresh = sessionOptions.autoRefresh ?? false;
   let repoRoot: string;
   let resolutionNote: string | undefined;
   try {
-    const resolution = await resolveMcpRepoRoot(configuredRoot);
+    const resolution = await resolveMcpRepoRoot(configuredRoot, {
+      workspaceFocusFile: sessionOptions.workspaceFocusFile,
+      workspaceSessionId: sessionOptions.workspaceSessionId
+    });
     repoRoot = resolution.repoRoot;
     if (resolution.source !== "configured-root") {
       const via = resolution.focusFile ? `${resolution.source}:${resolution.focusFile}` : resolution.source;
-      resolutionNote = `Workspace root: ${configuredRoot} -> focused repo via ${via}`;
+      const scoped = resolution.workspaceSessionId ? ` (${resolution.workspaceSessionId})` : "";
+      resolutionNote = `Workspace root: ${configuredRoot} -> focused repo via ${via}${scoped}`;
     }
   } catch (error) {
     const lines = [`Codexa context for ${configuredRoot}:`];
     lines.push(`Codexa status unavailable: ${boundedErrorMessage(error)}`);
+    if (boundedErrorMessage(error).includes("workspace focus is ambiguous")) {
+      const sessionHint = sessionOptions.workspaceSessionId ?? process.env.CODEXA_WORKSPACE_SESSION ?? process.env.SESSION_ID;
+      lines.push(
+        sessionHint
+          ? `Hint: rerun with --workspace-session ${sessionHint} or source the focused worktree's .codex/session-env.sh.`
+          : "Hint: after focus-worktree, source the focused worktree's .codex/session-env.sh or pass --workspace-session <session-id>."
+      );
+    }
     lines.push("Codexa startup hook is advisory; continuing without blocking the session.");
     return lines.join("\n");
   }

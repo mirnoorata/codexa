@@ -451,9 +451,11 @@ program
   .option("--json", "emit structured JSON")
   .option("--auto-refresh", "refresh a stale or missing index before proving", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before proving")
+  .option("--workspace-focus-file <path>", "workspace focus file to consult when <repo> is a workspace launch root")
+  .option("--workspace-session <id>", "active WORKING.md session row to prefer when <repo> is a workspace launch root")
   .description("Print a compact proof card: freshness, read-first files, plan snapshot, verification preview, reported evidence, policy pack, and gaps.")
-  .action(async (repo: string, opts: { task?: string; taskId?: string; diff: boolean; changeType: ChangeType; file?: string[]; budget: number; ranTest?: string[]; ranCommand?: string[]; ranCommandReport?: string[]; waiveCheck?: string[]; waiver?: string[]; json?: boolean; autoRefresh: boolean }) => {
-    const result = await proveQuery(await resolveQueryRepoRoot(repo), {
+  .action(async (repo: string, opts: { task?: string; taskId?: string; diff: boolean; changeType: ChangeType; file?: string[]; budget: number; ranTest?: string[]; ranCommand?: string[]; ranCommandReport?: string[]; waiveCheck?: string[]; waiver?: string[]; json?: boolean; autoRefresh: boolean } & CliQueryOptions) => {
+    const result = await proveQuery(await resolveQueryRepoRoot(repo, opts), {
       task: opts.task,
       taskId: opts.taskId,
       diff: opts.diff,
@@ -484,10 +486,12 @@ program
   .option("--fail-on-refresh", "fail a scenario if a query auto-refreshes during scoring", true)
   .option("--no-fail-on-refresh", "record refreshes without failing the scenario")
   .option("--centrality-experiment", "run eval-only transitive centrality/PageRank experiment without changing default rank", false)
+  .option("--workspace-focus-file <path>", "workspace focus file to consult when <repo> is a workspace launch root")
+  .option("--workspace-session <id>", "active WORKING.md session row to prefer when <repo> is a workspace launch root")
   .description("Run a structured Codexa quality benchmark with randomized anti-cheat holdouts.")
-  .action(async (repo: string, opts: { suite: "all" | "project" | "synthetic" | "historical-fixture" | "task-pack"; seed?: string; taskPack?: string; json?: boolean; autoRefresh: boolean; failOnRefresh: boolean; centralityExperiment: boolean }) => {
+  .action(async (repo: string, opts: { suite: "all" | "project" | "synthetic" | "historical-fixture" | "task-pack"; seed?: string; taskPack?: string; json?: boolean; autoRefresh: boolean; failOnRefresh: boolean; centralityExperiment: boolean } & CliQueryOptions) => {
     const result = await runEval(
-      await resolveQueryRepoRoot(repo),
+      await resolveQueryRepoRoot(repo, opts),
       { autoRefresh: opts.autoRefresh },
       { suite: opts.suite, seed: opts.seed, json: opts.json, failOnRefresh: opts.failOnRefresh, taskPackPath: opts.taskPack ? path.resolve(opts.taskPack) : undefined, centralityExperiment: opts.centralityExperiment }
     );
@@ -503,11 +507,17 @@ program
   .option("--context", "include a small context preview", false)
   .option("--auto-refresh", "refresh a stale or missing index before rendering the context preview", false)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before rendering the context preview")
+  .option("--workspace-focus-file <path>", "workspace focus file to consult when <repo> is a workspace launch root")
+  .option("--workspace-session <id>", "active WORKING.md session row to prefer when <repo> is a workspace launch root")
   .description("Print the lightweight Codexa SessionStart summary used by Codex hooks.")
-  .action(async (repo: string | undefined, opts: { context: boolean; autoRefresh: boolean }) => {
+  .action(async (repo: string | undefined, opts: { context: boolean; autoRefresh: boolean; workspaceFocusFile?: string; workspaceSession?: string }) => {
     const resolved = path.resolve(repo ?? process.cwd());
     const startedAt = Date.now();
-    const summary = await sessionStartSummary(repo, opts.context || process.env.CODEXA_SESSIONSTART_CONTEXT === "1", opts.autoRefresh);
+    const summary = await sessionStartSummary(repo, opts.context || process.env.CODEXA_SESSIONSTART_CONTEXT === "1", {
+      autoRefresh: opts.autoRefresh,
+      workspaceFocusFile: opts.workspaceFocusFile ? path.resolve(opts.workspaceFocusFile) : undefined,
+      workspaceSessionId: opts.workspaceSession
+    });
     console.log(summary);
     const unavailable = summary.includes("Codexa status unavailable:");
     await recordAdvisoryHookEvent(resolved, {
