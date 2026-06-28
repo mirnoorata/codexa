@@ -1,0 +1,70 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 1469 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(Change Summary) Tj T*
+() Tj T*
+(- Project: codexa) Tj T*
+(- Worktree: isolated codexa worktree) Tj T*
+(- Branch: codex/general/codexa-20260628-005647-focus-orientation) Tj T*
+(- Base: main) Tj T*
+(- Primary commit: 4b9210f) Tj T*
+(- Subject: docs\(readme\): document Codexa 0.7.0 updates) Tj T*
+() Tj T*
+(Changed Files) Tj T*
+() Tj T*
+(4b9210f docs\(readme\): document Codexa 0.7.0 updates) Tj T*
+(README.md | 37 ++++++++++++++++++++++++++++++-------) Tj T*
+(1 file changed, 30 insertions\(+\), 7 deletions\(-\)) Tj T*
+() Tj T*
+(Verification) Tj T*
+() Tj T*
+(- git diff --check: passed) Tj T*
+(- git diff --check: passed) Tj T*
+(- PATH=/home/q/.nvm/versions/node/v22.22.2/bin:$PATH npm run privacy: passed) Tj T*
+(- PATH=/home/q/.nvm/versions/node/v22.22.2/bin:$PATH npm run package:hygiene: passed) Tj T*
+(- docs-only waiver: no test command required) Tj T*
+(- Codexa post-edit-review: local artifact recorded) Tj T*
+(- Codexa test-plan: local artifact recorded) Tj T*
+(- git diff --cached --check: passed) Tj T*
+(- docs-only scope check: passed) Tj T*
+(- staged safety scan: passed) Tj T*
+() Tj T*
+(Notes) Tj T*
+() Tj T*
+(Updates the README to cover the shipped v0.7.0 graph-aware relational packets, generated) Tj T*
+(packet artifacts, raw-exact-vs-ranked search behavior, and fail-closed workspace-root) Tj T*
+(routing guidance.\\n\\nVerification:\\n- git diff --check\\n- npm run privacy\\n- npm run) Tj T*
+(package:hygiene) Tj T*
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000185 00000 n 
+0000000311 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1831
+%%EOF
