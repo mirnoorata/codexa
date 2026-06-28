@@ -289,6 +289,57 @@ it("routes workspace-root query CLI commands through an explicit workspace sessi
     expect(brief.stdout).not.toContain("otherQuerySymbol");
 });
 
+it("lets an explicit workspace session flag ignore stale ambient focus files", async () => {
+    const workspace = await trackedTmpDir("codexa-query-session-stale-env-");
+    const repoA = await createWorkspaceGitRepo(workspace, "repo-a", "selectedEnvOverrideSymbol");
+    const staleRepo = await createWorkspaceGitRepo(workspace, "stale-repo", "staleEnvOverrideSymbol");
+    await mkdir(path.join(workspace, ".codex"), { recursive: true });
+    await writeFile(
+      path.join(workspace, ".codex", "WORKING.md"),
+      [
+        "## Active Sessions",
+        "",
+        "| session | agent | repo | task | status | claims | last_seen | next |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        `| session-a | codex | ${repoA} | task a | active | none | now | inspect |`
+      ].join("\n"),
+      "utf8"
+    );
+    const staleFocusFile = path.join(workspace, "stale-WORKING.md");
+    await writeFile(
+      staleFocusFile,
+      [
+        "## Active Sessions",
+        "",
+        "| session | agent | repo | task | status | claims | last_seen | next |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        `| session-a | codex | ${staleRepo} | stale task | active | none | now | inspect |`
+      ].join("\n"),
+      "utf8"
+    );
+    const cli = path.resolve(process.cwd(), "dist/cli.js");
+    for (const repo of [repoA, staleRepo]) {
+      const indexed = spawnSync(process.execPath, [cli, "index", repo], {
+        cwd: process.cwd(),
+        encoding: "utf8"
+      });
+      expect(indexed.status).toBe(0);
+    }
+
+    const brief = spawnSync(process.execPath, [cli, "brief", workspace, "--task", "change selectedEnvOverrideSymbol", "--limit", "2", "--budget", "700", "--workspace-session", "session-a"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: testEnv({ CODEXA_WORKSPACE_FOCUS_FILE: staleFocusFile })
+    });
+
+    expect(brief.status).toBe(0);
+    expect(brief.stderr).toBe("");
+    expect(brief.stdout).toContain(`Repo: ${repoA}`);
+    expect(brief.stdout).toContain("selectedEnvOverrideSymbol");
+    expect(brief.stdout).not.toContain(staleRepo);
+    expect(brief.stdout).not.toContain("staleEnvOverrideSymbol");
+});
+
 it("routes workspace-root proof cards through an explicit workspace session flag", async () => {
     const workspace = await trackedTmpDir("codexa-prove-explicit-session-");
     const repoA = await createWorkspaceGitRepo(workspace, "repo-a", "selectedProofSymbol");

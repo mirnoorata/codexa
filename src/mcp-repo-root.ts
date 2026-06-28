@@ -136,7 +136,7 @@ async function* focusFileRepoCandidates(configuredRoot: string, options: McpRepo
 function focusFileCandidates(configuredRoot: string, options: McpRepoRootResolutionOptions): string[] {
   const candidates = [
     options.workspaceFocusFile,
-    process.env.CODEXA_WORKSPACE_FOCUS_FILE,
+    options.workspaceSessionId ? undefined : process.env.CODEXA_WORKSPACE_FOCUS_FILE,
     path.join(configuredRoot, ".codex", "WORKING.md")
   ].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
   return [...new Set(candidates.map((candidate) => path.resolve(candidate)))];
