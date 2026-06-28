@@ -12,7 +12,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
 endobj
 5 0 obj
-<< /Length 1885 >>
+<< /Length 1625 >>
 stream
 BT
 /F1 10 Tf
@@ -42,11 +42,8 @@ BT
 (- git diff --check: passed) Tj T*
 (- npm run check: passed) Tj T*
 (- git diff --check: passed) Tj T*
-(- node dist/cli.js session-start /srv --workspace-session 20260628-170957-focus-orientation) Tj T*
-(--workspace-focus-file /srv/.codex/WORKING.md: passed) Tj T*
-(- node dist/cli.js brief /srv --workspace-session 20260628-170957-focus-orientation) Tj T*
-(--workspace-focus-file /srv/.codex/WORKING.md --task 'workspace session routing smoke') Tj T*
-(--limit 2 --budget 900 --no-diff: passed) Tj T*
+(- Codexa session-start workspace-session routing smoke: passed) Tj T*
+(- Codexa brief workspace-session routing smoke: passed) Tj T*
 (- Codexa post-edit-review: local artifact recorded) Tj T*
 (- Codexa test-plan: local artifact recorded) Tj T*
 (- git diff --cached --check: passed) Tj T*
@@ -55,8 +52,8 @@ BT
 (Notes) Tj T*
 () Tj T*
 (Adds explicit workspace focus/session routing flags for session-start and Codexa query) Tj T*
-(commands so /srv launch roots can resolve to the intended focused worktree without relying) Tj T*
-(on inherited shell environment.) Tj T*
+(commands so workspace launch roots can resolve to the intended focused worktree without) Tj T*
+(relying on inherited shell environment.) Tj T*
 ET
 endstream
 endobj
@@ -71,5 +68,5 @@ xref
 trailer
 << /Size 6 /Root 1 0 R >>
 startxref
-2247
+1988
 %%EOF

@@ -22,8 +22,8 @@
 - git diff --check: passed
 - npm run check: passed
 - git diff --check: passed
-- node dist/cli.js session-start /srv --workspace-session 20260628-170957-focus-orientation --workspace-focus-file /srv/.codex/WORKING.md: passed
-- node dist/cli.js brief /srv --workspace-session 20260628-170957-focus-orientation --workspace-focus-file /srv/.codex/WORKING.md --task 'workspace session routing smoke' --limit 2 --budget 900 --no-diff: passed
+- Codexa session-start workspace-session routing smoke: passed
+- Codexa brief workspace-session routing smoke: passed
 - Codexa post-edit-review: local artifact recorded
 - Codexa test-plan: local artifact recorded
 - git diff --cached --check: passed
@@ -31,4 +31,4 @@
 
 ## Notes
 
-Adds explicit workspace focus/session routing flags for session-start and Codexa query commands so /srv launch roots can resolve to the intended focused worktree without relying on inherited shell environment.
+Adds explicit workspace focus/session routing flags for session-start and Codexa query commands so workspace launch roots can resolve to the intended focused worktree without relying on inherited shell environment.
