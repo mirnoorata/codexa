@@ -208,8 +208,86 @@ it("keeps explicit query CLI git repos authoritative when workspace session env 
     expect(brief.stdout).toContain("explicitRouteSymbol");
     expect(brief.stdout).not.toContain(focusedRepo);
     expect(brief.stdout).not.toContain("focusedRouteSymbol");
+  expect(brief.stderr).toBe("");
+});
+
+it("routes workspace-root session-start through an explicit workspace session flag", async () => {
+    const workspace = await trackedTmpDir("codexa-session-start-explicit-session-");
+    const repoA = await createWorkspaceGitRepo(workspace, "repo-a", "selectedSessionSymbol");
+    const repoB = await createWorkspaceGitRepo(workspace, "repo-b", "otherSessionSymbol");
+    await mkdir(path.join(workspace, ".codex"), { recursive: true });
+    const focusFile = path.join(workspace, ".codex", "WORKING.md");
+    await writeFile(
+      focusFile,
+      [
+        "## Active Sessions",
+        "",
+        "| session | agent | repo | task | status | claims | last_seen | next |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        `| session-a | codex | ${repoA} | task a | active | none | now | inspect |`,
+        `| session-b | codex | ${repoB} | task b | active | none | now | inspect |`
+      ].join("\n"),
+      "utf8"
+    );
+
+    const cli = path.resolve(process.cwd(), "dist/cli.js");
+    const result = spawnSync(process.execPath, [cli, "session-start", workspace, "--workspace-focus-file", focusFile, "--workspace-session", "session-a"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: testEnv()
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain(`Codexa context for ${repoA}:`);
+    expect(result.stdout).toContain(`Repo: ${repoA}`);
+    expect(result.stdout).toContain("session-a");
+    expect(result.stdout).not.toContain(repoB);
+    expect(result.stdout).not.toContain("Codexa status unavailable:");
+});
+
+it("routes workspace-root query CLI commands through an explicit workspace session flag", async () => {
+    const workspace = await trackedTmpDir("codexa-query-explicit-session-");
+    const repoA = await createWorkspaceGitRepo(workspace, "repo-a", "selectedQuerySymbol");
+    const repoB = await createWorkspaceGitRepo(workspace, "repo-b", "otherQuerySymbol");
+    await mkdir(path.join(workspace, ".codex"), { recursive: true });
+    const focusFile = path.join(workspace, ".codex", "WORKING.md");
+    await writeFile(
+      focusFile,
+      [
+        "## Active Sessions",
+        "",
+        "| session | agent | repo | task | status | claims | last_seen | next |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        `| session-a | codex | ${repoA} | task a | active | none | now | inspect |`,
+        `| session-b | codex | ${repoB} | task b | active | none | now | inspect |`
+      ].join("\n"),
+      "utf8"
+    );
+    const cli = path.resolve(process.cwd(), "dist/cli.js");
+    const indexed = spawnSync(process.execPath, [cli, "index", repoA], {
+      cwd: process.cwd(),
+      encoding: "utf8"
+    });
+    expect(indexed.status).toBe(0);
+
+    const brief = spawnSync(
+      process.execPath,
+      [cli, "brief", workspace, "--task", "change selectedQuerySymbol", "--limit", "2", "--budget", "700", "--workspace-focus-file", focusFile, "--workspace-session", "session-a"],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: testEnv()
+      }
+    );
+
+    expect(brief.status).toBe(0);
     expect(brief.stderr).toBe("");
-  });
+    expect(brief.stdout).toContain(`Repo: ${repoA}`);
+    expect(brief.stdout).toContain("selectedQuerySymbol");
+    expect(brief.stdout).not.toContain(repoB);
+    expect(brief.stdout).not.toContain("otherQuerySymbol");
+});
 
 it("routes workspace-root edit hooks through the focused repository", async () => {
     const workspace = await trackedTmpDir("codexa-edit-hooks-focused-");

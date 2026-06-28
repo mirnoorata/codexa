@@ -503,11 +503,17 @@ program
   .option("--context", "include a small context preview", false)
   .option("--auto-refresh", "refresh a stale or missing index before rendering the context preview", false)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before rendering the context preview")
+  .option("--workspace-focus-file <path>", "workspace focus file to consult when <repo> is a workspace launch root")
+  .option("--workspace-session <id>", "active WORKING.md session row to prefer when <repo> is a workspace launch root")
   .description("Print the lightweight Codexa SessionStart summary used by Codex hooks.")
-  .action(async (repo: string | undefined, opts: { context: boolean; autoRefresh: boolean }) => {
+  .action(async (repo: string | undefined, opts: { context: boolean; autoRefresh: boolean; workspaceFocusFile?: string; workspaceSession?: string }) => {
     const resolved = path.resolve(repo ?? process.cwd());
     const startedAt = Date.now();
-    const summary = await sessionStartSummary(repo, opts.context || process.env.CODEXA_SESSIONSTART_CONTEXT === "1", opts.autoRefresh);
+    const summary = await sessionStartSummary(repo, opts.context || process.env.CODEXA_SESSIONSTART_CONTEXT === "1", {
+      autoRefresh: opts.autoRefresh,
+      workspaceFocusFile: opts.workspaceFocusFile ? path.resolve(opts.workspaceFocusFile) : undefined,
+      workspaceSessionId: opts.workspaceSession
+    });
     console.log(summary);
     const unavailable = summary.includes("Codexa status unavailable:");
     await recordAdvisoryHookEvent(resolved, {

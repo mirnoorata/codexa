@@ -38,26 +38,32 @@ import {
   type CliQueryOptions
 } from "./options.js";
 
-export function registerQueryCommands(program: Command): void {
-program
-  .command("status")
-  .argument("<repo>", "repository root")
-  .description("Report Codexa index freshness and parser status.")
-  .action(async (repo: string) => printQuery(await statusQuery(await resolveQueryRepoRoot(repo))));
+function addWorkspaceRoutingOptions(command: Command): Command {
+  return command
+    .option("--workspace-focus-file <path>", "workspace focus file to consult when <repo> is a workspace launch root")
+    .option("--workspace-session <id>", "active WORKING.md session row to prefer when <repo> is a workspace launch root");
+}
 
-program
+export function registerQueryCommands(program: Command): void {
+addWorkspaceRoutingOptions(program
+  .command("status")
+  .argument("<repo>", "repository root"))
+  .description("Report Codexa index freshness and parser status.")
+  .action(async (repo: string, opts: CliQueryOptions) => printQuery(await statusQuery(await resolveQueryRepoRoot(repo, opts))));
+
+addWorkspaceRoutingOptions(program
   .command("repo-map")
   .argument("<repo>", "repository root")
   .option("--limit <n>", "maximum files/modules to return", parseIntOption, 20)
   .option("--budget <tokens>", "approximate token budget", parseIntOption, 1500)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
-  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
+  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying"))
   .description("Print the top-ranked repo map, refreshing stale artifacts when needed.")
   .action(async (repo: string, opts: { limit: number; budget: number; autoRefresh: boolean }) =>
-    printQuery(await repoMapQuery(await resolveQueryRepoRoot(repo), opts.limit, { autoRefresh: opts.autoRefresh }, opts.budget))
+    printQuery(await repoMapQuery(await resolveQueryRepoRoot(repo, opts), opts.limit, { autoRefresh: opts.autoRefresh }, opts.budget))
   );
 
-program
+addWorkspaceRoutingOptions(program
   .command("find-context")
   .argument("<repo>", "repository root")
   .requiredOption("--query <query>", "search query")
@@ -72,13 +78,13 @@ program
   .option("--semantic-timeout-ms <n>", "semantic query timeout in milliseconds", parseIntOption)
   .option("--semantic-batch-size <n>", "semantic query batch size", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
-  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
+  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying"))
   .description("Find matching files, symbols, and usage sites.")
   .action(async (repo: string, opts: { query: string; limit: number } & CliQueryOptions) =>
-    printQuery(await findContextQuery(await resolveQueryRepoRoot(repo), opts.query, opts.limit, queryOptionsFromCli(opts)))
+    printQuery(await findContextQuery(await resolveQueryRepoRoot(repo, opts), opts.query, opts.limit, queryOptionsFromCli(opts)))
   );
 
-program
+addWorkspaceRoutingOptions(program
   .command("search")
   .argument("<repo>", "repository root")
   .requiredOption("--query <query>", "search query")
@@ -96,19 +102,19 @@ program
   .option("--semantic-timeout-ms <n>", "semantic query timeout in milliseconds", parseIntOption)
   .option("--semantic-batch-size <n>", "semantic query batch size", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
-  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
+  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying"))
   .description("Run first-class hybrid semantic search over raw hits, Codexa ranking, tests, and known gaps.")
   .action(async (repo: string, opts: { query: string; pattern?: string[]; limit: number; raw: boolean } & CliQueryOptions) =>
     printQuery(
       await searchQuery(
-        await resolveQueryRepoRoot(repo),
+        await resolveQueryRepoRoot(repo, opts),
         { query: opts.query, patterns: opts.pattern, limit: opts.limit, includeRaw: opts.raw },
         queryOptionsFromCli(opts)
       )
     )
   );
 
-program
+addWorkspaceRoutingOptions(program
   .command("placeholder-report")
   .argument("<repo>", "repository root")
   .option("--include-tests", "include test files in placeholder findings", false)
@@ -117,12 +123,12 @@ program
   .option("--limit <n>", "maximum findings", parseIntOption, 40)
   .option("--budget <tokens>", "approximate token budget", parseIntOption, 2400)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
-  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
+  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying"))
   .description("Report indexed placeholder, dummy, TODO, and stub code/data findings.")
   .action(async (repo: string, opts: { includeTests: boolean; includeDocs: boolean; includeGenerated: boolean; limit: number; budget: number; autoRefresh: boolean }) =>
     printQuery(
       await placeholderReportQuery(
-        await resolveQueryRepoRoot(repo),
+        await resolveQueryRepoRoot(repo, opts),
         {
           includeTests: opts.includeTests,
           includeDocs: opts.includeDocs,
@@ -135,7 +141,7 @@ program
     )
   );
 
-program
+addWorkspaceRoutingOptions(program
   .command("explain")
   .argument("<repo>", "repository root")
   .option("--file <path>", "file to explain")
@@ -147,11 +153,11 @@ program
   .option("--lsp-timeout-ms <n>", "LSP request timeout in milliseconds", parseIntOption)
   .option("--lsp-max-files <n>", "maximum files to inspect with LSP assist", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
-  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
+  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying"))
   .description("Return compact evidence for a file or symbol.")
   .action(async (repo: string, opts: { file?: string; symbol?: string; depth?: number; language?: string; evidence?: boolean } & CliQueryOptions) => {
     const queryOptions = queryOptionsFromCli(opts);
-    const repoRoot = await resolveQueryRepoRoot(repo);
+    const repoRoot = await resolveQueryRepoRoot(repo, opts);
     if (opts.symbol) {
       printQuery(await symbolContextQuery(repoRoot, opts.symbol, queryOptions, { depth: opts.depth, language: opts.language, includeEvidence: opts.evidence }));
       return;
@@ -163,7 +169,7 @@ program
     throw new Error("explain requires --file or --symbol");
   });
 
-program
+addWorkspaceRoutingOptions(program
   .command("impact")
   .argument("<repo>", "repository root")
   .option("--file <path>", "file to analyze")
@@ -171,26 +177,26 @@ program
   .option("--change-type <type>", "change type: style, api, behavior, rename, delete, unknown", parseChangeType, "unknown")
   .option("--depth <n>", "import/test traversal depth, 1-3; default is adaptive by change type", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
-  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
+  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying"))
   .description("Return blast-radius evidence for a file or symbol.")
   .action(async (repo: string, opts: { file?: string; symbol?: string; changeType: ChangeType; depth?: number; autoRefresh: boolean }) => {
     if (!opts.file && !opts.symbol) {
       throw new Error("impact requires --file or --symbol");
     }
-    printQuery(await impactQuery(await resolveQueryRepoRoot(repo), opts, { autoRefresh: opts.autoRefresh }));
+    printQuery(await impactQuery(await resolveQueryRepoRoot(repo, opts), opts, { autoRefresh: opts.autoRefresh }));
   });
 
-program
+addWorkspaceRoutingOptions(program
   .command("diff-impact")
   .argument("<repo>", "repository root")
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
-  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
+  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying"))
   .description("Return impact context for the current dirty git diff.")
   .action(async (repo: string, opts: { autoRefresh: boolean }) =>
-    printQuery(await diffImpactQuery(await resolveQueryRepoRoot(repo), { autoRefresh: opts.autoRefresh }))
+    printQuery(await diffImpactQuery(await resolveQueryRepoRoot(repo, opts), { autoRefresh: opts.autoRefresh }))
   );
 
-program
+addWorkspaceRoutingOptions(program
   .command("test-plan")
   .argument("<repo>", "repository root")
   .option("--file <path...>", "target file path; repeat or pass multiple paths")
@@ -198,11 +204,11 @@ program
   .option("--no-diff", "ignore current dirty git diff")
   .option("--change-type <type>", "change type: style, api, behavior, rename, delete, unknown", parseChangeType, "unknown")
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
-  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
+  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying"))
   .description("Recommend targeted tests.")
   .action(async (repo: string, opts: { file?: string[]; diff: boolean; changeType: ChangeType; autoRefresh: boolean }) =>
     printQuery(
-      await testPlanQuery(await resolveQueryRepoRoot(repo), opts.diff, {
+      await testPlanQuery(await resolveQueryRepoRoot(repo, opts), opts.diff, {
         autoRefresh: opts.autoRefresh,
         files: opts.file,
         changeType: opts.changeType
@@ -210,7 +216,7 @@ program
     )
   );
 
-program
+addWorkspaceRoutingOptions(program
   .command("brief")
   .argument("<repo>", "repository root")
   .option("--task <task>", "task description to shape the brief")
@@ -237,7 +243,7 @@ program
   .option("--lsp-timeout-ms <n>", "LSP request timeout in milliseconds", parseIntOption)
   .option("--lsp-max-files <n>", "maximum files to inspect with LSP assist", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
-  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
+  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying"))
   .description("Build the default Codex-first task brief with bounded impact, risks, tests, freshness, and snippets.")
   .action(
     async (
@@ -256,7 +262,7 @@ program
     ) =>
       printQuery(
         await taskBriefQuery(
-          await resolveQueryRepoRoot(repo),
+          await resolveQueryRepoRoot(repo, opts),
           {
             task: opts.task,
             files: opts.file,
@@ -273,7 +279,7 @@ program
       )
   );
 
-program
+addWorkspaceRoutingOptions(program
   .command("context-pack")
   .argument("<repo>", "repository root")
   .option("--task <task>", "task description to shape the context pack")
@@ -300,7 +306,7 @@ program
   .option("--lsp-timeout-ms <n>", "LSP request timeout in milliseconds", parseIntOption)
   .option("--lsp-max-files <n>", "maximum files to inspect with LSP assist", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
-  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
+  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying"))
   .description("Build a compact task-shaped Codexa context pack.")
   .action(
     async (
@@ -319,7 +325,7 @@ program
     ) =>
       printQuery(
         await contextPackQuery(
-          await resolveQueryRepoRoot(repo),
+          await resolveQueryRepoRoot(repo, opts),
           {
             task: opts.task,
             files: opts.file,
@@ -336,7 +342,7 @@ program
       )
   );
 
-program
+addWorkspaceRoutingOptions(program
   .command("focus-brief")
   .argument("<repo>", "repository root")
   .option("--task <task>", "natural-language task to classify and focus")
@@ -354,13 +360,13 @@ program
   .option("--semantic-timeout-ms <n>", "semantic query timeout in milliseconds", parseIntOption)
   .option("--semantic-batch-size <n>", "semantic query batch size", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
-  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
+  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying"))
   .description("Classify a broad task, choose likely subsystems, and recommend the next Codexa call.")
   .action(async (repo: string, opts: { task?: string; budget: number; limit: number; diff: boolean } & CliQueryOptions) =>
-    printQuery(await focusBriefQuery(await resolveQueryRepoRoot(repo), { task: opts.task, tokenBudget: opts.budget, limit: opts.limit, diff: opts.diff }, queryOptionsFromCli(opts)))
+    printQuery(await focusBriefQuery(await resolveQueryRepoRoot(repo, opts), { task: opts.task, tokenBudget: opts.budget, limit: opts.limit, diff: opts.diff }, queryOptionsFromCli(opts)))
   );
 
-program
+addWorkspaceRoutingOptions(program
   .command("session-context")
   .argument("<repo>", "repository root")
   .option("--task <task>", "optional task to shape startup context")
@@ -378,13 +384,13 @@ program
   .option("--semantic-timeout-ms <n>", "semantic query timeout in milliseconds", parseIntOption)
   .option("--semantic-batch-size <n>", "semantic query batch size", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
-  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
+  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying"))
   .description("Print the Codexa focus/session packet used when Codex focuses a project.")
   .action(async (repo: string, opts: { task?: string; budget: number; limit: number; diff: boolean } & CliQueryOptions) =>
-    printQuery(await focusBriefQuery(await resolveQueryRepoRoot(repo), { task: opts.task, tokenBudget: opts.budget, limit: opts.limit, diff: opts.diff }, queryOptionsFromCli(opts)))
+    printQuery(await focusBriefQuery(await resolveQueryRepoRoot(repo, opts), { task: opts.task, tokenBudget: opts.budget, limit: opts.limit, diff: opts.diff }, queryOptionsFromCli(opts)))
   );
 
-program
+addWorkspaceRoutingOptions(program
   .command("session-memory")
   .argument("<repo>", "repository root")
   .option("--action <action>", "summary, read, remember, or compact", parseSessionMemoryAction, "summary")
@@ -401,7 +407,7 @@ program
   .option("--include-stale", "include stale entries", true)
   .option("--no-include-stale", "hide stale entries")
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
-  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
+  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying"))
   .description("Read, summarize, compact, or explicitly remember Codexa session working memory.")
   .action(
     async (
@@ -423,7 +429,7 @@ program
     ) =>
       printQuery(
         await sessionMemoryQuery(
-          await resolveQueryRepoRoot(repo),
+          await resolveQueryRepoRoot(repo, opts),
           {
             action: opts.action,
             sessionId: opts.sessionId,
@@ -443,33 +449,33 @@ program
       )
   );
 
-program
+addWorkspaceRoutingOptions(program
   .command("callers")
   .argument("<repo>", "repository root")
   .option("--file <path>", "target file")
   .option("--symbol <symbol>", "target symbol id, qualified name, or unique name")
   .option("--limit <n>", "maximum graph edges", parseIntOption, 20)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
-  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
+  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying"))
   .description("Show graph callers, importers, references, and tests for a target.")
   .action(async (repo: string, opts: { file?: string; symbol?: string; limit: number; autoRefresh: boolean }) =>
-    printQuery(await callersQuery(await resolveQueryRepoRoot(repo), opts, { autoRefresh: opts.autoRefresh }))
+    printQuery(await callersQuery(await resolveQueryRepoRoot(repo, opts), opts, { autoRefresh: opts.autoRefresh }))
   );
 
-program
+addWorkspaceRoutingOptions(program
   .command("callees")
   .argument("<repo>", "repository root")
   .option("--file <path>", "target file")
   .option("--symbol <symbol>", "target symbol id, qualified name, or unique name")
   .option("--limit <n>", "maximum graph edges", parseIntOption, 20)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
-  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
+  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying"))
   .description("Show graph callees, dependencies, imports, and risk surfaces for a target.")
   .action(async (repo: string, opts: { file?: string; symbol?: string; limit: number; autoRefresh: boolean }) =>
-    printQuery(await calleesQuery(await resolveQueryRepoRoot(repo), opts, { autoRefresh: opts.autoRefresh }))
+    printQuery(await calleesQuery(await resolveQueryRepoRoot(repo, opts), opts, { autoRefresh: opts.autoRefresh }))
   );
 
-program
+addWorkspaceRoutingOptions(program
   .command("dependency-path")
   .argument("<repo>", "repository root")
   .option("--from-file <path>", "source file")
@@ -478,13 +484,13 @@ program
   .option("--to-symbol <symbol>", "target symbol")
   .option("--max-depth <n>", "maximum graph depth", parseIntOption, 6)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
-  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
+  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying"))
   .description("Find a typed dependency path between files or symbols.")
   .action(async (repo: string, opts: { fromFile?: string; fromSymbol?: string; toFile?: string; toSymbol?: string; maxDepth: number; autoRefresh: boolean }) =>
-    printQuery(await dependencyPathQuery(await resolveQueryRepoRoot(repo), opts, { autoRefresh: opts.autoRefresh }))
+    printQuery(await dependencyPathQuery(await resolveQueryRepoRoot(repo, opts), opts, { autoRefresh: opts.autoRefresh }))
   );
 
-program
+addWorkspaceRoutingOptions(program
   .command("workflow-path")
   .argument("<repo>", "repository root")
   .option("--query <query>", "natural-language workflow query")
@@ -501,13 +507,13 @@ program
   .option("--semantic-timeout-ms <n>", "semantic query timeout in milliseconds", parseIntOption)
   .option("--semantic-batch-size <n>", "semantic query batch size", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
-  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
+  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying"))
   .description("Show route/job/manifest workflow traces related to a task, file, or symbol.")
   .action(async (repo: string, opts: { query?: string; file?: string; symbol?: string; limit: number } & CliQueryOptions) =>
-    printQuery(await workflowPathQuery(await resolveQueryRepoRoot(repo), opts, queryOptionsFromCli(opts)))
+    printQuery(await workflowPathQuery(await resolveQueryRepoRoot(repo, opts), opts, queryOptionsFromCli(opts)))
   );
 
-program
+addWorkspaceRoutingOptions(program
   .command("change-plan")
   .argument("<repo>", "repository root")
   .option("--task <task>", "task description")
@@ -535,7 +541,7 @@ program
   .option("--lsp-timeout-ms <n>", "LSP request timeout in milliseconds", parseIntOption)
   .option("--lsp-max-files <n>", "maximum files to inspect with LSP assist", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
-  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
+  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying"))
   .description("Build a Codex edit plan from focus, graph/workflow context, risks, tests, and gaps.")
   .action(
     async (
@@ -556,7 +562,7 @@ program
     ) =>
       printQuery(
         await changePlanQuery(
-          await resolveQueryRepoRoot(repo),
+          await resolveQueryRepoRoot(repo, opts),
           {
             task: opts.task,
             files: opts.file,
@@ -575,7 +581,7 @@ program
       )
   );
 
-program
+addWorkspaceRoutingOptions(program
   .command("post-edit-review")
   .alias("post-edit")
   .argument("<repo>", "repository root")
@@ -603,7 +609,7 @@ program
   .option("--semantic-timeout-ms <n>", "semantic query timeout in milliseconds", parseIntOption)
   .option("--semantic-batch-size <n>", "semantic query batch size", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
-  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
+  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying"))
   .description("Compare the current dirty tree against a saved Codexa change-plan snapshot.")
   .action(
     async (
@@ -627,7 +633,7 @@ program
     ) =>
       printQuery(
         await postEditReviewQuery(
-          await resolveQueryRepoRoot(repo),
+          await resolveQueryRepoRoot(repo, opts),
           {
             task: opts.task,
             taskId: opts.taskId,
@@ -647,6 +653,4 @@ program
         )
       )
   );
-
-
 }
