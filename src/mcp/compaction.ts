@@ -226,6 +226,7 @@ function enforceMcpStructuredBudget(
       verificationProvenance: boundedVerificationProvenance(dataWithoutMetrics.verificationProvenance),
       nextTools: compactNextTools(dataWithoutMetrics.nextTools, minimalTruncation),
       systemMessage: stringValue(dataWithoutMetrics.systemMessage),
+      runtime: compactSession(dataWithoutMetrics.runtime),
       truncation: minimalTruncation
     },
     160
@@ -1322,6 +1323,10 @@ function compactSession(value: unknown): unknown {
   const record = value as Record<string, unknown>;
   const limit = createArrayLimiter();
   const compacted = {
+    repoRoot: record.repoRoot,
+    routingSource: record.routingSource,
+    focusReason: record.focusReason,
+    workspaceSessionId: record.workspaceSessionId,
     commandBudgetMs: record.commandBudgetMs,
     maxResultBytes: record.maxResultBytes,
     maxResults: record.maxResults,

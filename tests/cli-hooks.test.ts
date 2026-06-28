@@ -1167,19 +1167,21 @@ describe("Codexa hook CLI", () => {
       encoding: "utf8",
       env: { ...process.env, SESSION_ID: "unrelated-helper-session" }
     });
-    expect(unscoped.status).toBe(0);
+    expect(unscoped.status).toBe(1);
     const unscopedData = JSON.parse(unscoped.stdout) as {
       repoRoot: string;
-      mcpReadiness: { routing: { configuredRoot: string; activeRepoRoot: string; focusReason: string; source: string; error?: string } };
+      checks: Array<{ name: string; status: string }>;
+      mcpReadiness: { routing: { configuredRoot: string; activeRepoRoot: string | null; source: string; error?: string } };
     };
-    expect(unscopedData.repoRoot).toBe(defaultRepo);
+    expect(unscopedData.repoRoot).toBe(workspace);
     expect(unscopedData.mcpReadiness.routing).toMatchObject({
       configuredRoot: workspace,
-      activeRepoRoot: defaultRepo,
-      focusReason: "workspace-default",
-      source: "workspace-focus-file"
+      activeRepoRoot: null,
+      source: "unresolved"
     });
-    expect(unscopedData.mcpReadiness.routing.error).toBeUndefined();
+    expect(unscopedData.mcpReadiness.routing.error).toContain("Codexa MCP workspace focus is ambiguous");
+    expect(unscopedData.mcpReadiness.routing.error).not.toContain("unrelated-helper-session");
+    expect(unscopedData.checks).toContainEqual(expect.objectContaining({ name: "mcp-routing", status: "fail" }));
 
     await writeFile(
       path.join(workspace, ".codex", "WORKING.md"),
