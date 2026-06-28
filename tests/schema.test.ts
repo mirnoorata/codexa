@@ -14,10 +14,16 @@ describe("Codexa schema contracts", () => {
     const codebaseDir = path.join(repo, ".codex/codebase");
     const index = JSON.parse(await readFile(path.join(codebaseDir, "index.json"), "utf8"));
     const freshness = JSON.parse(await readFile(path.join(codebaseDir, "freshness.json"), "utf8"));
+    const relationalPackets = JSON.parse(await readFile(path.join(codebaseDir, "relational-packets.json"), "utf8"));
+    const relationalGraph = JSON.parse(await readFile(path.join(codebaseDir, "relational-graph.json"), "utf8"));
+    const summaryPrompts = (await readFile(path.join(codebaseDir, "packet-summary-prompts.ndjson"), "utf8")).trim().split(/\r?\n/u).map((line) => JSON.parse(line));
     const facts = (await readFile(path.join(codebaseDir, "facts.ndjson"), "utf8")).trim().split(/\r?\n/u).map((line) => JSON.parse(line));
 
     expect(index.schemaVersion).toBe(1);
     expect(freshness.schemaVersion).toBe(1);
+    expect(relationalPackets.schemaVersion).toBe(1);
+    expect(relationalGraph.schemaVersion).toBe(1);
+    expect(summaryPrompts.every((prompt) => prompt.schemaVersion === 1)).toBe(true);
     expect(index.freshness.schemaVersion).toBe(1);
     expect(index.graphEdges).toBeInstanceOf(Array);
     expect(index.workflows).toBeInstanceOf(Array);
