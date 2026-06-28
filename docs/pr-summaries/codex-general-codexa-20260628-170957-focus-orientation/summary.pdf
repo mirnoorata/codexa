@@ -12,7 +12,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
 endobj
 5 0 obj
-<< /Length 2091 >>
+<< /Length 1279 >>
 stream
 BT
 /F1 10 Tf
@@ -24,34 +24,20 @@ BT
 (- Worktree: isolated codexa worktree) Tj T*
 (- Branch: codex/general/codexa-20260628-170957-focus-orientation) Tj T*
 (- Base: main) Tj T*
-(- Primary commit: 44217cd) Tj T*
-(- Review fix commit: 39ed7ec) Tj T*
-(- Subject: fix\(cli\): route focused workspace sessions explicitly) Tj T*
+(- Primary commit: 464651c) Tj T*
+(- Subject: fix\(cli\): ignore stale focus env for explicit sessions) Tj T*
 () Tj T*
 (Changed Files) Tj T*
 () Tj T*
-(44217cd fix\(cli\): route focused workspace sessions explicitly) Tj T*
-(src/cli.ts                                         |  10 +-) Tj T*
-(src/cli/options.ts                                 |  15 ++-) Tj T*
-(src/cli/query-commands.ts                          | 128 +++++++++++----------) Tj T*
-(src/init.ts                                        |  26 ++++-) Tj T*
-(...jects-malformed-integer-options-instead.test.ts |  80 ++++++++++++-) Tj T*
-(5 files changed, 188 insertions\(+\), 71 deletions\(-\)) Tj T*
-() Tj T*
-(39ed7ec fix\(cli\): route proof and eval workspace sessions) Tj T*
-(src/cli.ts                                         | 12 ++++--) Tj T*
-(...jects-malformed-integer-options-instead.test.ts | 43 ++++++++++++++++++++++) Tj T*
-(2 files changed, 51 insertions\(+\), 4 deletions\(-\)) Tj T*
+(464651c fix\(cli\): ignore stale focus env for explicit sessions) Tj T*
+(src/mcp-repo-root.ts                               |  2 +-) Tj T*
+(...jects-malformed-integer-options-instead.test.ts | 51 ++++++++++++++++++++++) Tj T*
+(2 files changed, 52 insertions\(+\), 1 deletion\(-\)) Tj T*
 () Tj T*
 (Verification) Tj T*
 () Tj T*
 (- git diff --check: passed) Tj T*
 (- npm run check: passed) Tj T*
-(- git diff --check: passed) Tj T*
-(- Codexa session-start workspace-session routing smoke: passed) Tj T*
-(- Codexa brief workspace-session routing smoke: passed) Tj T*
-(- Codexa proof-card workspace-session routing smoke: passed) Tj T*
-(- focused CLI workspace routing regression test: passed) Tj T*
 (- Codexa post-edit-review: local artifact recorded) Tj T*
 (- Codexa test-plan: local artifact recorded) Tj T*
 (- git diff --cached --check: passed) Tj T*
@@ -59,9 +45,9 @@ BT
 () Tj T*
 (Notes) Tj T*
 () Tj T*
-(Adds explicit workspace focus/session routing flags for session-start and Codexa query) Tj T*
-(commands so workspace launch roots can resolve to the intended focused worktree without) Tj T*
-(relying on inherited shell environment.) Tj T*
+(Resolves the PR review finding that session-only workspace routing could inherit a stale) Tj T*
+(ambient CODEXAWORKSPACEFOCUSFILE. Explicit workspace session options now resolve through the) Tj T*
+(configured workspace focus file unless a focus file is explicitly supplied.) Tj T*
 ET
 endstream
 endobj
@@ -76,5 +62,5 @@ xref
 trailer
 << /Size 6 /Root 1 0 R >>
 startxref
-2454
+1641
 %%EOF
