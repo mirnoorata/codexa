@@ -1,0 +1,205 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R 6 0 R 8 0 R] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 3199 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(Change Summary) Tj T*
+() Tj T*
+(- Project: codexa) Tj T*
+(- Worktree: isolated codexa worktree) Tj T*
+(- Branch: codex/general/codexa-20260628-0222-codexa-focus-orientation) Tj T*
+(- Base: main) Tj T*
+(- Primary commit: b239836) Tj T*
+(- Subject: refactor\(codexa\): split monolithic modules) Tj T*
+() Tj T*
+(Changed Files) Tj T*
+() Tj T*
+(b239836 refactor\(codexa\): split monolithic modules) Tj T*
+(scripts/verify-source-hygiene.mjs                  |   11 +) Tj T*
+(src/autoverify.ts                                  |  408 +-) Tj T*
+(src/autoverify/runner-state.ts                     |  394 ++) Tj T*
+(src/cli.ts                                         |  932 +---) Tj T*
+(src/cli/options.ts                                 |  283 +) Tj T*
+(src/cli/query-commands.ts                          |  652 +++) Tj T*
+(src/mcp/compaction-helpers.ts                      |  607 ++) Tj T*
+(src/mcp/compaction.ts                              |  644 +--) Tj T*
+(src/query/change-plan.ts                           |   87 +-) Tj T*
+(src/query/change-plan/checks.ts                    |   88 +) Tj T*
+(src/query/context.ts                               |  712 +--) Tj T*
+(src/query/context/focus.ts                         |  696 +++) Tj T*
+(src/query/post-edit.ts                             |  143 +-) Tj T*
+(src/query/post-edit/runner-review.ts               |  145 +) Tj T*
+(src/query/verification.ts                          |  774 +--) Tj T*
+(src/query/verification/command-envelope.ts         |  347 ++) Tj T*
+(src/query/verification/command-scope.ts            |  405 ++) Tj T*
+(src/retrieval.ts                                   |   87 +-) Tj T*
+(src/retrieval/constants.ts                         |   88 +) Tj T*
+(src/types.ts                                       | 1167 +---) Tj T*
+(src/types/change.ts                                |    1 +) Tj T*
+(src/types/facts.ts                                 |  432 ++) Tj T*
+(src/types/inputs.ts                                |   87 +) Tj T*
+(src/types/query-data.ts                            |  293 +) Tj T*
+(src/types/runtime.ts                               |  104 +) Tj T*
+(src/types/snapshots.ts                             |   77 +) Tj T*
+(src/types/verification.ts                          |  180 +) Tj T*
+(...jects-malformed-integer-options-instead.test.ts |  727 +++) Tj T*
+(...s-02-launches-windows-package-local-cmd.test.ts |  531 ++) Tj T*
+(tests/cli-hooks-03-suite.test.ts                   |   86 +) Tj T*
+(tests/cli-hooks-04-suite.test.ts                   |   91 +) Tj T*
+(tests/cli-hooks-fixtures.ts                        |  170 +) Tj T*
+(tests/cli-hooks.test.ts                            | 1573 ------) Tj T*
+(...r-01-ranks-transitive-import-hubs-above.test.ts |  740 +++) Tj T*
+(...2-surfaces-malformed-symbol-shaped-json.test.ts |  729 +++) Tj T*
+(...exer-03-reserves-fixed-risk-path-symbol.test.ts |  745 +++) Tj T*
+(...er-04-separates-evidence-tiers-and-uses.test.ts |  554 ++) Tj T*
+(...r-05-answers-broad-focus-graph-workflow.test.ts |  719 +++) Tj T*
+(...exer-06-keeps-planned-post-edit-reviews.test.ts |  427 ++) Tj T*
+(...ccounts-for-rancommands-through-package.test.ts |  935 ++++) Tj T*
+ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 3526 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(tests/indexer-08-does-not-recover-a-legacy.test.ts |  513 ++) Tj T*
+(...indexer-09-verification-workspace-scope.test.ts |  174 +) Tj T*
+(tests/indexer-fixtures.ts                          |  609 ++) Tj T*
+(tests/indexer.test.ts                              | 5886 --------------------) Tj T*
+(tests/mcp-01-keeps-the-primary-mcp-happy.test.ts   |  717 +++) Tj T*
+(tests/mcp-02-does-not-let-stale-codexa.test.ts     |  699 +++) Tj T*
+(...3-records-truncation-metadata-when-post.test.ts |  719 +++) Tj T*
+(...p-04-reports-package-version-and-codexa.test.ts |  435 ++) Tj T*
+(tests/mcp-05-suite.test.ts                         |  108 +) Tj T*
+(...p-06-core-profile-envelopes-never-steer.test.ts |   57 +) Tj T*
+(tests/mcp-fixtures.ts                              |  415 ++) Tj T*
+(tests/mcp.test.ts                                  | 3048 ----------) Tj T*
+(...ecords-bounded-entries-with-provenance.test.ts} |  399 +-) Tj T*
+(...ory-02-bounds-direct-entry-scope-arrays.test.ts |  314 ++) Tj T*
+(tests/session-memory-fixtures.ts                   |   89 +) Tj T*
+(tests/setup-env.ts                                 |    6 +) Tj T*
+(...01-runs-optional-external-scanners-with.test.ts |  724 +++) Tj T*
+(...lysis-02-imports-scip-json-reports-into.test.ts |  714 +++) Tj T*
+(...c-analysis-03-does-not-publish-new-scip.test.ts |  330 ++) Tj T*
+(tests/static-analysis.test.ts                      | 1751 ------) Tj T*
+(vitest.config.ts                                   |    1 +) Tj T*
+(61 files changed, 18132 insertions\(+\), 17447 deletions\(-\)) Tj T*
+(create mode 100644 src/autoverify/runner-state.ts) Tj T*
+(create mode 100644 src/cli/options.ts) Tj T*
+(create mode 100644 src/cli/query-commands.ts) Tj T*
+(create mode 100644 src/mcp/compaction-helpers.ts) Tj T*
+(create mode 100644 src/query/change-plan/checks.ts) Tj T*
+(create mode 100644 src/query/context/focus.ts) Tj T*
+(create mode 100644 src/query/post-edit/runner-review.ts) Tj T*
+(create mode 100644 src/query/verification/command-envelope.ts) Tj T*
+(create mode 100644 src/query/verification/command-scope.ts) Tj T*
+(create mode 100644 src/retrieval/constants.ts) Tj T*
+(create mode 100644 src/types/change.ts) Tj T*
+(create mode 100644 src/types/facts.ts) Tj T*
+(create mode 100644 src/types/inputs.ts) Tj T*
+(create mode 100644 src/types/query-data.ts) Tj T*
+(create mode 100644 src/types/runtime.ts) Tj T*
+(create mode 100644 src/types/snapshots.ts) Tj T*
+(create mode 100644 src/types/verification.ts) Tj T*
+(create mode 100644 tests/cli-hooks-01-rejects-malformed-integer-options-instead.test.ts) Tj T*
+(create mode 100644 tests/cli-hooks-02-launches-windows-package-local-cmd.test.ts) Tj T*
+(create mode 100644 tests/cli-hooks-03-suite.test.ts) Tj T*
+(create mode 100644 tests/cli-hooks-04-suite.test.ts) Tj T*
+(create mode 100644 tests/cli-hooks-fixtures.ts) Tj T*
+(delete mode 100644 tests/cli-hooks.test.ts) Tj T*
+(create mode 100644 tests/indexer-01-ranks-transitive-import-hubs-above.test.ts) Tj T*
+(create mode 100644 tests/indexer-02-surfaces-malformed-symbol-shaped-json.test.ts) Tj T*
+(create mode 100644 tests/indexer-03-reserves-fixed-risk-path-symbol.test.ts) Tj T*
+(create mode 100644 tests/indexer-04-separates-evidence-tiers-and-uses.test.ts) Tj T*
+(create mode 100644 tests/indexer-05-answers-broad-focus-graph-workflow.test.ts) Tj T*
+(create mode 100644 tests/indexer-06-keeps-planned-post-edit-reviews.test.ts) Tj T*
+(create mode 100644 tests/indexer-07-accounts-for-rancommands-through-package.test.ts) Tj T*
+ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 2000 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(create mode 100644 tests/indexer-08-does-not-recover-a-legacy.test.ts) Tj T*
+(create mode 100644 tests/indexer-09-verification-workspace-scope.test.ts) Tj T*
+(create mode 100644 tests/indexer-fixtures.ts) Tj T*
+(delete mode 100644 tests/indexer.test.ts) Tj T*
+(create mode 100644 tests/mcp-01-keeps-the-primary-mcp-happy.test.ts) Tj T*
+(create mode 100644 tests/mcp-02-does-not-let-stale-codexa.test.ts) Tj T*
+(create mode 100644 tests/mcp-03-records-truncation-metadata-when-post.test.ts) Tj T*
+(create mode 100644 tests/mcp-04-reports-package-version-and-codexa.test.ts) Tj T*
+(create mode 100644 tests/mcp-05-suite.test.ts) Tj T*
+(create mode 100644 tests/mcp-06-core-profile-envelopes-never-steer.test.ts) Tj T*
+(create mode 100644 tests/mcp-fixtures.ts) Tj T*
+(delete mode 100644 tests/mcp.test.ts) Tj T*
+(rename tests/{session-memory.test.ts => session-memory-01-records-bounded-entries-with-) Tj T*
+(provenance.test.ts} \(63%\)) Tj T*
+(create mode 100644 tests/session-memory-02-bounds-direct-entry-scope-arrays.test.ts) Tj T*
+(create mode 100644 tests/session-memory-fixtures.ts) Tj T*
+(create mode 100644 tests/setup-env.ts) Tj T*
+(create mode 100644 tests/static-analysis-01-runs-optional-external-scanners-with.test.ts) Tj T*
+(create mode 100644 tests/static-analysis-02-imports-scip-json-reports-into.test.ts) Tj T*
+(create mode 100644 tests/static-analysis-03-does-not-publish-new-scip.test.ts) Tj T*
+(delete mode 100644 tests/static-analysis.test.ts) Tj T*
+() Tj T*
+(Verification) Tj T*
+() Tj T*
+(- git diff --check: passed) Tj T*
+(- bash -lc 'source .codex/session-env.sh && unset CODEXAWORKSPACESESSION) Tj T*
+(CODEXAWORKSPACEFOCUSFILE && npm run check': passed) Tj T*
+(- Codexa post-edit-review: local artifact recorded) Tj T*
+(- Codexa test-plan: local artifact recorded) Tj T*
+(- git diff --cached --check: passed) Tj T*
+(- staged safety scan: passed) Tj T*
+() Tj T*
+(Notes) Tj T*
+() Tj T*
+(- No extra notes supplied by the finishing agent.) Tj T*
+ET
+endstream
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000127 00000 n 
+0000000197 00000 n 
+0000000323 00000 n 
+0000003573 00000 n 
+0000003699 00000 n 
+0000007276 00000 n 
+0000007402 00000 n 
+trailer
+<< /Size 10 /Root 1 0 R >>
+startxref
+9453
+%%EOF

@@ -8,6 +8,8 @@ const failures = [];
 
 await requireIgnoredPaths(["node_modules/", "dist/", ".codex/codebase/", ".codex/cache/"]);
 await requireThinQueriesBarrel();
+await requireFilesUnderLineBudget("src", ".ts", 1000, "source file");
+await requireFilesUnderLineBudget("tests", ".ts", 1200, "test file");
 await forbidSyncShellInQueryPath();
 await forbidHeavyRuntimeDependencies();
 await enforceSourceBoundaries();
@@ -37,6 +39,15 @@ async function requireThinQueriesBarrel() {
   const nonExportLines = lines.filter((line) => line.trim() && !line.trim().startsWith("export "));
   if (nonExportLines.length > 0) {
     failures.push("src/queries.ts must contain only export lines");
+  }
+}
+
+async function requireFilesUnderLineBudget(dir, suffix, limit, label) {
+  for (const file of await listFiles(dir, suffix)) {
+    const lineCount = (await readText(file)).split(/\r?\n/u).length;
+    if (lineCount > limit) {
+      failures.push(`${file} ${label} must stay under ${limit} lines; found ${lineCount}`);
+    }
   }
 }
 
