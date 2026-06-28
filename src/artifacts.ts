@@ -3,7 +3,7 @@ import path from "node:path";
 import { renderCodexUseContract } from "./codex-contract.js";
 import { ADVANCED_MCP_TOOL_NAMES, NO_SOURCE_MUTATION_CONTRACT, PRIMARY_MCP_TOOL_NAMES } from "./mcp-tool-catalog.js";
 import { isPlaceholderRisk, placeholderCategory } from "./placeholder-signals.js";
-import type { CodexaIndex, FileFact, ModuleClusterFact, SymbolFact } from "./types.js";
+import type { CodexaIndex, FileFact, ModuleClusterFact, WorkflowTraceFact, SymbolFact } from "./types.js";
 import { escapeMarkdown, formatPathLine, topBy } from "./util.js";
 
 export async function writeArtifacts(index: CodexaIndex, outputDir: string): Promise<void> {
@@ -14,6 +14,9 @@ export async function writeArtifacts(index: CodexaIndex, outputDir: string): Pro
     fs.writeFile(path.join(outputDir, "codex-contract.md"), renderCodexUseContract(index.freshness), "utf8"),
     fs.writeFile(path.join(outputDir, "repo-map.md"), renderRepoMap(index), "utf8"),
     fs.writeFile(path.join(outputDir, "relational-packets.md"), renderRelationalPackets(index), "utf8"),
+    fs.writeFile(path.join(outputDir, "relational-packets.json"), renderRelationalPacketsJson(index), "utf8"),
+    fs.writeFile(path.join(outputDir, "relational-graph.json"), renderRelationalGraphJson(index), "utf8"),
+    fs.writeFile(path.join(outputDir, "packet-summary-prompts.ndjson"), renderPacketSummaryPrompts(index), "utf8"),
     fs.writeFile(path.join(outputDir, "risk-map.md"), renderRiskMap(index), "utf8"),
     fs.writeFile(path.join(outputDir, "placeholder-map.md"), renderPlaceholderMap(index), "utf8"),
     fs.writeFile(path.join(outputDir, "test-map.md"), renderTestMap(index), "utf8"),
@@ -64,6 +67,9 @@ ambiguous; it combines raw hits, semantic retrieval when configured, Codexa
 ranking, likely tests, and gaps before \`task_brief\`.
 Read \`relational-packets.md\` when exact grep misses but the task likely maps
 to a process, symbol neighborhood, or module cluster.
+Use \`relational-packets.json\`, \`relational-graph.json\`, and
+\`packet-summary-prompts.ndjson\` for tools that need bounded structured packet
+data, graph visualization input, or explicit opt-in summary jobs.
 Read \`codex-contract.md\` first when a new Codex session needs the automatic-use
 rules without loading broader maps.
 
@@ -110,6 +116,12 @@ These generated packets summarize process traces and graph-aware module
 clusters precomputed at index time. They are read-first guidance, not proof;
 verify the cited source paths before editing.
 
+Structured companion artifacts:
+
+- \`relational-packets.json\` - bounded process and cluster packets.
+- \`relational-graph.json\` - graph-view export for files, workflows, modules, and edges.
+- \`packet-summary-prompts.ndjson\` - opt-in summary prompts; Codexa does not call a model during indexing.
+
 ## Process Packets
 
 ${index.workflows
@@ -125,6 +137,7 @@ ${index.workflows
 - Terminals: ${(workflow.terminalFiles ?? []).slice(0, 8).map((file) => `\`${file}\``).join(", ") || "none"}
 - Modules: ${(workflow.relatedModules ?? []).slice(0, 8).join(", ") || "none"}
 - Tests: ${workflow.tests.slice(0, 8).map((file) => `\`${file}\``).join(", ") || "none"}
+- Evidence: ${evidenceCountText(workflow.evidenceCounts)}
 
 ${workflow.summary}
 `
@@ -146,12 +159,208 @@ ${index.modules
 - Workflows: ${(module.workflows ?? []).slice(0, 6).join(", ") || "none"}
 - Tests: ${(module.tests ?? []).slice(0, 6).map((file) => `\`${file}\``).join(", ") || "none"}
 - Risks: ${(module.risks ?? []).slice(0, 6).join(", ") || "none"}
+- Evidence: ${evidenceCountText(module.evidenceCounts)}
 
 ${module.summary}
 `
   )
   .join("\n") || "- none detected"}
 `;
+}
+
+function renderRelationalPacketsJson(index: CodexaIndex): string {
+  const packetStore = {
+    schemaVersion: 1,
+    generatedAt: index.snapshot.indexedAt,
+    snapshot: {
+      snapshotId: index.snapshot.snapshotId,
+      headCommit: index.snapshot.headCommit,
+      freshness: index.freshness.reason
+    },
+    artifacts: {
+      markdown: "relational-packets.md",
+      graph: "relational-graph.json",
+      summaryPrompts: "packet-summary-prompts.ndjson"
+    },
+    processPackets: index.workflows.slice(0, 120).map((workflow) => ({
+      id: workflow.id,
+      title: workflow.title,
+      workflowKind: workflow.workflowKind,
+      processKind: workflow.processKind,
+      entryScore: workflow.entryScore,
+      confidence: workflow.confidence,
+      entryPath: workflow.entryPath,
+      entryLine: workflow.range?.startLine,
+      relatedFiles: workflow.relatedFiles.slice(0, 40),
+      terminalFiles: (workflow.terminalFiles ?? []).slice(0, 12),
+      relatedModules: (workflow.relatedModules ?? []).slice(0, 12),
+      tests: workflow.tests.slice(0, 20),
+      stepCounts: workflow.stepCounts,
+      evidenceCounts: workflow.evidenceCounts,
+      summary: workflow.summary,
+      truncation: workflow.truncation
+    })),
+    clusterPackets: index.modules.slice(0, 120).map((module) => ({
+      id: module.id,
+      name: module.name,
+      clusterKind: module.clusterKind ?? "path",
+      confidence: module.confidence,
+      rank: roundNumber(module.rank),
+      communityScore: module.communityScore,
+      sourceModules: (module.sourceModules ?? []).slice(0, 16),
+      files: module.files.slice(0, 40),
+      topFiles: (module.topFiles ?? module.files).slice(0, 16),
+      topSymbols: (module.topSymbols ?? []).slice(0, 24),
+      workflows: (module.workflows ?? []).slice(0, 20),
+      tests: (module.tests ?? []).slice(0, 20),
+      risks: (module.risks ?? []).slice(0, 20),
+      relationCount: module.relationCount ?? 0,
+      crossModuleRelationCount: module.crossModuleRelationCount ?? 0,
+      evidenceCounts: module.evidenceCounts,
+      evidenceProfile: module.evidenceProfile,
+      summarySource: module.summarySource ?? "deterministic",
+      summaryPrompt: module.summaryPrompt,
+      summary: module.summary,
+      truncation: module.truncation
+    }))
+  };
+  return `${JSON.stringify(packetStore, null, 2)}\n`;
+}
+
+function renderRelationalGraphJson(index: CodexaIndex): string {
+  const nodes = new Map<string, Record<string, unknown>>();
+  const edges: Array<Record<string, unknown>> = [];
+  const topFiles = new Set<string>();
+  for (const file of index.files.slice(0, 180)) {
+    topFiles.add(file.path);
+  }
+  for (const workflow of index.workflows.slice(0, 80)) {
+    topFiles.add(workflow.entryPath);
+    for (const file of [...workflow.relatedFiles, ...(workflow.terminalFiles ?? []), ...workflow.tests].slice(0, 40)) {
+      topFiles.add(file);
+    }
+  }
+  for (const module of index.modules.slice(0, 80)) {
+    for (const file of (module.topFiles ?? module.files).slice(0, 16)) {
+      topFiles.add(file);
+    }
+  }
+
+  for (const file of index.files.filter((file) => topFiles.has(file.path)).slice(0, 240)) {
+    nodes.set(fileNodeId(file.path), {
+      id: fileNodeId(file.path),
+      type: "file",
+      label: file.path,
+      path: file.path,
+      rank: roundNumber(file.rank),
+      language: file.language,
+      test: file.test,
+      generated: file.generated
+    });
+  }
+  for (const workflow of index.workflows.slice(0, 80)) {
+    nodes.set(workflowNodeId(workflow.id), {
+      id: workflowNodeId(workflow.id),
+      type: "workflow",
+      label: workflow.title,
+      workflowKind: workflow.workflowKind,
+      processKind: workflow.processKind,
+      entryScore: workflow.entryScore,
+      confidence: workflow.confidence
+    });
+    for (const file of uniqueGraphFiles([workflow.entryPath, ...workflow.relatedFiles, ...(workflow.terminalFiles ?? []), ...workflow.tests]).slice(0, 40)) {
+      if (nodes.has(fileNodeId(file))) {
+        edges.push({ id: `workflow:${workflow.id}:${file}`, kind: "TOUCHES", source: workflowNodeId(workflow.id), target: fileNodeId(file), confidence: workflow.confidence });
+      }
+    }
+  }
+  for (const module of index.modules.slice(0, 80)) {
+    nodes.set(moduleNodeId(module.id), {
+      id: moduleNodeId(module.id),
+      type: "module",
+      label: module.name,
+      clusterKind: module.clusterKind ?? "path",
+      rank: roundNumber(module.rank),
+      communityScore: module.communityScore,
+      sourceModules: (module.sourceModules ?? []).slice(0, 12)
+    });
+    for (const file of (module.topFiles ?? module.files).slice(0, 16)) {
+      if (nodes.has(fileNodeId(file))) {
+        edges.push({ id: `module:${module.id}:${file}`, kind: "CONTAINS", source: moduleNodeId(module.id), target: fileNodeId(file), confidence: module.confidence });
+      }
+    }
+  }
+  for (const edge of index.graphEdges
+    .filter((edge) => edge.fromPath && edge.toPath && nodes.has(fileNodeId(edge.fromPath)) && nodes.has(fileNodeId(edge.toPath)))
+    .sort((a, b) => b.weight - a.weight || a.edgeKind.localeCompare(b.edgeKind) || (a.fromPath ?? "").localeCompare(b.fromPath ?? "") || (a.toPath ?? "").localeCompare(b.toPath ?? ""))
+    .slice(0, 600)) {
+    edges.push({
+      id: `graph:${edge.id}`,
+      kind: edge.edgeKind,
+      source: fileNodeId(edge.fromPath!),
+      target: fileNodeId(edge.toPath!),
+      confidence: edge.confidence,
+      factSource: edge.source,
+      weight: roundNumber(edge.weight),
+      reason: edge.reason
+    });
+  }
+
+  const graphEdgesReturned = edges.filter((edge) => typeof edge.id === "string" && String(edge.id).startsWith("graph:")).length;
+  const graph = {
+    schemaVersion: 1,
+    generatedAt: index.snapshot.indexedAt,
+    snapshotId: index.snapshot.snapshotId,
+    nodes: [...nodes.values()].sort((a, b) => String(a.id).localeCompare(String(b.id))),
+    edges: dedupeGraphExportEdges(edges).sort((a, b) => String(a.id).localeCompare(String(b.id))),
+    truncation: {
+      files: { total: index.files.length, returned: [...nodes.values()].filter((node) => node.type === "file").length },
+      workflows: { total: index.workflows.length, returned: Math.min(index.workflows.length, 80) },
+      modules: { total: index.modules.length, returned: Math.min(index.modules.length, 80) },
+      graphEdges: { total: index.graphEdges.length, returned: graphEdgesReturned }
+    }
+  };
+  return `${JSON.stringify(graph, null, 2)}\n`;
+}
+
+function renderPacketSummaryPrompts(index: CodexaIndex): string {
+  const prompts = [
+    ...index.workflows.slice(0, 80).map((workflow) => workflowSummaryPromptRecord(workflow)),
+    ...index.modules.slice(0, 80).map((module) => moduleSummaryPromptRecord(module))
+  ];
+  return `${prompts.map((prompt) => JSON.stringify(prompt)).join("\n")}\n`;
+}
+
+function workflowSummaryPromptRecord(workflow: WorkflowTraceFact): Record<string, unknown> {
+  const inputFiles = uniqueGraphFiles([workflow.entryPath, ...workflow.relatedFiles, ...(workflow.terminalFiles ?? []), ...workflow.tests]).slice(0, 40);
+  return {
+    schemaVersion: 1,
+    kind: "workflow",
+    id: workflow.id,
+    title: workflow.title,
+    summarySource: "llm-ready",
+    inputFiles,
+    prompt: [
+      `Summarize workflow "${workflow.title}" for a coding agent using only cited files.`,
+      `Cover process boundaries, entry path, terminal files, tests, and confidence gaps.`,
+      `Entry: ${workflow.entryPath}.`,
+      `Files: ${inputFiles.slice(0, 16).join(", ") || "none"}.`
+    ].join(" ")
+  };
+}
+
+function moduleSummaryPromptRecord(module: ModuleClusterFact): Record<string, unknown> {
+  const inputFiles = (module.topFiles ?? module.files).slice(0, 40);
+  return {
+    schemaVersion: 1,
+    kind: "module",
+    id: module.id,
+    name: module.name,
+    clusterKind: module.clusterKind ?? "path",
+    summarySource: "llm-ready",
+    inputFiles,
+    prompt: module.summaryPrompt ?? `Summarize module cluster "${module.name}" for a coding agent using only cited files. Files: ${inputFiles.join(", ") || "none"}.`
+  };
 }
 
 function renderRiskMap(index: CodexaIndex): string {
@@ -457,6 +666,47 @@ function rankSymbols(index: CodexaIndex): SymbolFact[] {
 function symbolScore(symbol: SymbolFact, fileRanks: Map<string, number>, usageCounts: Map<string, number>): number {
   const kindBoost = ["route", "class", "function", "method"].includes(symbol.kind) ? 1 : 0;
   return (fileRanks.get(symbol.path) ?? 0) + Math.log2((usageCounts.get(symbol.id) ?? 0) + 1) + (symbol.exported ? 2 : 0) + kindBoost;
+}
+
+function evidenceCountText(counts: Partial<Record<string, number>> | undefined): string {
+  const entries = Object.entries(counts ?? {})
+    .filter(([, value]) => (value ?? 0) > 0)
+    .sort(([a], [b]) => a.localeCompare(b));
+  return entries.length > 0 ? entries.map(([key, value]) => `${key} ${value ?? 0}`).join(", ") : "none";
+}
+
+function roundNumber(value: number): number {
+  return Number(value.toFixed(4));
+}
+
+function fileNodeId(filePath: string): string {
+  return `file:${filePath}`;
+}
+
+function workflowNodeId(id: string): string {
+  return `workflow:${id}`;
+}
+
+function moduleNodeId(id: string): string {
+  return `module:${id}`;
+}
+
+function uniqueGraphFiles(files: string[]): string[] {
+  return [...new Set(files.filter(Boolean))].sort((a, b) => a.localeCompare(b));
+}
+
+function dedupeGraphExportEdges(edges: Array<Record<string, unknown>>): Array<Record<string, unknown>> {
+  const seen = new Set<string>();
+  const result: Array<Record<string, unknown>> = [];
+  for (const edge of edges) {
+    const key = String(edge.id);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(edge);
+  }
+  return result;
 }
 
 function table(headers: string[], rows: string[][]): string {
