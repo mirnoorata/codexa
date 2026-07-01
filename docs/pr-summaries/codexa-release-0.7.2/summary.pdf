@@ -1,0 +1,71 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 1423 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(Codexa 0.7.2 Release Summary) Tj T*
+() Tj T*
+(- Project: codexa) Tj T*
+(- Release PR: 84) Tj T*
+(- Release version: 0.7.2) Tj T*
+(- Base: main) Tj T*
+(- Release branch: release-please--branches--main--components--codexa) Tj T*
+(- Subject: chore\(main\): release 0.7.2) Tj T*
+() Tj T*
+(Changed Files) Tj T*
+() Tj T*
+(- .release-please-manifest.json) Tj T*
+(- CHANGELOG.md) Tj T*
+(- package.json) Tj T*
+(- package-lock.json) Tj T*
+(- server.json) Tj T*
+(- integrations/.claude-plugin/marketplace.json) Tj T*
+(- integrations/claude-code/.claude-plugin/plugin.json) Tj T*
+(- plugins/codexa/.codex-plugin/plugin.json) Tj T*
+(- docs/pr-summaries/codexa-release-0.7.2/summary.md) Tj T*
+(- docs/pr-summaries/codexa-release-0.7.2/summary.pdf) Tj T*
+() Tj T*
+(Verification) Tj T*
+() Tj T*
+(- Release path verifier: passed.) Tj T*
+(- Public hygiene verifier: passed.) Tj T*
+(- Registry preflight: @mirnoorata/codexa@0.7.2 was not published before the release PR) Tj T*
+(merge.) Tj T*
+(- GitHub PR checks before artifact commit: check, package-smoke, and benchmark passed.) Tj T*
+(- Final local and GitHub gates must pass again after this artifact commit before merge.) Tj T*
+() Tj T*
+(Notes) Tj T*
+() Tj T*
+(This release publishes the merged fix for workspace-root Codexa MCP routing so unscoped) Tj T*
+(workspace launches use the explicit Workspace Default repo instead of stale session pins.) Tj T*
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000185 00000 n 
+0000000311 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+1785
+%%EOF
