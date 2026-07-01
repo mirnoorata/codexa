@@ -138,6 +138,62 @@ it("routes workspace-root session-start hooks through the default repository", a
     expect(latest.status).toBe("ok");
   });
 
+it("routes workspace-root session-start hooks through the default repository despite unrelated active sessions", async () => {
+    const workspace = await trackedTmpDir("codexa-session-start-default-active-");
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const repo = path.join(workspace, "repo");
+    await mkdir(repo, { recursive: true });
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await writeFile(path.join(repo, "README.md"), "# fixture\n", "utf8");
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+
+    const activeRepo = path.join(workspace, "active-repo");
+    await mkdir(activeRepo, { recursive: true });
+    execFileSync("git", ["init"], { cwd: activeRepo, stdio: "ignore" });
+    await writeFile(path.join(activeRepo, "README.md"), "# active fixture\n", "utf8");
+    execFileSync("git", ["add", "."], { cwd: activeRepo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "active fixture"], {
+      cwd: activeRepo,
+      stdio: "ignore"
+    });
+
+    await mkdir(path.join(workspace, ".codex"), { recursive: true });
+    await writeFile(
+      path.join(workspace, ".codex", "WORKING.md"),
+      [
+        "## Workspace Default",
+        "",
+        `- Default repo: \`${repo}\`.`,
+        "",
+        "## Active Sessions",
+        "",
+        "| session | agent | repo | task | status | claims | last_seen | next |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+        `| unrelated-session | codex | ${activeRepo} | unrelated task | active | none | now | inspect |`
+      ].join("\n"),
+      "utf8"
+    );
+
+    const result = spawnSync(process.execPath, [path.resolve(process.cwd(), "dist/cli.js"), "session-start", workspace], {
+      cwd: process.cwd(),
+      encoding: "utf8"
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    expect(result.stdout).toContain(`Codexa context for ${repo}:`);
+    expect(result.stdout).toContain(`Repo: ${repo}`);
+    expect(result.stdout).not.toContain(activeRepo);
+    expect(result.stdout).not.toContain("Codexa status unavailable:");
+    expect(result.stdout).not.toContain("Failed to read git status");
+    const latest = JSON.parse(await readFile(path.join(workspace, ".codex/cache/codexa-hooks/latest.json"), "utf8")) as { status: string };
+    expect(latest.status).toBe("ok");
+  });
+
 it("routes workspace-root query CLI commands through the default repository", async () => {
     const workspace = await trackedTmpDir("codexa-query-default-");
     execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
