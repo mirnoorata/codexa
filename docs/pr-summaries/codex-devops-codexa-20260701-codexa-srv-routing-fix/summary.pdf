@@ -12,7 +12,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
 endobj
 5 0 obj
-<< /Length 1214 >>
+<< /Length 1899 >>
 stream
 BT
 /F1 10 Tf
@@ -25,24 +25,34 @@ BT
 (- Branch: codex/devops/codexa-20260701-codexa-srv-routing-fix) Tj T*
 (- Base: main) Tj T*
 (- Primary commit: 80287c1) Tj T*
+(- Hardening commit: 45d35b9) Tj T*
 (- Subject: fix\(mcp\): route workspace defaults without stale session pins) Tj T*
 () Tj T*
 (Changed Files) Tj T*
 () Tj T*
+(45d35b9 test\(mcp\): cover session-start workspace defaults with active rows) Tj T*
+(76302ac docs\(workflow\): add PR summary for codexa) Tj T*
 (80287c1 fix\(mcp\): route workspace defaults without stale session pins) Tj T*
-(src/mcp-repo-root.ts                               |  2 +-) Tj T*
-(...s-02-launches-windows-package-local-cmd.test.ts | 16 +++---) Tj T*
-(tests/mcp-01-keeps-the-primary-mcp-happy.test.ts   | 65 +++++++++++++++++++---) Tj T*
-(3 files changed, 65 insertions\(+\), 18 deletions\(-\)) Tj T*
+(.../summary.md                                     |  30 +++++++++) Tj T*
+(.../summary.pdf                                    | Bin 0 -> 1760 bytes) Tj T*
+(src/mcp-repo-root.ts                               |   2 +-) Tj T*
+(...jects-malformed-integer-options-instead.test.ts |  56 +++++++++++++++++) Tj T*
+(...s-02-launches-windows-package-local-cmd.test.ts |  16 ++---) Tj T*
+(tests/mcp-01-keeps-the-primary-mcp-happy.test.ts   |  65 ++++++++++++++++++--) Tj T*
+(6 files changed, 151 insertions\(+\), 18 deletions\(-\)) Tj T*
 () Tj T*
 (Verification) Tj T*
 () Tj T*
 (- git diff --check: passed) Tj T*
 (- npm run check: passed) Tj T*
+(- npx vitest run tests/cli-hooks-01-rejects-malformed-integer-options-instead.test.ts:) Tj T*
+(passed) Tj T*
 (- Codexa post-edit-review: local artifact recorded) Tj T*
 (- Codexa test-plan: local artifact recorded) Tj T*
 (- git diff --cached --check: passed) Tj T*
 (- staged safety scan: passed) Tj T*
+(- Adversarial review: one actionable session-start coverage gap fixed in 45d35b9; final no-) Tj T*
+(actionable-finding pass required before merge) Tj T*
 () Tj T*
 (Notes) Tj T*
 () Tj T*
@@ -62,5 +72,5 @@ xref
 trailer
 << /Size 6 /Root 1 0 R >>
 startxref
-1576
+2261
 %%EOF
