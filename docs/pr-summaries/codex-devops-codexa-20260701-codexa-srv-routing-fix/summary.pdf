@@ -1,0 +1,79 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 2186 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(Change Summary) Tj T*
+() Tj T*
+(- Project: codexa) Tj T*
+(- Worktree: isolated codexa worktree) Tj T*
+(- Branch: codex/devops/codexa-20260701-codexa-srv-routing-fix) Tj T*
+(- Base: main) Tj T*
+(- Subject: fix\(mcp\): route workspace defaults without stale session pins) Tj T*
+(- Source commit: 80287c1 - route workspace defaults without stale session pins) Tj T*
+(- Hardening commit: 45d35b9 - cover session-start workspace defaults with unrelated active) Tj T*
+(rows) Tj T*
+(- Summary artifacts: this Markdown file and the paired PDF in the same directory) Tj T*
+() Tj T*
+(Changed Runtime and Test Files) Tj T*
+() Tj T*
+(- src/mcp-repo-root.ts - lets an explicit Workspace Default focused repo route ahead of) Tj T*
+(unrelated active session rows.) Tj T*
+(- tests/mcp-01-keeps-the-primary-mcp-happy.test.ts - covers MCP stdio routing for Workspace) Tj T*
+(Default with unrelated active rows.) Tj T*
+(- tests/cli-hooks-02-launches-windows-package-local-cmd.test.ts - covers doctor --mcp-) Tj T*
+(readiness routing for the same board shape.) Tj T*
+(- tests/cli-hooks-01-rejects-malformed-integer-options-instead.test.ts - covers session-) Tj T*
+(start routing for the same board shape.) Tj T*
+() Tj T*
+(Verification) Tj T*
+() Tj T*
+(- git diff --check: passed) Tj T*
+(- npm run check: passed) Tj T*
+(- npx vitest run tests/cli-hooks-01-rejects-malformed-integer-options-instead.test.ts:) Tj T*
+(passed) Tj T*
+(- npm run security:check: passed after hardening; includes typecheck, lint, privacy, Claude) Tj T*
+(integration smoke, full Vitest, npm audit, public snapshot, package hygiene, plugin hygiene,) Tj T*
+(and package smoke) Tj T*
+(- Codexa post-edit-review: local artifact recorded) Tj T*
+(- Codexa test-plan: local artifact recorded) Tj T*
+(- git diff --cached --check: passed) Tj T*
+(- staged safety scan: passed) Tj T*
+(- Adversarial review: one actionable session-start coverage gap fixed in 45d35b9; later) Tj T*
+(artifact and PR-body hygiene findings fixed before merge) Tj T*
+() Tj T*
+(Notes) Tj T*
+() Tj T*
+(Local workspace MCP config was refreshed separately to exercise this branch until the) Tj T*
+(canonical checkout is updated.) Tj T*
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000185 00000 n 
+0000000311 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+2548
+%%EOF
