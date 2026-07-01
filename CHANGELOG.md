@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.7.2](https://github.com/mirnoorata/codexa/compare/v0.7.1...v0.7.2) (2026-07-01)
+
+
+### Bug Fixes
+
+* **mcp:** route workspace defaults without stale session pins ([1b3d6f1](https://github.com/mirnoorata/codexa/commit/1b3d6f184b165f5845c3fb9c60943291a28fe749))
+
 ## [0.7.1](https://github.com/mirnoorata/codexa/compare/v0.7.0...v0.7.1) (2026-06-28)
 
 
