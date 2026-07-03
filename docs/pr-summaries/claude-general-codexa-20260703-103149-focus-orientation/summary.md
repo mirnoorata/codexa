@@ -6,6 +6,7 @@
 - Base: `main`
 - Primary commit: `6add4a3`
 - Subject: `docs(plans): add adversarially hardened AAA roadmap`
+- Review fix commit: `f8fe392`
 
 ## Changed Files
 
@@ -15,6 +16,10 @@
  2 files changed, 954 insertions(+)
  create mode 100644 docs/plans/codexa-aaa-roadmap-2026-07-03.md
 
+f8fe392 docs(plans): correct public-tree references in roadmap
+ docs/plans/codexa-aaa-roadmap-2026-07-03.md | 7 ++++---
+ 1 file changed, 4 insertions(+), 3 deletions(-)
+
 ## Verification
 
 - git diff --check: passed
@@ -23,6 +28,7 @@
 - Codexa test-plan: local artifact recorded
 - git diff --cached --check: passed
 - staged safety scan: passed
+- adversarial diff review: 2 passes (hygiene clean; content 3 findings fixed in f8fe392) + final pass clean
 
 ## Notes
 

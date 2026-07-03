@@ -12,7 +12,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
 endobj
 5 0 obj
-<< /Length 1412 >>
+<< /Length 1781 >>
 stream
 BT
 /F1 10 Tf
@@ -26,6 +26,7 @@ BT
 (- Base: main) Tj T*
 (- Primary commit: 6add4a3) Tj T*
 (- Subject: docs\(plans\): add adversarially hardened AAA roadmap) Tj T*
+(- Review fix commit: f8fe392) Tj T*
 () Tj T*
 (Changed Files) Tj T*
 () Tj T*
@@ -35,6 +36,10 @@ BT
 (2 files changed, 954 insertions\(+\)) Tj T*
 (create mode 100644 docs/plans/codexa-aaa-roadmap-2026-07-03.md) Tj T*
 () Tj T*
+(f8fe392 docs\(plans\): correct public-tree references in roadmap) Tj T*
+(docs/plans/codexa-aaa-roadmap-2026-07-03.md | 7 ++++---) Tj T*
+(1 file changed, 4 insertions\(+\), 3 deletions\(-\)) Tj T*
+() Tj T*
 (Verification) Tj T*
 () Tj T*
 (- git diff --check: passed) Tj T*
@@ -43,6 +48,8 @@ BT
 (- Codexa test-plan: local artifact recorded) Tj T*
 (- git diff --cached --check: passed) Tj T*
 (- staged safety scan: passed) Tj T*
+(- adversarial diff review: 2 passes \(hygiene clean; content 3 findings fixed in f8fe392\) +) Tj T*
+(final pass clean) Tj T*
 () Tj T*
 (Notes) Tj T*
 () Tj T*
@@ -64,5 +71,5 @@ xref
 trailer
 << /Size 6 /Root 1 0 R >>
 startxref
-1774
+2143
 %%EOF
