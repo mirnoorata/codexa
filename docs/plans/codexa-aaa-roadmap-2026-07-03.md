@@ -146,7 +146,7 @@ retrieval behavior, so an eval archived before H1a is stale on arrival.
 ### H1a. Delete workspace-specific priors; fix decoy over-blocking (S)
 
 The public package ships the author's private-workspace priors:
-Private-workspace risk rules that fire on generic words (`failed|running|queue`)
+risk rules that fire on generic words (`failed|running|queue`)
 on any repo with a `src/` dir (`src/rules.ts:78-116`, consumed per-file via
 `src/parser/risks.ts:28-45`), hardcoded UI filenames (`src/graph.ts:697-698`),
 Codexa's own src layout hardcoded as "architecture core"
@@ -726,8 +726,9 @@ packet sections join the T1.6 golden-byte suite.
    60-second drift-catch walkthrough on a well-known OSS repo; promote the
    honest comparison matrix into README; persist the 2026-06-17 and
    2026-07-03 research notes (with source URLs) into `docs/research/`;
-   ship the three existing HTML demos;
-   fill-or-delete the six `.gitkeep`-only dirs; changelog history note.
+   ship the HTML demo walkthroughs (currently unpublished
+   drafts held outside the repo);
+   fill-or-delete the `.gitkeep`-only placeholder dirs; changelog history note.
 
 ### T6. Scale floor [R] (Impact: medium; Effort: S–M)
 
