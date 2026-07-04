@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.8.0](https://github.com/mirnoorata/codexa/compare/v0.7.2...v0.8.0) (2026-07-04)
+
+
+### Features
+
+* **mcp:** surface workspace skill hints ([7aa3f50](https://github.com/mirnoorata/codexa/commit/7aa3f5068d8357a8090c7abf709c55d2a1aca5d1))
+
 ## [0.7.2](https://github.com/mirnoorata/codexa/compare/v0.7.1...v0.7.2) (2026-07-01)
 
 
