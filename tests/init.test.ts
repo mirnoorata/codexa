@@ -554,7 +554,7 @@ describe("Codexa project init", () => {
         "| session | agent | repo | task | status | claims | last_seen | next |",
         "| --- | --- | --- | --- | --- | --- | --- | --- |",
         `| session-a | codex | ${repo} | ignored task prose | active | claim:src/index.ts claim:private/notes.txt worker:general | now | continue work |`,
-        `| session-blocked | codex | ${repo} | blocked task | blocked | claim:src/api.ts | now | inspect blocker |`,
+        `| session-blocked | codex | ${repo} | blocked task | blocked | claim:src/api.ts | now | inspect private/blocked-notes.txt |`,
         `| session-merged | codex | ${repo} | old task | merged-live | claim:src/old.ts | yesterday | done |`
       ].join("\n"),
       "utf8"
@@ -566,8 +566,11 @@ describe("Codexa project init", () => {
     expect(summary).toContain("session=session-a | status=active");
     expect(summary).toContain("claims=2");
     expect(summary).toContain("session=session-blocked | status=blocked");
+    expect(summary).toContain("next=attention");
     expect(summary).not.toContain("src/index.ts");
     expect(summary).not.toContain("private/notes.txt");
+    expect(summary).not.toContain("private/blocked-notes.txt");
+    expect(summary).not.toContain("inspect private");
     expect(summary).not.toContain("session-merged");
     expect(summary).not.toContain("ignored task prose");
   });

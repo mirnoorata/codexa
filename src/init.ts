@@ -284,7 +284,7 @@ async function workspaceActiveRowsDigest(input: { focusFile?: string; selectedSe
       parts.push(`claims=${claimCount}`);
     }
     if (row.status === "blocked" || /\b(block|inspect|review|merge|pr|wait|next)\b/iu.test(row.next)) {
-      parts.push(`next=${boundedDigestField(row.next, WORKSPACE_DIGEST_MAX_FIELD)}`);
+      parts.push("next=attention");
     }
     lines.push(`- ${parts.join(" | ")}`);
   }

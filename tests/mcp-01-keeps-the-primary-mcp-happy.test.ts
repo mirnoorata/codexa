@@ -191,13 +191,14 @@ it("exposes configured skill hints and surfaces path-matched skills in task brie
       ["---", "name: evil-skill", "description: Should not be scanned.", "---", "", "# Evil", ""].join("\n"),
       "utf8"
     );
+    await symlink(outsideSkillRoot, path.join(repo, ".claude/linked-skills"), "dir");
     await writeFile(
       path.join(repo, ".codex/skill-hints.json"),
       JSON.stringify(
         {
           schemaVersion: 1,
-          skillRoots: ["<repo>/.claude/skills", outsideSkillRoot],
-          hints: [{ glob: "src/**/*.ts", skills: ["site-hardening"] }]
+          skillRoots: ["<repo>/.claude/skills", "<repo>/.claude/linked-skills", outsideSkillRoot],
+          hints: [{ glob: "src/**/*.ts", skills: ["site-hardening", "evil-skill", "missing-skill"] }]
         },
         null,
         2
@@ -220,29 +221,36 @@ it("exposes configured skill hints and surfaces path-matched skills in task brie
       const skillText = String(skillResource.contents?.[0]?.text);
       expect(skillText).toContain("<repo>/.claude/skills");
       expect(skillText).toContain("site-hardening - Harden web trust boundaries.");
-      expect(skillText).not.toContain("evil-skill");
+      expect(skillText).not.toContain("Should not be scanned.");
       expect(skillText).toContain("ignored skill root outside allowed skill roots");
+      expect(skillText).toContain("ignored skill hint for unscanned skill: evil-skill");
+      expect(skillText).toContain("ignored skill hint for unscanned skill: missing-skill");
       expect(skillText).not.toContain(workspace);
       expect(skillText).not.toContain(outsideSkillRoot);
 
       const taskBrief = await client.callTool({ name: "task_brief", arguments: { files: ["src/alpha.ts"], task: "harden alpha", tokenBudget: 1400, limit: 5 } });
-      const serialized = JSON.stringify(taskBrief);
-      expect(serialized).toContain("Skill and playbook hints");
-      expect(serialized).toContain("site-hardening");
-      expect(serialized).toContain("codexa://repo/codebase/playbooks/");
+      const rendered = JSON.stringify(taskBrief.content);
+      expect(rendered).toContain("Skill and playbook hints");
+      expect(rendered).toContain("site-hardening");
+      expect(rendered).not.toContain("skill evil-skill");
+      expect(rendered).not.toContain("skill missing-skill");
+      expect(rendered).toContain("codexa://repo/codebase/playbooks/");
       const data = taskBrief.structuredContent as {
         data?: {
           skillHints?: {
             roots?: string[];
             applicableSkills?: Array<{ name?: string; matchedGlob?: string; matchedPath?: string; skillPath?: string }>;
             targetPlaybooks?: Array<{ uri?: string }>;
+            warnings?: string[];
           };
         };
       };
       expect(data.data?.skillHints?.roots).toEqual(["<repo>/.claude/skills"]);
+      expect(data.data?.skillHints?.applicableSkills?.map((skill) => skill.name)).toEqual(["site-hardening"]);
       expect(data.data?.skillHints?.applicableSkills?.[0]).toMatchObject({ name: "site-hardening", matchedGlob: "src/**/*.ts", matchedPath: "src/alpha.ts" });
       expect(data.data?.skillHints?.applicableSkills?.[0]?.skillPath).toBe("<repo>/.claude/skills/site-hardening/SKILL.md");
       expect(data.data?.skillHints?.targetPlaybooks?.[0]?.uri).toContain("codexa://repo/codebase/playbooks/");
+      expect(data.data?.skillHints?.warnings?.join("\n")).toContain("ignored skill hint for unscanned skill: evil-skill");
     } finally {
       await client.close();
     }

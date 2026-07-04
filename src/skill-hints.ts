@@ -63,23 +63,30 @@ export async function loadSkillHints(repoRoot: string): Promise<SkillHintsSummar
     return { configPath: SKILL_HINTS_RELATIVE_PATH, configured: false, roots: [], scannedSkills: [], hints: [], warnings };
   }
 
-  const allowedRoots = allowedSkillRootPrefixes(repo);
+  const allowedRoots = await allowedSkillRootPrefixes(repo);
   const configuredRoots = arrayConfig(config.skillRoots, "skillRoots", warnings);
   const roots = uniqueSorted(configuredRoots.flatMap((root) => resolveConfiguredRoot(root, repo, allowedRoots, warnings))).slice(0, MAX_ROOTS);
   const scannedSkills: ScannedSkillHint[] = [];
+  const acceptedRoots: string[] = [];
   for (const root of roots) {
-    scannedSkills.push(...(await scanSkillRoot(root, repo, allowedRoots, warnings)));
+    const scan = await scanSkillRoot(root, repo, allowedRoots, warnings);
+    if (!scan) {
+      continue;
+    }
+    acceptedRoots.push(root);
+    scannedSkills.push(...scan.skills);
     if (scannedSkills.length >= MAX_SKILLS) {
       warnings.push(`skill scan capped at ${MAX_SKILLS} entries`);
       break;
     }
   }
-  const hints = sanitizeHints(config.hints, warnings);
+  const dedupedSkills = dedupeSkills(scannedSkills).slice(0, MAX_SKILLS);
+  const hints = filterHintsToScannedSkills(sanitizeHints(config.hints, warnings), new Set(dedupedSkills.map((skill) => skill.name)), warnings);
   return {
     configPath: SKILL_HINTS_RELATIVE_PATH,
     configured: true,
-    roots: roots.map((root) => displaySkillPath(root, repo)),
-    scannedSkills: dedupeSkills(scannedSkills).slice(0, MAX_SKILLS),
+    roots: acceptedRoots.map((root) => displaySkillPath(root, repo)),
+    scannedSkills: dedupedSkills,
     hints,
     warnings
   };
@@ -107,12 +114,15 @@ export function applicableSkillHints(summary: SkillHintsSummary, paths: string[]
         }
         seen.add(key);
         const skill = skillsByName.get(skillName);
+        if (!skill) {
+          continue;
+        }
         selected.push({
-          name: skillName,
+          name: skill.name,
           matchedGlob: glob,
           matchedPath,
-          description: skill?.description,
-          skillPath: skill?.path
+          description: skill.description,
+          skillPath: skill.path
         });
       }
     }
@@ -217,30 +227,42 @@ function resolveConfiguredRoot(rawRoot: unknown, repoRoot: string, allowedRoots:
   return [resolved];
 }
 
-async function scanSkillRoot(root: string, repoRoot: string, allowedRoots: string[], warnings: string[]): Promise<ScannedSkillHint[]> {
-  let rootStat;
+async function scanSkillRoot(root: string, repoRoot: string, allowedRoots: string[], warnings: string[]): Promise<{ skills: ScannedSkillHint[] } | undefined> {
+  let realRoot: string;
   try {
-    rootStat = await fs.stat(root);
+    realRoot = await fs.realpath(root);
   } catch {
     warnings.push(`skill root unavailable: ${displaySkillPath(root, repoRoot)}`);
-    return [];
+    return undefined;
+  }
+  if (!isAllowedSkillPath(realRoot, allowedRoots)) {
+    warnings.push(`ignored skill root outside allowed skill roots: ${displaySkillPath(root, repoRoot)}`);
+    return undefined;
+  }
+
+  let rootStat;
+  try {
+    rootStat = await fs.stat(realRoot);
+  } catch {
+    warnings.push(`skill root unavailable: ${displaySkillPath(root, repoRoot)}`);
+    return undefined;
   }
   if (!rootStat.isDirectory()) {
     warnings.push(`skill root is not a directory: ${displaySkillPath(root, repoRoot)}`);
-    return [];
+    return undefined;
   }
 
   const directSkill = await readSkill(root, root, repoRoot, allowedRoots, warnings);
   if (directSkill) {
-    return [directSkill];
+    return { skills: [directSkill] };
   }
 
   let entries: string[];
   try {
-    entries = (await fs.readdir(root)).sort().slice(0, MAX_ROOT_ENTRIES);
+    entries = (await fs.readdir(realRoot)).sort().slice(0, MAX_ROOT_ENTRIES);
   } catch (error) {
     warnings.push(`could not list skill root ${displaySkillPath(root, repoRoot)}: ${errorMessage(error)}`);
-    return [];
+    return undefined;
   }
 
   const skills: ScannedSkillHint[] = [];
@@ -253,7 +275,7 @@ async function scanSkillRoot(root: string, repoRoot: string, allowedRoots: strin
       skills.push(skill);
     }
   }
-  return skills;
+  return { skills };
 }
 
 async function readSkill(skillDir: string, root: string, repoRoot: string, allowedRoots: string[], warnings: string[]): Promise<ScannedSkillHint | undefined> {
@@ -293,8 +315,15 @@ async function readSkill(skillDir: string, root: string, repoRoot: string, allow
   };
 }
 
-function allowedSkillRootPrefixes(repoRoot: string): string[] {
-  return [path.resolve(repoRoot)];
+async function allowedSkillRootPrefixes(repoRoot: string): Promise<string[]> {
+  const repo = path.resolve(repoRoot);
+  const roots = [repo];
+  try {
+    roots.push(await fs.realpath(repo));
+  } catch {
+    // The resolved repo path is still sufficient for missing disposable fixtures.
+  }
+  return uniqueSorted(roots);
 }
 
 function isAllowedSkillPath(candidate: string, allowedRoots: string[]): boolean {
@@ -344,6 +373,27 @@ function sanitizeHints(rawHints: unknown, warnings: string[]): SkillHintsSummary
     hints.push({ globs, skills });
   }
   return hints;
+}
+
+function filterHintsToScannedSkills(hints: SkillHintsSummary["hints"], scannedSkillNames: Set<string>, warnings: string[]): SkillHintsSummary["hints"] {
+  const filtered: SkillHintsSummary["hints"] = [];
+  const warned = new Set<string>();
+  for (const hint of hints) {
+    const skills = hint.skills.filter((skill) => {
+      if (scannedSkillNames.has(skill)) {
+        return true;
+      }
+      if (!warned.has(skill)) {
+        warned.add(skill);
+        warnings.push(`ignored skill hint for unscanned skill: ${skill}`);
+      }
+      return false;
+    });
+    if (skills.length > 0) {
+      filtered.push({ globs: hint.globs, skills });
+    }
+  }
+  return filtered;
 }
 
 function arrayConfig(value: unknown, fieldName: string, warnings: string[]): unknown[] {
