@@ -225,6 +225,7 @@ it("exposes configured skill hints and surfaces path-matched skills in task brie
       expect(skillText).toContain("ignored skill root outside allowed skill roots");
       expect(skillText).toContain("ignored skill hint for unscanned skill: evil-skill");
       expect(skillText).toContain("ignored skill hint for unscanned skill: missing-skill");
+      expect(skillText).not.toContain("evil-skill/SKILL.md");
       expect(skillText).not.toContain(workspace);
       expect(skillText).not.toContain(outsideSkillRoot);
 
