@@ -286,15 +286,16 @@ async function readSkill(skillDir: string, root: string, allowedRoots: string[],
 }
 
 function allowedSkillRootPrefixes(repoRoot: string): string[] {
+  const filesystemRoot = path.parse(repoRoot).root;
   return uniqueSorted(
     [
       repoRoot,
       path.join(os.homedir(), ".codex/skills"),
       path.join(os.homedir(), ".claude/skills"),
       path.join(os.homedir(), ".agents/skills"),
-      "/srv/.codex/skills",
-      "/srv/.claude/skills",
-      "/srv/.agents/skills"
+      path.join(filesystemRoot, "srv", ".codex", "skills"),
+      path.join(filesystemRoot, "srv", ".claude", "skills"),
+      path.join(filesystemRoot, "srv", ".agents", "skills")
     ].map((root) => path.resolve(root))
   );
 }
