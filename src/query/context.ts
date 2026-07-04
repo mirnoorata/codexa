@@ -361,9 +361,10 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       lspAssist,
       sessionMemory: sessionMemory.data,
       workspaceGuidance: workspaceGuidance.data,
-      skillHints: skillHints.configured
+      skillHints: skillHints.configured || skillHints.warnings.length > 0
         ? {
             configPath: skillHints.configPath,
+            configured: skillHints.configured,
             roots: skillHints.roots.slice(0, 12),
             applicableSkills,
             targetPlaybooks,

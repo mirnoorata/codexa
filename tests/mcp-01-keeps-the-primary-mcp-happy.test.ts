@@ -197,7 +197,7 @@ it("exposes configured skill hints and surfaces path-matched skills in task brie
         {
           schemaVersion: 1,
           skillRoots: ["<repo>/.claude/skills", outsideSkillRoot],
-          hints: [{ glob: "src/**", skills: ["site-hardening"] }]
+          hints: [{ glob: "src/**/*.ts", skills: ["site-hardening"] }]
         },
         null,
         2
@@ -240,7 +240,7 @@ it("exposes configured skill hints and surfaces path-matched skills in task brie
         };
       };
       expect(data.data?.skillHints?.roots).toEqual(["<repo>/.claude/skills"]);
-      expect(data.data?.skillHints?.applicableSkills?.[0]).toMatchObject({ name: "site-hardening", matchedGlob: "src/**", matchedPath: "src/alpha.ts" });
+      expect(data.data?.skillHints?.applicableSkills?.[0]).toMatchObject({ name: "site-hardening", matchedGlob: "src/**/*.ts", matchedPath: "src/alpha.ts" });
       expect(data.data?.skillHints?.applicableSkills?.[0]?.skillPath).toBe("<repo>/.claude/skills/site-hardening/SKILL.md");
       expect(data.data?.skillHints?.targetPlaybooks?.[0]?.uri).toContain("codexa://repo/codebase/playbooks/");
     } finally {
@@ -275,6 +275,52 @@ it("contains malformed skill hint configs without throwing", async () => {
     expect(summary.warnings.join("\n")).toContain("ignored hint.skills because it is not an array");
     expect(summary.warnings.join("\n")).toContain("ignored skill hint that is not an object");
     expect(summary.warnings.join("\n")).toContain("ignored hint.globs because it is not an array");
+  });
+
+it("reports invalid skill hint config through MCP output", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-skill-hints-invalid-"));
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const repo = await createIndexedMcpRepo(workspace, "repo", "alpha", "alphaSymbol");
+    await writeFile(path.join(repo, ".codex/skill-hints.json"), "{not json", "utf8");
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh"],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-skill-hints-invalid-test", version: "0.1.0" });
+    await client.connect(transport);
+
+    try {
+      const skillResource = await client.readResource({ uri: "codexa://repo/codebase/skill-hints.md" });
+      const skillText = String(skillResource.contents?.[0]?.text);
+      expect(skillText).toContain(".codex/skill-hints.json is present but could not be used.");
+      expect(skillText).toContain(".codex/skill-hints.json is not valid JSON");
+
+      const taskBrief = await client.callTool({ name: "task_brief", arguments: { files: ["src/alpha.ts"], task: "harden alpha", tokenBudget: 1400, limit: 5 } });
+      const data = taskBrief.structuredContent as { data?: { skillHints?: { configured?: boolean; warnings?: string[] } } };
+      expect(data.data?.skillHints?.configured).toBe(false);
+      expect(data.data?.skillHints?.warnings?.join("\n")).toContain(".codex/skill-hints.json is not valid JSON");
+    } finally {
+      await client.close();
+    }
+  });
+
+it("does not scan user-global skill roots from repo-controlled skill hint config", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-skill-hints-global-"));
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const repo = await createIndexedMcpRepo(workspace, "repo", "alpha", "alphaSymbol");
+    await writeFile(
+      path.join(repo, ".codex/skill-hints.json"),
+      JSON.stringify({ schemaVersion: 1, skillRoots: ["~/.codex/skills"], hints: [{ glob: "src/**", skills: ["private-skill"] }] }, null, 2),
+      "utf8"
+    );
+
+    const summary = await loadSkillHints(repo);
+
+    expect(summary.roots).toEqual([]);
+    expect(summary.scannedSkills).toEqual([]);
+    expect(summary.warnings.join("\n")).toContain("ignored skill root outside allowed skill roots: ~/.codex/skills");
   });
 
 it("ignores terminal composite session statuses when checking workspace conflicts", async () => {

@@ -147,8 +147,15 @@ export async function targetPlaybookHints(repoRoot: string, index: CodexaIndex, 
 export function renderSkillHintsResource(summary: SkillHintsSummary): string {
   const lines = ["# Codexa Skill Hints", ""];
   if (!summary.configured) {
-    lines.push(`No ${SKILL_HINTS_RELATIVE_PATH} file is configured for this repository.`);
-    return lines.join("\n");
+    lines.push(
+      summary.warnings.length > 0
+        ? `${SKILL_HINTS_RELATIVE_PATH} is present but could not be used.`
+        : `No ${SKILL_HINTS_RELATIVE_PATH} file is configured for this repository.`
+    );
+    if (summary.warnings.length > 0) {
+      lines.push("", "## Warnings", ...summary.warnings.map((warning) => `- ${warning}`));
+    }
+    return `${lines.join("\n")}\n`;
   }
   lines.push(`Config: ${summary.configPath}`);
   lines.push("");
@@ -287,18 +294,7 @@ async function readSkill(skillDir: string, root: string, repoRoot: string, allow
 }
 
 function allowedSkillRootPrefixes(repoRoot: string): string[] {
-  const filesystemRoot = path.parse(repoRoot).root;
-  return uniqueSorted(
-    [
-      repoRoot,
-      path.join(os.homedir(), ".codex/skills"),
-      path.join(os.homedir(), ".claude/skills"),
-      path.join(os.homedir(), ".agents/skills"),
-      path.join(filesystemRoot, "srv", ".codex", "skills"),
-      path.join(filesystemRoot, "srv", ".claude", "skills"),
-      path.join(filesystemRoot, "srv", ".agents", "skills")
-    ].map((root) => path.resolve(root))
-  );
+  return [path.resolve(repoRoot)];
 }
 
 function isAllowedSkillPath(candidate: string, allowedRoots: string[]): boolean {
@@ -402,20 +398,29 @@ function dedupeSkills(skills: ScannedSkillHint[]): ScannedSkillHint[] {
 
 function globMatcher(glob: string): (candidate: string) => boolean {
   const normalized = normalizeCodexPath(glob);
-  const pattern = normalized
-    .split(/(\*\*)/u)
-    .map((part) => {
-      if (part === "**") {
-        return ".*";
-      }
-      return part
-        .split(/(\*)/u)
-        .map((piece) => (piece === "*" ? "[^/]*" : escapeRegExp(piece)))
-        .join("");
-    })
-    .join("");
+  const pattern = globPatternToRegExpSource(normalized);
   const regex = new RegExp(`^${pattern}$`, "u");
   return (candidate: string) => regex.test(normalizeCodexPath(candidate));
+}
+
+function globPatternToRegExpSource(glob: string): string {
+  let pattern = "";
+  for (let index = 0; index < glob.length; ) {
+    if (glob.startsWith("**/", index)) {
+      pattern += "(?:.*/)?";
+      index += 3;
+    } else if (glob.startsWith("**", index)) {
+      pattern += ".*";
+      index += 2;
+    } else if (glob[index] === "*") {
+      pattern += "[^/]*";
+      index += 1;
+    } else {
+      pattern += escapeRegExp(glob[index]);
+      index += 1;
+    }
+  }
+  return pattern;
 }
 
 function normalizeCodexPath(value: string): string {
