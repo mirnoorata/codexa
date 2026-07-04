@@ -12,6 +12,7 @@ import { MCP_TOOL_CATALOG, PRIMARY_CODEX_LOOP, compactNonPostEditMcpResult, comp
 import { conciseText } from "../src/mcp/compaction.js";
 import { CORE_PROFILE_TOOL_NAMES, MCP_TOOL_NAMES, MCP_TOOL_REGISTRY } from "../src/mcp/tool-registry.js";
 import { MCP_REGISTERED_TOOL_NAMES } from "../src/mcp/tools.js";
+import { loadSkillHints } from "../src/skill-hints.js";
 import { CURRENT_VERIFICATION_PROVENANCE } from "../src/types.js";
 import { CODEXA_VERSION } from "../src/version.js";
 import { freshnessFixture, seq, serializedBytes, waitForStderr, stopChild, waitForExit, createIndexedMcpRepo, createIndexedMcpAutoVerifyRepo, buildContextPacket, buildFocusBriefPacket, buildTestPlanPacket, buildChangePlanPacket } from "./mcp-fixtures.js";
@@ -170,6 +171,165 @@ it("fails closed when active project focus conflicts with workspace default", as
     } finally {
       await client.close();
     }
+  });
+
+it("exposes configured skill hints and surfaces path-matched skills in task briefs", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-skill-hints-"));
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const repo = await createIndexedMcpRepo(workspace, "repo", "alpha", "alphaSymbol");
+    const skillDir = path.join(repo, ".claude/skills/site-hardening");
+    await mkdir(skillDir, { recursive: true });
+    await writeFile(
+      path.join(skillDir, "SKILL.md"),
+      ["---", "name: site-hardening", "description: Harden web trust boundaries.", "---", "", "# Site Hardening", ""].join("\n"),
+      "utf8"
+    );
+    const outsideSkillRoot = path.join(workspace, "..", `${path.basename(workspace)}-outside-skills`);
+    await mkdir(path.join(outsideSkillRoot, "evil-skill"), { recursive: true });
+    await writeFile(
+      path.join(outsideSkillRoot, "evil-skill", "SKILL.md"),
+      ["---", "name: evil-skill", "description: Should not be scanned.", "---", "", "# Evil", ""].join("\n"),
+      "utf8"
+    );
+    await symlink(outsideSkillRoot, path.join(repo, ".claude/linked-skills"), "dir");
+    await writeFile(
+      path.join(repo, ".codex/skill-hints.json"),
+      JSON.stringify(
+        {
+          schemaVersion: 1,
+          skillRoots: ["<repo>/.claude/skills", "<repo>/.claude/linked-skills", outsideSkillRoot],
+          hints: [{ glob: "src/**/*.ts", skills: ["site-hardening", "evil-skill", "missing-skill"] }]
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh"],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-skill-hints-test", version: "0.1.0" });
+    await client.connect(transport);
+
+    try {
+      const resources = await client.listResources();
+      expect(resources.resources.map((resource) => resource.uri)).toContain("codexa://repo/codebase/skill-hints.md");
+      const skillResource = await client.readResource({ uri: "codexa://repo/codebase/skill-hints.md" });
+      const skillText = String(skillResource.contents?.[0]?.text);
+      expect(skillText).toContain("<repo>/.claude/skills");
+      expect(skillText).toContain("site-hardening - Harden web trust boundaries.");
+      expect(skillText).not.toContain("Should not be scanned.");
+      expect(skillText).toContain("ignored skill root outside allowed skill roots");
+      expect(skillText).toContain("ignored skill hint for unscanned skill: evil-skill");
+      expect(skillText).toContain("ignored skill hint for unscanned skill: missing-skill");
+      expect(skillText).not.toContain("evil-skill/SKILL.md");
+      expect(skillText).not.toContain(workspace);
+      expect(skillText).not.toContain(outsideSkillRoot);
+
+      const taskBrief = await client.callTool({ name: "task_brief", arguments: { files: ["src/alpha.ts"], task: "harden alpha", tokenBudget: 1400, limit: 5 } });
+      const rendered = JSON.stringify(taskBrief.content);
+      expect(rendered).toContain("Skill and playbook hints");
+      expect(rendered).toContain("site-hardening");
+      expect(rendered).not.toContain("skill evil-skill");
+      expect(rendered).not.toContain("skill missing-skill");
+      expect(rendered).toContain("codexa://repo/codebase/playbooks/");
+      const data = taskBrief.structuredContent as {
+        data?: {
+          skillHints?: {
+            roots?: string[];
+            applicableSkills?: Array<{ name?: string; matchedGlob?: string; matchedPath?: string; skillPath?: string }>;
+            targetPlaybooks?: Array<{ uri?: string }>;
+            warnings?: string[];
+          };
+        };
+      };
+      expect(data.data?.skillHints?.roots).toEqual(["<repo>/.claude/skills"]);
+      expect(data.data?.skillHints?.applicableSkills?.map((skill) => skill.name)).toEqual(["site-hardening"]);
+      expect(data.data?.skillHints?.applicableSkills?.[0]).toMatchObject({ name: "site-hardening", matchedGlob: "src/**/*.ts", matchedPath: "src/alpha.ts" });
+      expect(data.data?.skillHints?.applicableSkills?.[0]?.skillPath).toBe("<repo>/.claude/skills/site-hardening/SKILL.md");
+      expect(data.data?.skillHints?.targetPlaybooks?.[0]?.uri).toContain("codexa://repo/codebase/playbooks/");
+      expect(data.data?.skillHints?.warnings?.join("\n")).toContain("ignored skill hint for unscanned skill: evil-skill");
+    } finally {
+      await client.close();
+    }
+  });
+
+it("contains malformed skill hint configs without throwing", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-skill-hints-malformed-"));
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const repo = await createIndexedMcpRepo(workspace, "repo", "alpha", "alphaSymbol");
+    await writeFile(
+      path.join(repo, ".codex/skill-hints.json"),
+      JSON.stringify(
+        {
+          schemaVersion: 1,
+          skillRoots: "<repo>/.claude/skills",
+          hints: [{ glob: "src/**", skills: "site-hardening" }, null, { globs: "src/**", skills: ["site-hardening"] }]
+        },
+        null,
+        2
+      ),
+      "utf8"
+    );
+
+    const summary = await loadSkillHints(repo);
+
+    expect(summary.configured).toBe(true);
+    expect(summary.roots).toEqual([]);
+    expect(summary.hints).toEqual([]);
+    expect(summary.warnings.join("\n")).toContain("ignored skillRoots because it is not an array");
+    expect(summary.warnings.join("\n")).toContain("ignored hint.skills because it is not an array");
+    expect(summary.warnings.join("\n")).toContain("ignored skill hint that is not an object");
+    expect(summary.warnings.join("\n")).toContain("ignored hint.globs because it is not an array");
+  });
+
+it("reports invalid skill hint config through MCP output", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-skill-hints-invalid-"));
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const repo = await createIndexedMcpRepo(workspace, "repo", "alpha", "alphaSymbol");
+    await writeFile(path.join(repo, ".codex/skill-hints.json"), "{not json", "utf8");
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh"],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-skill-hints-invalid-test", version: "0.1.0" });
+    await client.connect(transport);
+
+    try {
+      const skillResource = await client.readResource({ uri: "codexa://repo/codebase/skill-hints.md" });
+      const skillText = String(skillResource.contents?.[0]?.text);
+      expect(skillText).toContain(".codex/skill-hints.json is present but could not be used.");
+      expect(skillText).toContain(".codex/skill-hints.json is not valid JSON");
+
+      const taskBrief = await client.callTool({ name: "task_brief", arguments: { files: ["src/alpha.ts"], task: "harden alpha", tokenBudget: 1400, limit: 5 } });
+      const data = taskBrief.structuredContent as { data?: { skillHints?: { configured?: boolean; warnings?: string[] } } };
+      expect(data.data?.skillHints?.configured).toBe(false);
+      expect(data.data?.skillHints?.warnings?.join("\n")).toContain(".codex/skill-hints.json is not valid JSON");
+    } finally {
+      await client.close();
+    }
+  });
+
+it("does not scan user-global skill roots from repo-controlled skill hint config", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-skill-hints-global-"));
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const repo = await createIndexedMcpRepo(workspace, "repo", "alpha", "alphaSymbol");
+    await writeFile(
+      path.join(repo, ".codex/skill-hints.json"),
+      JSON.stringify({ schemaVersion: 1, skillRoots: ["~/.codex/skills"], hints: [{ glob: "src/**", skills: ["private-skill"] }] }, null, 2),
+      "utf8"
+    );
+
+    const summary = await loadSkillHints(repo);
+
+    expect(summary.roots).toEqual([]);
+    expect(summary.scannedSkills).toEqual([]);
+    expect(summary.warnings.join("\n")).toContain("ignored skill root outside allowed skill roots: ~/.codex/skills");
   });
 
 it("ignores terminal composite session statuses when checking workspace conflicts", async () => {

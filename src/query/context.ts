@@ -24,6 +24,7 @@ import { semanticOptionsFromQueryOptions } from "../semantic-retrieval.js";
 import { compactChangedSymbol, compactDiffGroup, compactFileFact, compactRetrievalResult, compactWorkflowTrace } from "./compact-data.js";
 import { summarizeSessionMemory } from "../session-memory.js";
 import { workspaceGuidancePreview } from "./workspace-guidance.js";
+import { applicableSkillHints, loadSkillHints, targetPlaybookHints } from "../skill-hints.js";
 import {
   actionabilityFromPacketVerdict,
   addDirtyWorktreeFocus,
@@ -244,6 +245,10 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     symbols: requestedSymbols,
     limit: 6
   });
+  const skillHints = await loadSkillHints(repoRoot);
+  const skillHintTargets = uniqueSorted([...requestedFiles, ...focusPaths]).slice(0, 40);
+  const applicableSkills = applicableSkillHints(skillHints, skillHintTargets);
+  const targetPlaybooks = await targetPlaybookHints(repoRoot, index, focusPaths);
   const contextSources = summarizeContextSources(focusEntries);
   const dirtyScopeChangePlan = dirtyScope?.mode === "edit" && dirtyScope.canPlan && packetIntent?.verdict === "edit-ready";
   const changePlanInputs = dirtyScopeChangePlan
@@ -308,6 +313,10 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     workspaceGuidance.lines.length > 0 ? "" : undefined,
     workspaceGuidance.lines.length > 0 ? "Workspace guidance:" : undefined,
     ...workspaceGuidance.lines,
+    applicableSkills.length > 0 || targetPlaybooks.length > 0 ? "" : undefined,
+    applicableSkills.length > 0 || targetPlaybooks.length > 0 ? "Skill and playbook hints:" : undefined,
+    ...applicableSkills.map((skill) => `- skill ${skill.name}: ${skill.matchedGlob} matched ${skill.matchedPath}${skill.description ? `; ${skill.description}` : ""}`),
+    ...targetPlaybooks.map((playbook) => `- playbook ${playbook.module}: ${playbook.uri}`),
     suppressActionGuidance ? undefined : "",
     suppressActionGuidance ? undefined : "If run, these commands would cover:",
     ...(suppressActionGuidance ? [] : formatVerificationCoverage(verificationCoverage)),
@@ -352,6 +361,17 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       lspAssist,
       sessionMemory: sessionMemory.data,
       workspaceGuidance: workspaceGuidance.data,
+      skillHints: skillHints.configured || skillHints.warnings.length > 0
+        ? {
+            configPath: skillHints.configPath,
+            configured: skillHints.configured,
+            roots: skillHints.roots.slice(0, 12),
+            applicableSkills,
+            targetPlaybooks,
+            warnings: skillHints.warnings.slice(0, 12)
+          }
+        : undefined,
+      targetPlaybooks,
       intentConfidence: packetIntent,
       packetVerdict: packetIntent?.verdict,
       actionability,

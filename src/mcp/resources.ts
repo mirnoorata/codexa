@@ -2,6 +2,7 @@ import { ResourceTemplate, type McpServer } from "@modelcontextprotocol/sdk/serv
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { statusQuery } from "../queries.js";
+import { loadSkillHints, renderSkillHintsResource } from "../skill-hints.js";
 
 export async function registerArtifactResources(server: McpServer, resolveRepoRoot: () => Promise<string>): Promise<void> {
   const artifacts = [
@@ -14,6 +15,7 @@ export async function registerArtifactResources(server: McpServer, resolveRepoRo
     ["conventions", "codexa://repo/codebase/conventions.md", ".codex/codebase/conventions.md", "text/markdown", "Detected project conventions"],
     ["workflows", "codexa://repo/codebase/workflows.md", ".codex/codebase/workflows.md", "text/markdown", "Detected workflow traces"],
     ["playbooks", "codexa://repo/codebase/playbooks/README.md", ".codex/codebase/playbooks/README.md", "text/markdown", "Generated Codexa change playbook index"],
+    ["skill-hints", "codexa://repo/codebase/skill-hints.md", ".codex/skill-hints.json", "text/markdown", "Configured skill roots and path-matched skill hints"],
     ["freshness-json", "codexa://repo/codebase/freshness.json", ".codex/codebase/freshness.json", "application/json", "Codexa freshness snapshot"]
   ] as const;
 
@@ -34,6 +36,8 @@ export async function registerArtifactResources(server: McpServer, resolveRepoRo
             text:
               relativePath === ".codex/codebase/freshness.json"
                 ? await readLiveFreshnessArtifact(await resolveRepoRoot())
+                : relativePath === ".codex/skill-hints.json"
+                  ? renderSkillHintsResource(await loadSkillHints(await resolveRepoRoot()))
                 : await readArtifact(await resolveRepoRoot(), relativePath)
           }
         ]

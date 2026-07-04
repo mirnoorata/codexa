@@ -136,6 +136,8 @@ export interface BaseQueryData {
   systemMessage?: string;
   sessionMemory?: QueryObject;
   workspaceGuidance?: QueryObject;
+  skillHints?: QueryObject;
+  targetPlaybooks?: QueryObject[];
   priorSessionMemory?: QueryObject;
   runtime?: QueryObject;
   session?: QueryObject;
