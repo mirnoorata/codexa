@@ -626,6 +626,9 @@ function compactContextPacketData(data: ContextPacketData, mode: ContextPacketDa
     systemMessage: stringValue(data.systemMessage),
     session: compactSession(data.session),
     sessionMemory: data.sessionMemory,
+    workspaceGuidance: data.workspaceGuidance,
+    skillHints: data.skillHints,
+    targetPlaybooks: limit("targetPlaybooks", data.targetPlaybooks, 12),
     runtime: data.runtime,
     truncation: Object.keys(limit.truncation).length > 0 ? limit.truncation : undefined
   };
