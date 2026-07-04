@@ -3,7 +3,7 @@
 << /Type /Catalog /Pages 2 0 R >>
 endobj
 2 0 obj
-<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+<< /Type /Pages /Kids [4 0 R 6 0 R] /Count 2 >>
 endobj
 3 0 obj
 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
@@ -12,7 +12,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
 endobj
 5 0 obj
-<< /Length 1737 >>
+<< /Length 1977 >>
 stream
 BT
 /F1 10 Tf
@@ -24,52 +24,87 @@ BT
 (- Worktree: isolated codexa worktree) Tj T*
 (- Branch: claude/general/codexa-20260704-091747-focus-orientation) Tj T*
 (- Base: main) Tj T*
-(- Primary commit: a076e15) Tj T*
+(- Source head before artifact refresh: a779398) Tj T*
 (- Subject: feat\(mcp\): surface workspace skill hints) Tj T*
 () Tj T*
 (Changed Files) Tj T*
 () Tj T*
-(a076e15 feat\(mcp\): surface workspace skill hints) Tj T*
-(src/init.ts                                      | 159 +++++++++) Tj T*
-(src/mcp/compaction.ts                            |   3 +) Tj T*
-(src/mcp/resources.ts                             |   4 +) Tj T*
-(src/query/context.ts                             |  19 +) Tj T*
-(src/skill-hints.ts                               | 425 +++++++++++++++++++++++) Tj T*
-(src/types/query-data.ts                          |   2 +) Tj T*
-(tests/init.test.ts                               |  41 +++) Tj T*
-(tests/mcp-01-keeps-the-primary-mcp-happy.test.ts |  68 ++++) Tj T*
-(8 files changed, 721 insertions\(+\)) Tj T*
-(create mode 100644 src/skill-hints.ts) Tj T*
+(- src/skill-hints.ts) Tj T*
+(- src/init.ts) Tj T*
+(- src/query/context.ts) Tj T*
+(- src/mcp/compaction.ts) Tj T*
+(- src/mcp/resources.ts) Tj T*
+(- src/types/query-data.ts) Tj T*
+(- tests/init.test.ts) Tj T*
+(- tests/mcp-01-keeps-the-primary-mcp-happy.test.ts) Tj T*
+(- Summary artifacts under docs/pr-summaries/) Tj T*
+() Tj T*
+(Diff stat before artifact refresh:) Tj T*
+() Tj T*
+(text) Tj T*
+(10 files changed, 893 insertions\(+\)) Tj T*
+() Tj T*
+() Tj T*
+(Commit Stack) Tj T*
+() Tj T*
+(- a076e15 feat\(mcp\): surface workspace skill hints) Tj T*
+(- 16cc35a docs\(workflow\): add PR summary for codexa) Tj T*
+(- 6484259 fix\(mcp\): avoid workspace paths in skill hints) Tj T*
+(- 16aadd8 fix\(mcp\): harden skill hint config parsing) Tj T*
+(- 911ed7f fix\(mcp\): redact workspace skill hint surfaces) Tj T*
+(- a779398 test\(mcp\): keep redaction fixtures public-safe) Tj T*
 () Tj T*
 (Verification) Tj T*
 () Tj T*
+(- npm run test -- tests/init.test.ts tests/mcp-01-keeps-the-primary-mcp-happy.test.ts:) Tj T*
+(passed, 53 tests) Tj T*
+(- npm run privacy: passed) Tj T*
 (- git diff --check: passed) Tj T*
-(- npm run check: passed) Tj T*
-(- Codexa post-edit-review: local artifact recorded) Tj T*
-(- Codexa test-plan: local artifact recorded) Tj T*
-(- Codexa proof-card: local artifact recorded) Tj T*
-(- Codexa outcome-to-row: WORKING.md bridge updated) Tj T*
-(- git diff --cached --check: passed) Tj T*
-(- staged safety scan: passed) Tj T*
+(- npm run check: passed, including typecheck, lint, privacy, Claude Code integration tests,) Tj T*
+(build, and Vitest) Tj T*
+(- Claude Code integration tests: 77 passed) Tj T*
+(- Vitest: 39 files passed, 400 tests passed) Tj T*
+(- Adversarial review: actionable findings fixed in follow-up Conventional Commits) Tj T*
+(- git diff --check: passed) Tj T*
 () Tj T*
 (Notes) Tj T*
 () Tj T*
 (Implements the portable Codexa portion of the workspace audit remediation: bounded workspace) Tj T*
+ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 495 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
 (session-start digest, configured skill/playbook hints, structured MCP compaction, and) Tj T*
 (regression coverage.) Tj T*
+() Tj T*
+(Hardening follow-ups keep repo-controlled skill-hint config contained to repo-local skill) Tj T*
+(roots, render malformed config warnings instead of hiding them, redact workspace session) Tj T*
+(claims from session-start summaries, make glob matching cover direct children, and keep) Tj T*
+(redaction fixtures public-safe.) Tj T*
 ET
 endstream
 endobj
 xref
-0 6
+0 8
 0000000000 65535 f 
 0000000009 00000 n 
 0000000058 00000 n 
-0000000115 00000 n 
-0000000185 00000 n 
-0000000311 00000 n 
+0000000121 00000 n 
+0000000191 00000 n 
+0000000317 00000 n 
+0000002345 00000 n 
+0000002471 00000 n 
 trailer
-<< /Size 6 /Root 1 0 R >>
+<< /Size 8 /Root 1 0 R >>
 startxref
-2099
+3016
 %%EOF

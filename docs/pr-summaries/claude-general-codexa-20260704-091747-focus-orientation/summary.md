@@ -4,34 +4,49 @@
 - Worktree: `isolated codexa worktree`
 - Branch: `claude/general/codexa-20260704-091747-focus-orientation`
 - Base: `main`
-- Primary commit: `a076e15`
+- Source head before artifact refresh: `a779398`
 - Subject: `feat(mcp): surface workspace skill hints`
 
 ## Changed Files
 
-a076e15 feat(mcp): surface workspace skill hints
- src/init.ts                                      | 159 +++++++++
- src/mcp/compaction.ts                            |   3 +
- src/mcp/resources.ts                             |   4 +
- src/query/context.ts                             |  19 +
- src/skill-hints.ts                               | 425 +++++++++++++++++++++++
- src/types/query-data.ts                          |   2 +
- tests/init.test.ts                               |  41 +++
- tests/mcp-01-keeps-the-primary-mcp-happy.test.ts |  68 ++++
- 8 files changed, 721 insertions(+)
- create mode 100644 src/skill-hints.ts
+- `src/skill-hints.ts`
+- `src/init.ts`
+- `src/query/context.ts`
+- `src/mcp/compaction.ts`
+- `src/mcp/resources.ts`
+- `src/types/query-data.ts`
+- `tests/init.test.ts`
+- `tests/mcp-01-keeps-the-primary-mcp-happy.test.ts`
+- Summary artifacts under `docs/pr-summaries/`
+
+Diff stat before artifact refresh:
+
+```text
+10 files changed, 893 insertions(+)
+```
+
+## Commit Stack
+
+- `a076e15` `feat(mcp): surface workspace skill hints`
+- `16cc35a` `docs(workflow): add PR summary for codexa`
+- `6484259` `fix(mcp): avoid workspace paths in skill hints`
+- `16aadd8` `fix(mcp): harden skill hint config parsing`
+- `911ed7f` `fix(mcp): redact workspace skill hint surfaces`
+- `a779398` `test(mcp): keep redaction fixtures public-safe`
 
 ## Verification
 
+- `npm run test -- tests/init.test.ts tests/mcp-01-keeps-the-primary-mcp-happy.test.ts`: passed, 53 tests
+- `npm run privacy`: passed
+- `git diff --check`: passed
+- `npm run check`: passed, including typecheck, lint, privacy, Claude Code integration tests, build, and Vitest
+- Claude Code integration tests: 77 passed
+- Vitest: 39 files passed, 400 tests passed
+- Adversarial review: actionable findings fixed in follow-up Conventional Commits
 - git diff --check: passed
-- npm run check: passed
-- Codexa post-edit-review: local artifact recorded
-- Codexa test-plan: local artifact recorded
-- Codexa proof-card: local artifact recorded
-- Codexa outcome-to-row: WORKING.md bridge updated
-- git diff --cached --check: passed
-- staged safety scan: passed
 
 ## Notes
 
 Implements the portable Codexa portion of the workspace audit remediation: bounded workspace session-start digest, configured skill/playbook hints, structured MCP compaction, and regression coverage.
+
+Hardening follow-ups keep repo-controlled skill-hint config contained to repo-local skill roots, render malformed config warnings instead of hiding them, redact workspace session claims from session-start summaries, make glob matching cover direct children, and keep redaction fixtures public-safe.
