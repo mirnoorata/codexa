@@ -2,6 +2,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import type { CommandResult } from "../src/command.js";
 import { getGitStateAsync, type GitCommandRunner } from "../src/git.js";
+import { freshnessFromStored } from "../src/indexer/freshness.js";
 import { indexGaps } from "../src/query/diff.js";
 import type { CodexaIndex, FreshnessInfo } from "../src/types.js";
 
@@ -89,6 +90,43 @@ describe("getGitStateAsync degradation", () => {
     const git = await getGitStateAsync(REPO, { commandRunner: stubRunner({}) });
     expect(git.degradedReasons).toEqual([]);
     expect(git.dirtyFiles).toEqual(["a.ts"]);
+  });
+});
+
+describe("freshness under a degraded git probe", () => {
+  it("fails closed: a degraded probe can never report fresh", () => {
+    const loaded = {
+      schemaVersion: 1,
+      snapshotId: "s1",
+      repoRoot: REPO,
+      gitRoot: REPO,
+      headCommit: "abc123",
+      indexedAt: "2026-07-09T00:00:00.000Z",
+      dirtyFiles: [],
+      indexedDirtyFiles: [],
+      dirtyFileHashes: {},
+      indexedDirtyFileHashes: {},
+      missing: false,
+      stale: false,
+      reason: "fresh",
+      parserErrorCount: 0
+    } as FreshnessInfo;
+    const current = {
+      git: {
+        repoRoot: REPO,
+        gitRoot: REPO,
+        headCommit: "abc123",
+        files: [],
+        dirtyFiles: [],
+        churnByPath: new Map<string, number>(),
+        degradedReasons: ["git status output truncated"]
+      },
+      dirtyFileHashes: {}
+    };
+    const empty = { reportHashes: {}, diagnostics: [] };
+    const freshness = freshnessFromStored(REPO, current, empty, empty, loaded);
+    expect(freshness.stale).toBe(true);
+    expect(freshness.reason).toBe("git-state-degraded");
   });
 });
 

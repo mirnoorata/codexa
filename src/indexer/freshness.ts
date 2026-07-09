@@ -49,7 +49,11 @@ export function freshnessFromStored(repo: string, current: RepoFreshnessFiles, r
   const externalSymbolReportsChanged = stableJson(symbolReports.reportHashes) !== stableJson(indexedExternalSymbolReportHashes);
   const commitChanged = current.git.headCommit !== loaded.headCommit;
   const repoRootChanged = path.resolve(loaded.repoRoot) !== repo || loaded.gitRoot !== current.git.gitRoot;
-  const stale = dirtyChanged || externalRiskReportsChanged || externalSymbolReportsChanged || commitChanged || repoRootChanged;
+  // A degraded probe (truncated/timed-out git) saw only part of the tree;
+  // "unchanged" computed from partial dirty files is not evidence of
+  // freshness. Fail closed.
+  const gitStateDegraded = current.git.degradedReasons.length > 0;
+  const stale = gitStateDegraded || dirtyChanged || externalRiskReportsChanged || externalSymbolReportsChanged || commitChanged || repoRootChanged;
   return {
     ...loaded,
     repoRoot: repo,
@@ -65,15 +69,17 @@ export function freshnessFromStored(repo: string, current: RepoFreshnessFiles, r
     missing: false,
     stale,
     reason: stale
-      ? commitChanged
-        ? "head-commit-changed"
-        : repoRootChanged
-          ? "repo-root-changed"
-          : externalRiskReportsChanged
-            ? "external-risk-reports-changed"
-            : externalSymbolReportsChanged
-              ? "external-symbol-reports-changed"
-              : "dirty-files-changed"
+      ? gitStateDegraded
+        ? "git-state-degraded"
+        : commitChanged
+          ? "head-commit-changed"
+          : repoRootChanged
+            ? "repo-root-changed"
+            : externalRiskReportsChanged
+              ? "external-risk-reports-changed"
+              : externalSymbolReportsChanged
+                ? "external-symbol-reports-changed"
+                : "dirty-files-changed"
       : loaded.reason
   };
 }

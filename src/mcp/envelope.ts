@@ -438,7 +438,7 @@ function worktreeForMcpData(data: Record<string, unknown>): { knownClean: boolea
   const degradedReasons = [...stringArray(worktree?.degradedReasons), ...stringArray(data.worktreeDegradationReasons)].filter(Boolean);
   // No worktree signal at all must not render as a verified-clean tree:
   // absence of evidence is not evidence of cleanliness.
-  const hasSignal = knownDirtyCount !== undefined || worktree !== undefined || Array.isArray(data.changedFiles) || degradedReasons.length > 0;
+  const hasSignal = knownDirtyCount !== undefined || Array.isArray(data.changedFiles) || degradedReasons.length > 0;
   if (!hasSignal) {
     return { knownClean: false, unknown: true, degraded: false, dirtyFileCount: 0, degradedReasons: [] };
   }

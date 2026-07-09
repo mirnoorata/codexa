@@ -16,6 +16,12 @@ describe("envelope worktree honesty", () => {
     expect(worktree.degraded).toBe(false);
   });
 
+  it("renders an empty worktree record as unknown, not clean", () => {
+    const worktree = envelopeWorktree({ mode: "freshness", worktree: {} });
+    expect(worktree.knownClean).toBe(false);
+    expect(worktree.unknown).toBe(true);
+  });
+
   it("renders a real zero-dirty signal as known clean", () => {
     const worktree = envelopeWorktree({ mode: "freshness", runtime: { dirtyFileCount: 0 } });
     expect(worktree.knownClean).toBe(true);
