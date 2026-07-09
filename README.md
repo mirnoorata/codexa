@@ -628,6 +628,13 @@ AutoVerify command execution is disabled unless user-owned autonomy is
 `CODEXA_AUTOVERIFY=true`. Even then, AutoVerify is hook-only. MCP
 `post_edit_review` never spawns commands.
 
+The general autonomy switch is `CODEXA_AUTONOMY`: `read-only` (aliases
+`readonly`, `off`) or `full-access` (aliases `full`, `bypass` — this grants
+the same command-execution rights as user-owned full-access autonomy, so
+treat it like a credential). `CODEXA_AUTOVERIFY` takes precedence when both
+are set, and an unrecognized `CODEXA_AUTONOMY` value fails with an error
+instead of being silently ignored.
+
 AutoVerify is not a sandbox. Test code still runs locally with the user's file
 permissions. Codexa records whether verification mutated source/test/provenance
 state and treats such reports as non-covering evidence.

@@ -24,6 +24,7 @@ import {
 import type { AutoVerifyCandidate, VerificationCommandReport } from "./types.js";
 import { shellWords } from "./query/verification/shell.js";
 import { isSubpath, stableId, uniqueSorted } from "./util.js";
+import { CODEXA_VERSION } from "./version.js";
 
 const DEFAULT_MAX_COMMANDS = 2;
 const DEFAULT_TIMEOUT_MS = 15_000;
@@ -801,7 +802,7 @@ async function runVerificationCommand(repoRoot: string, command: SafeAutoVerifyC
     schemaVersion: 1,
     reportKind: "codexa-autoverify-report",
     runnerName: "codexa",
-    runnerVersion: process.env.npm_package_version ?? "0.0.0",
+    runnerVersion: CODEXA_VERSION,
     policyId: AUTO_VERIFY_POLICY_ID,
     policyDigest: AUTO_VERIFY_POLICY_DIGEST,
     taskId: command.candidate.taskId,
