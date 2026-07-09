@@ -13,6 +13,7 @@ import {
   sanitizeCoverageForDisplay,
   sanitizeLedgerForDisplay
 } from "./query/verification-display.js";
+import { pruneMissingFiles, prunedFilesGap } from "./query/prune-missing.js";
 import type {
   ChangeType,
   CodexaIndex,
@@ -141,7 +142,8 @@ export async function proveQuery(repoRoot: string, options: ProveOptions = {}): 
     reason: snapshotLoad.error ?? snapshotLoad.missingReason ?? snapshotLoad.blockedSnapshot?.reason,
     blocked: Boolean(snapshotLoad.blockedSnapshot)
   });
-  const readFirst = readFirstFromFocus(focusData.focusFiles);
+  const readFirstPrune = pruneMissingFiles(readFirstFromFocus(focusData.focusFiles), repo, (entry) => entry.path);
+  const readFirst = readFirstPrune.entries;
   const recommendedCommands = stringArray(testData.verificationCommands);
   const commandPlan = verificationCommandPlanFromData(testData.verificationCommandPlan);
   const ledgerPreview = verificationLedgerFromData(testData.verificationLedgerPreview);
@@ -167,6 +169,9 @@ export async function proveQuery(repoRoot: string, options: ProveOptions = {}): 
     focusGaps: stringArray(focusData.gaps),
     testGaps: stringArray(testData.gaps)
   });
+  if (readFirstPrune.prunedCount > 0) {
+    gaps.push(prunedFilesGap(readFirstPrune.prunedCount));
+  }
   const data: ProveData = {
     mode: "proof_card",
     actionability,

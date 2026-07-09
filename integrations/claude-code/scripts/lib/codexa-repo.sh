@@ -564,6 +564,31 @@ PY
 # repo prose. This is the trust boundary that prevents prompt injection
 # through `additionalContext` / hook stderr.
 
+# Print the plugin's own manifest version ("0.8.0") or "unknown". The
+# banner must not claim a hardcoded version, and `codexa --version` is the
+# wrong source twice over: it costs a node boot the 6s hook budget cannot
+# spare, and the CLI version can legitimately differ from the plugin's
+# (CODEXA_CLI override, PATH binary).
+claudio_plugin_version() {
+  local manifest="$CLAUDIO_ROOT/.claude-plugin/plugin.json"
+  local v=""
+  if [[ -f "$manifest" ]]; then
+    v="$(python3 -c "
+import json, sys
+try:
+    value = json.load(open(sys.argv[1])).get('version', '')
+except Exception:
+    value = ''
+sys.stdout.write(value if isinstance(value, str) else '')
+" "$manifest" 2>/dev/null)"
+  fi
+  if [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.+][A-Za-z0-9.-]{0,32})?$ ]]; then
+    printf '%s' "$v"
+  else
+    printf 'unknown'
+  fi
+}
+
 # Parse the short `codexa status` output into strict key=value lines. All
 # fields optional; invalid lines are dropped silently.
 # Safe output format:

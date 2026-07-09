@@ -41,7 +41,7 @@ run_hook() {
 
 make_wired_repo() {
   local dir="$1"
-  mkdir -p "$dir/.codex/codebase" "$dir/.codex/cache/codexa-tasks"
+  mkdir -p "$dir/.codex/codebase" "$dir/.codex/cache/codexa-tasks" "$dir/src"
   cat >"$dir/.codex/config.toml" <<'TOML'
 [features]
 hooks = true
@@ -57,6 +57,11 @@ TOML
 ## Dynamic Queries
 None
 MD
+  # The read-first files must exist on disk: the banner prunes entries whose
+  # file is gone (a stale index naming ghosts is exactly what we guard).
+  printf 'export const foo = 1\n' >"$dir/src/foo.ts"
+  printf 'export const bar = 1\n' >"$dir/src/bar.ts"
+  printf 'export const baz = 1\n' >"$dir/src/baz.ts"
   # The Stop fingerprint hashes git status/diff output; a wired repo without
   # a git history would trigger "not a git repository" (rc=128) and the
   # degraded-fingerprint branch. Initialize an empty git repo so tests
@@ -176,6 +181,8 @@ cat >"$ADV_REPO/.codex/codebase/README.md" <<'EOF'
 6. `path with spaces.tsx` - rank 30
 7. legit/file.ts - rank 15.5
 EOF
+mkdir -p "$ADV_REPO/legit"
+printf 'export const legit = 1\n' >"$ADV_REPO/legit/file.ts"
 ADV_PAYLOAD="$(python3 -c '
 import json, sys
 print(json.dumps({"session_id": "adv", "cwd": sys.argv[1]}))
@@ -229,6 +236,58 @@ if [[ $LAST_RC -eq 0 && -z "$LAST_STDOUT" ]]; then
   pass "empty payload is silently tolerated"
 else
   fail "empty payload is silently tolerated" "rc=$LAST_RC stdout='$LAST_STDOUT'"
+fi
+
+# Deleted-but-indexed file: the banner prunes it, keeps live entries, and
+# says how many ghosts were dropped so the staleness stays visible.
+GHOST_REPO="$TMP/ghost-readme"
+make_wired_repo "$GHOST_REPO"
+rm -f "$GHOST_REPO/src/bar.ts"
+run_hook "session-start.sh" "{\"session_id\":\"ghost\",\"cwd\":\"$GHOST_REPO\"}" "$INTEG_ROOT" "CODEXA_CLI=/nonexistent/cli.js"
+ghost_addl="$(printf '%s' "$LAST_STDOUT" | python3 -c '
+import json, sys
+payload = json.load(sys.stdin)
+print(payload["hookSpecificOutput"]["additionalContext"])
+' 2>/dev/null)"
+if [[ -n "$ghost_addl" ]] \
+   && ! printf '%s' "$ghost_addl" | grep -q "src/bar.ts" \
+   && printf '%s' "$ghost_addl" | grep -q "src/foo.ts" \
+   && printf '%s' "$ghost_addl" | grep -q "1 deleted file(s) pruned"; then
+  pass "SessionStart prunes deleted read-first files and reports the count"
+else
+  fail "SessionStart prunes deleted read-first files and reports the count" "addl='$ghost_addl'"
+fi
+
+# The banner version comes from the plugin manifest, never a hardcoded
+# string or a CLI spawn.
+manifest_version="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["version"])' "$INTEG_ROOT/.claude-plugin/plugin.json")"
+if printf '%s' "$ghost_addl" | grep -qF "codexa/plugin v$manifest_version"; then
+  pass "SessionStart banner reports the plugin manifest version"
+else
+  fail "SessionStart banner reports the plugin manifest version" "expected v$manifest_version addl='$ghost_addl'"
+fi
+
+# Stale index: the read-first heading carries the freshness token so a
+# ranked list from a stale index is labeled as such.
+STALE_REPO="$TMP/stale-status"
+make_wired_repo "$STALE_REPO"
+STALE_NODE="$TMP/stub-node-stale"
+cat >"$STALE_NODE" <<'EOF'
+#!/usr/bin/env bash
+echo "Codexa status: stale"
+EOF
+chmod +x "$STALE_NODE"
+: >"$TMP/stub-cli-stale.js"
+run_hook "session-start.sh" "{\"session_id\":\"stale\",\"cwd\":\"$STALE_REPO\"}" "$INTEG_ROOT" "CLAUDIO_NODE_BIN=$STALE_NODE CODEXA_CLI=$TMP/stub-cli-stale.js"
+stale_addl="$(printf '%s' "$LAST_STDOUT" | python3 -c '
+import json, sys
+payload = json.load(sys.stdin)
+print(payload["hookSpecificOutput"]["additionalContext"])
+' 2>/dev/null)"
+if printf '%s' "$stale_addl" | grep -q "index: stale"; then
+  pass "SessionStart labels the read-first list when the index is stale"
+else
+  fail "SessionStart labels the read-first list when the index is stale" "addl='$stale_addl'"
 fi
 
 # ---------- PreToolUse ----------

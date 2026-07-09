@@ -12,6 +12,7 @@ import { freshnessBanner, ambiguityResult } from "./runtime.js";
 import { ensureQuerySession, type QuerySessionInput } from "./session.js";
 import { formatTestRecommendations, recommendTests } from "./tests.js";
 import { findFile, resolveFileTarget, resolveSymbolTarget } from "./targets.js";
+import { pruneMissingFiles, prunedFilesGap } from "./prune-missing.js";
 import { formatChangedEntry } from "./worktree.js";
 import { compactWorktreeState, getWorktreeState, worktreeStateGaps, worktreeStateText } from "./worktree-state.js";
 
@@ -89,7 +90,12 @@ export async function impactQuery(
   const ranked = [...affectedFiles.values()].sort((a, b) => impactSortScore(b) - impactSortScore(a) || b.file.rank - a.file.rank || a.file.path.localeCompare(b.file.path));
   const evidenceTiers = tierImpactEntries(ranked);
   const tierOrdered = [...evidenceTiers.authoritative, ...evidenceTiers.derived, ...evidenceTiers.heuristic];
-  const fanout = summarizeFanout(tierOrdered, changeType);
+  const rawFanout = summarizeFanout(tierOrdered, changeType);
+  const fanoutPrune = pruneMissingFiles(rawFanout.readFirst, repoRoot, (entry) => entry.file.path);
+  const fanout = { ...rawFanout, readFirst: fanoutPrune.entries };
+  if (fanoutPrune.prunedCount > 0) {
+    gaps.push(prunedFilesGap(fanoutPrune.prunedCount));
+  }
   const tests = recommendTests(index, ranked.map((entry) => entry.file.path), repoRoot);
   const recipes = verificationRecipes(index, ranked.map((entry) => entry.file.path), changeType);
   const quality = assessContextQuality({
