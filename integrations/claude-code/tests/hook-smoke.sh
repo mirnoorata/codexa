@@ -1492,6 +1492,51 @@ else
   fail "pre-edit cooldown skips the CLI spawn after a recent skip" "rc=$LAST_RC breach=$([[ -e "$PE_MARKER_DIR/pre-edit-cooldown-breach" ]] && echo yes || echo no)"
 fi
 
+# ---------- Worktree wiring ----------
+section "Worktree wiring"
+
+# Wiring is host-local (.codex/config.toml is not branch content), so a
+# fresh linked worktree is invisible to the hooks until `codexa init` runs
+# in it. Both halves of that contract are pinned here.
+WT_PARENT="$TMP/wt-parent"
+mkdir -p "$WT_PARENT"
+(
+  cd "$WT_PARENT" \
+    && git init -q . 2>/dev/null \
+    && echo "content" > file.ts \
+    && git add file.ts 2>/dev/null \
+    && git -c user.email=a@b -c user.name=a -c init.defaultBranch=main commit -q -m init 2>/dev/null
+) || true
+mkdir -p "$WT_PARENT/.codex"
+cat >"$WT_PARENT/.codex/config.toml" <<'TOML'
+[features]
+hooks = true
+TOML
+WT_CHECKOUT="$TMP/wt-checkout"
+( cd "$WT_PARENT" && git worktree add -q -b wt-branch "$WT_CHECKOUT" 2>/dev/null ) || true
+
+run_hook "pre-edit.sh" "{\"session_id\":\"wt\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$WT_CHECKOUT/file.ts\"}}" "$INTEG_ROOT" "CODEXA_CLI=/nonexistent-cli CLAUDE_PLUGIN_DATA=$TMP/wt-data"
+if [[ $LAST_RC -eq 0 && -z "$LAST_STDERR" ]]; then
+  pass "fresh unwired worktree stays invisible to pre-edit (wiring is host-local)"
+else
+  fail "fresh unwired worktree stays invisible to pre-edit (wiring is host-local)" "rc=$LAST_RC stderr='$LAST_STDERR'"
+fi
+
+# Simulate `codexa init` in the worktree: config.toml appears there.
+mkdir -p "$WT_CHECKOUT/.codex"
+cat >"$WT_CHECKOUT/.codex/config.toml" <<'TOML'
+[features]
+hooks = true
+TOML
+run_hook "pre-edit.sh" "{\"session_id\":\"wt\",\"tool_name\":\"Edit\",\"tool_input\":{\"file_path\":\"$WT_CHECKOUT/file.ts\"}}" "$INTEG_ROOT" "CODEXA_CLI=/nonexistent-cli CLAUDE_PLUGIN_DATA=$TMP/wt-data"
+if [[ $LAST_RC -eq 0 ]] \
+   && printf '%s' "$LAST_STDERR" | grep -q "$WT_CHECKOUT" \
+   && ! printf '%s' "$LAST_STDERR" | grep -q "$WT_PARENT"; then
+  pass "wired worktree resolves to the worktree root, not the parent checkout"
+else
+  fail "wired worktree resolves to the worktree root, not the parent checkout" "rc=$LAST_RC stderr='$LAST_STDERR'"
+fi
+
 # ---------- Summary ----------
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ $FAIL -eq 0 ]]

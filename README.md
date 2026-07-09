@@ -123,6 +123,19 @@ are preserved, and malformed JSON aborts the write). When init runs from an
 evictable npx cache, generated configs pin `npx -y @mirnoorata/codexa@<version>`
 instead of the cache path so they keep working after a cache prune.
 
+Linked git worktrees are wired the same way — wiring never travels with the
+branch because `.codex/config.toml` is host-local, so a fresh worktree is
+invisible to Codexa until you run init in it:
+
+```bash
+git worktree add ../my-feature feature-branch
+codexa init ../my-feature        # non-interactive: config + hooks + a fresh index for the worktree
+```
+
+The worktree gets its own index (its HEAD and dirty state differ from the
+parent checkout's, so the parent's index would serve stale answers). If you
+automate worktree creation, add `codexa init` to that automation.
+
 Useful flags: the default tool profile for fresh installs is `core` — only the
 primary-loop tools (plus `impact`/`freshness`) are exposed, which cuts per-turn
 schema token cost; `--tools full` exposes all 20 tools, and re-running plain

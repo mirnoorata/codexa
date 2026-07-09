@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -777,6 +777,26 @@ describe("node interpreter pinning in generated wiring", () => {
     const parsed = JSON.parse(await readFile(path.join(repo, ".mcp.json"), "utf8"));
     const entry = Object.values(parsed.mcpServers)[0] as { command: string };
     expect(entry.command).toBe("node");
+  });
+
+  it("wires a linked git worktree with its own config, hooks, and fresh index", async () => {
+    const repo = await createInitRepo();
+    const worktree = path.join(path.dirname(repo), `${path.basename(repo)}-wt`);
+    execFileSync("git", ["worktree", "add", "-b", "wt-feature", worktree], { cwd: repo, stdio: "ignore" });
+
+    const result = await initializeProject(worktree, { cliPath: "/opt/codexa/dist/cli.js" });
+
+    expect(await realpath(result.repoRoot)).toBe(await realpath(worktree));
+    const config = await readFile(path.join(worktree, ".codex/config.toml"), "utf8");
+    expect(config).toContain("serve");
+    const hooks = await readFile(path.join(worktree, ".codex/hooks.json"), "utf8");
+    expect(hooks).toContain("hook-pre-edit");
+    // The worktree gets its OWN fresh index; the parent checkout stays
+    // untouched (its HEAD/dirty state differ — reusing its index would
+    // serve stale answers).
+    const freshness = JSON.parse(await readFile(path.join(worktree, ".codex/codebase/freshness.json"), "utf8"));
+    expect(freshness.stale).toBe(false);
+    await expect(readFile(path.join(repo, ".codex/config.toml"), "utf8")).rejects.toThrow();
   });
 
   it("keeps PATH-dependent node when config.toml is git-tracked", async () => {
