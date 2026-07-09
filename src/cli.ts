@@ -35,8 +35,30 @@ import {
   type CliQueryOptions
 } from "./cli/options.js";
 import { CODEXA_VERSION } from "./version.js";
+import { nodeSupported, nodeVersionComplaint } from "./node-version.js";
 
 const program = new Command();
+
+// Codexa's engines contract is not enforced by node itself, so a
+// PATH-resolved v18 would otherwise run every command silently. serve
+// refuses (a wrong-major MCP server misbehaves invisibly for weeks); hook
+// subcommands stay quiet (their stderr lands in host transcripts on every
+// edit); everything else warns once and proceeds so diagnosis (doctor)
+// stays reachable on the unsupported major.
+const NODE_GUARD_QUIET_COMMANDS = new Set(["session-start", "hook-pre-edit", "hook-post-edit"]);
+program.hook("preAction", (_thisCommand, actionCommand) => {
+  if (nodeSupported()) {
+    return;
+  }
+  const commandName = actionCommand.name();
+  if (commandName === "serve") {
+    console.error(`Refusing to start the MCP server: ${nodeVersionComplaint()}`);
+    process.exit(1);
+  }
+  if (!NODE_GUARD_QUIET_COMMANDS.has(commandName)) {
+    console.error(`Warning: ${nodeVersionComplaint()}`);
+  }
+});
 const cliModulePath = fileURLToPath(import.meta.url);
 const defaultCliPath = cliModulePath.endsWith(`${path.sep}src${path.sep}cli.ts`)
   ? path.resolve(path.dirname(cliModulePath), "../dist/cli.js")
