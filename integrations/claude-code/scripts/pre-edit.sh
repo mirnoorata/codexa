@@ -53,6 +53,25 @@ if [[ -z "$repo" ]]; then
   exit 0
 fi
 
+# Session edit ledger: record that THIS session edited THIS repo, BEFORE the
+# snapshot early-exit below — legitimate mid-task edits under an existing
+# plan must still leave evidence, or stop.sh would demote their true-positive
+# drift blocks. Empty session_id records nothing (no attributable evidence →
+# stop.sh stays advisory-only, fail-open to fewer blocks).
+_pe_state_dir="${CLAUDE_PLUGIN_DATA:-${XDG_STATE_HOME:-$HOME/.local/state}/codexa-claude-code}"
+session_id="$(printf '%s' "$payload" | claudio_json_field session_id)"
+if [[ -n "$session_id" ]]; then
+  if _pe_edit_marker="$(claudio_session_edit_marker "$_pe_state_dir" "$session_id" "$repo")"; then
+    if [[ ! -f "$_pe_edit_marker" ]]; then
+      mkdir -p "$_pe_state_dir" 2>/dev/null || true
+      # First edit of this (session, repo): opportunistic GC of markers from
+      # long-gone sessions. File mtime is the only age signal needed.
+      find "$_pe_state_dir" -maxdepth 1 -name 'session-edit-*' -mtime +7 -delete 2>/dev/null || true
+    fi
+    touch "$_pe_edit_marker" 2>/dev/null || true
+  fi
+fi
+
 if claudio_has_snapshot "$repo"; then
   exit 0
 fi
@@ -64,8 +83,8 @@ safe_rel="$(claudio_display_path "$rel")"
 # Negative cache: when the baseline save persistently skips (degraded
 # worktree, blocked plan), every edit would otherwise pay the up-to-8s CLI
 # spawn in the PreToolUse critical path. A recent skip marker (5 min TTL)
-# short-circuits straight to the advisory.
-_pe_state_dir="${CLAUDE_PLUGIN_DATA:-${XDG_STATE_HOME:-$HOME/.local/state}/codexa-claude-code}"
+# short-circuits straight to the advisory. (_pe_state_dir is set above,
+# next to the session edit ledger.)
 _pe_repo_key="$(printf '%s' "$repo" | shasum -a 256 2>/dev/null | awk '{print $1}')"
 _pe_skip_marker="$_pe_state_dir/pre-edit-skip-$_pe_repo_key"
 _pe_marker_fresh=0

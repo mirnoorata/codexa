@@ -105,6 +105,28 @@ claudio_is_edit_tool() {
   return 1
 }
 
+# Print the marker path recording that a session performed an edit-tool
+# write inside a repo. Written by pre-edit.sh on every edit-tool call that
+# resolves into a wired repo; read by stop.sh as a block-eligibility gate
+# (a session with no recorded edits is never drift-blocked). The filename
+# hashes (session, repo) — session_id is external hook input and must never
+# reach a filesystem path raw. Returns 1 when no hash tool is available or
+# the session id is empty; callers treat that as "no evidence" (fail-open
+# to fewer blocks).
+claudio_session_edit_marker() {
+  local state_dir="$1"
+  local session_id="$2"
+  local repo="$3"
+  [[ -z "$state_dir" || -z "$session_id" || -z "$repo" ]] && return 1
+  local key
+  key="$(printf 'session-edit:%s:%s' "$session_id" "$repo" | shasum -a 256 2>/dev/null | awk '{print $1}')"
+  if [[ -z "$key" ]]; then
+    key="$(printf 'session-edit:%s:%s' "$session_id" "$repo" | md5sum 2>/dev/null | awk '{print $1}')"
+  fi
+  [[ -z "$key" ]] && return 1
+  printf '%s/session-edit-%s' "$state_dir" "$key"
+}
+
 # Return 0 if the Codexa CLI is invocable (either node+cli.js or PATH codexa).
 claudio_codexa_available() {
   [[ ${#_CODEXA_INVOKE[@]} -gt 0 ]] || return 1
