@@ -130,6 +130,7 @@ function gitStateFromFreshness(repoRoot: string, freshness: FreshnessInfo): GitS
     headCommit: freshness.headCommit,
     files: [],
     dirtyFiles: freshness.dirtyFiles,
-    churnByPath: new Map()
+    churnByPath: new Map(),
+    degradedReasons: freshness.degradedGitState ?? []
   };
 }

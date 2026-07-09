@@ -123,6 +123,7 @@ function parseStage(): IndexPipelineStage<BuildIndexPipelineContext> {
           stale: false,
           reason: discovered.git.dirtyFiles.length > 0 ? "fresh-with-dirty-overlay" : "fresh",
           parserErrorCount: 0,
+          degradedGitState: discovered.git.degradedReasons,
           externalRiskReportHashes: {},
           indexedExternalRiskReportHashes: {},
           externalRiskReportDiagnostics: [],

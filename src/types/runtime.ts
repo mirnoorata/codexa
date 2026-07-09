@@ -15,6 +15,9 @@ export interface FreshnessInfo {
   stale: boolean;
   reason: string;
   parserErrorCount: number;
+  // Git overflowed/timed out during the index build; the index proceeded on
+  // partial state and packets must surface this as a gap, never silently.
+  degradedGitState?: string[];
   externalRiskReportHashes?: Record<string, string>;
   indexedExternalRiskReportHashes?: Record<string, string>;
   externalRiskReportDiagnostics?: Array<{ path: string; reason: string; sizeBytes?: number; limitBytes?: number }>;

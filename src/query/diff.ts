@@ -85,6 +85,9 @@ export function indexGaps(index: CodexaIndex, freshness: FreshnessInfo, unindexe
   if (freshness.stale) {
     gaps.push(`index stale: ${freshness.reason}`);
   }
+  if (freshness.degradedGitState?.length) {
+    gaps.push(`git state degraded at index time: ${freshness.degradedGitState.join("; ")}`);
+  }
   if (index.parserErrors.length > 0) {
     gaps.push(`parser errors: ${index.parserErrors.length} file(s), first ${index.parserErrors[0].path}`);
   }
