@@ -1,0 +1,117 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R 6 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 3137 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(Change Summary) Tj T*
+() Tj T*
+(- Project: codexa) Tj T*
+(- Worktree: isolated codexa worktree) Tj T*
+(- Branch: claude/general/codexa-20260709-025016-focus-orientation) Tj T*
+(- Base: origin/main) Tj T*
+(- Commits: 8 \(1048508..1c842b5\)) Tj T*
+(- Subject: fix\(core\): kill false-positive drift blocks, pin node truth, unfreeze MCP) Tj T*
+(routing, prune ghost packets) Tj T*
+() Tj T*
+(Scope) Tj T*
+() Tj T*
+(Implements F1-F8 of the "functioning optimally" audit plan \(adversarially) Tj T*
+(reviewed by four independent reviewers before implementation; all items) Tj T*
+(SOUND-WITH-AMENDMENTS, amendments folded in\).) Tj T*
+() Tj T*
+(- F1/F2 fix\(hooks\): stop-hook drift blocks now require recorded edit) Tj T*
+(evidence from the current session \(pre-edit session ledger, hashed) Tj T*
+(filenames, mtime GC\) and a snapshot younger than) Tj T*
+(CLAUDIOSNAPSHOTBLOCKTTLHOURS \(default 24h\). A session that edited) Tj T*
+(nothing is never drift-blocked; demotions print their reason.) Tj T*
+(- F3 fix\(git\): deleted the production-dead sync getGitState; one 16 MiB) Tj T*
+(cap shared with the review path; truncation/timeout degrade loudly) Tj T*
+(\(freshness.degradedGitState + packet gaps\) instead of hard-throwing;) Tj T*
+(truncated NUL output clamps to the last complete entry; churn failure) Tj T*
+(records a gap instead of silently zeroing ranking.) Tj T*
+(- F4 fix\(init\): untracked host-local wiring pins the exact node binary;) Tj T*
+(tracked/shared files keep PATH-"node"; serve refuses node <22 naming the) Tj T*
+(binary and fix; hook subcommands stay quiet; doctor reports the running) Tj T*
+(binary and flags bare-node PATH-dependence and dangling/undersized pins.) Tj T*
+(- F5 fix\(mcp\): root preference recomputed per call \(no spawn-time freeze\),) Tj T*
+(focus rows written after server start route the next call; explicit) Tj T*
+(workspace routing with no matching row surfaces an envelope warning;) Tj T*
+(plugin env allowlist gains CODEXAWORKSPACESESSION.) Tj T*
+(- F6 test\(init\): characterization tests pin that codexa init wires a) Tj T*
+(linked worktree correctly \(own config/hooks/fresh index\) and that unwired) Tj T*
+(worktrees are invisible; README documents worktree add -> codexa init.) Tj T*
+(- F7 fix\(query\): focus/impact/proof-card read-first lists and session) Tj T*
+(banners prune files that no longer exist, surfacing a counted) Tj T*
+(rebuild-the-index gap; banner shows the plugin manifest version and labels) Tj T*
+(stale-index read-first lists.) Tj T*
+(- F8 fix\(mcp\): absent worktree data renders knownClean:false + unknown:true) Tj T*
+(\(envelope schema + proof card\); AutoVerify reports real CODEXAVERSION;) Tj T*
+(CODEXAAUTONOMY documented.) Tj T*
+() Tj T*
+(Verification) Tj T*
+() Tj T*
+(- npm run check green end-to-end \(typecheck, lint, privacy, cmd-smoke,) Tj T*
+(hook-smoke 87 cases, vitest 418 tests / 42 files\), exit code 0.) Tj T*
+(- Live v18 verification on this host: /usr/bin/node dist/cli.js serve) Tj T*
+(refuses with rc=1 naming the binary; doctor warns once and still runs;) Tj T*
+(hook subcommands emit no version noise.) Tj T*
+ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 811 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(- Doctor node-wiring states exercised live: pinned-ok, dangling-pin fail,) Tj T*
+(bare-node warn.) Tj T*
+(- New hook-smoke cases: no-edit demotion, TTL demotion, fresh-snapshot block) Tj T*
+(preserved, TTL env override, ledger persistence on the snapshot fast path,) Tj T*
+(ghost pruning, manifest version, stale label, worktree wiring contract.) Tj T*
+() Tj T*
+(Notes) Tj T*
+() Tj T*
+(- F9 \(workspace remediation runbook\) is operator-side and runs after this) Tj T*
+(branch lands in the workspace's codexa install.) Tj T*
+(- Deferred explicitly: H12 session pins/leases \(incl. snapshot session) Tj T*
+(binding ? identity-namespace mismatch\), fail-closed no-match routing,) Tj T*
+(H5/H6 verdict precision for editing sessions with concurrent foreign) Tj T*
+(changes.) Tj T*
+ET
+endstream
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000121 00000 n 
+0000000191 00000 n 
+0000000317 00000 n 
+0000003505 00000 n 
+0000003631 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R >>
+startxref
+4492
+%%EOF

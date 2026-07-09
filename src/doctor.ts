@@ -6,6 +6,7 @@ import { effectiveAutonomyMode, type CodexaAutonomyStatus } from "./autonomy.js"
 import { getFreshness } from "./indexer.js";
 import { MCP_TOOL_CATALOG, MCP_TOOL_NAMES } from "./mcp-tool-catalog.js";
 import { resolveMcpRepoRoot, shouldPreferConfiguredRepoRoot, type McpRepoRootResolution, type McpRepoRootResolutionOptions } from "./mcp-repo-root.js";
+import { MIN_NODE_MAJOR, nodeSupported } from "./node-version.js";
 import { codexaHookEventsRelativePath, loadLatestCodexaHookEvent } from "./post-edit-outcomes.js";
 
 export interface DoctorOptions {
@@ -29,6 +30,7 @@ export interface DoctorResult {
     node: {
       version: string;
       supported: boolean;
+      execPath: string;
     };
     git: {
       root: string | null;
@@ -85,6 +87,7 @@ export async function runDoctor(repoInput: string, options: DoctorOptions = {}):
   const node = checkNode(checks);
   const git = checkGit(repoRoot, checks);
   const config = await checkConfig(repoRoot, checks, nextActions);
+  await checkNodeWiring(repoRoot, checks, nextActions);
   const hooks = await checkHooks(repoRoot, checks, nextActions);
   const index = await checkIndex(repoRoot, checks, nextActions);
   const artifacts = await checkArtifacts(repoRoot);
@@ -382,14 +385,80 @@ function sameStringSet(left: string[], right: string[]): boolean {
 }
 
 function checkNode(checks: DoctorCheck[]): DoctorResult["data"]["node"] {
-  const major = Number(process.versions.node.split(".")[0]);
-  const supported = Number.isFinite(major) && major >= 22;
+  const supported = nodeSupported();
   checks.push({
     name: "node",
     status: supported ? "ok" : "fail",
-    message: supported ? `Node ${process.version} satisfies Codexa's >=22 requirement.` : `Node ${process.version} is below Codexa's >=22 requirement.`
+    message: supported
+      ? `Node ${process.version} (${process.execPath}) satisfies Codexa's >=${MIN_NODE_MAJOR} requirement.`
+      : `Node ${process.version} (${process.execPath}) is below Codexa's >=${MIN_NODE_MAJOR} requirement.`
   });
-  return { version: process.version, supported };
+  return { version: process.version, supported, execPath: process.execPath };
+}
+
+// The generated wiring decides which node actually serves MCP — a healthy
+// doctor process proves nothing about it. Flags PATH-dependent bare "node"
+// (whatever PATH resolves at spawn time wins) and pinned interpreters that
+// have gone missing or are below the supported major (nvm upgrades remove
+// old binaries), always naming the re-init fix.
+async function checkNodeWiring(repoRoot: string, checks: DoctorCheck[], nextActions: string[]): Promise<void> {
+  const text = await readTextIfExists(path.join(repoRoot, ".codex/config.toml"));
+  if (!text) {
+    return;
+  }
+  const managedStart = text.indexOf("# >>> codexa managed");
+  const managedEnd = text.indexOf("# <<< codexa managed");
+  if (managedStart === -1 || managedEnd === -1 || managedEnd < managedStart) {
+    return;
+  }
+  const match = /^command\s*=\s*"((?:[^"\\]|\\.)*)"/mu.exec(text.slice(managedStart, managedEnd));
+  if (!match) {
+    return;
+  }
+  const command = match[1].replace(/\\(["\\])/gu, "$1");
+  if (command === "npx") {
+    return;
+  }
+  if (command === "node") {
+    checks.push({
+      name: "node-wiring",
+      status: "warn",
+      message: `Generated MCP wiring launches PATH-dependent "node"; the spawn context's PATH decides which major runs. Re-run \`codexa init\` to pin ${process.execPath}.`
+    });
+    nextActions.push("Run `codexa init <repo>` to pin the node interpreter in generated wiring.");
+    return;
+  }
+  if (!path.isAbsolute(command)) {
+    return;
+  }
+  const pinnedVersion = runPinnedNodeVersion(command);
+  if (pinnedVersion === null) {
+    checks.push({
+      name: "node-wiring",
+      status: "fail",
+      message: `Pinned node interpreter ${command} is missing or not runnable (upgraded or uninstalled?). Re-run \`codexa init\` to re-pin.`
+    });
+    nextActions.push("Run `codexa init <repo>` to re-pin the node interpreter in generated wiring.");
+    return;
+  }
+  if (!nodeSupported(pinnedVersion.replace(/^v/u, ""))) {
+    checks.push({
+      name: "node-wiring",
+      status: "fail",
+      message: `Pinned node interpreter ${command} is ${pinnedVersion}, below Codexa's >=${MIN_NODE_MAJOR} requirement. Re-run \`codexa init\` under a supported node.`
+    });
+    nextActions.push("Run `codexa init <repo>` under a supported node to re-pin generated wiring.");
+    return;
+  }
+  checks.push({ name: "node-wiring", status: "ok", message: `Generated MCP wiring pins ${command} (${pinnedVersion}).` });
+}
+
+function runPinnedNodeVersion(command: string): string | null {
+  try {
+    return execFileSync(command, ["-v"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 3_000 }).trim();
+  } catch {
+    return null;
+  }
 }
 
 function checkGit(repoRoot: string, checks: DoctorCheck[]): DoctorResult["data"]["git"] {

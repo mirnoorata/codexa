@@ -5,6 +5,7 @@ import { renderCodexUseContract } from "./codex-contract.js";
 import { buildIndexLocked } from "./indexer.js";
 import { CORE_PROFILE_TOOL_NAMES, PRIMARY_CODEX_LOOP } from "./mcp-tool-catalog.js";
 import { resolveMcpRepoRoot } from "./mcp-repo-root.js";
+import { pinnableNodeExecPath } from "./node-version.js";
 import { assertPolicyPackWritable, initializePolicyPack, type PolicyPackInitResult } from "./policy-pack.js";
 import { statusQuery } from "./queries.js";
 import { CODEXA_VERSION } from "./version.js";
@@ -74,6 +75,26 @@ function resolveLaunchSpec(cliPath: string): LaunchSpec {
   return { command: "node", args: [cliPath], pinnedNpx: false };
 }
 
+// Pin the running interpreter only into untracked host-local wiring: an
+// absolute path in a tracked file breaks other checkouts and leaks private
+// home paths, so tracked wiring keeps PATH-"node" + the serve version guard.
+function pinNodeLaunch(launch: LaunchSpec, repoRoot: string, targetRelPath: string): LaunchSpec {
+  const execPath = launch.command === "node" ? pinnableNodeExecPath() : null;
+  if (!execPath || isGitTracked(repoRoot, targetRelPath)) {
+    return launch;
+  }
+  return { ...launch, command: execPath };
+}
+
+function isGitTracked(repoRoot: string, relPath: string): boolean {
+  try {
+    execFileSync("git", ["-C", repoRoot, "ls-files", "--error-unmatch", relPath], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Re-running plain `codexa init` must not silently change an existing
 // install's tool exposure (the rendered managed block historically told
 // full-profile users to refresh with exactly `codexa init`). When --tools is
@@ -129,7 +150,7 @@ export async function initializeProject(repoInput: string | undefined, options: 
   await upsertCodexConfig(configPath, {
     autoRefresh,
     cliPath,
-    launch,
+    launch: pinNodeLaunch(launch, repoRoot, path.join(".codex", "config.toml")),
     repoRoot,
     serverName,
     hooks: keepHooksFeature,
@@ -139,7 +160,7 @@ export async function initializeProject(repoInput: string | undefined, options: 
   if (writeHooks) {
     await upsertHooksConfig(hooksPath, {
       cliPath,
-      launch,
+      launch: pinNodeLaunch(launch, repoRoot, path.join(".codex", "hooks.json")),
       repoRoot
     });
   }
@@ -613,7 +634,10 @@ async function upsertHooksConfig(hooksPath: string, options: { cliPath: string; 
   const cleanedSessionStart = cleanHookList(hooks.SessionStart, options);
   const cleanedPreToolUse = cleanHookList(hooks.PreToolUse, options);
   const cleanedPostToolUse = cleanHookList(hooks.PostToolUse, options);
-  const launchShell = [options.launch.command, ...options.launch.args.map(shellQuote)].join(" ");
+  // Quote a pinned interpreter path only when it needs it; a bare command
+  // name must stay unquoted so legacy entry matching keeps working.
+  const launchCommand = /[\s'"\\]/u.test(options.launch.command) ? shellQuote(options.launch.command) : options.launch.command;
+  const launchShell = [launchCommand, ...options.launch.args.map(shellQuote)].join(" ");
 
   cleanedSessionStart.push({
     codexaManaged: true,

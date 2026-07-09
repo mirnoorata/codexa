@@ -22,6 +22,7 @@ import { coverageForDisplay, formatVerificationCoverage, verificationCommandPlan
 import { classifyTaskIntent, retrieveForTask, type IntentConfidence, type RetrievalMatch, type RetrievalResult, type TaskIntent } from "../retrieval.js";
 import { semanticOptionsFromQueryOptions } from "../semantic-retrieval.js";
 import { compactChangedSymbol, compactDiffGroup, compactFileFact, compactRetrievalResult, compactWorkflowTrace } from "./compact-data.js";
+import { pruneMissingFiles, prunedFilesGap } from "./prune-missing.js";
 import { summarizeSessionMemory } from "../session-memory.js";
 import { workspaceGuidancePreview } from "./workspace-guidance.js";
 import { applicableSkillHints, loadSkillHints, targetPlaybookHints } from "../skill-hints.js";
@@ -149,7 +150,12 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     }
   }
 
-  const focusEntries = [...focus.values()].sort((a, b) => tierScore(a.tier) - tierScore(b.tier) || b.rank - a.rank || a.file.path.localeCompare(b.file.path)).slice(0, limit);
+  const focusPrune = pruneMissingFiles(
+    [...focus.values()].sort((a, b) => tierScore(a.tier) - tierScore(b.tier) || b.rank - a.rank || a.file.path.localeCompare(b.file.path)).slice(0, limit),
+    repoRoot,
+    (entry) => entry.file.path
+  );
+  const focusEntries = focusPrune.entries;
   const focusPaths = focusEntries.map((entry) => entry.file.path);
   const contextSeedPaths = dirtyContextTask ? focusPaths : dirtyDrivesFocus ? uniqueSorted([...focusPaths, ...changed]) : focusPaths;
   const snippetChangedSymbols = dirtyDrivesFocus ? changedSymbols : changedSymbols.filter((entry) => impactSeeds.has(entry.symbol.path));
@@ -193,7 +199,11 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       ? "inspect_first"
       : qualityLikeFallbackActionability(focusEntries);
   const baseline = explicitQuery ? await baselineSearchSummary(repoRoot, queryText) : undefined;
-  const gaps = [...indexGaps(index, freshness, unindexedChanged), ...(worktree ? worktreeStateGaps(worktree) : [])];
+  const gaps = [
+    ...indexGaps(index, freshness, unindexedChanged),
+    ...(worktree ? worktreeStateGaps(worktree) : []),
+    ...(focusPrune.prunedCount > 0 ? [prunedFilesGap(focusPrune.prunedCount)] : [])
+  ];
   const quality = assessContextQuality({
     freshness,
     gaps,
@@ -464,10 +474,14 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
           .filter((match) => workflowModules.has(moduleNameForPath(match.file.path)) || hasExactRetrievalLane(match))
           .map((match) => ({ ...match, tier: focusMatchTier(match.file, task, match) }))
       : retrievalMatches;
-  const selected: FocusSelectionEntry[] =
+  const selectedPrune = pruneMissingFiles(
     retrieval.matches.length > 0 || exactMatches.length > 0 || workflowMatches.length > 0
       ? uniqueFocusEntries([...exactMatches, ...workflowMatches, ...workflowTestMatches, ...workflowScopedMatches]).slice(0, limit)
-      : index.files.slice(0, limit).map((file) => ({ file, score: file.rank, reasons: ["ranked project entry point fallback"], matchedTerms: [], tier: "fallback" as EvidenceTier }));
+      : index.files.slice(0, limit).map((file) => ({ file, score: file.rank, reasons: ["ranked project entry point fallback"], matchedTerms: [], tier: "fallback" as EvidenceTier })),
+    repoRoot,
+    (entry) => entry.file.path
+  );
+  const selected: FocusSelectionEntry[] = selectedPrune.entries;
   const focusFiles = uniqueFiles(selected.map((entry) => entry.file)).slice(0, limit);
   const tiersByPath = new Map(selected.map((entry) => [entry.file.path, entry.tier]));
   const tests = recommendTests(index, focusFiles.map((file) => file.path), repoRoot).slice(0, 10);
@@ -477,7 +491,11 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
     retrieval.intentConfidence.recommendedNextTool === nextCall.tool
       ? `${nextCall.tool} - ${nextCall.reason}`
       : `${retrieval.intentConfidence.recommendedNextTool} - ${nextCall.reason}`;
-  const gaps = [...indexGaps(index, freshness, unindexedChanged), ...(worktree ? worktreeStateGaps(worktree) : [])];
+  const gaps = [
+    ...indexGaps(index, freshness, unindexedChanged),
+    ...(worktree ? worktreeStateGaps(worktree) : []),
+    ...(selectedPrune.prunedCount > 0 ? [prunedFilesGap(selectedPrune.prunedCount)] : [])
+  ];
   const quality = assessContextQuality({
     freshness,
     gaps,

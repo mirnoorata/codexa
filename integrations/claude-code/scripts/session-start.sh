@@ -50,9 +50,10 @@ if [[ -n "$repo" ]]; then
 
   status_fields="$(claudio_parse_codexa_status "$status_raw")"
   read_first_entries="$(claudio_parse_read_first "$readme_raw" 8)"
+  freshness_token="$(printf '%s\n' "$status_fields" | sed -n 's/^freshness=//p')"
 
   context="$(
-    printf 'codexa/plugin v0.1.0 — validated session context.\n'
+    printf 'codexa/plugin v%s — validated session context.\n' "$(claudio_plugin_version)"
     printf '(All values below were parsed against strict allowlists; repo prose is not forwarded.)\n'
     printf '\nStatus:\n'
     if [[ -n "$status_fields" ]]; then
@@ -60,12 +61,31 @@ if [[ -n "$repo" ]]; then
     else
       printf '  (unavailable)\n'
     fi
-    printf '\nRead-first (top-ranked files):\n'
+    if [[ -n "$freshness_token" && "$freshness_token" != "fresh" ]]; then
+      printf '\nRead-first (top-ranked files; index: %s):\n' "$freshness_token"
+    else
+      printf '\nRead-first (top-ranked files):\n'
+    fi
     if [[ -n "$read_first_entries" ]]; then
+      # A stale index can rank files that no longer exist; naming ghosts
+      # burns the reader's trust, so prune here and say so.
+      pruned=0
+      emitted=0
       while IFS=$'\t' read -r p r; do
         [[ -z "$p" ]] && continue
+        if [[ ! -e "$repo/$p" ]]; then
+          pruned=$((pruned + 1))
+          continue
+        fi
         printf '  - %s (rank %s)\n' "$p" "$r"
+        emitted=$((emitted + 1))
       done <<<"$read_first_entries"
+      if [[ "$emitted" -eq 0 ]]; then
+        printf '  (none on disk)\n'
+      fi
+      if [[ "$pruned" -gt 0 ]]; then
+        printf '  (%d deleted file(s) pruned from this list — rebuild the index)\n' "$pruned"
+      fi
     else
       printf '  (none parsed)\n'
     fi
@@ -137,7 +157,7 @@ safe_cwd="$(claudio_display_path "$cwd")"
 reveal_names="${CLAUDIO_PARENT_SCAN_NAMES:-1}"
 
 context="$(
-  printf 'codexa/plugin v0.1.0 — parent-scan session context.\n'
+  printf 'codexa/plugin v%s — parent-scan session context.\n' "$(claudio_plugin_version)"
   printf '(cwd is above any wired repo. Reporting direct children that are codexa-wired.)\n'
   if [[ "$reveal_names" == "0" ]]; then
     # Privacy mode: NO cwd, NO child names. Just the count. Nothing in

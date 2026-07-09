@@ -123,6 +123,19 @@ are preserved, and malformed JSON aborts the write). When init runs from an
 evictable npx cache, generated configs pin `npx -y @mirnoorata/codexa@<version>`
 instead of the cache path so they keep working after a cache prune.
 
+Linked git worktrees are wired the same way — wiring never travels with the
+branch because `.codex/config.toml` is host-local, so a fresh worktree is
+invisible to Codexa until you run init in it:
+
+```bash
+git worktree add ../my-feature feature-branch
+codexa init ../my-feature        # non-interactive: config + hooks + a fresh index for the worktree
+```
+
+The worktree gets its own index (its HEAD and dirty state differ from the
+parent checkout's, so the parent's index would serve stale answers). If you
+automate worktree creation, add `codexa init` to that automation.
+
 Useful flags: the default tool profile for fresh installs is `core` — only the
 primary-loop tools (plus `impact`/`freshness`) are exposed, which cuts per-turn
 schema token cost; `--tools full` exposes all 20 tools, and re-running plain
@@ -614,6 +627,13 @@ AutoVerify command execution is disabled unless user-owned autonomy is
 `full-access` or the environment sets `CODEXA_AUTOVERIFY=1` /
 `CODEXA_AUTOVERIFY=true`. Even then, AutoVerify is hook-only. MCP
 `post_edit_review` never spawns commands.
+
+The general autonomy switch is `CODEXA_AUTONOMY`: `read-only` (aliases
+`readonly`, `off`) or `full-access` (aliases `full`, `bypass` — this grants
+the same command-execution rights as user-owned full-access autonomy, so
+treat it like a credential). `CODEXA_AUTOVERIFY` takes precedence when both
+are set, and an unrecognized `CODEXA_AUTONOMY` value fails with an error
+instead of being silently ignored.
 
 AutoVerify is not a sandbox. Test code still runs locally with the user's file
 permissions. Codexa records whether verification mutated source/test/provenance

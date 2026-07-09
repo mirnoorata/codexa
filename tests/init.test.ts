@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -33,10 +33,10 @@ describe("Codexa project init", () => {
       };
     };
     expect(hooks.hooks.SessionStart).toHaveLength(1);
-    expect(hooks.hooks.SessionStart[0].hooks[0].command).toBe(`node '/opt/codexa/dist/cli.js' session-start '${repo}'`);
+    expect(hooks.hooks.SessionStart[0].hooks[0].command).toBe(`${process.execPath} '/opt/codexa/dist/cli.js' session-start '${repo}'`);
     expect(hooks.hooks.PreToolUse[0].matcher).toBe("Edit|MultiEdit|Write|NotebookEdit|apply_patch");
-    expect(hooks.hooks.PreToolUse[0].hooks[0].command).toBe(`node '/opt/codexa/dist/cli.js' hook-pre-edit '${repo}'`);
-    expect(hooks.hooks.PostToolUse[0].hooks[0].command).toBe(`node '/opt/codexa/dist/cli.js' hook-post-edit '${repo}'`);
+    expect(hooks.hooks.PreToolUse[0].hooks[0].command).toBe(`${process.execPath} '/opt/codexa/dist/cli.js' hook-pre-edit '${repo}'`);
+    expect(hooks.hooks.PostToolUse[0].hooks[0].command).toBe(`${process.execPath} '/opt/codexa/dist/cli.js' hook-post-edit '${repo}'`);
 
     const freshness = await readFile(path.join(repo, ".codex/codebase/freshness.json"), "utf8");
     expect(JSON.parse(freshness).stale).toBe(false);
@@ -751,11 +751,66 @@ describe("launch pinning for ephemeral runner caches", () => {
     expect(config).not.toContain("xfs-");
   });
 
-  it("does not pin for ordinary install paths", async () => {
+  it("does not npx-pin for ordinary install paths", async () => {
     const repo = await createInitRepo();
     const result = await initializeProject(repo, { cliPath: "/usr/lib/node_modules/@mirnoorata/codexa/dist/cli.js", index: false });
     expect(result.launchNote).toBeNull();
     const config = await readFile(path.join(repo, ".codex/config.toml"), "utf8");
+    expect(config).not.toContain('command = "npx"');
+  });
+});
+
+describe("node interpreter pinning in generated wiring", () => {
+  it("pins the running node into untracked config.toml and hooks.json", async () => {
+    const repo = await createInitRepo();
+    await initializeProject(repo, { cliPath: "/usr/lib/node_modules/@mirnoorata/codexa/dist/cli.js", index: false });
+    const config = await readFile(path.join(repo, ".codex/config.toml"), "utf8");
+    expect(config).toContain(`command = "${process.execPath}"`);
+    const hooks = await readFile(path.join(repo, ".codex/hooks.json"), "utf8");
+    expect(hooks).toContain(process.execPath);
+    expect(JSON.parse(hooks).hooks.SessionStart.at(-1).hooks[0].command.startsWith(process.execPath)).toBe(true);
+  });
+
+  it("keeps PATH-dependent node in the shared .mcp.json", async () => {
+    const repo = await createInitRepo();
+    await initializeProject(repo, { cliPath: "/opt/codexa/dist/cli.js", index: false, claude: true });
+    const parsed = JSON.parse(await readFile(path.join(repo, ".mcp.json"), "utf8"));
+    const entry = Object.values(parsed.mcpServers)[0] as { command: string };
+    expect(entry.command).toBe("node");
+  });
+
+  it("wires a linked git worktree with its own config, hooks, and fresh index", async () => {
+    const repo = await createInitRepo();
+    const worktree = path.join(path.dirname(repo), `${path.basename(repo)}-wt`);
+    execFileSync("git", ["worktree", "add", "-b", "wt-feature", worktree], { cwd: repo, stdio: "ignore" });
+
+    const result = await initializeProject(worktree, { cliPath: "/opt/codexa/dist/cli.js" });
+
+    expect(await realpath(result.repoRoot)).toBe(await realpath(worktree));
+    const config = await readFile(path.join(worktree, ".codex/config.toml"), "utf8");
+    expect(config).toContain("serve");
+    const hooks = await readFile(path.join(worktree, ".codex/hooks.json"), "utf8");
+    expect(hooks).toContain("hook-pre-edit");
+    // The worktree gets its OWN fresh index; the parent checkout stays
+    // untouched (its HEAD/dirty state differ — reusing its index would
+    // serve stale answers).
+    const freshness = JSON.parse(await readFile(path.join(worktree, ".codex/codebase/freshness.json"), "utf8"));
+    expect(freshness.stale).toBe(false);
+    await expect(readFile(path.join(repo, ".codex/config.toml"), "utf8")).rejects.toThrow();
+  });
+
+  it("keeps PATH-dependent node when config.toml is git-tracked", async () => {
+    const repo = await createInitRepo();
+    await mkdir(path.join(repo, ".codex"), { recursive: true });
+    await writeFile(path.join(repo, ".codex/config.toml"), "[features]\nhooks = true\n", "utf8");
+    execFileSync("git", ["add", ".codex/config.toml"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "track config"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    await initializeProject(repo, { cliPath: "/opt/codexa/dist/cli.js", index: false });
+    const config = await readFile(path.join(repo, ".codex/config.toml"), "utf8");
     expect(config).toContain('command = "node"');
+    expect(config).not.toContain(`command = "${process.execPath}"`);
   });
 });

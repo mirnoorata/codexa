@@ -105,6 +105,28 @@ claudio_is_edit_tool() {
   return 1
 }
 
+# Print the marker path recording that a session performed an edit-tool
+# write inside a repo. Written by pre-edit.sh on every edit-tool call that
+# resolves into a wired repo; read by stop.sh as a block-eligibility gate
+# (a session with no recorded edits is never drift-blocked). The filename
+# hashes (session, repo) — session_id is external hook input and must never
+# reach a filesystem path raw. Returns 1 when no hash tool is available or
+# the session id is empty; callers treat that as "no evidence" (fail-open
+# to fewer blocks).
+claudio_session_edit_marker() {
+  local state_dir="$1"
+  local session_id="$2"
+  local repo="$3"
+  [[ -z "$state_dir" || -z "$session_id" || -z "$repo" ]] && return 1
+  local key
+  key="$(printf 'session-edit:%s:%s' "$session_id" "$repo" | shasum -a 256 2>/dev/null | awk '{print $1}')"
+  if [[ -z "$key" ]]; then
+    key="$(printf 'session-edit:%s:%s' "$session_id" "$repo" | md5sum 2>/dev/null | awk '{print $1}')"
+  fi
+  [[ -z "$key" ]] && return 1
+  printf '%s/session-edit-%s' "$state_dir" "$key"
+}
+
 # Return 0 if the Codexa CLI is invocable (either node+cli.js or PATH codexa).
 claudio_codexa_available() {
   [[ ${#_CODEXA_INVOKE[@]} -gt 0 ]] || return 1
@@ -541,6 +563,31 @@ PY
 # is plugin-controlled labels + validated field values, never free-form
 # repo prose. This is the trust boundary that prevents prompt injection
 # through `additionalContext` / hook stderr.
+
+# Print the plugin's own manifest version ("0.8.0") or "unknown". The
+# banner must not claim a hardcoded version, and `codexa --version` is the
+# wrong source twice over: it costs a node boot the 6s hook budget cannot
+# spare, and the CLI version can legitimately differ from the plugin's
+# (CODEXA_CLI override, PATH binary).
+claudio_plugin_version() {
+  local manifest="$CLAUDIO_ROOT/.claude-plugin/plugin.json"
+  local v=""
+  if [[ -f "$manifest" ]]; then
+    v="$(python3 -c "
+import json, sys
+try:
+    value = json.load(open(sys.argv[1])).get('version', '')
+except Exception:
+    value = ''
+sys.stdout.write(value if isinstance(value, str) else '')
+" "$manifest" 2>/dev/null)"
+  fi
+  if [[ "$v" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.+][A-Za-z0-9.-]{0,32})?$ ]]; then
+    printf '%s' "$v"
+  else
+    printf 'unknown'
+  fi
+}
 
 # Parse the short `codexa status` output into strict key=value lines. All
 # fields optional; invalid lines are dropped silently.

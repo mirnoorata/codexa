@@ -13,6 +13,7 @@ import {
   sanitizeCoverageForDisplay,
   sanitizeLedgerForDisplay
 } from "./query/verification-display.js";
+import { pruneMissingFiles, prunedFilesGap } from "./query/prune-missing.js";
 import type {
   ChangeType,
   CodexaIndex,
@@ -79,6 +80,7 @@ export interface ProveData {
   };
   worktree: {
     knownClean?: boolean;
+    unknown?: boolean;
     degraded?: boolean;
     dirtyFileCount?: number;
     changedFiles: string[];
@@ -135,13 +137,14 @@ export async function proveQuery(repoRoot: string, options: ProveOptions = {}): 
   const testData = asRecord(testPlan.data);
   const actionability = typeof testData.actionability === "string" ? testData.actionability : "verify";
   const changedFiles = stringArray(testData.changedFiles);
-  const worktree = worktreeFromData(focusData.worktree, changedFiles, stringArray(focusData.worktreeDegradationReasons));
+  const worktree = worktreeFromData(focusData.worktree, changedFiles, stringArray(focusData.worktreeDegradationReasons), Array.isArray(testData.changedFiles));
   const snapshot = snapshotSummary(snapshotLoad.snapshot, {
     taskId: snapshotLoad.latestTaskId,
     reason: snapshotLoad.error ?? snapshotLoad.missingReason ?? snapshotLoad.blockedSnapshot?.reason,
     blocked: Boolean(snapshotLoad.blockedSnapshot)
   });
-  const readFirst = readFirstFromFocus(focusData.focusFiles);
+  const readFirstPrune = pruneMissingFiles(readFirstFromFocus(focusData.focusFiles), repo, (entry) => entry.path);
+  const readFirst = readFirstPrune.entries;
   const recommendedCommands = stringArray(testData.verificationCommands);
   const commandPlan = verificationCommandPlanFromData(testData.verificationCommandPlan);
   const ledgerPreview = verificationLedgerFromData(testData.verificationLedgerPreview);
@@ -167,6 +170,9 @@ export async function proveQuery(repoRoot: string, options: ProveOptions = {}): 
     focusGaps: stringArray(focusData.gaps),
     testGaps: stringArray(testData.gaps)
   });
+  if (readFirstPrune.prunedCount > 0) {
+    gaps.push(prunedFilesGap(readFirstPrune.prunedCount));
+  }
   const data: ProveData = {
     mode: "proof_card",
     actionability,
@@ -297,13 +303,21 @@ function snapshotSummary(
   };
 }
 
-function worktreeFromData(value: unknown, changedFiles: string[], fallbackDegradedReasons: string[]): ProveData["worktree"] {
+function worktreeFromData(value: unknown, changedFiles: string[], fallbackDegradedReasons: string[], changedFilesKnown: boolean): ProveData["worktree"] {
   const record = asRecord(value);
   const degradedReasons = stringArray(record.degradedReasons).length > 0 ? stringArray(record.degradedReasons) : fallbackDegradedReasons;
+  const shape = record as WorktreeShape;
+  // Same honesty rule as the MCP envelope: with no worktree signal at all,
+  // knownClean is false-by-honesty, never clean-by-omission.
+  const hasSignal = typeof shape.knownClean === "boolean" || typeof shape.dirtyFileCount === "number" || changedFilesKnown || degradedReasons.length > 0;
+  if (!hasSignal) {
+    return { knownClean: false, unknown: true, degraded: false, dirtyFileCount: 0, changedFiles: [], degradedReasons: [] };
+  }
   return {
-    knownClean: typeof (record as WorktreeShape).knownClean === "boolean" ? ((record as WorktreeShape).knownClean as boolean) : changedFiles.length === 0 && degradedReasons.length === 0,
-    degraded: typeof (record as WorktreeShape).degraded === "boolean" ? ((record as WorktreeShape).degraded as boolean) : degradedReasons.length > 0,
-    dirtyFileCount: typeof (record as WorktreeShape).dirtyFileCount === "number" ? ((record as WorktreeShape).dirtyFileCount as number) : changedFiles.length,
+    knownClean: typeof shape.knownClean === "boolean" ? (shape.knownClean as boolean) : changedFiles.length === 0 && degradedReasons.length === 0,
+    unknown: false,
+    degraded: typeof shape.degraded === "boolean" ? (shape.degraded as boolean) : degradedReasons.length > 0,
+    dirtyFileCount: typeof shape.dirtyFileCount === "number" ? (shape.dirtyFileCount as number) : changedFiles.length,
     changedFiles: changedFiles.slice(0, 120),
     degradedReasons
   };

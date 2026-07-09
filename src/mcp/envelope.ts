@@ -131,6 +131,9 @@ export function createMcpOutputSchema(detail: McpOutputSchemaDetail = mcpOutputS
   });
   const worktreeSchema = z.object({
     knownClean: z.boolean(),
+    // True when the packet carried no worktree signal at all: knownClean is
+    // then false-by-honesty, not a verified clean tree.
+    unknown: z.boolean(),
     degraded: z.boolean(),
     dirtyFileCount: z.number(),
     degradedReasons: z.array(z.string())
@@ -427,14 +430,22 @@ function mcpActionabilityValue(value: unknown): McpActionability | undefined {
   return typeof value === "string" && (MCP_ACTIONABILITY_VALUES as readonly string[]).includes(value) ? (value as McpActionability) : undefined;
 }
 
-function worktreeForMcpData(data: Record<string, unknown>): { knownClean: boolean; degraded: boolean; dirtyFileCount: number; degradedReasons: string[] } {
+function worktreeForMcpData(data: Record<string, unknown>): { knownClean: boolean; unknown: boolean; degraded: boolean; dirtyFileCount: number; degradedReasons: string[] } {
   const worktree = isRecord(data.worktree) ? data.worktree : undefined;
   const runtime = isRecord(data.runtime) ? data.runtime : isRecord(data.session) ? data.session : undefined;
   const changedFiles = stringArray(data.changedFiles);
-  const dirtyFileCount = numberValue(worktree?.dirtyFileCount) ?? numberValue(runtime?.dirtyFileCount) ?? changedFiles.length;
+  const knownDirtyCount = numberValue(worktree?.dirtyFileCount) ?? numberValue(runtime?.dirtyFileCount);
   const degradedReasons = [...stringArray(worktree?.degradedReasons), ...stringArray(data.worktreeDegradationReasons)].filter(Boolean);
+  // No worktree signal at all must not render as a verified-clean tree:
+  // absence of evidence is not evidence of cleanliness.
+  const hasSignal = knownDirtyCount !== undefined || Array.isArray(data.changedFiles) || degradedReasons.length > 0;
+  if (!hasSignal) {
+    return { knownClean: false, unknown: true, degraded: false, dirtyFileCount: 0, degradedReasons: [] };
+  }
+  const dirtyFileCount = knownDirtyCount ?? changedFiles.length;
   return {
     knownClean: dirtyFileCount === 0 && degradedReasons.length === 0,
+    unknown: false,
     degraded: degradedReasons.length > 0,
     dirtyFileCount,
     degradedReasons

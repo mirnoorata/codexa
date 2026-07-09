@@ -75,7 +75,7 @@ export async function runnerDirtyState(repoRoot: string, protectedPaths: string[
     fullStatuses,
     fullProtectedHashes,
     fullUntrackedProtectedFiles,
-    degradedReason: status === null ? "git status unavailable" : undefined
+    degradedReason: status === null ? "git status unavailable" : git.degradedReasons.length > 0 ? git.degradedReasons.join("; ") : undefined
   };
 }
 

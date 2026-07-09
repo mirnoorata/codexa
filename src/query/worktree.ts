@@ -1,10 +1,11 @@
 import path from "node:path";
 import { runCommand, type CommandResult, type RunCommandOptions } from "../command.js";
+import { commandFailureReason, GIT_STATE_MAX_BUFFER_BYTES, GIT_STATE_TIMEOUT_MS } from "../git.js";
 import type { ChangedFileEntry, ChangedSymbol, CodexaIndex } from "../types.js";
 import { normalizePath } from "../util.js";
 
-const GIT_TIMEOUT_MS = 5_000;
-const GIT_MAX_BUFFER_BYTES = 1024 * 1024;
+const GIT_TIMEOUT_MS = GIT_STATE_TIMEOUT_MS;
+const GIT_MAX_BUFFER_BYTES = GIT_STATE_MAX_BUFFER_BYTES;
 type WorktreeCommandRunner = (command: string, args: string[], options?: RunCommandOptions) => Promise<CommandResult>;
 
 // A degraded worktree is one where git couldn't report state reliably
@@ -213,19 +214,6 @@ async function gitDiff(
     stdout: "",
     degradedReason: commandFailureReason(`git ${args.join(" ")}`, result)
   };
-}
-
-function commandFailureReason(label: string, result: CommandResult): string {
-  if (result.timedOut) {
-    return `${label} timed out`;
-  }
-  if (result.truncated) {
-    return `${label} output truncated`;
-  }
-  if (typeof result.exitCode === "number" && result.exitCode !== 0) {
-    return `${label} exited with code ${result.exitCode}`;
-  }
-  return `${label} failed`;
 }
 
 function rangesIntersect(startA: number, endA: number, startB: number, endB: number): boolean {

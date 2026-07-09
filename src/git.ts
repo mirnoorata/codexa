@@ -1,6 +1,5 @@
-import { execFileSync } from "node:child_process";
 import path from "node:path";
-import { runCommand } from "./command.js";
+import { runCommand, type CommandResult, type RunCommandOptions } from "./command.js";
 import { normalizePath } from "./util.js";
 
 export interface GitState {
@@ -10,91 +9,29 @@ export interface GitState {
   files: string[];
   dirtyFiles: string[];
   churnByPath: Map<string, number>;
+  degradedReasons: string[];
 }
+
+export type GitCommandRunner = (command: string, args: string[], options?: RunCommandOptions) => Promise<CommandResult>;
 
 export interface GitStateOptions {
   includeFiles?: boolean;
   includeChurn?: boolean;
+  commandRunner?: GitCommandRunner;
 }
+
+// One truth for git-state limits: the index build (this file) and the review
+// path (src/query/worktree.ts) must degrade at the same threshold instead of
+// telling two different stories about the same tree.
+export const GIT_STATE_TIMEOUT_MS = 5_000;
+export const GIT_STATE_MAX_BUFFER_BYTES = 16 * 1024 * 1024;
 
 const asyncGitStateInflight = new Map<string, Promise<GitState>>();
 
-function runGit(repoRoot: string, args: string[], trim = true): string | null {
-  try {
-    const output = execFileSync("git", ["-C", repoRoot, ...args], {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"]
-    });
-    return trim ? output.trim() : output;
-  } catch {
-    return null;
-  }
-}
-
-async function runGitAsync(repoRoot: string, args: string[], trim = true): Promise<string | null> {
-  const result = await runCommand("git", ["-C", repoRoot, ...args], {
-    timeoutMs: 5_000,
-    maxBufferBytes: 2 * 1024 * 1024
-  });
-  if (!result.ok) {
-    return null;
-  }
-  return trim ? result.stdout.trim() : result.stdout;
-}
-
-export function getGitState(repoRoot: string, options: GitStateOptions = {}): GitState {
-  const resolvedRoot = path.resolve(repoRoot);
-  const gitRoot = runGit(resolvedRoot, ["rev-parse", "--show-toplevel"]);
-  if (!gitRoot) {
-    throw new Error(`Codexa requires a git repository: ${resolvedRoot}`);
-  }
-  const headCommit = runGit(resolvedRoot, ["rev-parse", "HEAD"]);
-  const includeFiles = options.includeFiles ?? true;
-  const includeChurn = options.includeChurn ?? true;
-  const pathspec = repoRootPathspec();
-  const fileOutput = includeFiles ? runGit(resolvedRoot, ["ls-files", "-co", "--exclude-standard", "-z", ...pathspec], false) : "";
-  if (includeFiles && fileOutput === null) {
-    throw new Error(`Failed to list git-visible files in ${resolvedRoot}`);
-  }
-  const statusOutput = runGit(resolvedRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all", ...pathspec], false);
-  if (statusOutput === null) {
-    throw new Error(`Failed to read git status in ${resolvedRoot}`);
-  }
-  const churnOutput = includeChurn ? (runGit(resolvedRoot, ["log", "--since=180 days ago", "--name-only", "--pretty=format:", ...pathspec]) ?? "") : "";
-
-  const relativePrefix = gitRoot ? normalizePath(path.relative(gitRoot, resolvedRoot)) : "";
-  const files = splitNul(fileOutput ?? "")
-    .map((file) => normalizePath(file))
-    .filter((file) => file.length > 0);
-
-  const dirtyFiles = parsePorcelain(statusOutput)
-    .map((file) => repoRelativePath(file, gitRoot, relativePrefix))
-    .filter((file): file is string => Boolean(file))
-    .filter((file) => !isCodexaGenerated(file));
-
-  const churnByPath = new Map<string, number>();
-  for (const file of churnOutput.split(/\r?\n/).map((line) => normalizePath(line.trim())).filter(Boolean)) {
-    if (isCodexaGenerated(file)) {
-      continue;
-    }
-    const rel = repoRelativePath(file, gitRoot, relativePrefix);
-    if (!rel || isCodexaGenerated(rel)) {
-      continue;
-    }
-    churnByPath.set(rel, (churnByPath.get(rel) ?? 0) + 1);
-  }
-
-  return {
-    repoRoot: resolvedRoot,
-    gitRoot: gitRoot ? path.resolve(gitRoot) : null,
-    headCommit,
-    files,
-    dirtyFiles: [...new Set(dirtyFiles)].sort(),
-    churnByPath
-  };
-}
-
 export async function getGitStateAsync(repoRoot: string, options: GitStateOptions = {}): Promise<GitState> {
+  if (options.commandRunner) {
+    return readGitStateAsync(repoRoot, options);
+  }
   const key = gitStateCacheKey(repoRoot, options);
   const existing = asyncGitStateInflight.get(key);
   if (existing) {
@@ -109,26 +46,55 @@ export async function getGitStateAsync(repoRoot: string, options: GitStateOption
 
 async function readGitStateAsync(repoRoot: string, options: GitStateOptions = {}): Promise<GitState> {
   const resolvedRoot = path.resolve(repoRoot);
-  const gitRoot = await runGitAsync(resolvedRoot, ["rev-parse", "--show-toplevel"]);
-  if (!gitRoot) {
+  const runner = options.commandRunner ?? runCommand;
+  const degradedReasons: string[] = [];
+
+  const gitRootResult = await runGitCapture(runner, resolvedRoot, ["rev-parse", "--show-toplevel"]);
+  if (!gitRootResult.ok) {
     throw new Error(`Codexa requires a git repository: ${resolvedRoot}`);
   }
-  const headCommit = await runGitAsync(resolvedRoot, ["rev-parse", "HEAD"]);
+  const gitRoot = gitRootResult.stdout.trim();
+  const headResult = await runGitCapture(runner, resolvedRoot, ["rev-parse", "HEAD"]);
+  const headCommit = headResult.ok ? headResult.stdout.trim() : null;
   const includeFiles = options.includeFiles ?? true;
   const includeChurn = options.includeChurn ?? true;
   const pathspec = repoRootPathspec();
-  const fileOutput = includeFiles ? await runGitAsync(resolvedRoot, ["ls-files", "-co", "--exclude-standard", "-z", ...pathspec], false) : "";
-  if (includeFiles && fileOutput === null) {
-    throw new Error(`Failed to list git-visible files in ${resolvedRoot}`);
+
+  let fileOutput = "";
+  if (includeFiles) {
+    const filesResult = await runGitCapture(runner, resolvedRoot, ["ls-files", "-co", "--exclude-standard", "-z", ...pathspec]);
+    const partial = partialNulOutput("git ls-files", filesResult);
+    if (partial.degradedReason) {
+      degradedReasons.push(partial.degradedReason);
+    }
+    if (partial.output === null) {
+      throw new Error(`Failed to list git-visible files in ${resolvedRoot}`);
+    }
+    fileOutput = partial.output;
   }
-  const statusOutput = await runGitAsync(resolvedRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all", ...pathspec], false);
-  if (statusOutput === null) {
+
+  const statusResult = await runGitCapture(runner, resolvedRoot, ["status", "--porcelain=v1", "-z", "--untracked-files=all", ...pathspec]);
+  const statusPartial = partialNulOutput("git status", statusResult);
+  if (statusPartial.degradedReason) {
+    degradedReasons.push(statusPartial.degradedReason);
+  }
+  if (statusPartial.output === null) {
     throw new Error(`Failed to read git status in ${resolvedRoot}`);
   }
-  const churnOutput = includeChurn ? ((await runGitAsync(resolvedRoot, ["log", "--since=180 days ago", "--name-only", "--pretty=format:", ...pathspec])) ?? "") : "";
+  const statusOutput = statusPartial.output;
+
+  let churnOutput = "";
+  if (includeChurn) {
+    const churnResult = await runGitCapture(runner, resolvedRoot, ["log", "--since=180 days ago", "--name-only", "--pretty=format:", ...pathspec]);
+    if (churnResult.ok) {
+      churnOutput = churnResult.stdout.trim();
+    } else {
+      degradedReasons.push(`${commandFailureReason("git log churn", churnResult)}; ranking proceeds without churn`);
+    }
+  }
 
   const relativePrefix = gitRoot ? normalizePath(path.relative(gitRoot, resolvedRoot)) : "";
-  const files = splitNul(fileOutput ?? "")
+  const files = splitNul(fileOutput)
     .map((file) => normalizePath(file))
     .filter((file) => file.length > 0);
 
@@ -155,8 +121,49 @@ async function readGitStateAsync(repoRoot: string, options: GitStateOptions = {}
     headCommit,
     files,
     dirtyFiles: [...new Set(dirtyFiles)].sort(),
-    churnByPath
+    churnByPath,
+    degradedReasons
   };
+}
+
+async function runGitCapture(runner: GitCommandRunner, repoRoot: string, args: string[]): Promise<CommandResult> {
+  return runner("git", ["-C", repoRoot, ...args], {
+    timeoutMs: GIT_STATE_TIMEOUT_MS,
+    maxBufferBytes: GIT_STATE_MAX_BUFFER_BYTES
+  });
+}
+
+// Size/time overflows DEGRADE instead of failing the whole state read: the
+// partial output is clamped to the last complete NUL-terminated entry so a
+// truncated half-path never enters the file lists (and porcelain rename
+// pairing never mis-pairs on a cut fragment). Real git failures — non-zero
+// exit without overflow, spawn errors — return a null output; the callers'
+// hard-throw contract for a broken repo is unchanged.
+function partialNulOutput(label: string, result: CommandResult): { output: string | null; degradedReason: string | null } {
+  if (result.ok) {
+    return { output: result.stdout, degradedReason: null };
+  }
+  if (result.truncated || result.timedOut) {
+    const lastNul = result.stdout.lastIndexOf("\0");
+    return {
+      output: lastNul === -1 ? "" : result.stdout.slice(0, lastNul + 1),
+      degradedReason: commandFailureReason(label, result)
+    };
+  }
+  return { output: null, degradedReason: null };
+}
+
+export function commandFailureReason(label: string, result: CommandResult): string {
+  if (result.timedOut) {
+    return `${label} timed out`;
+  }
+  if (result.truncated) {
+    return `${label} output truncated`;
+  }
+  if (typeof result.exitCode === "number" && result.exitCode !== 0) {
+    return `${label} exited with code ${result.exitCode}`;
+  }
+  return `${label} failed`;
 }
 
 function gitStateCacheKey(repoRoot: string, options: GitStateOptions): string {

@@ -3,7 +3,6 @@ import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:f
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { getGitState } from "../src/git.js";
 import { buildIndex, buildIndexLocked, getFreshness, loadIndex } from "../src/indexer.js";
 import { MAX_INDEXED_SOURCE_BYTES } from "../src/repo-files.js";
 import { validateChangePlanTargetCandidate } from "../src/query/change-plan.js";

@@ -88,6 +88,72 @@ it("routes workspace-root MCP calls and resources to the focused repository", as
     }
   });
 
+it("routes a focus row written AFTER server spawn (no frozen configured-root preference)", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-late-focus-"));
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    await mkdir(path.join(workspace, "src"), { recursive: true });
+    await writeFile(path.join(workspace, "src/workspace.ts"), "export function workspaceRootSymbol() { return 1 }\n", "utf8");
+    execFileSync("git", ["add", "-A"], { cwd: workspace, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], { cwd: workspace, stdio: "ignore" });
+    await buildIndex({ repoRoot: workspace, writeArtifacts: true });
+    const repoA = await createIndexedMcpRepo(workspace, "repo-a", "alpha", "alphaSymbol");
+
+    // No focus file exists at spawn time: the server starts pinned to the
+    // configured workspace root.
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-late-focus-test", version: "0.1.0" });
+    await client.connect(transport);
+
+    try {
+      const first = await client.callTool({ name: "freshness", arguments: {} });
+      expect(JSON.stringify(first)).toContain('"routingSource":"configured-root"');
+
+      const focusFile = path.join(workspace, ".codex", "WORKING.md");
+      await mkdir(path.dirname(focusFile), { recursive: true });
+      await writeFile(focusFile, `## Session\n\n- Focused project: \`${repoA}\`.\n`, "utf8");
+
+      const second = await client.callTool({ name: "freshness", arguments: {} });
+      expect(JSON.stringify(second)).toContain(repoA);
+      expect(JSON.stringify(second)).toContain('"routingSource":"workspace-focus-file"');
+    } finally {
+      await client.close();
+    }
+  });
+
+it("surfaces a warning when explicit workspace routing matches no focus row", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-focus-miss-"));
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    await mkdir(path.join(workspace, "src"), { recursive: true });
+    await writeFile(path.join(workspace, "src/workspace.ts"), "export function workspaceRootSymbol() { return 1 }\n", "utf8");
+    const focusFile = path.join(workspace, ".codex", "WORKING.md");
+    await mkdir(path.dirname(focusFile), { recursive: true });
+    await writeFile(focusFile, "## Session\n\nno focus rows here\n", "utf8");
+    execFileSync("git", ["add", "-A"], { cwd: workspace, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], { cwd: workspace, stdio: "ignore" });
+    await buildIndex({ repoRoot: workspace, writeArtifacts: true });
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace, "--workspace-focus-file", focusFile],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-focus-miss-test", version: "0.1.0" });
+    await client.connect(transport);
+
+    try {
+      const result = await client.callTool({ name: "freshness", arguments: {} });
+      const serialized = JSON.stringify(result);
+      expect(serialized).toContain('"routingSource":"configured-root"');
+      expect(serialized).toContain("no focus row matched");
+    } finally {
+      await client.close();
+    }
+  });
+
 it("routes unscoped workspace default despite active-session rows", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-working-default-"));
     execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });

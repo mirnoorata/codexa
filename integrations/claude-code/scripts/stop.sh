@@ -17,10 +17,14 @@
 #     inspect, the drift summary is made model-visible through the Stop
 #     hook JSON contract ({"decision":"block","reason":...}) so the agent
 #     can act on it; clean/advisory verdicts stay stderr-only. Blocking
-#     additionally requires BOTH opt-in signals: an explicit change_plan
-#     snapshot (implicit hook baselines never block) AND the session
-#     working inside the repo (mode 1) — parent-scan reviews of other
-#     workspace repos are always stderr-only. The stop_hook_active
+#     additionally requires ALL of: an explicit change_plan snapshot
+#     (implicit hook baselines never block), the session working inside
+#     the repo (mode 1 — parent-scan reviews of other workspace repos are
+#     always stderr-only), recorded edit evidence from this session in
+#     this repo (pre-edit.sh session ledger — a session that edited
+#     nothing is never drift-blocked), and a snapshot younger than
+#     CLAUDIO_SNAPSHOT_BLOCK_TTL_HOURS (default 24 — a stale snapshot from
+#     a finished task demotes to advisory). The stop_hook_active
 #     re-entrancy guard plus the fingerprint debounce bound this to at
 #     most one block per stop sequence and per dirty-tree state. Set
 #     CLAUDIO_STOP_BLOCK=0 for stderr-only behavior everywhere.
@@ -57,7 +61,9 @@ claudio_stop_review_one() {
   local fingerprint_tmp
   fingerprint_tmp="$(mktemp)" || return 0
   python3 - "$repo" "$snapshot_file" >"$fingerprint_tmp" 2>/dev/null <<'PY'
+import datetime
 import hashlib
+import json
 import os
 import stat
 import subprocess
@@ -205,19 +211,45 @@ for entry in raw.split(b"\0"):
     h.update(hashlib.sha256(data).hexdigest().encode("ascii"))
     h.update(b"\n")
 h.update(b"\nSNAPSHOT\n")
+snapshot_raw = None
 try:
     with open(snapshot, "rb") as f:
-        h.update(hashlib.sha256(f.read()).hexdigest().encode("ascii"))
-        h.update(b"\n")
+        snapshot_raw = f.read()
+    h.update(hashlib.sha256(snapshot_raw).hexdigest().encode("ascii"))
+    h.update(b"\n")
 except OSError:
     h.update(b"missing\n")
-sys.stdout.write(h.hexdigest())
+
+# Snapshot age in whole hours from latest.json's createdAt (ISO 8601), for
+# the caller's block-TTL gate. Unparseable/missing/future timestamps yield
+# an empty line: age unknown never demotes a block.
+age_hours = ""
+if snapshot_raw is not None:
+    try:
+        created = json.loads(snapshot_raw).get("createdAt")
+        if isinstance(created, str):
+            dt = datetime.datetime.fromisoformat(created.replace("Z", "+00:00"))
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=datetime.timezone.utc)
+        else:
+            dt = None
+        if dt is not None:
+            seconds = (datetime.datetime.now(datetime.timezone.utc) - dt).total_seconds()
+            if seconds >= 0:
+                age_hours = str(int(seconds // 3600))
+    except (ValueError, TypeError, AttributeError):
+        pass
+sys.stdout.write(h.hexdigest() + "\n" + age_hours)
 sys.exit(3 if degraded else 0)
 PY
   local fingerprint_rc=$?
-  local fingerprint
-  fingerprint="$(cat "$fingerprint_tmp" 2>/dev/null)"
+  local fingerprint snapshot_age_hours
+  fingerprint="$(sed -n '1p' "$fingerprint_tmp" 2>/dev/null)"
+  snapshot_age_hours="$(sed -n '2p' "$fingerprint_tmp" 2>/dev/null)"
   rm -f "$fingerprint_tmp"
+  case "$snapshot_age_hours" in
+    ''|*[!0-9]*) snapshot_age_hours="" ;;
+  esac
   if [[ -z "$fingerprint" ]]; then
     # GNU stat uses -c; BSD/macOS stat uses -f.
     local snapshot_mtime
@@ -244,6 +276,33 @@ PY
 
   if ! claudio_codexa_available; then
     return 0
+  fi
+
+  # Block-demotion gates. Blocking additionally requires (a) recorded edit
+  # evidence from this session in this repo (pre-edit.sh ledger) and (b) a
+  # snapshot younger than the block TTL. The review still runs and prints;
+  # only the escalation to a Stop block is demoted, with the reason printed
+  # when a block would otherwise have fired.
+  local demote_reason=""
+  if [[ "$block_eligible" == "1" ]]; then
+    local edit_marker=""
+    if [[ -n "$session_id" ]]; then
+      edit_marker="$(claudio_session_edit_marker "$data_dir" "$session_id" "$repo")" || edit_marker=""
+    fi
+    if [[ -z "$edit_marker" || ! -f "$edit_marker" ]]; then
+      demote_reason="no edits recorded for this session in this repo"
+    else
+      local ttl_hours="${CLAUDIO_SNAPSHOT_BLOCK_TTL_HOURS:-24}"
+      case "$ttl_hours" in
+        ''|*[!0-9]*) ttl_hours=24 ;;
+      esac
+      # Base-10 normalization: a zero-padded env value ("08") would
+      # otherwise be parsed as invalid octal and abort the arithmetic.
+      ttl_hours=$((10#$ttl_hours))
+      if [[ -n "$snapshot_age_hours" ]] && (( 10#$snapshot_age_hours >= ttl_hours )); then
+        demote_reason="snapshot is ${snapshot_age_hours}h old (block TTL ${ttl_hours}h)"
+      fi
+    fi
   fi
 
   local out rc
@@ -278,7 +337,7 @@ $(printf '%s\n' "$summary_fields" | sed 's/^/  /')
 EOF
 
   if [[ "$block_eligible" == "1" ]]; then
-    claudio_stop_collect_block "$safe_repo" "$out" "$summary_fields"
+    claudio_stop_collect_block "$safe_repo" "$out" "$summary_fields" "$demote_reason"
   fi
 
   return 0
@@ -297,6 +356,7 @@ claudio_stop_collect_block() {
   local safe_repo="$1"
   local out="$2"
   local summary_fields="$3"
+  local demote_reason="${4:-}"
   [[ "${CLAUDIO_STOP_BLOCK:-1}" == "0" ]] && return 0
   [[ -z "${_CLAUDIO_BLOCK_FILE:-}" ]] && return 0
   local fields verdict inspect origin
@@ -313,6 +373,13 @@ claudio_stop_collect_block() {
   elif [[ "$verdict" == "inspect" && "$inspect" == "blocking" ]]; then
     label="inspect (blocking)"
   else
+    return 0
+  fi
+  # A blockworthy verdict that failed an eligibility gate stays advisory;
+  # say why so the operator can tell a demotion from a clean verdict.
+  # demote_reason is plugin-controlled text, never raw CLI output.
+  if [[ -n "$demote_reason" ]]; then
+    printf '[codexa] verdict=%s demoted to advisory: %s.\n' "$label" "$demote_reason" >&2
     return 0
   fi
   # Zero counts are usually a budget-truncation artifact (the summary
