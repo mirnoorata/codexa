@@ -119,15 +119,14 @@ async function createCodexaMcpServer(repoRoot: string, options: QueryOptions): P
   const queryOptions: QueryOptions = { ...options, autoRefresh: options.autoRefresh ?? true };
   const sessionMemoryMode = queryOptions.sessionMemory ?? "auto";
   const autoRecordSessionMemory = sessionMemoryMode !== "off";
-  const preferConfiguredRoot = await shouldPreferConfiguredRepoRoot(configuredRepoRoot, queryOptions);
   const annotationRepoRoot = await resolveMcpRepoRoot(configuredRepoRoot, {
     workspaceFocusFile: queryOptions.workspaceFocusFile,
     workspaceSessionId: queryOptions.workspaceSessionId,
-    preferConfiguredRoot
+    preferConfiguredRoot: await shouldPreferConfiguredRepoRoot(configuredRepoRoot, queryOptions)
   })
     .then((resolution) => resolution.repoRoot)
     .catch(() => configuredRepoRoot);
-  const mcpRuntime = createMcpRuntime({ configuredRepoRoot, queryOptions, preferConfiguredRoot });
+  const mcpRuntime = createMcpRuntime({ configuredRepoRoot, queryOptions });
   const server = new McpServer(
     {
       name: "codexa",

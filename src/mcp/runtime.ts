@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getFreshness } from "../indexer.js";
-import { resolveMcpRepoRoot, type McpRepoRootResolution } from "../mcp-repo-root.js";
+import { resolveMcpRepoRoot, shouldPreferConfiguredRepoRoot, type McpRepoRootResolution } from "../mcp-repo-root.js";
 import { requireIndex } from "../query/runtime.js";
 import { createQuerySessionFromIndexState, type QuerySession, type QuerySessionIndexState } from "../query/session.js";
 import type { QueryOptions, QueryResult } from "../types.js";
@@ -14,16 +14,23 @@ export interface McpRuntime {
 export interface CreateMcpRuntimeOptions {
   configuredRepoRoot: string;
   queryOptions: QueryOptions;
-  preferConfiguredRoot: boolean;
 }
 
-export function createMcpRuntime({ configuredRepoRoot, queryOptions, preferConfiguredRoot }: CreateMcpRuntimeOptions): McpRuntime {
+export function createMcpRuntime({ configuredRepoRoot, queryOptions }: CreateMcpRuntimeOptions): McpRuntime {
   let cachedIndexState: QuerySessionIndexState | undefined;
   let cachedIndexStateRepoRoot: string | undefined;
   let indexStateInflight: { repoRoot: string; promise: Promise<QuerySessionIndexState> } | undefined;
   let activeResolution: McpRepoRootResolution | undefined;
 
   const resolveActiveRepoRootResolution = async (): Promise<McpRepoRootResolution> => {
+    // Recomputed per call, never frozen at server spawn: a workspace server
+    // started before any focus row existed must still route to a repo the
+    // operator focuses LATER in the server's lifetime. Freezing this at
+    // startup pinned long-lived servers to the workspace monorepo forever.
+    const preferConfiguredRoot = await shouldPreferConfiguredRepoRoot(configuredRepoRoot, {
+      workspaceFocusFile: queryOptions.workspaceFocusFile,
+      workspaceSessionId: queryOptions.workspaceSessionId
+    });
     const resolution = await resolveMcpRepoRoot(configuredRepoRoot, {
       workspaceFocusFile: queryOptions.workspaceFocusFile,
       workspaceSessionId: queryOptions.workspaceSessionId,
@@ -111,7 +118,7 @@ export function withSessionRuntime(result: QueryResult, session: QuerySession, r
     maxResultBytes: session.maxResultBytes,
     resultBytes: Buffer.byteLength(result.text, "utf8"),
     maxResults: session.maxResults,
-    warnings: session.warnings.slice(0, 20),
+    warnings: [...(resolution?.warnings ?? []), ...session.warnings].slice(0, 20),
     provenance: session.provenance.slice(0, 30)
   };
   let text = result.text;
@@ -124,7 +131,7 @@ export function withSessionRuntime(result: QueryResult, session: QuerySession, r
       ...runtime,
       resultBytes: Buffer.byteLength(text, "utf8"),
       resultTruncated: true,
-      warnings: session.warnings.slice(0, 20)
+      warnings: [...(resolution?.warnings ?? []), ...session.warnings].slice(0, 20)
     });
   }
   return {
@@ -141,7 +148,8 @@ export function withRoutingRuntime(result: QueryResult, resolution: McpRepoRootR
       repoRoot: resolution.repoRoot,
       routingSource: resolution.source,
       focusReason: resolution.focusReason,
-      workspaceSessionId: resolution.workspaceSessionId
+      workspaceSessionId: resolution.workspaceSessionId,
+      ...(resolution.warnings?.length ? { warnings: resolution.warnings } : {})
     })
   };
 }

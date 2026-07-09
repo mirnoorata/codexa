@@ -89,6 +89,19 @@ export async function resolveMcpRepoRoot(configuredRootInput: string, options: M
   }
 
   if (configuredRootIsGitRepo) {
+    // Explicit workspace routing that matched nothing must not LOOK routed:
+    // packets computed over the workspace monorepo are wrong-repo answers
+    // unless the caller can see the miss.
+    if (workspaceRoutingRequested) {
+      return {
+        configuredRoot,
+        repoRoot: configuredRoot,
+        source: "configured-root",
+        warnings: [
+          `workspace routing requested${options.workspaceSessionId ? ` (session ${options.workspaceSessionId})` : ""} but no focus row matched; serving the configured root ${configuredRoot}`
+        ]
+      };
+    }
     return { configuredRoot, repoRoot: configuredRoot, source: "configured-root" };
   }
 
