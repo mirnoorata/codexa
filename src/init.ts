@@ -75,17 +75,11 @@ function resolveLaunchSpec(cliPath: string): LaunchSpec {
   return { command: "node", args: [cliPath], pinnedNpx: false };
 }
 
-// Absolute interpreter paths are host-local facts: pinning one into a
-// git-tracked file breaks every other checkout of the repo and leaks private
-// home paths. Only untracked host-local wiring (config.toml, hooks.json)
-// gets the exact binary that ran init; tracked files and the often-committed
-// repo .mcp.json keep PATH-dependent "node" and rely on the serve version
-// guard to fail loudly instead of running a wrong major silently.
+// Pin the running interpreter only into untracked host-local wiring: an
+// absolute path in a tracked file breaks other checkouts and leaks private
+// home paths, so tracked wiring keeps PATH-"node" + the serve version guard.
 function pinNodeLaunch(launch: LaunchSpec, repoRoot: string, targetRelPath: string): LaunchSpec {
-  if (launch.command !== "node") {
-    return launch;
-  }
-  const execPath = pinnableNodeExecPath();
+  const execPath = launch.command === "node" ? pinnableNodeExecPath() : null;
   if (!execPath || isGitTracked(repoRoot, targetRelPath)) {
     return launch;
   }
@@ -640,8 +634,8 @@ async function upsertHooksConfig(hooksPath: string, options: { cliPath: string; 
   const cleanedSessionStart = cleanHookList(hooks.SessionStart, options);
   const cleanedPreToolUse = cleanHookList(hooks.PreToolUse, options);
   const cleanedPostToolUse = cleanHookList(hooks.PostToolUse, options);
-  // A pinned absolute interpreter may contain shell metacharacters; a bare
-  // command name must stay unquoted so legacy entry matching keeps working.
+  // Quote a pinned interpreter path only when it needs it; a bare command
+  // name must stay unquoted so legacy entry matching keeps working.
   const launchCommand = /[\s'"\\]/u.test(options.launch.command) ? shellQuote(options.launch.command) : options.launch.command;
   const launchShell = [launchCommand, ...options.launch.args.map(shellQuote)].join(" ");
 
