@@ -296,7 +296,10 @@ PY
       case "$ttl_hours" in
         ''|*[!0-9]*) ttl_hours=24 ;;
       esac
-      if [[ -n "$snapshot_age_hours" ]] && (( snapshot_age_hours >= ttl_hours )); then
+      # Base-10 normalization: a zero-padded env value ("08") would
+      # otherwise be parsed as invalid octal and abort the arithmetic.
+      ttl_hours=$((10#$ttl_hours))
+      if [[ -n "$snapshot_age_hours" ]] && (( 10#$snapshot_age_hours >= ttl_hours )); then
         demote_reason="snapshot is ${snapshot_age_hours}h old (block TTL ${ttl_hours}h)"
       fi
     fi

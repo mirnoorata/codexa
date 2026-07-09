@@ -59,6 +59,14 @@ fi
 # drift blocks. Empty session_id records nothing (no attributable evidence →
 # stop.sh stays advisory-only, fail-open to fewer blocks).
 _pe_state_dir="${CLAUDE_PLUGIN_DATA:-${XDG_STATE_HOME:-$HOME/.local/state}/codexa-claude-code}"
+# Mirror stop.sh's defense: a state dir nested inside the repo would dirty
+# the tree AND park ledger markers where stop.sh (which applies the same
+# redirect) never looks — silently demoting every legitimate block.
+_pe_state_real="$(claudio_realpath "$_pe_state_dir")"
+_pe_repo_real="$(claudio_realpath "$repo")"
+if [[ -n "$_pe_state_real" && -n "$_pe_repo_real" && "$_pe_state_real" == "$_pe_repo_real"* ]]; then
+  _pe_state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/codexa-claude-code"
+fi
 session_id="$(printf '%s' "$payload" | claudio_json_field session_id)"
 if [[ -n "$session_id" ]]; then
   if _pe_edit_marker="$(claudio_session_edit_marker "$_pe_state_dir" "$session_id" "$repo")"; then
