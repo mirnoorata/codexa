@@ -1,0 +1,118 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R 6 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 2959 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(Change Summary) Tj T*
+() Tj T*
+(- Project: codexa) Tj T*
+(- Worktree: /srv/worktree/codexa/codex/20260710-005638-focus-orientation) Tj T*
+(- Branch: codex/general/codexa-20260710-005638-focus-orientation) Tj T*
+(- Base: main) Tj T*
+(- Primary commit: 0985f1f) Tj T*
+(- Subject: feat\(verification\): expose trust tiers and scale semantic indexing) Tj T*
+() Tj T*
+(Changed Files) Tj T*
+() Tj T*
+(0985f1f feat\(verification\): expose trust tiers and scale semantic indexing) Tj T*
+(.gitignore                                         |   1 +) Tj T*
+(README.md                                          |   6 +-) Tj T*
+(.../codexa-competitive-optimization-2026-07-10.md  | 414 +++++++++++++++++++++) Tj T*
+(src/eval/scoring.ts                                |   2 +) Tj T*
+(src/mcp/compaction-helpers.ts                      |   5 +) Tj T*
+(src/mcp/envelope.ts                                |   1 +) Tj T*
+(src/prove.ts                                       |  12 +-) Tj T*
+(src/query/post-edit.ts                             |   8 +-) Tj T*
+(src/query/test-plan.ts                             |  19 +-) Tj T*
+(src/query/verification.ts                          |  45 ++-) Tj T*
+(src/query/verification/command-envelope.ts         |  20 +-) Tj T*
+(src/query/verification/command-scope.ts            |   4 +-) Tj T*
+(src/query/verification/trust.ts                    |  27 ++) Tj T*
+(src/semantic/python.ts                             |   6 +-) Tj T*
+(src/semantic/typescript.ts                         |  62 ++-) Tj T*
+(src/types/verification.ts                          |  10 +-) Tj T*
+(...jects-malformed-integer-options-instead.test.ts |   6 +-) Tj T*
+(...ccounts-for-rancommands-through-package.test.ts |  15 +-) Tj T*
+(...3-records-truncation-metadata-when-post.test.ts |  17 +-) Tj T*
+(tests/prove.test.ts                                |   9 +-) Tj T*
+(tests/schema.test.ts                               |   9 +) Tj T*
+(tests/semantic-hot-paths.test.ts                   | 102 +++++) Tj T*
+(tests/verification-trust.test.ts                   |  46 +++) Tj T*
+(23 files changed, 785 insertions\(+\), 61 deletions\(-\)) Tj T*
+(create mode 100644 docs/plans/codexa-competitive-optimization-2026-07-10.md) Tj T*
+(create mode 100644 src/query/verification/trust.ts) Tj T*
+(create mode 100644 tests/semantic-hot-paths.test.ts) Tj T*
+(create mode 100644 tests/verification-trust.test.ts) Tj T*
+() Tj T*
+(Verification) Tj T*
+() Tj T*
+(- git diff --check: passed) Tj T*
+(- env -u CODEXAWORKSPACESESSION -u CODEXAWORKSPACEFOCUSFILE -u SESSIONID npm run check:) Tj T*
+(passed) Tj T*
+(- env -u CODEXAWORKSPACESESSION -u CODEXAWORKSPACEFOCUSFILE -u SESSIONID npm run eval:ci:) Tj T*
+(passed) Tj T*
+(- env -u CODEXAWORKSPACESESSION -u CODEXAWORKSPACEFOCUSFILE -u SESSIONID npm run) Tj T*
+(benchmark:ci: passed) Tj T*
+(- env -u CODEXAWORKSPACESESSION -u CODEXAWORKSPACEFOCUSFILE -u SESSIONID npm run) Tj T*
+(smoke:package: passed) Tj T*
+ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 862 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(- npm run package:hygiene: passed) Tj T*
+(- npm audit --audit-level=moderate: passed) Tj T*
+(- Codexa post-edit-review: /srv/.codex/artifacts/codexa/codex-general-) Tj T*
+(codexa-20260710-005638-focus-orientation/codexa-post-edit-review.txt) Tj T*
+(- Codexa test-plan: /srv/.codex/artifacts/codexa/codex-general-codexa-20260710-005638-focus-) Tj T*
+(orientation/codexa-test-plan.txt) Tj T*
+(- git diff --cached --check: passed) Tj T*
+(- staged safety scan: passed) Tj T*
+() Tj T*
+(Notes) Tj T*
+() Tj T*
+(Implements the reviewed competitive optimization plan: first-class verification trust) Tj T*
+(provenance and deterministic semantic-assist scaling. Includes current-source competitor) Tj T*
+(analysis, full regression coverage, and observed cold-index improvement with no new public) Tj T*
+(verb or runtime dependency.) Tj T*
+ET
+endstream
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000121 00000 n 
+0000000191 00000 n 
+0000000317 00000 n 
+0000003327 00000 n 
+0000003453 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R >>
+startxref
+4365
+%%EOF
