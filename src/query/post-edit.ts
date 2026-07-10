@@ -233,11 +233,12 @@ async function postEditReviewQueryInternal(
     snapshot,
     repoRoot
   });
-  const ranCommandReports = [...manualRanCommandReports, ...runnerReview.coveringReports];
   const displayedRanCommandReports = [...manualRanCommandReports, ...runnerReview.displayReports];
   const waivedChecks = input.waivedChecks ?? [];
   const waivers = input.waivers ?? [];
-  const preliminaryVerificationCoverage = verificationEvidenceForCommandReports(index, ranCommands, ranCommandReports, repoRoot).coverage;
+  const preliminaryVerificationCoverage = verificationEvidenceForCommandReports(index, ranCommands, manualRanCommandReports, repoRoot, {
+    trustedCommandReports: runnerReview.coveringReports
+  }).coverage;
   const hasActualEditedFiles = editPaths.length > 0;
   const riskEscalations = reviewTargets
     .map((filePath) => findFile(index, filePath))
@@ -276,7 +277,8 @@ async function postEditReviewQueryInternal(
     tests,
     ranTests,
     ranCommands,
-    ranCommandReports,
+    ranCommandReports: manualRanCommandReports,
+    trustedCommandReports: runnerReview.coveringReports,
     waivedChecks,
     waivers,
     repoRoot,

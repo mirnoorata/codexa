@@ -9,6 +9,7 @@ export interface EvalVerificationProvenance {
   commandCoverageClassifier?: string;
   commandCoverageClassifierVersion?: string;
   commandEnvelopeRulesetVersion?: string;
+  verificationCoverageVersion?: string;
   verificationLedgerVersion?: string;
 }
 
@@ -524,6 +525,7 @@ function extractVerificationProvenance(value: unknown): EvalVerificationProvenan
     commandCoverageClassifier: typeof record.commandCoverageClassifier === "string" ? record.commandCoverageClassifier : undefined,
     commandCoverageClassifierVersion: typeof record.commandCoverageClassifierVersion === "string" ? record.commandCoverageClassifierVersion : undefined,
     commandEnvelopeRulesetVersion: typeof record.commandEnvelopeRulesetVersion === "string" ? record.commandEnvelopeRulesetVersion : undefined,
+    verificationCoverageVersion: typeof record.verificationCoverageVersion === "string" ? record.verificationCoverageVersion : undefined,
     verificationLedgerVersion: typeof record.verificationLedgerVersion === "string" ? record.verificationLedgerVersion : undefined
   };
 }

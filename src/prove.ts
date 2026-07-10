@@ -14,6 +14,7 @@ import {
   sanitizeLedgerForDisplay
 } from "./query/verification-display.js";
 import { pruneMissingFiles, prunedFilesGap } from "./query/prune-missing.js";
+import { verificationTrustTierOrNone } from "./query/verification/trust.js";
 import type {
   ChangeType,
   CodexaIndex,
@@ -389,14 +390,20 @@ function verificationCommandPlanFromData(value: unknown): VerificationCommandPla
   if (!Array.isArray(value)) {
     return [];
   }
-  return value.filter(isVerificationCommandPlanEntry).slice(0, 30);
+  return value
+    .filter(isVerificationCommandPlanEntry)
+    .slice(0, 30)
+    .map((entry) => ({ ...entry, trustTier: verificationTrustTierOrNone(entry.trustTier) }));
 }
 
 function verificationLedgerFromData(value: unknown): VerificationLedgerEntry[] {
   if (!Array.isArray(value)) {
     return [];
   }
-  return value.filter(isVerificationLedgerEntry).slice(0, 30);
+  return value
+    .filter(isVerificationLedgerEntry)
+    .slice(0, 30)
+    .map((entry) => ({ ...entry, trustTier: verificationTrustTierOrNone(entry.trustTier) }));
 }
 
 function testRecommendationsFromData(value: unknown): TestRecommendation[] {
@@ -470,6 +477,7 @@ function trustPosture(): string[] {
     "core proof paths are local and model-free; optional semantic lanes remain explicit opt-ins",
     "Codexa MCP tools are context and review tools, not source-mutating edit tools",
     "reported commands earn verification credit only through the shared command classifier",
+    "verification trust is explicit: executed-by-autoverify > witnessed > artifact-corroborated > reported > none",
     "repository policy text is bounded local evidence, not executable code"
   ];
 }

@@ -13,7 +13,7 @@ import {
   verificationLedgerForPostEdit
 } from "./verification.js";
 import { CURRENT_VERIFICATION_PROVENANCE } from "../types.js";
-import type { ChangeType, QueryOptions, QueryResult, VerificationLedgerEntry } from "../types.js";
+import type { ChangeType, QueryOptions, QueryResult, VerificationCoverage, VerificationLedgerEntry } from "../types.js";
 import { limitText, normalizePath } from "../util.js";
 
 export interface TestPlanOptions extends QueryOptions {
@@ -53,7 +53,7 @@ export async function testPlanQuery(input: QuerySessionInput, diff = true, optio
     ranCommands: [],
     repoRoot
   });
-  const verificationCoverage = verificationPreview.coverage;
+  const verificationCoverage = markCoverageAsPreview(verificationPreview.coverage);
   const commandPlan = verificationCommandPlan(verificationCoverage);
   const verificationLedgerPreview = markLedgerAsPreview(verificationPreview.ledger);
   const actionability = scopedFiles.length > 0 ? "verify" : "needs_target";
@@ -194,13 +194,18 @@ function uniqueInOrder(values: string[]): string[] {
 }
 
 function markLedgerAsPreview(ledger: VerificationLedgerEntry[]): VerificationLedgerEntry[] {
-  return ledger.map((entry) =>
-    entry.status === "covered"
+  return ledger.map((entry) => {
+    const preview = { ...entry, trustTier: "none" as const };
+    return entry.status === "covered"
       ? {
-          ...entry,
+          ...preview,
           status: "would_cover",
           evidence: entry.evidence.map((item) => `would cover if run: ${item}`)
         }
-      : entry
-  );
+      : preview;
+  });
+}
+
+function markCoverageAsPreview(coverage: VerificationCoverage[]): VerificationCoverage[] {
+  return coverage.map((entry) => ({ ...entry, trustTier: "none" }));
 }

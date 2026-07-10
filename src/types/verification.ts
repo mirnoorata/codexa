@@ -50,16 +50,20 @@ export type VerificationCoverageKind =
 
 export type VerificationLedgerStatus = "covered" | "missing" | "waived" | "not_applicable" | "would_cover";
 
+export type VerificationTrustTier = "executed-by-autoverify" | "witnessed" | "artifact-corroborated" | "reported" | "none";
+
 export const VERIFICATION_PROVENANCE_SCHEMA_VERSION = 1 as const;
 export const VERIFICATION_COMMAND_COVERAGE_CLASSIFIER_VERSION = "command-coverage-v3";
 export const VERIFICATION_COMMAND_ENVELOPE_RULESET_VERSION = "command-envelope-v2";
-export const VERIFICATION_LEDGER_VERSION = "verification-ledger-v2";
+export const VERIFICATION_COVERAGE_VERSION = "verification-coverage-v4";
+export const VERIFICATION_LEDGER_VERSION = "verification-ledger-v3";
 
 export interface VerificationProvenance {
   schemaVersion: typeof VERIFICATION_PROVENANCE_SCHEMA_VERSION;
   commandCoverageClassifier: "codexa-command-coverage";
   commandCoverageClassifierVersion: string;
   commandEnvelopeRulesetVersion: string;
+  verificationCoverageVersion: string;
   verificationLedgerVersion: string;
 }
 
@@ -68,6 +72,7 @@ export const CURRENT_VERIFICATION_PROVENANCE: VerificationProvenance = {
   commandCoverageClassifier: "codexa-command-coverage",
   commandCoverageClassifierVersion: VERIFICATION_COMMAND_COVERAGE_CLASSIFIER_VERSION,
   commandEnvelopeRulesetVersion: VERIFICATION_COMMAND_ENVELOPE_RULESET_VERSION,
+  verificationCoverageVersion: VERIFICATION_COVERAGE_VERSION,
   verificationLedgerVersion: VERIFICATION_LEDGER_VERSION
 };
 
@@ -76,6 +81,7 @@ export interface VerificationCoverage {
   command: string;
   source: string;
   confidence: Confidence;
+  trustTier: VerificationTrustTier;
   scope?: string;
   targetPath?: string;
   details: string[];
@@ -130,6 +136,7 @@ export interface VerificationCommandPlanEntry {
   scopes: string[];
   sources: string[];
   confidence: Confidence;
+  trustTier: VerificationTrustTier;
 }
 
 export interface VerificationLedgerEntry {
@@ -137,6 +144,7 @@ export interface VerificationLedgerEntry {
   recommended: string;
   target: string;
   status: VerificationLedgerStatus;
+  trustTier: VerificationTrustTier;
   evidence: string[];
   missingReason?: string;
   waiverReason?: string;

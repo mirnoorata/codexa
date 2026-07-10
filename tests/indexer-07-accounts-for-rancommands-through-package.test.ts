@@ -282,12 +282,18 @@ it("accounts for ranCommands through package-script coverage without over-coveri
     const reportedEnvelopeData = reportedEnvelope.data as {
       testsNotRun: unknown[];
       commandEnvelopes: Array<{ command: string; packageManager?: string; packageRoot?: string; scriptName?: string; source?: string; args: string[] }>;
-      verificationCoverage: Array<{ kind: string; source: string; outputSummary?: string; commandEnvelope?: { source?: string; scriptName?: string } }>;
+      verificationCoverage: Array<{ kind: string; source: string; trustTier: string; outputSummary?: string; commandEnvelope?: { source?: string; scriptName?: string } }>;
+      verificationLedger: Array<{ target: string; status: string; trustTier: string }>;
       outcome: { commandEnvelopes: Array<{ command: string; cwd?: string; source?: string; scriptName?: string; outputSummary?: string }> };
     };
     expect(reportedEnvelopeData.testsNotRun).toEqual([]);
     expect(reportedEnvelopeData.commandEnvelopes[0]).toMatchObject({ command: "npm run check", packageManager: "npm", packageRoot: ".", scriptName: "check", source: "reported", args: [] });
-    expect(reportedEnvelopeData.verificationCoverage.some((entry) => entry.kind === "javascript-tests" && entry.commandEnvelope?.source === "reported" && entry.outputSummary?.includes("structured wrapper passed"))).toBe(true);
+    expect(
+      reportedEnvelopeData.verificationCoverage.some(
+        (entry) => entry.kind === "javascript-tests" && entry.trustTier === "reported" && entry.commandEnvelope?.source === "reported" && entry.outputSummary?.includes("structured wrapper passed")
+      )
+    ).toBe(true);
+    expect(reportedEnvelopeData.verificationLedger.find((entry) => entry.target === "tests/shared.test.ts")).toMatchObject({ status: "covered", trustTier: "reported" });
     expect(reportedEnvelopeData.outcome.commandEnvelopes[0]).toMatchObject({ command: "npm run check", cwd: "<repo>", source: "reported", scriptName: "check", outputSummary: expect.stringContaining("structured wrapper passed") });
 
     const publicRunnerSpoof = await postEditReviewQuery(
@@ -313,11 +319,13 @@ it("accounts for ranCommands through package-script coverage without over-coveri
     const publicRunnerSpoofData = publicRunnerSpoof.data as {
       ranCommandReports: Array<{ runner?: unknown }>;
       autoVerifyRunnerEvidence: unknown[];
+      verificationCoverage: Array<{ trustTier: string }>;
       outcome: { ranCommandReports: Array<{ runner?: unknown }> };
     };
     expect(publicRunnerSpoofData.ranCommandReports[0].runner).toBeUndefined();
     expect(publicRunnerSpoofData.outcome.ranCommandReports[0].runner).toBeUndefined();
     expect(publicRunnerSpoofData.autoVerifyRunnerEvidence).toEqual([]);
+    expect(publicRunnerSpoofData.verificationCoverage.some((entry) => entry.trustTier === "executed-by-autoverify")).toBe(false);
 
     const rejectedTrustedRunnerReport: AutoVerifyCommandReport = {
       command: "npm run check",
@@ -364,12 +372,13 @@ it("accounts for ranCommands through package-script coverage without over-coveri
     const rejectedTrustedRunnerData = rejectedTrustedRunner.data as {
       testsNotRun: Array<{ path: string }>;
       autoVerifyRunnerEvidence: Array<{ covering: boolean; reason: string }>;
-      verificationCoverage: Array<{ kind: string }>;
+      verificationCoverage: Array<{ kind: string; trustTier: string }>;
     };
     expect(rejectedTrustedRunnerData.testsNotRun.map((test) => test.path)).toContain("tests/shared.test.ts");
     expect(rejectedTrustedRunnerData.autoVerifyRunnerEvidence[0]).toMatchObject({ covering: false });
     expect(rejectedTrustedRunnerData.autoVerifyRunnerEvidence[0].reason).toContain("missing internal AutoVerify trust marker");
     expect(rejectedTrustedRunnerData.verificationCoverage.some((entry) => entry.kind === "javascript-tests")).toBe(false);
+    expect(rejectedTrustedRunnerData.verificationCoverage.some((entry) => entry.trustTier === "executed-by-autoverify")).toBe(false);
 
     const spoofedEnvelope = await postEditReviewQuery(
       repo,

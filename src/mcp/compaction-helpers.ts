@@ -1,3 +1,5 @@
+import { verificationTrustTierOrNone } from "../query/verification/trust.js";
+
 export type McpTruncation = Record<string, { total: number; returned: number }>;
 
 export function createArrayLimiter(): ((name: string, value: unknown, limit: number, map?: (entry: unknown) => unknown) => unknown) & {
@@ -341,6 +343,7 @@ export function compactVerificationCoverage(value: unknown): unknown {
     command: record.command,
     source: record.source,
     confidence: record.confidence,
+    trustTier: verificationTrustTierOrNone(record.trustTier),
     scope: record.scope,
     targetPath: record.targetPath,
     details: details.value,
@@ -369,6 +372,7 @@ export function compactVerificationPlan(value: unknown): unknown {
     scopes: scopes.value,
     sources: sources.value,
     confidence: record.confidence,
+    trustTier: verificationTrustTierOrNone(record.trustTier),
     truncation: Object.keys(truncation).length > 0 ? truncation : undefined
   };
 }
@@ -386,6 +390,7 @@ export function compactVerificationLedgerEntry(value: unknown): unknown {
     recommended: record.recommended,
     target: record.target,
     status: record.status,
+    trustTier: verificationTrustTierOrNone(record.trustTier),
     evidence: evidence.value,
     missingReason: record.missingReason,
     waiverReason: record.waiverReason,

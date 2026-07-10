@@ -5,8 +5,17 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildIndex, buildIndexLocked, loadIndex } from "../src/indexer.js";
 import { statusQuery } from "../src/queries.js";
+import { CURRENT_VERIFICATION_PROVENANCE } from "../src/types.js";
 
 describe("Codexa schema contracts", () => {
+  it("versions verification coverage independently from the command classifier", () => {
+    expect(CURRENT_VERIFICATION_PROVENANCE).toMatchObject({
+      commandCoverageClassifierVersion: "command-coverage-v3",
+      verificationCoverageVersion: "verification-coverage-v4",
+      verificationLedgerVersion: "verification-ledger-v3"
+    });
+  });
+
   it("writes versioned index, freshness, and NDJSON fact artifacts", async () => {
     const repo = await createSchemaFixtureRepo();
     await buildIndex({ repoRoot: repo });

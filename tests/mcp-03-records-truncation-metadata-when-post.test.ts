@@ -53,9 +53,9 @@ it("records truncation metadata when post-edit arrays are compacted", () => {
           classifierVersion: CURRENT_VERIFICATION_PROVENANCE.commandCoverageClassifierVersion
         })),
         verificationProvenance: CURRENT_VERIFICATION_PROVENANCE,
-        verificationCoverage: Array.from({ length: 45 }, (_, index) => ({ status: "covered", evidence: [`npm test ${index}`] })),
-        verificationLedger: Array.from({ length: 65 }, (_, index) => ({ status: "covered", evidence: [`npm test ${index}`] })),
-        waivedVerification: Array.from({ length: 35 }, (_, index) => ({ status: "waived", evidence: [`waiver ${index}`] })),
+        verificationCoverage: Array.from({ length: 45 }, (_, index) => ({ status: "covered", trustTier: "reported", evidence: [`npm test ${index}`] })),
+        verificationLedger: Array.from({ length: 65 }, (_, index) => ({ status: "covered", trustTier: "executed-by-autoverify", evidence: [`npm test ${index}`] })),
+        waivedVerification: Array.from({ length: 35 }, (_, index) => ({ status: "waived", trustTier: "none", evidence: [`waiver ${index}`] })),
         workflowChecks: Array.from({ length: 25 }, (_, index) => ({ target: `workflow ${index}` })),
         dependencyChecks: Array.from({ length: 35 }, (_, index) => ({ target: `dependency ${index}` })),
         complexityReview: {
@@ -94,9 +94,9 @@ it("records truncation metadata when post-edit arrays are compacted", () => {
             classifierVersion: CURRENT_VERIFICATION_PROVENANCE.commandCoverageClassifierVersion
           })),
           verificationProvenance: CURRENT_VERIFICATION_PROVENANCE,
-          verificationCoverage: Array.from({ length: 45 }, (_, index) => ({ status: "covered", evidence: [`npm test ${index}`] })),
-          verificationLedger: Array.from({ length: 65 }, (_, index) => ({ status: "covered", evidence: [`npm test ${index}`] })),
-          waivedVerification: Array.from({ length: 35 }, (_, index) => ({ status: "waived", evidence: [`waiver ${index}`] })),
+          verificationCoverage: Array.from({ length: 45 }, (_, index) => ({ status: "covered", trustTier: "reported", evidence: [`npm test ${index}`] })),
+          verificationLedger: Array.from({ length: 65 }, (_, index) => ({ status: "covered", trustTier: "executed-by-autoverify", evidence: [`npm test ${index}`] })),
+          waivedVerification: Array.from({ length: 35 }, (_, index) => ({ status: "waived", trustTier: "none", evidence: [`waiver ${index}`] })),
           modifiedPublicSymbols: Array.from({ length: 45 }, (_, index) => `symbol ${index}`)
         }
       }
@@ -172,6 +172,9 @@ it("records truncation metadata when post-edit arrays are compacted", () => {
     expect(data.verificationCoverage).toHaveLength(40);
     expect(data.verificationLedger).toHaveLength(60);
     expect(data.waivedVerification).toHaveLength(30);
+    expect(data.verificationCoverage[0]).toMatchObject({ trustTier: "reported" });
+    expect(data.verificationLedger[0]).toMatchObject({ trustTier: "executed-by-autoverify" });
+    expect(data.waivedVerification[0]).toMatchObject({ trustTier: "none" });
     expect(data.workflowChecks).toHaveLength(20);
     expect(data.dependencyChecks).toHaveLength(30);
     expect(data.complexityReview).toMatchObject({ status: "review", blocking: false });
@@ -211,6 +214,8 @@ it("records truncation metadata when post-edit arrays are compacted", () => {
     expect(data.outcome?.verificationCoverage).toHaveLength(40);
     expect(data.outcome?.verificationLedger).toHaveLength(60);
     expect(data.outcome?.waivedVerification).toHaveLength(30);
+    expect(data.outcome?.verificationCoverage[0]).toMatchObject({ trustTier: "reported" });
+    expect(data.outcome?.verificationLedger[0]).toMatchObject({ trustTier: "executed-by-autoverify" });
     expect(data.outcome?.modifiedPublicSymbols).toHaveLength(40);
     const serialized = JSON.stringify(data);
     expect(serialized).not.toContain("s3cr3t-value");

@@ -3,6 +3,7 @@ import path from "node:path";
 import type { CodexaIndex, Confidence, VerificationCommandEnvelope, VerificationCommandPlanEntry, VerificationCoverage, VerificationCoverageKind, VerificationWaiver } from "../../types.js";
 import { uniqueSorted } from "../../util.js";
 import { shellWords, splitShellSequence, stripLeadingEnvironment, stripQuotes, type ShellControlOperator } from "./shell.js";
+import { strongerVerificationTrustTier, verificationTrustTierOrNone } from "./trust.js";
 
 export interface PackageScript {
   packageRoot: string;
@@ -307,9 +308,10 @@ export function dedupeCoverage(coverage: VerificationCoverage[]): VerificationCo
     if (existing) {
       existing.details = uniqueSorted([...existing.details, ...entry.details]);
       existing.confidence = mergeConfidence(existing.confidence, entry.confidence);
+      existing.trustTier = strongerVerificationTrustTier(existing.trustTier, entry.trustTier);
       existing.commandEnvelope = existing.commandEnvelope ?? entry.commandEnvelope;
     } else {
-      byKey.set(key, { ...entry, details: uniqueSorted(entry.details) });
+      byKey.set(key, { ...entry, trustTier: verificationTrustTierOrNone(entry.trustTier), details: uniqueSorted(entry.details) });
     }
   }
   return [...byKey.values()].sort((a, b) => a.kind.localeCompare(b.kind) || (a.targetPath ?? "").localeCompare(b.targetPath ?? "") || a.command.localeCompare(b.command));
