@@ -12,7 +12,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
 endobj
 5 0 obj
-<< /Length 2983 >>
+<< /Length 2970 >>
 stream
 BT
 /F1 10 Tf
@@ -21,7 +21,7 @@ BT
 (Change Summary) Tj T*
 () Tj T*
 (- Project: codexa) Tj T*
-(- Worktree: /srv/worktree/codexa/codex/20260710-005638-focus-orientation) Tj T*
+(- Worker checkout: isolated worktree \(local path omitted\)) Tj T*
 (- Branch: codex/general/codexa-20260710-005638-focus-orientation) Tj T*
 (- Base: main) Tj T*
 (- Primary commit: 0985f1f) Tj T*
@@ -77,7 +77,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 7 0 R >>
 endobj
 7 0 obj
-<< /Length 862 >>
+<< /Length 710 >>
 stream
 BT
 /F1 10 Tf
@@ -85,10 +85,8 @@ BT
 50 760 Td
 (- npm run package:hygiene: passed) Tj T*
 (- npm audit --audit-level=moderate: passed) Tj T*
-(- Codexa post-edit-review: /srv/.codex/artifacts/codexa/codex-general-) Tj T*
-(codexa-20260710-005638-focus-orientation/codexa-post-edit-review.txt) Tj T*
-(- Codexa test-plan: /srv/.codex/artifacts/codexa/codex-general-codexa-20260710-005638-focus-) Tj T*
-(orientation/codexa-test-plan.txt) Tj T*
+(- Codexa post-edit-review: passed; local review artifact generated) Tj T*
+(- Codexa test-plan: passed; local test-plan artifact generated) Tj T*
 (- git diff --cached --check: passed) Tj T*
 (- staged safety scan: passed) Tj T*
 () Tj T*
@@ -109,10 +107,10 @@ xref
 0000000121 00000 n 
 0000000191 00000 n 
 0000000317 00000 n 
-0000003351 00000 n 
-0000003477 00000 n 
+0000003338 00000 n 
+0000003464 00000 n 
 trailer
 << /Size 8 /Root 1 0 R >>
 startxref
-4389
+4224
 %%EOF

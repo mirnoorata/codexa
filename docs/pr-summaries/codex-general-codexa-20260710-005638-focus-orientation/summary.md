@@ -1,7 +1,7 @@
 # Change Summary
 
 - Project: `codexa`
-- Worktree: `/srv/worktree/codexa/codex/20260710-005638-focus-orientation`
+- Worker checkout: isolated worktree (local path omitted)
 - Branch: `codex/general/codexa-20260710-005638-focus-orientation`
 - Base: `main`
 - Primary commit: `0985f1f`
@@ -48,8 +48,8 @@
 - env -u CODEXA_WORKSPACE_SESSION -u CODEXA_WORKSPACE_FOCUS_FILE -u SESSION_ID npm run smoke:package: passed
 - npm run package:hygiene: passed
 - npm audit --audit-level=moderate: passed
-- Codexa post-edit-review: /srv/.codex/artifacts/codexa/codex-general-codexa-20260710-005638-focus-orientation/codexa-post-edit-review.txt
-- Codexa test-plan: /srv/.codex/artifacts/codexa/codex-general-codexa-20260710-005638-focus-orientation/codexa-test-plan.txt
+- Codexa post-edit-review: passed; local review artifact generated
+- Codexa test-plan: passed; local test-plan artifact generated
 - git diff --cached --check: passed
 - staged safety scan: passed
 
