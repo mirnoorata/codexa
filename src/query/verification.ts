@@ -218,8 +218,21 @@ export function verificationEvidenceForCommandReports(
   return { coverage: dedupeCoverage(coverage), commandEnvelopes: dedupeCommandEnvelopes(commandEnvelopes) };
 }
 
-export function coverageForDisplay(index: CodexaIndex, commands: string[], repoRoot = index.snapshot.repoRoot): VerificationCoverage[] {
-  return verificationCoverageForCommands(index, commands, repoRoot);
+export function asVerificationCoveragePreview(coverage: VerificationCoverage[]): VerificationCoverage[] {
+  return coverage.map((entry) => ({ ...entry, trustTier: "none" }));
+}
+
+export function asVerificationLedgerPreview(ledger: VerificationLedgerEntry[]): VerificationLedgerEntry[] {
+  return ledger.map((entry) => {
+    const preview = { ...entry, trustTier: "none" as const };
+    return entry.status === "covered"
+      ? {
+          ...preview,
+          status: "would_cover",
+          evidence: entry.evidence.map((item) => `would cover if run: ${item}`)
+        }
+      : preview;
+  });
 }
 
 function analyzeCommandEnvelope(

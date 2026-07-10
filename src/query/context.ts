@@ -18,7 +18,13 @@ import { compactWorktreeState, getWorktreeState, worktreeStateGaps, worktreeStat
 import { isCodexaControlPath } from "./worktree.js";
 import { formatTestRecommendations, recommendTests } from "./tests.js";
 import { findFile, resolveFileTarget, resolveSymbolTarget } from "./targets.js";
-import { coverageForDisplay, formatVerificationCoverage, verificationCommandPlan, verificationCommandsForContext } from "./verification.js";
+import {
+  asVerificationCoveragePreview,
+  formatVerificationCoverage,
+  verificationCommandPlan,
+  verificationCommandsForContext,
+  verificationCoverageForCommands
+} from "./verification.js";
 import { classifyTaskIntent, retrieveForTask, type IntentConfidence, type RetrievalMatch, type RetrievalResult, type TaskIntent } from "../retrieval.js";
 import { semanticOptionsFromQueryOptions } from "../semantic-retrieval.js";
 import { compactChangedSymbol, compactDiffGroup, compactFileFact, compactRetrievalResult, compactWorkflowTrace } from "./compact-data.js";
@@ -220,7 +226,9 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
   const displayedTests = suppressActionGuidance ? [] : tests;
   const recipes = suppressActionGuidance ? [] : verificationRecipes(index, contextSeedPaths, changeType).slice(0, 8);
   const verificationCommands = suppressActionGuidance ? [] : verificationCommandsForContext(index, repoRoot, contextSeedPaths, displayedTests, 16);
-  const verificationCoverage = suppressActionGuidance ? [] : coverageForDisplay(index, verificationCommands, repoRoot);
+  const verificationCoverage = suppressActionGuidance
+    ? []
+    : asVerificationCoveragePreview(verificationCoverageForCommands(index, verificationCommands, repoRoot));
   const commandPlan = suppressActionGuidance ? [] : verificationCommandPlan(verificationCoverage);
   const value = valueEstimate("context_pack", {
     rawFileCount: baseline?.lines,

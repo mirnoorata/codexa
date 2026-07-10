@@ -373,7 +373,7 @@ Final local proof:
   and 87 hook smoke checks.
 - `npm run eval:ci`: 21 scenarios passed; score 1; raw `rg` better in 0.
 - `npm run benchmark:ci`: all thresholds passed. The observed cold index was
-  3,909 ms versus the 5,163 ms pre-change run on the same host, a 24.3%
+  3,839 ms versus the 5,163 ms pre-change run on the same host, a 25.6%
   reduction. This is a single-host comparison, not a general performance
   guarantee.
 - `npm run smoke:package`: 25 packed-install checks passed.
@@ -415,6 +415,13 @@ The implementation review found and resolved these issues before commit:
    persistence, and ledger output, while graph/file-only evidence remains
    `none`. Structural, reported, executed AutoVerify, and integrated ledger
    cases cover the distinction.
+9. **Unrun context recommendations looked reported.** A second external PR
+   review found that context packets classified recommended command strings
+   through the raw-report path, so their text and structured command plans
+   emitted `reported` before execution. Context and test-plan output now share
+   explicit preview conversion that forces coverage, grouped command plans,
+   and ledger previews to `none`; task-brief and test-plan regressions lock the
+   fail-closed contract.
 
 Convergence verdict: no unresolved correctness, trust-boundary, performance,
 packaging, documentation, or test finding remains in the local review. PR
