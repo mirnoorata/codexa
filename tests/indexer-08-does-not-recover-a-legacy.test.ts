@@ -254,6 +254,22 @@ it("does not let required dependency checks self-approve from only the edited fi
         expect.arrayContaining([expect.objectContaining({ target: "public-surface: service/helpers.py", status: "missing" })])
       );
 
+      const pythonAggregate = await postEditReviewQuery(repo, { taskId: "missing-required-check", ranCommands: ["pytest"] }, { autoRefresh: false });
+      const pythonAggregateData = pythonAggregate.data as {
+        dependencyChecks: Array<{ target: string; status: string; trustTier: string }>;
+        verificationLedger: Array<{ kind: string; target: string; status: string; trustTier: string }>;
+      };
+      expect(pythonAggregateData.dependencyChecks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ target: "public-surface: service/helpers.py", status: "covered", trustTier: "reported" })
+        ])
+      );
+      expect(pythonAggregateData.verificationLedger).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: "dependency", target: "public-surface: service/helpers.py", status: "covered", trustTier: "reported" })
+        ])
+      );
+
       const legacyWaivedDependency = await postEditReviewQuery(
       repo,
       {

@@ -77,7 +77,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 7 0 R >>
 endobj
 7 0 obj
-<< /Length 710 >>
+<< /Length 1243 >>
 stream
 BT
 /F1 10 Tf
@@ -96,6 +96,16 @@ BT
 (provenance and deterministic semantic-assist scaling. Includes current-source competitor) Tj T*
 (analysis, full regression coverage, and observed cold-index improvement with no new public) Tj T*
 (verb or runtime dependency.) Tj T*
+() Tj T*
+(PR Review Follow-up) Tj T*
+() Tj T*
+(- External review found that command-backed required dependency checks still emitted ledger) Tj T*
+(trust none.) Tj T*
+(- Fixed required-check evaluation and ledger propagation while preserving none for) Tj T*
+(graph/file-only evidence.) Tj T*
+(- Added structural, reported, executed AutoVerify, and integration regressions.) Tj T*
+(- Latest full gate: 44 test files and 425 tests passed; eval, benchmark, package smoke,) Tj T*
+(privacy, package hygiene, and audit remain green.) Tj T*
 ET
 endstream
 endobj
@@ -112,5 +122,5 @@ xref
 trailer
 << /Size 8 /Root 1 0 R >>
 startxref
-4224
+4758
 %%EOF

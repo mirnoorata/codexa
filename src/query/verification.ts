@@ -379,8 +379,8 @@ export function verificationLedgerForPostEdit(input: {
   waivedChecks?: string[];
   waivers?: VerificationWaiver[];
   repoRoot?: string;
-  workflowChecks?: Array<{ target: string; reason: string; status: VerificationLedgerStatus; confidence: Confidence; evidenceTier?: string; source?: string }>;
-  dependencyChecks?: Array<{ target: string; reason: string; status: VerificationLedgerStatus; confidence: Confidence; evidenceTier?: string; source?: string }>;
+  workflowChecks?: Array<{ target: string; reason: string; status: VerificationLedgerStatus; confidence: Confidence; trustTier?: VerificationTrustTier; evidenceTier?: string; source?: string }>;
+  dependencyChecks?: Array<{ target: string; reason: string; status: VerificationLedgerStatus; confidence: Confidence; trustTier?: VerificationTrustTier; evidenceTier?: string; source?: string }>;
 }): { coverage: VerificationCoverage[]; commandEnvelopes: VerificationCommandEnvelope[]; ledger: VerificationLedgerEntry[]; testsNotRun: TestRecommendation[] } {
   const repoRoot = input.repoRoot ?? input.index.snapshot.repoRoot;
   const evidence = verificationEvidenceForCommandReports(input.index, input.ranCommands, input.ranCommandReports ?? [], repoRoot, {
@@ -477,7 +477,7 @@ export function formatVerificationLedger(ledger: VerificationLedgerEntry[]): str
 
 function checkLedgerEntry(
   kind: "workflow" | "dependency",
-  check: { target: string; reason: string; status: VerificationLedgerStatus; confidence: Confidence; source?: string },
+  check: { target: string; reason: string; status: VerificationLedgerStatus; confidence: Confidence; trustTier?: VerificationTrustTier; source?: string },
   waivers: Map<string, VerificationWaiver>
 ): VerificationLedgerEntry {
   const waiver = check.status === "missing" ? waivers.get(waiverKey(kind, check.target)) : undefined;
@@ -487,7 +487,7 @@ function checkLedgerEntry(
     recommended: check.reason,
     target: check.target,
     status,
-    trustTier: "none",
+    trustTier: status === "covered" ? verificationTrustTierOrNone(check.trustTier) : "none",
     evidence:
       status === "covered"
         ? [`${kind} evidence present`]

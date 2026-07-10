@@ -56,3 +56,10 @@
 ## Notes
 
 Implements the reviewed competitive optimization plan: first-class verification trust provenance and deterministic semantic-assist scaling. Includes current-source competitor analysis, full regression coverage, and observed cold-index improvement with no new public verb or runtime dependency.
+
+## PR Review Follow-up
+
+- External review found that command-backed required dependency checks still emitted ledger trust `none`.
+- Fixed required-check evaluation and ledger propagation while preserving `none` for graph/file-only evidence.
+- Added structural, reported, executed AutoVerify, and integration regressions.
+- Latest full gate: 44 test files and 425 tests passed; eval, benchmark, package smoke, privacy, package hygiene, and audit remain green.

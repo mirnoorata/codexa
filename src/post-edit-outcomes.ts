@@ -14,6 +14,7 @@ import type {
   VerificationLedgerEntry,
   VerificationLedgerStatus,
   VerificationProvenance,
+  VerificationTrustTier,
   VerificationWaiver,
   SessionMemoryPointer
 } from "./types.js";
@@ -83,6 +84,7 @@ export interface PostEditOutcomeInput {
 
 export interface PostEditCheckResult extends TaskSnapshotRequiredCheck {
   status: Extract<VerificationLedgerStatus, "covered" | "missing" | "not_applicable">;
+  trustTier: VerificationTrustTier;
 }
 
 export interface PostEditRiskDelta {

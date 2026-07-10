@@ -369,7 +369,7 @@ Implemented on 2026-07-10:
 
 Final local proof:
 
-- `npm run check`: 44 test files and 424 tests passed, plus 26 command-wrapper
+- `npm run check`: 44 test files and 425 tests passed, plus 26 command-wrapper
   and 87 hook smoke checks.
 - `npm run eval:ci`: 21 scenarios passed; score 1; raw `rg` better in 0.
 - `npm run benchmark:ci`: all thresholds passed. The observed cold index was
@@ -408,6 +408,13 @@ The implementation review found and resolved these issues before commit:
 7. **Semantic determinism compared too few fields.** Strengthened the test to
    compare complete import, usage, and symbol facts after removing only the
    two intentionally per-run provenance fields.
+8. **Command-backed required checks lost their trust tier.** External PR
+   review found that dependency checks covered by `ranTests` or matching
+   command coverage still produced ledger rows with `none`. Required-check
+   evaluation now carries the strongest matching tier through result, text,
+   persistence, and ledger output, while graph/file-only evidence remains
+   `none`. Structural, reported, executed AutoVerify, and integrated ledger
+   cases cover the distinction.
 
 Convergence verdict: no unresolved correctness, trust-boundary, performance,
 packaging, documentation, or test finding remains in the local review. PR
