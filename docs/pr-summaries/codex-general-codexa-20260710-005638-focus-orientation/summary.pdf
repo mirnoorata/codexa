@@ -12,7 +12,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
 endobj
 5 0 obj
-<< /Length 2959 >>
+<< /Length 2983 >>
 stream
 BT
 /F1 10 Tf
@@ -62,13 +62,13 @@ BT
 (Verification) Tj T*
 () Tj T*
 (- git diff --check: passed) Tj T*
-(- env -u CODEXAWORKSPACESESSION -u CODEXAWORKSPACEFOCUSFILE -u SESSIONID npm run check:) Tj T*
-(passed) Tj T*
-(- env -u CODEXAWORKSPACESESSION -u CODEXAWORKSPACEFOCUSFILE -u SESSIONID npm run eval:ci:) Tj T*
-(passed) Tj T*
-(- env -u CODEXAWORKSPACESESSION -u CODEXAWORKSPACEFOCUSFILE -u SESSIONID npm run) Tj T*
+(- env -u CODEXA_WORKSPACE_SESSION -u CODEXA_WORKSPACE_FOCUS_FILE -u SESSION_ID npm run) Tj T*
+(check: passed) Tj T*
+(- env -u CODEXA_WORKSPACE_SESSION -u CODEXA_WORKSPACE_FOCUS_FILE -u SESSION_ID npm run) Tj T*
+(eval:ci: passed) Tj T*
+(- env -u CODEXA_WORKSPACE_SESSION -u CODEXA_WORKSPACE_FOCUS_FILE -u SESSION_ID npm run) Tj T*
 (benchmark:ci: passed) Tj T*
-(- env -u CODEXAWORKSPACESESSION -u CODEXAWORKSPACEFOCUSFILE -u SESSIONID npm run) Tj T*
+(- env -u CODEXA_WORKSPACE_SESSION -u CODEXA_WORKSPACE_FOCUS_FILE -u SESSION_ID npm run) Tj T*
 (smoke:package: passed) Tj T*
 ET
 endstream
@@ -109,10 +109,10 @@ xref
 0000000121 00000 n 
 0000000191 00000 n 
 0000000317 00000 n 
-0000003327 00000 n 
-0000003453 00000 n 
+0000003351 00000 n 
+0000003477 00000 n 
 trailer
 << /Size 8 /Root 1 0 R >>
 startxref
-4365
+4389
 %%EOF
