@@ -782,8 +782,10 @@ function hasSymbol(context: PythonContext, filePath: string, qualifiedName: stri
 }
 
 function markExported(context: PythonContext, symbolId: string): void {
-  context.symbols = context.symbols.map((symbol) => (symbol.id === symbolId ? { ...symbol, exported: true } : symbol));
-  rebuildSymbolMaps(context);
+  const symbol = context.symbolsById.get(symbolId);
+  if (symbol) {
+    symbol.exported = true;
+  }
 }
 
 function addSymbolToMaps(context: PythonContext, symbol: SymbolFact): void {

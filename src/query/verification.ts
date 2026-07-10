@@ -11,6 +11,7 @@ import type {
   VerificationCommandPlanEntry,
   VerificationLedgerEntry,
   VerificationLedgerStatus,
+  VerificationTrustTier,
   VerificationWaiver
 } from "../types.js";
 import { uniqueSorted } from "../util.js";
@@ -79,6 +80,7 @@ import {
   structuredRawSuppressionKey,
   type NormalizedCommandReport
 } from "./verification/command-envelope.js";
+import { strongerVerificationTrustTier, strongestVerificationTrustTier, verificationTrustTierOrNone } from "./verification/trust.js";
 
 interface VerificationEvidenceResult {
   coverage: VerificationCoverage[];
@@ -90,6 +92,10 @@ interface PreparedCommandReport {
   initialCwd: string;
   outputSummary: string | undefined;
   commandEnvelope: VerificationCommandEnvelope;
+}
+
+interface VerificationEvidenceOptions {
+  trustedCommandReports?: VerificationCommandReport[];
 }
 
 export function verificationCoverageForCommands(index: CodexaIndex, ranCommands: string[], repoRoot = index.snapshot.repoRoot): VerificationCoverage[] {
@@ -109,7 +115,8 @@ export function verificationEvidenceForCommandReports(
   index: CodexaIndex,
   ranCommands: string[],
   ranCommandReports: VerificationCommandReport[] = [],
-  repoRoot = index.snapshot.repoRoot
+  repoRoot = index.snapshot.repoRoot,
+  options: VerificationEvidenceOptions = {}
 ): VerificationEvidenceResult {
   const scripts = packageScriptsFromIndex(index);
   const packageRoots = packageRootsFromIndex(index);
@@ -117,17 +124,17 @@ export function verificationEvidenceForCommandReports(
   const envelopeContext = { repoRoot, scripts, packageRoots, packageNamesByRoot };
   const coverage: VerificationCoverage[] = [];
   const commandEnvelopes: VerificationCommandEnvelope[] = [];
-  const preparedReports = normalizeCommandReports(ranCommands, ranCommandReports, repoRoot).map((report) => {
+  const preparedReports = normalizeCommandReports(ranCommands, ranCommandReports, repoRoot, options.trustedCommandReports).map((report) => {
     const initialCwd = report.cwd ? normalizeCwd(report.cwd, repoRoot) : ".";
     const outputSummary = commandOutputSummary(report);
     const commandEnvelope = commandEnvelopeForReport(report, initialCwd, envelopeContext);
     return { report, initialCwd, outputSummary, commandEnvelope } satisfies PreparedCommandReport;
   });
-	  const structuredSemanticKeys = new Set(
-	    preparedReports
-	      .map(({ report, commandEnvelope }) => structuredRawSuppressionKey(report, commandEnvelope, envelopeContext))
-	      .filter((key): key is string => Boolean(key))
-	  );
+  const structuredSemanticKeys = new Set(
+    preparedReports
+      .map(({ report, commandEnvelope }) => structuredRawSuppressionKey(report, commandEnvelope, envelopeContext))
+      .filter((key): key is string => Boolean(key))
+  );
   for (const { report, initialCwd, outputSummary, commandEnvelope } of preparedReports) {
     const rawSemanticKey = report.fromReport ? undefined : commandEnvelopeSemanticKey(commandEnvelope);
     if (rawSemanticKey && structuredSemanticKeys.has(rawSemanticKey)) {
@@ -144,6 +151,7 @@ export function verificationEvidenceForCommandReports(
         command: input.command,
         source: input.source,
         confidence: input.confidence ?? "derived",
+        trustTier: report.trustTier,
         scope: input.scope,
         targetPath: input.targetPath,
         details: uniqueSorted([...redactSecretDetails(input.details ?? []), ...reportDetails]),
@@ -210,8 +218,21 @@ export function verificationEvidenceForCommandReports(
   return { coverage: dedupeCoverage(coverage), commandEnvelopes: dedupeCommandEnvelopes(commandEnvelopes) };
 }
 
-export function coverageForDisplay(index: CodexaIndex, commands: string[], repoRoot = index.snapshot.repoRoot): VerificationCoverage[] {
-  return verificationCoverageForCommands(index, commands, repoRoot);
+export function asVerificationCoveragePreview(coverage: VerificationCoverage[]): VerificationCoverage[] {
+  return coverage.map((entry) => ({ ...entry, trustTier: "none" }));
+}
+
+export function asVerificationLedgerPreview(ledger: VerificationLedgerEntry[]): VerificationLedgerEntry[] {
+  return ledger.map((entry) => {
+    const preview = { ...entry, trustTier: "none" as const };
+    return entry.status === "covered"
+      ? {
+          ...preview,
+          status: "would_cover",
+          evidence: entry.evidence.map((item) => `would cover if run: ${item}`)
+        }
+      : preview;
+  });
 }
 
 function analyzeCommandEnvelope(
@@ -367,14 +388,17 @@ export function verificationLedgerForPostEdit(input: {
   ranTests: string[];
   ranCommands: string[];
   ranCommandReports?: VerificationCommandReport[];
+  trustedCommandReports?: VerificationCommandReport[];
   waivedChecks?: string[];
   waivers?: VerificationWaiver[];
   repoRoot?: string;
-  workflowChecks?: Array<{ target: string; reason: string; status: VerificationLedgerStatus; confidence: Confidence; evidenceTier?: string; source?: string }>;
-  dependencyChecks?: Array<{ target: string; reason: string; status: VerificationLedgerStatus; confidence: Confidence; evidenceTier?: string; source?: string }>;
+  workflowChecks?: Array<{ target: string; reason: string; status: VerificationLedgerStatus; confidence: Confidence; trustTier?: VerificationTrustTier; evidenceTier?: string; source?: string }>;
+  dependencyChecks?: Array<{ target: string; reason: string; status: VerificationLedgerStatus; confidence: Confidence; trustTier?: VerificationTrustTier; evidenceTier?: string; source?: string }>;
 }): { coverage: VerificationCoverage[]; commandEnvelopes: VerificationCommandEnvelope[]; ledger: VerificationLedgerEntry[]; testsNotRun: TestRecommendation[] } {
   const repoRoot = input.repoRoot ?? input.index.snapshot.repoRoot;
-  const evidence = verificationEvidenceForCommandReports(input.index, input.ranCommands, input.ranCommandReports ?? [], repoRoot);
+  const evidence = verificationEvidenceForCommandReports(input.index, input.ranCommands, input.ranCommandReports ?? [], repoRoot, {
+    trustedCommandReports: input.trustedCommandReports
+  });
   const coverage = evidence.coverage;
   const waiverSet = waiversForMatching(input.waivers ?? [], input.waivedChecks ?? []);
   const ledger: VerificationLedgerEntry[] = [];
@@ -392,6 +416,7 @@ export function verificationLedgerForPostEdit(input: {
       recommended: test.path,
       target: test.path,
       status,
+      trustTier: status === "covered" ? match.trustTier : "none",
       evidence: status === "waived" ? [`waived: ${waiver?.reason ?? "explicit waiver"}`] : match.evidence,
       missingReason: status === "missing" ? "no reported test path, matching command, aggregate runner, or waiver covered this recommendation" : undefined,
       waiverReason: status === "waived" ? waiver?.reason : undefined,
@@ -427,13 +452,15 @@ export function verificationCommandPlan(coverage: VerificationCoverage[]): Verif
         targetPaths: [],
         scopes: [],
         sources: [],
-        confidence: entry.confidence
+        confidence: entry.confidence,
+        trustTier: verificationTrustTierOrNone(entry.trustTier)
       } satisfies VerificationCommandPlanEntry);
     plan.covers = uniqueSorted([...plan.covers, entry.kind]) as VerificationCoverageKind[];
     plan.targetPaths = uniqueSorted([...plan.targetPaths, ...(entry.targetPath ? [entry.targetPath] : [])]);
     plan.scopes = uniqueSorted([...plan.scopes, ...(entry.scope ? [entry.scope] : [])]);
     plan.sources = uniqueSorted([...plan.sources, entry.source]);
     plan.confidence = mergeConfidence(plan.confidence, entry.confidence);
+    plan.trustTier = strongerVerificationTrustTier(plan.trustTier, entry.trustTier);
     byCommand.set(command, plan);
   }
   return [...byCommand.values()].sort((a, b) => commandPlanScore(b) - commandPlanScore(a) || a.command.localeCompare(b.command));
@@ -446,7 +473,7 @@ export function formatVerificationCommandPlan(plan: VerificationCommandPlanEntry
   return plan.slice(0, 16).map((entry) => {
     const targets = entry.targetPaths.length > 0 ? `; targets ${entry.targetPaths.slice(0, 4).join(", ")}` : "";
     const scopes = entry.scopes.length > 0 ? `; scopes ${entry.scopes.slice(0, 4).join(", ")}` : "";
-    return `- ${entry.command}: covers ${entry.covers.join(", ")}${targets}${scopes}; ${entry.confidence}; ${entry.sources.slice(0, 3).join(", ")}`;
+    return `- ${entry.command}: covers ${entry.covers.join(", ")}${targets}${scopes}; trust ${entry.trustTier}; ${entry.confidence}; ${entry.sources.slice(0, 3).join(", ")}`;
   });
 }
 
@@ -457,13 +484,13 @@ export function formatVerificationLedger(ledger: VerificationLedgerEntry[]): str
   return ledger.slice(0, 30).map((entry) => {
     const evidence = entry.evidence.length > 0 ? `; evidence: ${entry.evidence.slice(0, 3).join(" | ")}` : "";
     const missing = entry.missingReason ? `; missing: ${entry.missingReason}` : "";
-    return `- ${entry.status}: ${entry.kind} ${entry.target}; ${entry.recommended}${evidence}${missing}`;
+    return `- ${entry.status}: ${entry.kind} ${entry.target}; trust ${entry.trustTier}; ${entry.recommended}${evidence}${missing}`;
   });
 }
 
 function checkLedgerEntry(
   kind: "workflow" | "dependency",
-  check: { target: string; reason: string; status: VerificationLedgerStatus; confidence: Confidence; source?: string },
+  check: { target: string; reason: string; status: VerificationLedgerStatus; confidence: Confidence; trustTier?: VerificationTrustTier; source?: string },
   waivers: Map<string, VerificationWaiver>
 ): VerificationLedgerEntry {
   const waiver = check.status === "missing" ? waivers.get(waiverKey(kind, check.target)) : undefined;
@@ -473,6 +500,7 @@ function checkLedgerEntry(
     recommended: check.reason,
     target: check.target,
     status,
+    trustTier: status === "covered" ? verificationTrustTierOrNone(check.trustTier) : "none",
     evidence:
       status === "covered"
         ? [`${kind} evidence present`]
@@ -495,7 +523,7 @@ function testVerificationEvidence(
   coverage: VerificationCoverage[],
   packageRoots: string[],
   indexedPaths: Set<string>
-): { covered: boolean; evidence: string[]; coverage: VerificationCoverage[] } {
+): { covered: boolean; evidence: string[]; coverage: VerificationCoverage[]; trustTier: VerificationTrustTier } {
   const directEvidence = wasTestRun(test, ranTests) ? [`reported ranTests matched ${test.path}`] : [];
   const commandCoverage = coverage.filter((entry) => coverageCoversTest(entry, test.path, packageRoots, indexedPaths));
   const commandEvidence = commandCoverage.map((entry) => {
@@ -505,7 +533,11 @@ function testVerificationEvidence(
   return {
     covered: directEvidence.length > 0 || commandEvidence.length > 0,
     evidence: [...directEvidence, ...commandEvidence],
-    coverage: commandCoverage
+    coverage: commandCoverage,
+    trustTier: strongestVerificationTrustTier([
+      ...(directEvidence.length > 0 ? (["reported"] as VerificationTrustTier[]) : []),
+      ...commandCoverage.map((entry) => entry.trustTier)
+    ])
   };
 }
 

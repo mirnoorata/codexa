@@ -44,6 +44,8 @@ interface SemanticContext {
   parserErrors: ParserErrorFact[];
   symbolById: Map<string, SymbolFact>;
   symbolsByPath: Map<string, SymbolFact[]>;
+  usageSitesByMergeKey: Map<string, UsageSiteFact[]>;
+  importsByMergeKey: Map<string, ImportEdgeFact>;
 }
 
 const MAX_COMPILER_PROJECT_CACHE_ENTRIES = 6;
@@ -81,9 +83,12 @@ export async function applyTypeScriptSemanticAssist(
     imports: index.imports.map((imp) => ({ ...imp })),
     parserErrors: index.parserErrors.map((error) => ({ ...error })),
     symbolById: new Map(),
-    symbolsByPath: new Map()
+    symbolsByPath: new Map(),
+    usageSitesByMergeKey: new Map(),
+    importsByMergeKey: new Map()
   };
   rebuildSymbolMaps(context);
+  rebuildSemanticMergeIndexes(context);
 
   const projects = groupSemanticProjects(index, semanticFiles, options.files);
   for (const project of projects) {
@@ -575,11 +580,10 @@ function findExistingSymbol(
 }
 
 function mergeUsage(context: SemanticContext, usage: UsageSiteFact): void {
-  const existing = context.usageSites.find(
+  const key = usageMergeKey(usage);
+  const bucket = context.usageSitesByMergeKey.get(key) ?? [];
+  const existing = bucket.find(
     (candidate) =>
-      candidate.path === usage.path &&
-      candidate.name === usage.name &&
-      candidate.kind === usage.kind &&
       Math.abs((candidate.range?.startByte ?? -1) - (usage.range?.startByte ?? -2)) <= 4
   );
   if (existing) {
@@ -592,18 +596,13 @@ function mergeUsage(context: SemanticContext, usage: UsageSiteFact): void {
     return;
   }
   context.usageSites.push(usage);
+  bucket.push(usage);
+  context.usageSitesByMergeKey.set(key, bucket);
 }
 
 function mergeImport(context: SemanticContext, imp: ImportEdgeFact): void {
-  const existing = context.imports.find(
-    (candidate) =>
-      candidate.path === imp.path &&
-      candidate.specifier === imp.specifier &&
-      candidate.importedName === imp.importedName &&
-      candidate.localName === imp.localName &&
-      Boolean(candidate.reExport) === Boolean(imp.reExport) &&
-      Boolean(candidate.typeOnly) === Boolean(imp.typeOnly)
-  );
+  const key = importMergeKey(imp);
+  const existing = context.importsByMergeKey.get(key);
   if (existing) {
     if (!existing.resolvedPath && imp.resolvedPath) {
       existing.resolvedPath = imp.resolvedPath;
@@ -611,6 +610,41 @@ function mergeImport(context: SemanticContext, imp: ImportEdgeFact): void {
     return;
   }
   context.imports.push(imp);
+  context.importsByMergeKey.set(key, imp);
+}
+
+function rebuildSemanticMergeIndexes(context: SemanticContext): void {
+  for (const usage of context.usageSites) {
+    const key = usageMergeKey(usage);
+    const bucket = context.usageSitesByMergeKey.get(key) ?? [];
+    bucket.push(usage);
+    context.usageSitesByMergeKey.set(key, bucket);
+  }
+  for (const imp of context.imports) {
+    const key = importMergeKey(imp);
+    if (!context.importsByMergeKey.has(key)) {
+      context.importsByMergeKey.set(key, imp);
+    }
+  }
+}
+
+function usageMergeKey(usage: UsageSiteFact): string {
+  return JSON.stringify([usage.path, usage.name, usage.kind]);
+}
+
+function importMergeKey(imp: ImportEdgeFact): string {
+  return JSON.stringify([
+    imp.path,
+    imp.specifier,
+    optionalImportFieldKey(imp.importedName),
+    optionalImportFieldKey(imp.localName),
+    Boolean(imp.reExport),
+    Boolean(imp.typeOnly)
+  ]);
+}
+
+function optionalImportFieldKey(value: unknown): [present: boolean, value: unknown] {
+  return [value !== undefined, value ?? null];
 }
 
 function importFact(

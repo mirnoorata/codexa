@@ -44,7 +44,9 @@ Four capabilities are deliberately hard to find elsewhere:
   wrappers are unwrapped with ambiguity failing closed. Scope stated plainly:
   this detects structural exit-masking in *reported* commands — it cannot
   detect a wholesale fabricated report. The opt-in AutoVerify lane exists for
-  execution-backed evidence.
+  execution-backed evidence. Coverage, ledgers, and proof cards label that
+  difference explicitly: `executed-by-autoverify` evidence ranks above future
+  witnessed/artifact lanes, reported evidence, and rows with no positive proof.
 - **Graph-aware relational packets.** v0.7.0 precomputes bounded process
   packets, functional module clusters, graph-view exports, and opt-in summary
   prompts. `search` now reports raw exact-hit counts beside Codexa-ranked
@@ -183,6 +185,8 @@ It reports:
   planned tests when a snapshot exists;
 - verification commands, ledger preview, and reported commands/tests/reports
   classified with the same command-credit rules as `post-edit-review`;
+- explicit trust tiers on coverage and ledger rows, so an agent-reported pass
+  cannot look equivalent to a fresh AutoVerify execution;
 - local policy-pack status and remaining proof gaps.
 
 `codexa policy-init /path/to/project` writes a small local policy pack under

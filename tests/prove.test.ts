@@ -96,6 +96,9 @@ describe("Codexa proof cards", () => {
       expect(data.policies.policies.map((policy) => policy.kind).sort()).toEqual(["complexity", "security", "verification"]);
       expect(data.nextCommands.some((command) => command.includes("post-edit-review"))).toBe(true);
       expect(data.verification.tests.some((test) => test.path === "tests/widget.test.ts")).toBe(true);
+      expect(data.verification.commandPlan.every((entry) => entry.trustTier === "none")).toBe(true);
+      expect(data.verification.ledgerPreview.every((entry) => entry.trustTier === "none")).toBe(true);
+      expect(data.trustPosture.join("\n")).toContain("executed-by-autoverify > witnessed > artifact-corroborated > reported > none");
     } finally {
       await rm(repo, { recursive: true, force: true });
     }
@@ -161,7 +164,10 @@ describe("Codexa proof cards", () => {
       expect(result.text).toContain("Reported verification ledger:");
       expect(data.verification.reported.hasEvidence).toBe(true);
       expect(data.verification.ledgerPreview.some((entry) => entry.status === "would_cover")).toBe(true);
-      expect(data.verification.reported.ledger.some((entry) => entry.target === "tests/widget.test.ts" && entry.status === "covered")).toBe(true);
+      expect(data.verification.ledgerPreview.every((entry) => entry.trustTier === "none")).toBe(true);
+      expect(data.verification.reported.coverage.every((entry) => entry.trustTier === "reported")).toBe(true);
+      expect(data.verification.reported.commandPlan.every((entry) => entry.trustTier === "reported")).toBe(true);
+      expect(data.verification.reported.ledger.some((entry) => entry.target === "tests/widget.test.ts" && entry.status === "covered" && entry.trustTier === "reported")).toBe(true);
       expect(data.verification.reported.testsNotRun.map((test) => test.path)).not.toContain("tests/widget.test.ts");
       expect(data.verification.reported.commandEnvelopes[0]).toMatchObject({ command: "npm test", cwd: "<repo>", packageManager: "npm", scriptName: "test" });
       expect(serializedReported).not.toContain(outside);
@@ -195,6 +201,7 @@ describe("Codexa proof cards", () => {
       });
       const waivedData = waived.data as ProveData;
       expect(waivedData.verification.reported.ledger.some((entry) => entry.target === "tests/widget.test.ts" && entry.status === "waived")).toBe(true);
+      expect(waivedData.verification.reported.ledger.find((entry) => entry.target === "tests/widget.test.ts")?.trustTier).toBe("none");
       expect(waivedData.verification.reported.waivedVerification.some((entry) => entry.target === "tests/widget.test.ts" && entry.waiverReason === "manual browser regression")).toBe(true);
     } finally {
       await rm(repo, { recursive: true, force: true });

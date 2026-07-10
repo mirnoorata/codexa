@@ -1,6 +1,7 @@
 import { isTestPath } from "../language.js";
 import type { PostEditCheckResult } from "../post-edit-outcomes.js";
-import type { GraphEdgeFact, TaskSnapshotRequiredCheck, TestRecommendation, VerificationCoverage, WorkflowTraceFact } from "../types.js";
+import type { GraphEdgeFact, TaskSnapshotRequiredCheck, TestRecommendation, VerificationCoverage, VerificationTrustTier, WorkflowTraceFact } from "../types.js";
+import { strongestVerificationTrustTier } from "./verification/trust.js";
 
 export function evaluateRequiredChecks(
   checks: TaskSnapshotRequiredCheck[],
@@ -30,42 +31,51 @@ export function evaluateRequiredChecks(
     const evidencePaths = check.paths.filter((filePath) => !editSet.has(filePath));
     const hasNonEditedEvidence = evidencePaths.some((filePath) => edgePaths.has(filePath) || selectedSet.has(filePath) || affectedTestSet.has(filePath));
     if (!relevant) {
-      return { ...check, status: "not_applicable" };
+      return { ...check, status: "not_applicable", trustTier: "none" };
     }
+    const verificationEvidence =
+      check.kind === "dependency" ? dependencyCheckVerificationEvidence(check, input) : { covered: false, trustTier: "none" as const };
     const covered =
       check.kind === "workflow"
         ? workflowTitles.has(check.target) && hasNonEditedEvidence
-        : hasNonEditedEvidence || dependencyCheckCoveredByVerification(check, input);
-    return { ...check, status: covered ? "covered" : "missing" };
+        : hasNonEditedEvidence || verificationEvidence.covered;
+    return { ...check, status: covered ? "covered" : "missing", trustTier: covered ? verificationEvidence.trustTier : "none" };
   });
 }
 
-function dependencyCheckCoveredByVerification(
+function dependencyCheckVerificationEvidence(
   check: TaskSnapshotRequiredCheck,
   input: {
     tests: TestRecommendation[];
     ranTests: string[];
     verificationCoverage: VerificationCoverage[];
   }
-): boolean {
+): { covered: boolean; trustTier: VerificationTrustTier } {
   const checkPaths = check.paths.map(normalizePathLike);
   const testPaths = check.paths.filter(isTestPath);
-  if (
+  const directTestEvidence = testPaths.some((testPath) =>
+    input.ranTests.some((ranTest) => normalizePathLike(ranTest) === normalizePathLike(testPath))
+  );
+  const testCoverage = input.verificationCoverage.filter((coverage) =>
     testPaths.some(
-      (testPath) =>
-        input.ranTests.some((ranTest) => normalizePathLike(ranTest) === normalizePathLike(testPath)) ||
-        input.verificationCoverage.some((coverage) => coverage.kind === (testPath.endsWith(".py") ? "python-tests" : "javascript-tests") && coverageCoversPath(coverage, testPath))
+      (testPath) => coverage.kind === (testPath.endsWith(".py") ? "python-tests" : "javascript-tests") && coverageCoversPath(coverage, testPath)
     )
-  ) {
-    return true;
-  }
+  );
   const sourcePaths = check.paths.filter((filePath) => !isTestPath(filePath));
-  return input.verificationCoverage.some((coverage) => {
+  const sourceCoverage = input.verificationCoverage.filter((coverage) => {
     if (coverage.targetPath) {
       return checkPaths.includes(normalizePathLike(coverage.targetPath)) && coverageKindCompatibleWithSourcePath(coverage.kind, coverage.targetPath);
     }
     return sourcePaths.some((filePath) => coverageKindCompatibleWithSourcePath(coverage.kind, filePath) && coverageCoversPath(coverage, filePath));
   });
+  const matchingCoverage = [...testCoverage, ...sourceCoverage];
+  return {
+    covered: directTestEvidence || matchingCoverage.length > 0,
+    trustTier: strongestVerificationTrustTier([
+      ...(directTestEvidence ? (["reported"] as VerificationTrustTier[]) : []),
+      ...matchingCoverage.map((coverage) => coverage.trustTier)
+    ])
+  };
 }
 
 function coverageKindCompatibleWithSourcePath(kind: VerificationCoverage["kind"], filePath: string): boolean {

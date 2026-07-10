@@ -1,5 +1,5 @@
 import { CURRENT_VERIFICATION_PROVENANCE } from "../../types.js";
-import type { VerificationCommandEnvelope, VerificationCommandReport } from "../../types.js";
+import type { VerificationCommandEnvelope, VerificationCommandReport, VerificationTrustTier } from "../../types.js";
 import { commandNeedsFullMaskingAnalysis } from "./masking.js";
 import { isNonRunningCommand, shellWords, shellWrappedCommand, stripLeadingEnvironment, stripPackageManagerFlags, stripShellControlWords } from "./shell.js";
 import {
@@ -14,6 +14,7 @@ import {
 
 export interface NormalizedCommandReport extends VerificationCommandReport {
   fromReport: boolean;
+  trustTier: VerificationTrustTier;
   missingExitCode?: boolean;
   missingCwd?: boolean;
 }
@@ -74,7 +75,12 @@ function isSecretFlag(value: string): boolean {
   return /^--?[a-z0-9-]*(?:token|secret|password|passwd|pwd|api-?key|access-?key|auth|credential|cookie)[a-z0-9-]*(?:=.*)?$/iu.test(value);
 }
 
-export function normalizeCommandReports(ranCommands: string[], ranCommandReports: VerificationCommandReport[], repoRoot: string): NormalizedCommandReport[] {
+export function normalizeCommandReports(
+  ranCommands: string[],
+  ranCommandReports: VerificationCommandReport[],
+  repoRoot: string,
+  trustedCommandReports: VerificationCommandReport[] = []
+): NormalizedCommandReport[] {
   const rawReports: NormalizedCommandReport[] = [];
   const structuredReports: NormalizedCommandReport[] = [];
   const structuredCommandScopes = new Set<string>();
@@ -84,9 +90,13 @@ export function normalizeCommandReports(ranCommands: string[], ranCommandReports
     if (!cleanCommand) {
       continue;
     }
-    rawReports.push({ command: cleanCommand, fromReport: false });
+    rawReports.push({ command: cleanCommand, fromReport: false, trustTier: "reported" });
   }
-  for (const report of ranCommandReports) {
+  const structuredInputs: Array<{ report: VerificationCommandReport; trustTier: VerificationTrustTier }> = [
+    ...ranCommandReports.map((report) => ({ report, trustTier: "reported" as const })),
+    ...trustedCommandReports.map((report) => ({ report, trustTier: "executed-by-autoverify" as const }))
+  ];
+  for (const { report, trustTier } of structuredInputs) {
     const cleanCommand = report.command.trim();
     if (!cleanCommand) {
       continue;
@@ -95,7 +105,7 @@ export function normalizeCommandReports(ranCommands: string[], ranCommandReports
     const cleanCwd = typeof report.cwd === "string" && report.cwd.trim().length > 0 ? report.cwd.trim() : undefined;
     const compacted = compactCommandReport({ ...report, command: cleanCommand, cwd: cleanCwd });
     const missingCwd = cleanCwd === undefined;
-    structuredReports.push({ ...compacted, fromReport: true, missingExitCode: compacted.exitCode === undefined, missingCwd });
+    structuredReports.push({ ...compacted, fromReport: true, trustTier, missingExitCode: compacted.exitCode === undefined, missingCwd });
     if (!missingCwd) {
       structuredCommandScopes.add(commandScopeKey(cleanCommand, compacted.cwd, repoRoot));
     }

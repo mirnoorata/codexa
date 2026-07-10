@@ -825,7 +825,8 @@ it("auto-runs targeted safe verification before persisting hook-post-edit outcom
     expect(outcomeFiles).toHaveLength(1);
     const outcome = JSON.parse(await readFile(path.join(repo, ".codex/cache/codexa-outcomes", outcomeFiles[0]), "utf8")) as {
       ranCommandReports: Array<{ command: string; cwd?: string; args?: string[]; exitCode?: number; runner?: { policyId?: string; reportKind?: string; sourceMutationDetected?: boolean; envMode?: string } }>;
-      verificationLedger: Array<{ target: string; status: string; evidence: string[] }>;
+      verificationCoverage: Array<{ kind: string; trustTier: string }>;
+      verificationLedger: Array<{ target: string; status: string; trustTier: string; evidence: string[] }>;
     };
     expect(outcome.ranCommandReports[0]).toMatchObject({ exitCode: 0 });
     expect(outcome.ranCommandReports[0]).toMatchObject({ cwd: "<repo>", args: ["--", "tests/main.test.js"] });
@@ -836,7 +837,8 @@ it("auto-runs targeted safe verification before persisting hook-post-edit outcom
       sourceMutationDetected: false
     });
     expect(outcome.ranCommandReports[0]?.command).toContain("npm run test -- tests/main.test.js");
-    expect(outcome.verificationLedger.find((entry) => entry.target === "tests/main.test.js")).toMatchObject({ status: "covered" });
+    expect(outcome.verificationCoverage.some((entry) => entry.kind === "javascript-tests" && entry.trustTier === "executed-by-autoverify")).toBe(true);
+    expect(outcome.verificationLedger.find((entry) => entry.target === "tests/main.test.js")).toMatchObject({ status: "covered", trustTier: "executed-by-autoverify" });
   });
 
 it("keeps AutoVerify dirty hashes aligned when Codexa is rooted in a git subdirectory", async () => {

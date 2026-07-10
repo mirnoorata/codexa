@@ -6,6 +6,8 @@ import { formatOutcomeLearningRecommendations, formatTestRecommendations, outcom
 import { compactChangedSymbol, compactDiffGroup } from "./compact-data.js";
 import { compactWorktreeState, getWorktreeState, worktreeStateGaps, worktreeStateText } from "./worktree-state.js";
 import {
+  asVerificationCoveragePreview,
+  asVerificationLedgerPreview,
   formatVerificationCoverage,
   formatVerificationLedger,
   verificationCommandPlan,
@@ -13,7 +15,7 @@ import {
   verificationLedgerForPostEdit
 } from "./verification.js";
 import { CURRENT_VERIFICATION_PROVENANCE } from "../types.js";
-import type { ChangeType, QueryOptions, QueryResult, VerificationLedgerEntry } from "../types.js";
+import type { ChangeType, QueryOptions, QueryResult } from "../types.js";
 import { limitText, normalizePath } from "../util.js";
 
 export interface TestPlanOptions extends QueryOptions {
@@ -53,9 +55,9 @@ export async function testPlanQuery(input: QuerySessionInput, diff = true, optio
     ranCommands: [],
     repoRoot
   });
-  const verificationCoverage = verificationPreview.coverage;
+  const verificationCoverage = asVerificationCoveragePreview(verificationPreview.coverage);
   const commandPlan = verificationCommandPlan(verificationCoverage);
-  const verificationLedgerPreview = markLedgerAsPreview(verificationPreview.ledger);
+  const verificationLedgerPreview = asVerificationLedgerPreview(verificationPreview.ledger);
   const actionability = scopedFiles.length > 0 ? "verify" : "needs_target";
   const text = scopedFiles.length > 0
     ? [
@@ -191,16 +193,4 @@ function uniqueInOrder(values: string[]): string[] {
     }
   }
   return result;
-}
-
-function markLedgerAsPreview(ledger: VerificationLedgerEntry[]): VerificationLedgerEntry[] {
-  return ledger.map((entry) =>
-    entry.status === "covered"
-      ? {
-          ...entry,
-          status: "would_cover",
-          evidence: entry.evidence.map((item) => `would cover if run: ${item}`)
-        }
-      : entry
-  );
 }

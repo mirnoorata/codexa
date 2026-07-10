@@ -92,10 +92,10 @@ it("emits coverage semantics from test-plan", async () => {
     const plan = await testPlanQuery(repo, true, { autoRefresh: true });
     const data = plan.data as {
       verificationCommands: string[];
-      verificationCoverage: Array<{ kind: string; source: string; targetPath?: string; scope?: string }>;
+      verificationCoverage: Array<{ kind: string; source: string; trustTier: string; targetPath?: string; scope?: string }>;
         commandEnvelopes: Array<{ classifierVersion: string; scopeStatus: string }>;
-        verificationCommandPlan: Array<{ command: string; covers: string[] }>;
-        verificationLedgerPreview: Array<{ target: string; status: string; evidence: string[] }>;
+        verificationCommandPlan: Array<{ command: string; covers: string[]; trustTier: string }>;
+        verificationLedgerPreview: Array<{ target: string; status: string; trustTier: string; evidence: string[] }>;
         verificationProvenance: typeof CURRENT_VERIFICATION_PROVENANCE;
         testsNotRun: unknown[];
     };
@@ -103,12 +103,15 @@ it("emits coverage semantics from test-plan", async () => {
     expect(plan.text).toContain("Verification ledger preview if recommended commands are run:");
     expect(data.verificationCommands).toContain("npm run check");
       expect(data.verificationCoverage.map((entry) => entry.kind)).toEqual(expect.arrayContaining(["typescript-syntax", "javascript-tests"]));
+      expect(data.verificationCoverage.every((entry) => entry.trustTier === "none")).toBe(true);
       expect(data.commandEnvelopes.some((entry) => entry.classifierVersion === CURRENT_VERIFICATION_PROVENANCE.commandCoverageClassifierVersion && entry.scopeStatus === "repo")).toBe(true);
       expect(data.verificationProvenance).toEqual(CURRENT_VERIFICATION_PROVENANCE);
     expect((data.testsNotRun as Array<{ path: string }>).map((test) => test.path)).toContain("tests/shared.test.ts");
     const checkCovers = data.verificationCommandPlan.filter((entry) => entry.command.startsWith("npm run check")).flatMap((entry) => entry.covers);
     expect(checkCovers).toEqual(expect.arrayContaining(["typescript-syntax", "javascript-tests"]));
+    expect(data.verificationCommandPlan.every((entry) => entry.trustTier === "none")).toBe(true);
     expect(data.verificationLedgerPreview.find((entry) => entry.target === "tests/shared.test.ts")?.status).toBe("would_cover");
+    expect(data.verificationLedgerPreview.every((entry) => entry.trustTier === "none")).toBe(true);
     expect(data.verificationLedgerPreview.find((entry) => entry.target === "tests/shared.test.ts")?.evidence.some((item) => item.includes("would cover if run") && item.includes("npm run check"))).toBe(true);
     const sharedTargetedIndex = data.verificationCommands.findIndex((command) => command.includes("tests/shared.test.ts"));
     const sharedAggregateIndex = data.verificationCommands.findIndex((command) => command === "npm run check");
@@ -153,11 +156,15 @@ it("emits coverage semantics from test-plan", async () => {
     const brief = await taskBriefQuery(repo, { files: ["src/shared.ts"], diff: false, tokenBudget: 2200, limit: 6 }, { autoRefresh: false });
     const briefData = brief.data as {
       verificationCommands: string[];
-      verificationCommandPlan: Array<{ command: string; covers: string[] }>;
+      verificationCoverage: Array<{ trustTier: string }>;
+      verificationCommandPlan: Array<{ command: string; covers: string[]; trustTier: string }>;
     };
     expect(brief.text).toContain("If run, these commands would cover:");
     expect(briefData.verificationCommands).toContain("npm run check");
     expect(briefData.verificationCommandPlan.find((entry) => entry.command === "npm run check")?.covers).toEqual(expect.arrayContaining(["typescript-syntax", "javascript-tests"]));
+    expect(briefData.verificationCoverage.every((entry) => entry.trustTier === "none")).toBe(true);
+    expect(briefData.verificationCommandPlan.every((entry) => entry.trustTier === "none")).toBe(true);
+    expect(brief.text.slice(brief.text.indexOf("If run, these commands would cover:")).split("Verification recipes:", 1)[0]).not.toContain("trust reported");
 
     await writeFile(path.join(repo, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n", "utf8");
     await writeFile(path.join(repo, "packages/foo/src/foo.ts"), "export function foo(value: string) { return value.trim().toLowerCase() }\n", "utf8");
@@ -252,6 +259,22 @@ it("does not let required dependency checks self-approve from only the edited fi
       expect(wrongLanguageAggregateData.verificationCoverage.some((entry) => entry.kind === "javascript-tests")).toBe(true);
       expect(wrongLanguageAggregateData.dependencyChecks).toEqual(
         expect.arrayContaining([expect.objectContaining({ target: "public-surface: service/helpers.py", status: "missing" })])
+      );
+
+      const pythonAggregate = await postEditReviewQuery(repo, { taskId: "missing-required-check", ranCommands: ["pytest"] }, { autoRefresh: false });
+      const pythonAggregateData = pythonAggregate.data as {
+        dependencyChecks: Array<{ target: string; status: string; trustTier: string }>;
+        verificationLedger: Array<{ kind: string; target: string; status: string; trustTier: string }>;
+      };
+      expect(pythonAggregateData.dependencyChecks).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ target: "public-surface: service/helpers.py", status: "covered", trustTier: "reported" })
+        ])
+      );
+      expect(pythonAggregateData.verificationLedger).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ kind: "dependency", target: "public-surface: service/helpers.py", status: "covered", trustTier: "reported" })
+        ])
       );
 
       const legacyWaivedDependency = await postEditReviewQuery(

@@ -143,6 +143,7 @@ export function createMcpOutputSchema(detail: McpOutputSchemaDetail = mcpOutputS
     commandCoverageClassifier: z.literal("codexa-command-coverage"),
     commandCoverageClassifierVersion: z.string(),
     commandEnvelopeRulesetVersion: z.string(),
+    verificationCoverageVersion: z.string(),
     verificationLedgerVersion: z.string()
   });
   return {
