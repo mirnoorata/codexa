@@ -100,6 +100,8 @@ function addTargetedJavaScriptTestCoverage(
 
 function playwrightTestTargets(args: string[], cwd: string, repoRoot: string): { ok: true; targets: string[] } | { ok: false; reason: string } {
   const valueOptions = new Set([
+    "-b",
+    "--browser",
     "-c",
     "--config",
     "-j",
@@ -123,7 +125,7 @@ function playwrightTestTargets(args: string[], cwd: string, repoRoot: string): {
     if (arg === "--") {
       continue;
     }
-    const inlineOption = arg.startsWith("--") && arg.includes("=") ? arg.slice(0, arg.indexOf("=")) : undefined;
+    const inlineOption = arg.startsWith("-") && arg.includes("=") ? arg.slice(0, arg.indexOf("=")) : undefined;
     if (inlineOption && valueOptions.has(inlineOption)) {
       continue;
     }

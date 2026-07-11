@@ -54,6 +54,8 @@ describe("Playwright verification credit", () => {
     const target = "tests/e2e.spec.ts";
     const commands = [
       `playwright test ${target}`,
+      `playwright test --browser chromium ${target}`,
+      `playwright test -b=webkit ${target}`,
       `playwright test --project=chromium ${target}`,
       `playwright test --global-timeout=60000 ${target}`,
       `playwright test --repeat-each=2 ${target}`,

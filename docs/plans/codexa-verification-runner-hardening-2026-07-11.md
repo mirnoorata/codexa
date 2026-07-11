@@ -325,3 +325,8 @@ valid grep and test-name patterns, so subset runs could regain full file
 credit. Proof-weakening flags are now presence-sensitive regardless of inline
 value, with Playwright, Vitest, Jest, and Node test regressions. This is
 deliberately fail-closed for boolean-looking values.
+
+The third exact-head review found a compatibility false missing for supported
+Playwright `-b/--browser <name>` test runs. Browser selection is scope-safe
+when an explicit indexed test path is present, so both separate and inline
+forms now receive the same targeted credit as other safe value options.
