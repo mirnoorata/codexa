@@ -1,0 +1,86 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 2647 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(Change Summary) Tj T*
+() Tj T*
+(- Project: codexa) Tj T*
+(- Worktree: /srv/worktree/codexa/codex/20260711-codexa-verification-runner-hardening) Tj T*
+(- Branch: codex/general/codexa-20260711-codexa-verification-runner-hardening) Tj T*
+(- Base: main) Tj T*
+(- Primary commit: 9085e45) Tj T*
+(- Subject: feat\(verification\): harden runner classification) Tj T*
+() Tj T*
+(Changed Files) Tj T*
+() Tj T*
+(9085e45 feat\(verification\): harden runner classification) Tj T*
+(.gitignore                                         |   1 +) Tj T*
+(README.md                                          |  11 +-) Tj T*
+(...exa-verification-runner-hardening-2026-07-11.md | 297 +++++++++++++++++++++) Tj T*
+(src/query/verification.ts                          |  46 ++--) Tj T*
+(src/query/verification/command-envelope.ts         |  12 +-) Tj T*
+(src/query/verification/javascript-tests.ts         | 276 +++++++++++++++++++) Tj T*
+(src/query/verification/script-credit.ts            |   2 +-) Tj T*
+(src/types/verification.ts                          |   2 +-) Tj T*
+(tests/schema.test.ts                               |   2 +-) Tj T*
+(tests/verification-playwright.test.ts              | 196 ++++++++++++++) Tj T*
+(tests/verification-shell-differential.test.ts      | 173 ++++++++++++) Tj T*
+(11 files changed, 975 insertions\(+\), 43 deletions\(-\)) Tj T*
+(create mode 100644 docs/plans/codexa-verification-runner-hardening-2026-07-11.md) Tj T*
+(create mode 100644 src/query/verification/javascript-tests.ts) Tj T*
+(create mode 100644 tests/verification-playwright.test.ts) Tj T*
+(create mode 100644 tests/verification-shell-differential.test.ts) Tj T*
+() Tj T*
+(Verification) Tj T*
+() Tj T*
+(- git diff --check: passed) Tj T*
+(- npm run check: passed) Tj T*
+(- npm run eval:ci: passed) Tj T*
+(- npm run benchmark:ci: passed) Tj T*
+(- npm run smoke:package: passed) Tj T*
+(- npm run package:hygiene: passed) Tj T*
+(- npm audit --audit-level=moderate: passed) Tj T*
+(- Codexa post-edit-review: /srv/.codex/artifacts/codexa/codex-general-) Tj T*
+(codexa-20260711-codexa-verification-runner-hardening/codexa-post-edit-review.txt) Tj T*
+(- Codexa test-plan: /srv/.codex/artifacts/codexa/codex-general-codexa-20260711-codexa-) Tj T*
+(verification-runner-hardening/codexa-test-plan.txt) Tj T*
+(- git diff --cached --check: passed) Tj T*
+(- staged safety scan: passed) Tj T*
+() Tj T*
+(Notes) Tj T*
+() Tj T*
+(Implements the next highest-ROI Codexa verification phase: deterministic real-shell) Tj T*
+(differential safety, fail-closed targeted Playwright Test credit, adjacent runner hardening,) Tj T*
+(and classifier provenance v4.) Tj T*
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000185 00000 n 
+0000000311 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+3009
+%%EOF
