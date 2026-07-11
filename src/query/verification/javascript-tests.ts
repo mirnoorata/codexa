@@ -170,13 +170,13 @@ function withoutCommandOptionValues(args: string[], options: string[]): string[]
 }
 
 function hasNonRunningJavaScriptTestArg(runner: JavaScriptTestRunner, args: string[]): boolean {
-  if (hasEnabledFlag(args, ["--version", "-v", "-V", "--help", "-h", "help", "--passWithNoTests", "--pass-with-no-tests"])) {
+  if (hasPresentFlag(args, ["--version", "-v", "-V", "--help", "-h", "help", "--passWithNoTests", "--pass-with-no-tests"])) {
     return true;
   }
   if (runner === "vitest") {
     return (
       ["bench", "complete", "init", "list"].includes(args[0] ?? "") ||
-      hasEnabledFlag(args, [
+      hasPresentFlag(args, [
         "--standalone",
         "--mergeReports",
         "--merge-reports",
@@ -201,7 +201,7 @@ function hasNonRunningJavaScriptTestArg(runner: JavaScriptTestRunner, args: stri
     );
   }
   if (runner === "jest") {
-    return hasEnabledFlag(args, [
+    return hasPresentFlag(args, [
       "--listTests",
       "--list-tests",
       "--showConfig",
@@ -238,9 +238,9 @@ function hasNonRunningJavaScriptTestArg(runner: JavaScriptTestRunner, args: stri
     ]);
   }
   if (runner === "node-test") {
-    return hasEnabledFlag(args, ["--watch", "--test-only", "--test-name-pattern", "--test-skip-pattern", "--test-shard", "--test-update-snapshots"]);
+    return hasPresentFlag(args, ["--watch", "--test-only", "--test-name-pattern", "--test-skip-pattern", "--test-shard", "--test-update-snapshots"]);
   }
-  return hasEnabledFlag(args, [
+  return hasPresentFlag(args, [
     "--debug",
     "--list",
     "--ui",
@@ -262,17 +262,6 @@ function hasNonRunningJavaScriptTestArg(runner: JavaScriptTestRunner, args: stri
   ]);
 }
 
-function hasEnabledFlag(args: string[], flags: string[]): boolean {
-  return args.some((arg) =>
-    flags.some((flag) => {
-      if (arg === flag) {
-        return true;
-      }
-      if (!arg.startsWith(`${flag}=`)) {
-        return false;
-      }
-      const value = arg.slice(flag.length + 1).toLowerCase();
-      return value !== "false" && value !== "0" && value !== "off";
-    })
-  );
+function hasPresentFlag(args: string[], flags: string[]): boolean {
+  return args.some((arg) => flags.some((flag) => arg === flag || arg.startsWith(`${flag}=`)));
 }

@@ -318,3 +318,10 @@ The exact-head Codex review then found that raw `yarn dlx vitest` and
 script expansion before receiving coverage. All resolved JavaScript runners
 now classify before that branch, matching command-envelope behavior; both Yarn
 launcher forms have production-path regressions.
+
+The second exact-head review found that the common flag helper treated inline
+values `false`, `0`, and `off` as disabled for every option. Those strings are
+valid grep and test-name patterns, so subset runs could regain full file
+credit. Proof-weakening flags are now presence-sensitive regardless of inline
+value, with Playwright, Vitest, Jest, and Node test regressions. This is
+deliberately fail-closed for boolean-looking values.
