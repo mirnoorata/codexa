@@ -244,9 +244,6 @@ export function scriptNameCreditUnsafe(command: string): boolean {
     if (first !== undefined && (first.startsWith("!") || EXIT_CONSUMING_OPENERS.has(first) || first.startsWith("$(") || first.startsWith("`"))) {
       return true;
     }
-    if (!resolveToolInvocation(stripPackageManagerFlags(stripShellControlWords(words))).executesResolvedTool) {
-      return true;
-    }
     const wrapped = shellWrappedCommand(words);
     return wrapped !== undefined && (shellWrapperBodyIsAmbiguous(words) || scriptNameCreditUnsafe(wrapped));
   });
@@ -271,20 +268,26 @@ function commandDiscardedSubstitution(segment: { text: string }): boolean {
 }
 
 // True when the script NAME alone cannot be trusted as evidence: somewhere in
-// the body a command discards the exit of a substitution that LOOKS like the
-// named check (`echo $(tsc)`, `export X=$(tsc) && echo passed`, `git commit -m
+// the body a command does not execute its apparent tool, or discards the exit
+// of a substitution that looks like the named check (`echo $(tsc)`, `export
+// X=$(tsc) && echo passed`, `git commit -m
 // "$(tsc)"`, or the same inside a wrapper). The discarded check never
 // contributes an exit-faithful result no matter what ends the chain, so the
 // name proves nothing about it. A substitution holding only metadata
 // (`node build.mjs && echo $(date)`) does not poison the name, and tool
 // evidence on the substitution-stripped body is unaffected either way — a
-// runner visible outside substitutions keeps its own credit.
+// runner visible outside substitutions keeps its own credit. Tool evidence is
+// still collected when the name is unsafe, so a later real launcher remains
+// independently provable after a harmless metadata probe.
 export function scriptNameTrustUnsafe(command: string): boolean {
   return splitShellSequence(command).some((segment) => {
     if (commandDiscardedSubstitution(segment) && DISCARDED_CHECK_PATTERN.test(commandSubstitutionContents(segment.text))) {
       return true;
     }
     const words = stripLeadingEnvironment(shellWords(segment.text));
+    if (!resolveToolInvocation(stripPackageManagerFlags(stripShellControlWords(words))).executesResolvedTool) {
+      return true;
+    }
     const wrapped = shellWrappedCommand(words);
     return wrapped !== undefined && (shellWrapperBodyIsAmbiguous(words) || scriptNameTrustUnsafe(wrapped));
   });

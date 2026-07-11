@@ -293,23 +293,20 @@ function deriveSegmentEnvelope(segment: string, cwd: string, ctx: CommandEnvelop
   if (invocation.command === "playwright" || invocation.command === "vitest" || invocation.command === "jest") {
     return { ...base, packageManager: invocation.command, scriptName: invocation.command, args: invocation.args };
   }
+  if (invocation.command === "tsc") {
+    return { ...base, packageManager: "tsc", scriptName: "tsc", args: invocation.args };
+  }
   if (first === "yarn" && effectiveWords[1]) {
     const scriptName = effectiveWords[1] === "run" ? effectiveWords[2] : effectiveWords[1];
     return effectiveWords[1] === "run" && isPackageManagerRunInformationalWord(scriptName)
       ? { ...base, packageManager: "yarn", args: effectiveWords.slice(1) }
       : { ...base, packageManager: "yarn", scriptName, args: effectiveWords.slice(effectiveWords[1] === "run" ? 3 : 2) };
   }
-  if (first === "npx" && effectiveWords[1] === "tsc") {
-    return { ...base, packageManager: "tsc", scriptName: "tsc", args: effectiveWords.slice(2) };
-  }
   if (first === "pytest") {
     return { ...base, packageManager: "pytest", scriptName: "pytest", args: effectiveWords.slice(1) };
   }
   if ((first === "python" || first === "python3") && effectiveWords[1] === "-m" && effectiveWords[2] === "pytest") {
     return { ...base, packageManager: first, scriptName: "pytest", args: effectiveWords.slice(3) };
-  }
-  if (first === "tsc") {
-    return { ...base, packageManager: "tsc", scriptName: "tsc", args: effectiveWords.slice(1) };
   }
   if (first === "npm" && effectiveWords[1] === "audit") {
     return { ...base, packageManager: "npm", scriptName: "audit", args: effectiveWords.slice(2) };

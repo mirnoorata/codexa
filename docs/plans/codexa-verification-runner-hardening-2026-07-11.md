@@ -356,3 +356,11 @@ returns before package-manager script fallbacks, so a package script named
 `dlx`, `exec`, or `--version` cannot revive rejected metadata evidence. Positive
 controls retain ordinary `command`, `timeout`, `time -v`, package, workspace,
 and yes-mode launcher behavior.
+
+The fifth exact-head review found that the metadata guard lived in the broader
+exit-fidelity veto. A harmless probe before a real launcher therefore erased
+all package-script tool evidence, not just unsafe name-only credit. Metadata
+modes now make only the script name untrusted; independently resolved later
+tools remain eligible. Resolved `tsc` launchers also use the shared raw and
+structured-envelope path, with regressions for `npm --version && npm exec --
+tsc --noEmit` and direct `npm exec -- tsc --noEmit`.

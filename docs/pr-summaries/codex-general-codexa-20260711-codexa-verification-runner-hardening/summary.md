@@ -36,4 +36,5 @@
 Exact-head reviews closed Yarn launcher routing, false-like filter values,
 Playwright browser-option support, and non-executing launcher/prefix credit.
 The final pass also blocked opaque call bodies, option-value decoys, unknown
-flags, contradicted structured envelopes, and fallback reclassification.
+flags, contradicted structured envelopes, and fallback reclassification while
+preserving later real tool evidence after harmless metadata probes.

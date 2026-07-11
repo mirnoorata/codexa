@@ -454,6 +454,7 @@ export async function createVerificationCoverageFixtureRepo(): Promise<string> {
           npxversiontypecheck: "npx -y tsc --version",
           npxlauncherversiontypecheck: "npx --version tsc --noEmit",
           npmrunversiontypecheck: "npm run --version",
+          metadatathentypecheck: "npm --version && npm exec -- tsc --noEmit",
           commandlookuptypecheck: "command -v tsc --noEmit",
           helpverify: "node scripts/verify-source-hygiene.mjs --help",
           shhelptypecheck: "sh -c 'tsc --help'",

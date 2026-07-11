@@ -785,6 +785,14 @@ function analyzeSegment(
     addJavaScriptTestCoverage(invocation.args, cwd, commandText, `direct ${invocation.command} command`, invocation.command, ctx);
     return;
   }
+  if (invocation.command === "tsc") {
+    if (isNonCompilingTscCommand(effectiveWords)) {
+      ctx.addCoverage({ kind: "unknown", command: commandText, source: "tsc invoked with a non-compiling flag", confidence: "heuristic", scope: cwd, details: chain });
+      return;
+    }
+    ctx.addCoverage({ kind: "typescript-syntax", command: commandText, source: "direct tsc command", scope: cwd, details: chain });
+    return;
+  }
   if (first === "yarn" && effectiveWords[1]) {
     const scriptName = effectiveWords[1] === "run" ? effectiveWords[2] : effectiveWords[1];
     if (scriptName && !(effectiveWords[1] === "run" && isPackageManagerRunInformationalWord(scriptName))) {
@@ -802,16 +810,6 @@ function analyzeSegment(
   }
   if ((first === "python" || first === "python3") && effectiveWords[1] === "-m" && effectiveWords[2] === "pytest") {
     addPythonTestCoverage(effectiveWords.slice(3), cwd, commandText, "direct python -m pytest command", ctx);
-    return;
-  }
-  if (first === "tsc" || (first === "npx" && effectiveWords[1] === "tsc")) {
-    if (isNonCompilingTscCommand(effectiveWords)) {
-      // tsc --help / --version / --init / --showConfig / --listFilesOnly do not
-      // typecheck; they must not satisfy a TypeScript verification check.
-      ctx.addCoverage({ kind: "unknown", command: commandText, source: "tsc invoked with a non-compiling flag", confidence: "heuristic", scope: cwd, details: chain });
-      return;
-    }
-    ctx.addCoverage({ kind: "typescript-syntax", command: commandText, source: "direct tsc command", scope: cwd, details: chain });
     return;
   }
   if (first === "npm" && effectiveWords[1] === "audit") {
