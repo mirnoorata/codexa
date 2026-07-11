@@ -452,6 +452,10 @@ export async function createVerificationCoverageFixtureRepo(): Promise<string> {
           parenstypecheck: "(tsc -p tsconfig.json --noEmit)",
           mixedbuild: "vite build && tsc --version",
           npxversiontypecheck: "npx -y tsc --version",
+          npxlauncherversiontypecheck: "npx --version tsc --noEmit",
+          npmrunversiontypecheck: "npm run --version",
+          metadatathentypecheck: "npm --version && npm exec -- tsc --noEmit",
+          commandlookuptypecheck: "command -v tsc --noEmit",
           helpverify: "node scripts/verify-source-hygiene.mjs --help",
           shhelptypecheck: "sh -c 'tsc --help'",
           gitmsgtypecheck: 'git commit -m "$(tsc -p tsconfig.json --noEmit)"'

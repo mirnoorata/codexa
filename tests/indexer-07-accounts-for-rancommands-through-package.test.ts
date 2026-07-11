@@ -768,7 +768,7 @@ it("accounts for ranCommands through package-script coverage without over-coveri
     // bintsctypecheck: a real tsc behind a path counts via basename.
     // npxtypecheck: launcher flags (`npx -y tsc`) do not hide the tool.
     // parenstypecheck: a glued subshell still resolves tsc + --noEmit).
-    for (const script of ["bintsctypecheck", "npxtypecheck", "parenstypecheck"]) {
+    for (const script of ["bintsctypecheck", "npxtypecheck", "parenstypecheck", "metadatathentypecheck"]) {
       const realTsc = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: [`npm run ${script}`] }, { autoRefresh: false });
       const kinds = (realTsc.data as { verificationCoverage: Array<{ kind: string }> }).verificationCoverage.map((e) => e.kind);
       expect(kinds).toContain("typescript-syntax");
@@ -785,6 +785,13 @@ it("accounts for ranCommands through package-script coverage without over-coveri
     // cannot ride a type-ish script name into credit.
     const npxVersion = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["npm run npxversiontypecheck"] }, { autoRefresh: false });
     expect((npxVersion.data as { verificationCoverage: Array<{ kind: string }> }).verificationCoverage.map((e) => e.kind)).not.toContain("typescript-syntax");
+
+    // Metadata modes before the apparent tool never execute it and cannot use
+    // a type-ish script name as substitute evidence.
+    for (const script of ["npxlauncherversiontypecheck", "npmrunversiontypecheck", "commandlookuptypecheck"]) {
+      const metadataOnly = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: [`npm run ${script}`] }, { autoRefresh: false });
+      expect((metadataOnly.data as { verificationCoverage: Array<{ kind: string }> }).verificationCoverage.map((e) => e.kind), script).not.toContain("typescript-syntax");
+    }
 
     // A hygiene script invoked with --help runs nothing — no lint evidence.
     const helpVerify = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["npm run helpverify"] }, { autoRefresh: false });
@@ -860,6 +867,9 @@ it("accounts for ranCommands through package-script coverage without over-coveri
       const tscNonCompiling = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: [command] }, { autoRefresh: false });
       expect((tscNonCompiling.data as { verificationCoverage: Array<{ kind: string }> }).verificationCoverage.map((e) => e.kind)).not.toContain("typescript-syntax");
     }
+
+    const npmExecTsc = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["npm exec -- tsc --noEmit"] }, { autoRefresh: false });
+    expect((npmExecTsc.data as { verificationCoverage: Array<{ kind: string }> }).verificationCoverage.map((e) => e.kind)).toContain("typescript-syntax");
 
     const simpleIfFlow = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["if true; then npm test; fi"] }, { autoRefresh: false });
     expect((simpleIfFlow.data as { testsNotRun: unknown[] }).testsNotRun).toEqual([]);

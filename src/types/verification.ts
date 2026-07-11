@@ -53,7 +53,7 @@ export type VerificationLedgerStatus = "covered" | "missing" | "waived" | "not_a
 export type VerificationTrustTier = "executed-by-autoverify" | "witnessed" | "artifact-corroborated" | "reported" | "none";
 
 export const VERIFICATION_PROVENANCE_SCHEMA_VERSION = 1 as const;
-export const VERIFICATION_COMMAND_COVERAGE_CLASSIFIER_VERSION = "command-coverage-v3";
+export const VERIFICATION_COMMAND_COVERAGE_CLASSIFIER_VERSION = "command-coverage-v4";
 export const VERIFICATION_COMMAND_ENVELOPE_RULESET_VERSION = "command-envelope-v2";
 export const VERIFICATION_COVERAGE_VERSION = "verification-coverage-v4";
 export const VERIFICATION_LEDGER_VERSION = "verification-ledger-v3";

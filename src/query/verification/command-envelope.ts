@@ -1,9 +1,11 @@
 import { CURRENT_VERIFICATION_PROVENANCE } from "../../types.js";
 import type { VerificationCommandEnvelope, VerificationCommandReport, VerificationTrustTier } from "../../types.js";
 import { commandNeedsFullMaskingAnalysis } from "./masking.js";
+import { isPackageManagerRunInformationalWord, resolveToolInvocation } from "./script-credit.js";
 import { isNonRunningCommand, shellWords, shellWrappedCommand, stripLeadingEnvironment, stripPackageManagerFlags, stripShellControlWords } from "./shell.js";
 import {
   normalizeCwd,
+  npmWorkspaceSelection,
   packageNameForRoot,
   packageRootForCwd,
   readFlagArgument,
@@ -266,7 +268,9 @@ function deriveSegmentEnvelope(segment: string, cwd: string, ctx: CommandEnvelop
     return deriveCommandEnvelope(shellWrapped, cwd, ctx);
   }
   const workspace = workspaceSpecifierFromWords(words);
-  const scoped = scopedPackageCommand(words, ctx.repoRoot, ctx.packageRoots, ctx.packageNamesByRoot) ?? scopedPackageCommand(stripPackageManagerFlags(words), ctx.repoRoot, ctx.packageRoots, ctx.packageNamesByRoot);
+  const scoped =
+    scopedPackageCommand(words, ctx.repoRoot, ctx.packageRoots, ctx.packageNamesByRoot, cwd) ??
+    scopedPackageCommand(stripPackageManagerFlags(words), ctx.repoRoot, ctx.packageRoots, ctx.packageNamesByRoot, cwd);
   if (scoped) {
     const derived = deriveSegmentEnvelope(scoped.words.join(" "), scoped.cwd, ctx);
     return { ...derived, workspace: derived.workspace ?? workspace };
@@ -277,28 +281,35 @@ function deriveSegmentEnvelope(segment: string, cwd: string, ctx: CommandEnvelop
   const packageName = isRepoPackageRoot(packageRoot) ? packageNameForRoot(packageRoot, ctx.repoRoot, ctx.packageNamesByRoot) : undefined;
   const base = { packageRoot, packageName, workspace, args: [] };
   if ((first === "npm" || first === "pnpm") && effectiveWords[1] === "run" && effectiveWords[2]) {
+    if (isPackageManagerRunInformationalWord(effectiveWords[2])) {
+      return { ...base, packageManager: first, args: effectiveWords.slice(1) };
+    }
     return { ...base, packageManager: first, scriptName: effectiveWords[2], args: effectiveWords.slice(3) };
   }
   if ((first === "npm" || first === "pnpm") && (effectiveWords[1] === "test" || effectiveWords[1] === "t")) {
     return { ...base, packageManager: first, scriptName: "test", args: effectiveWords.slice(2) };
   }
+  const invocation = resolveToolInvocation(effectiveWords);
+  if (!invocation.executesResolvedTool) {
+    return { ...base, packageManager: first, args: effectiveWords.slice(1) };
+  }
+  if (invocation.command === "playwright" || invocation.command === "vitest" || invocation.command === "jest") {
+    return { ...base, packageManager: invocation.command, scriptName: invocation.command, args: invocation.args };
+  }
+  if (invocation.command === "tsc") {
+    return { ...base, packageManager: "tsc", scriptName: "tsc", args: invocation.args };
+  }
   if (first === "yarn" && effectiveWords[1]) {
-    return { ...base, packageManager: "yarn", scriptName: effectiveWords[1] === "run" ? effectiveWords[2] : effectiveWords[1], args: effectiveWords.slice(effectiveWords[1] === "run" ? 3 : 2) };
-  }
-  if (first === "vitest" || first === "jest") {
-    return { ...base, packageManager: first, scriptName: first, args: effectiveWords.slice(1) };
-  }
-  if (first === "npx" && (effectiveWords[1] === "vitest" || effectiveWords[1] === "jest" || effectiveWords[1] === "tsc")) {
-    return { ...base, packageManager: effectiveWords[1], scriptName: effectiveWords[1], args: effectiveWords.slice(2) };
+    const scriptName = effectiveWords[1] === "run" ? effectiveWords[2] : effectiveWords[1];
+    return effectiveWords[1] === "run" && isPackageManagerRunInformationalWord(scriptName)
+      ? { ...base, packageManager: "yarn", args: effectiveWords.slice(1) }
+      : { ...base, packageManager: "yarn", scriptName, args: effectiveWords.slice(effectiveWords[1] === "run" ? 3 : 2) };
   }
   if (first === "pytest") {
     return { ...base, packageManager: "pytest", scriptName: "pytest", args: effectiveWords.slice(1) };
   }
   if ((first === "python" || first === "python3") && effectiveWords[1] === "-m" && effectiveWords[2] === "pytest") {
     return { ...base, packageManager: first, scriptName: "pytest", args: effectiveWords.slice(3) };
-  }
-  if (first === "tsc") {
-    return { ...base, packageManager: "tsc", scriptName: "tsc", args: effectiveWords.slice(1) };
   }
   if (first === "npm" && effectiveWords[1] === "audit") {
     return { ...base, packageManager: "npm", scriptName: "audit", args: effectiveWords.slice(2) };
@@ -308,8 +319,8 @@ function deriveSegmentEnvelope(segment: string, cwd: string, ctx: CommandEnvelop
 
 function workspaceSpecifierFromWords(words: string[]): string | undefined {
   const first = words[0];
-  const npmWorkspace = first === "npm" ? readFlagArgument(words, 1, ["-w", "--workspace"]) : undefined;
-  if (npmWorkspace) {
+  const npmWorkspace = npmWorkspaceSelection(words);
+  if (npmWorkspace && !npmWorkspace.multiple) {
     return npmWorkspace.value;
   }
   const pnpmFilter = first === "pnpm" ? readFlagArgument(words, 1, ["--filter", "-F"]) : undefined;

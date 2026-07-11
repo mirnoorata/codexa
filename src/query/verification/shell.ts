@@ -426,6 +426,15 @@ export function stripLeadingEnvironment(words: string[]): string[] {
     while (index < words.length && (words[index] === "-i" || words[index] === "--ignore-environment")) {
       index += 1;
     }
+    while (index < words.length && isEnvironmentAssignment(words[index])) {
+      index += 1;
+    }
+    // Preserve wrappers with options that need execution or scope parsing.
+    // Flatten only the simple `env [-i] NAME=value command` form.
+    if (words[index]?.startsWith("-")) {
+      return words;
+    }
+    return words.slice(index);
   }
   while (index < words.length && isEnvironmentAssignment(words[index])) {
     index += 1;
