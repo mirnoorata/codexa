@@ -1,7 +1,7 @@
 import { CURRENT_VERIFICATION_PROVENANCE } from "../../types.js";
 import type { VerificationCommandEnvelope, VerificationCommandReport, VerificationTrustTier } from "../../types.js";
 import { commandNeedsFullMaskingAnalysis } from "./masking.js";
-import { resolveToolInvocation } from "./script-credit.js";
+import { isPackageManagerRunInformationalWord, resolveToolInvocation } from "./script-credit.js";
 import { isNonRunningCommand, shellWords, shellWrappedCommand, stripLeadingEnvironment, stripPackageManagerFlags, stripShellControlWords } from "./shell.js";
 import {
   normalizeCwd,
@@ -278,17 +278,26 @@ function deriveSegmentEnvelope(segment: string, cwd: string, ctx: CommandEnvelop
   const packageName = isRepoPackageRoot(packageRoot) ? packageNameForRoot(packageRoot, ctx.repoRoot, ctx.packageNamesByRoot) : undefined;
   const base = { packageRoot, packageName, workspace, args: [] };
   if ((first === "npm" || first === "pnpm") && effectiveWords[1] === "run" && effectiveWords[2]) {
+    if (isPackageManagerRunInformationalWord(effectiveWords[2])) {
+      return { ...base, packageManager: first, args: effectiveWords.slice(1) };
+    }
     return { ...base, packageManager: first, scriptName: effectiveWords[2], args: effectiveWords.slice(3) };
   }
   if ((first === "npm" || first === "pnpm") && (effectiveWords[1] === "test" || effectiveWords[1] === "t")) {
     return { ...base, packageManager: first, scriptName: "test", args: effectiveWords.slice(2) };
   }
   const invocation = resolveToolInvocation(effectiveWords);
+  if (!invocation.executesResolvedTool) {
+    return { ...base, packageManager: first, args: effectiveWords.slice(1) };
+  }
   if (invocation.command === "playwright" || invocation.command === "vitest" || invocation.command === "jest") {
     return { ...base, packageManager: invocation.command, scriptName: invocation.command, args: invocation.args };
   }
   if (first === "yarn" && effectiveWords[1]) {
-    return { ...base, packageManager: "yarn", scriptName: effectiveWords[1] === "run" ? effectiveWords[2] : effectiveWords[1], args: effectiveWords.slice(effectiveWords[1] === "run" ? 3 : 2) };
+    const scriptName = effectiveWords[1] === "run" ? effectiveWords[2] : effectiveWords[1];
+    return effectiveWords[1] === "run" && isPackageManagerRunInformationalWord(scriptName)
+      ? { ...base, packageManager: "yarn", args: effectiveWords.slice(1) }
+      : { ...base, packageManager: "yarn", scriptName, args: effectiveWords.slice(effectiveWords[1] === "run" ? 3 : 2) };
   }
   if (first === "npx" && effectiveWords[1] === "tsc") {
     return { ...base, packageManager: "tsc", scriptName: "tsc", args: effectiveWords.slice(2) };

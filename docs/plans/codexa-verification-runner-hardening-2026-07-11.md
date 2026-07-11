@@ -283,10 +283,15 @@ preserved, while a second explicit snapshot,
 12-file provisional scope expansion. The final cohesion pass then removed the
 `src/query/verification/shell.ts` diff, leaving 11 changed files.
 
+Review-driven fixes later expanded the dirty closure to shared script-credit
+fixtures and committed summary artifacts. The final Codexa gate uses the
+explicit `codexa-verification-runner-hardening-closure-20260711` snapshot so
+that those reviewed files are planned rather than waived.
+
 Local acceptance evidence:
 
 - `npm run check`: source/release/privacy checks, 113 shell integration checks,
-  46 test files, and 431 Vitest tests passed.
+  46 test files, and 433 Vitest tests passed.
 - `npm run eval:ci`: 21 scenarios passed with score 1.
 - `npm run benchmark:ci`: every hot-path threshold passed.
 - `npm run smoke:package`: 25 packed install/runtime checks passed.
@@ -330,3 +335,24 @@ The third exact-head review found a compatibility false missing for supported
 Playwright `-b/--browser <name>` test runs. Browser selection is scope-safe
 when an explicit indexed test path is present, so both separate and inline
 forms now receive the same targeted credit as other safe value options.
+
+The fourth exact-head review found that the shared invocation resolver skipped
+launcher and transparent-prefix options without preserving whether those
+options execute the apparent child tool. Commands such as `npx --version
+playwright test ...` and `command -v playwright test ...` could therefore
+receive test credit even though they only print metadata. Resolution now
+returns an explicit `executesResolvedTool` invariant consumed by raw coverage,
+structured-envelope derivation, and package-script evidence. Informational
+launcher/prefix modes and opaque `npx -c/--call` bodies fail closed, while
+ordinary launcher flags remain supported. Static production-path regressions,
+contradicted-envelope coverage, named-script laundering checks, and real-shell
+stub observations cover the boundary.
+
+The same adversarial pass then tested option values and fallback precedence.
+Value-bearing prefixes such as `time -o <file>` and `env --chdir <dir>` now
+skip their values instead of treating runner-shaped values as executables;
+unknown prefix and launcher options fail closed. Non-executing resolution also
+returns before package-manager script fallbacks, so a package script named
+`dlx`, `exec`, or `--version` cannot revive rejected metadata evidence. Positive
+controls retain ordinary `command`, `timeout`, `time -v`, package, workspace,
+and yes-mode launcher behavior.

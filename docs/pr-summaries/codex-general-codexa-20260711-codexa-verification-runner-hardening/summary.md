@@ -4,43 +4,36 @@
 - Worktree: isolated Codexa worktree
 - Branch: `codex/general/codexa-20260711-codexa-verification-runner-hardening`
 - Base: `main`
-- Primary commit: `9085e45`
-- Subject: `feat(verification): harden runner classification`
+- Delivery: feature implementation plus exact-head adversarial review fixes
 
-## Changed Files
+## Scope
 
-9085e45 feat(verification): harden runner classification
- .gitignore                                         |   1 +
- README.md                                          |  11 +-
- ...exa-verification-runner-hardening-2026-07-11.md | 297 +++++++++++++++++++++
- src/query/verification.ts                          |  46 ++--
- src/query/verification/command-envelope.ts         |  12 +-
- src/query/verification/javascript-tests.ts         | 276 +++++++++++++++++++
- src/query/verification/script-credit.ts            |   2 +-
- src/types/verification.ts                          |   2 +-
- tests/schema.test.ts                               |   2 +-
- tests/verification-playwright.test.ts              | 196 ++++++++++++++
- tests/verification-shell-differential.test.ts      | 173 ++++++++++++
- 11 files changed, 975 insertions(+), 43 deletions(-)
- create mode 100644 docs/plans/codexa-verification-runner-hardening-2026-07-11.md
- create mode 100644 src/query/verification/javascript-tests.ts
- create mode 100644 tests/verification-playwright.test.ts
- create mode 100644 tests/verification-shell-differential.test.ts
+- Saved the first-principles phase plan and implementation/review record.
+- Added fail-closed targeted Playwright Test classification and hardened
+  Vitest, Jest, and Node test proof-weakening modes.
+- Unified raw-command, structured-envelope, and package-script runner
+  resolution with explicit child-execution state.
+- Rejected informational, opaque, unknown, and value-decoy launcher/prefix
+  forms without losing supported package, workspace, browser, timeout, and
+  wrapper forms.
+- Added deterministic real-shell differential tests and production-path
+  regressions; advanced classifier provenance to v4.
+- Updated public behavior documentation and repository summary artifacts.
 
 ## Verification
 
 - git diff --check: passed
-- npm run check: passed
-- npm run eval:ci: passed
-- npm run benchmark:ci: passed
-- npm run smoke:package: passed
+- npm run check: passed (113 shell checks; 46 files; 433 tests)
+- npm run eval:ci: passed (21 scenarios; score 1)
+- npm run benchmark:ci: passed (all thresholds)
+- npm run smoke:package: passed (25 checks)
 - npm run package:hygiene: passed
-- npm audit --audit-level=moderate: passed
-- Codexa post-edit-review: passed; local artifact retained outside the repository
-- Codexa test-plan: generated; local artifact retained outside the repository
-- git diff --cached --check: passed
-- staged safety scan: passed
+- npm audit --audit-level=moderate: passed (0 vulnerabilities)
+- Focused runner and differential regressions: passed
 
-## Notes
+## Review Hardening
 
-Implements the next highest-ROI Codexa verification phase: deterministic real-shell differential safety, fail-closed targeted Playwright Test credit, adjacent runner hardening, and classifier provenance v4.
+Exact-head reviews closed Yarn launcher routing, false-like filter values,
+Playwright browser-option support, and non-executing launcher/prefix credit.
+The final pass also blocked opaque call bodies, option-value decoys, unknown
+flags, contradicted structured envelopes, and fallback reclassification.

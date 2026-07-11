@@ -23,54 +23,168 @@ import { EXIT_CONSUMING_OPENERS, segmentMasksExit, stripFlowPrefix } from "./mas
 // still run echo. A leading backslash (`\echo`) only suppresses alias lookup,
 // and brace-group/subshell openers (`{ echo ...`, `(echo ...`) propagate the
 // inner command's behavior.
-const TRANSPARENT_EXEC_PREFIXES = new Set(["command", "builtin", "busybox", "exec", "nohup", "nice", "time", "sudo", "doas", "stdbuf", "timeout", "env"]);
+const TRANSPARENT_EXEC_PREFIXES = new Set(["command", "exec", "nohup", "nice", "time", "sudo", "doas", "stdbuf", "timeout", "env"]);
+
+// Some otherwise-transparent prefixes have inspection modes that consume the
+// remaining words without executing them. Keep these prefix-specific: `time
+// -v tool`, for example, really does run tool, while `command -v tool` only
+// performs a lookup.
+const NON_RUNNING_PREFIX_FLAGS = new Map<string, Set<string>>([
+  ["command", new Set(["-v", "-V", "--help"])],
+  ["exec", new Set(["--help"])],
+  ["nohup", new Set(["--help", "--version"])],
+  ["nice", new Set(["--help", "--version"])],
+  ["time", new Set(["--help", "--version"])],
+  ["sudo", new Set(["-e", "-h", "-K", "-l", "-ll", "-v", "-V", "--edit", "--help", "--list", "--remove-timestamp", "--validate", "--version"])],
+  ["doas", new Set(["-C", "-L"])],
+  ["stdbuf", new Set(["--help", "--version"])],
+  ["timeout", new Set(["--help", "--version"])],
+  ["env", new Set(["-0", "--help", "--null", "--version"])]
+]);
+
+const PREFIX_NO_VALUE_FLAGS = new Map<string, Set<string>>([
+  ["command", new Set(["-p"])],
+  ["exec", new Set(["-c", "-l"])],
+  ["time", new Set(["-a", "-p", "-v"])],
+  ["sudo", new Set(["-A", "-b", "-E", "-H", "-k", "-n", "-P", "-S"])],
+  ["doas", new Set(["-n"])],
+  ["timeout", new Set(["--foreground", "--preserve-status", "--verbose"])],
+  ["env", new Set(["-i", "-v", "--debug", "--ignore-environment"])]
+]);
+
+const PREFIX_VALUE_FLAGS = new Map<string, Set<string>>([
+  ["exec", new Set(["-a"])],
+  ["nice", new Set(["-n", "--adjustment"])],
+  ["time", new Set(["-f", "-o", "--format", "--output"])],
+  ["sudo", new Set(["-C", "-D", "-g", "-p", "-R", "-r", "-t", "-T", "-u", "-U", "--chdir", "--chroot", "--command-timeout", "--group", "--host", "--other-user", "--prompt", "--role", "--type", "--user"])],
+  ["doas", new Set(["-a", "-u"])],
+  ["stdbuf", new Set(["-e", "-i", "-o", "--error", "--input", "--output"])],
+  ["timeout", new Set(["-k", "-s", "--kill-after", "--signal"])],
+  ["env", new Set(["-C", "-S", "-u", "--argv0", "--chdir", "--split-string", "--unset"])]
+]);
+
+interface CommandResolution {
+  word: string | undefined;
+  index: number;
+  executesResolvedTool: boolean;
+}
 
 // Resolve the effective command word through the transparent prefixes above,
 // skipping their flags and duration arguments, group openers, and backslashes.
-function resolveCommandIndex(words: string[]): { word: string | undefined; index: number } {
+function resolveCommandIndex(words: string[]): CommandResolution {
   let index = 0;
-  let sawPrefix = false;
+  let activePrefix: string | undefined;
+  let executesResolvedTool = true;
+  let optionsEnded = false;
   while (index < words.length) {
     const word = words[index].replace(/^[({\\]+/u, "");
+    if (optionsEnded) {
+      return { word, index, executesResolvedTool };
+    }
     if (word === "" || TRANSPARENT_EXEC_PREFIXES.has(word)) {
-      sawPrefix = true;
+      if (word !== "") {
+        activePrefix = word;
+      }
       index += 1;
       continue;
     }
-    if (sawPrefix && (word.startsWith("-") || /^\d+(?:\.\d+)?[smhd]?$/u.test(word))) {
+    if (activePrefix && word === "--") {
+      optionsEnded = true;
       index += 1;
       continue;
     }
-    return { word, index };
+    if (activePrefix && word.startsWith("-")) {
+      const flag = optionName(word);
+      if (prefixFlagIsNonRunning(activePrefix, flag)) {
+        executesResolvedTool = false;
+        index += 1;
+        continue;
+      }
+      if (PREFIX_NO_VALUE_FLAGS.get(activePrefix)?.has(flag)) {
+        index += 1;
+        continue;
+      }
+      if (PREFIX_VALUE_FLAGS.get(activePrefix)?.has(flag)) {
+        index += hasAttachedOptionValue(word) ? 1 : 2;
+        continue;
+      }
+      // Unknown prefix options may consume the next runner-shaped token as a
+      // value. Preserve the candidate for diagnostics, but never credit it.
+      executesResolvedTool = false;
+      index += 1;
+      continue;
+    }
+    if (activePrefix === "timeout" && /^\d+(?:\.\d+)?[smhd]?$/u.test(word)) {
+      index += 1;
+      continue;
+    }
+    if (activePrefix === "env" && /^[A-Za-z_][A-Za-z0-9_]*=/u.test(word)) {
+      index += 1;
+      continue;
+    }
+    return { word, index, executesResolvedTool };
   }
-  return { word: undefined, index };
+  return { word: undefined, index, executesResolvedTool };
+}
+
+function prefixFlagIsNonRunning(prefix: string, flag: string): boolean {
+  return NON_RUNNING_PREFIX_FLAGS.get(prefix)?.has(flag) ?? false;
+}
+
+function optionName(value: string): string {
+  const separator = value.indexOf("=");
+  return separator > 0 ? value.slice(0, separator) : value;
+}
+
+function hasAttachedOptionValue(value: string): boolean {
+  return value.includes("=");
 }
 
 // Launchers that expose the next word as the real tool (`npx tsc`).
 const TOOL_LAUNCHERS = new Set(["npx", "bunx"]);
 const PACKAGE_MANAGER_EXEC_WORDS = new Set(["exec", "x", "dlx"]);
+const PACKAGE_MANAGERS = new Set(["npm", "pnpm", "yarn"]);
 // Launcher flags that take a value (`npx -p typescript tsc`).
-const LAUNCHER_VALUE_FLAGS = new Set(["-p", "--package", "-c", "--call"]);
+const LAUNCHER_VALUE_FLAGS = new Set(["-p", "--package"]);
+const OPAQUE_LAUNCHER_VALUE_FLAGS = new Set(["-c", "--call"]);
+const NON_RUNNING_LAUNCHER_FLAGS = new Set(["-h", "-v", "-V", "--help", "--version"]);
+const PACKAGE_MANAGER_INFORMATION_WORDS = new Set([...NON_RUNNING_LAUNCHER_FLAGS, "help"]);
+const LAUNCHER_NO_VALUE_FLAGS = new Set(["-y", "-ws", "--bun", "--ignore-existing", "--include-workspace-root", "--no-install", "--quiet", "--workspaces", "--yes"]);
+const LAUNCHER_CONTEXT_VALUE_FLAGS = new Set(["-w", "--workspace"]);
 
-function skipLauncherFlags(args: string[]): string[] {
+function skipLauncherFlags(args: string[]): { rest: string[]; executesResolvedTool: boolean } {
   let index = 0;
+  let executesResolvedTool = true;
   while (index < args.length) {
     const arg = args[index];
     if (arg === "--") {
       index += 1;
       break;
     }
-    if (LAUNCHER_VALUE_FLAGS.has(arg)) {
-      index += 2;
+    const flag = optionName(arg);
+    if (LAUNCHER_VALUE_FLAGS.has(flag) || LAUNCHER_CONTEXT_VALUE_FLAGS.has(flag)) {
+      index += hasAttachedOptionValue(arg) ? 1 : 2;
+      continue;
+    }
+    if (OPAQUE_LAUNCHER_VALUE_FLAGS.has(flag)) {
+      executesResolvedTool = false;
+      index += hasAttachedOptionValue(arg) ? 1 : 2;
       continue;
     }
     if (arg.startsWith("-")) {
+      if (NON_RUNNING_LAUNCHER_FLAGS.has(flag)) {
+        executesResolvedTool = false;
+      } else if (!LAUNCHER_NO_VALUE_FLAGS.has(flag)) {
+        // Unknown launcher flags may consume the next token. Fail closed rather
+        // than interpreting a possible option value as the executed tool.
+        executesResolvedTool = false;
+      }
       index += 1;
       continue;
     }
     break;
   }
-  return args.slice(index);
+  return { rest: args.slice(index), executesResolvedTool };
 }
 
 function commandBasename(word: string): string {
@@ -82,16 +196,31 @@ function commandBasename(word: string): string {
 // to the tool that actually runs. The name-veto and the evidence extractor
 // must agree on what a command is — they once didn't, and the drift laundered
 // `npx -y tsc --version` into a credited typecheck.
-export function resolveToolInvocation(words: string[]): { command: string; args: string[] } {
-  const { index } = resolveCommandIndex(words);
+export function resolveToolInvocation(words: string[]): { command: string; args: string[]; executesResolvedTool: boolean } {
+  const resolution = resolveCommandIndex(words);
+  const { index } = resolution;
   let command = commandBasename(words[index] ?? "");
   let args = words.slice(index + 1);
+  let executesResolvedTool = resolution.executesResolvedTool;
   if (TOOL_LAUNCHERS.has(command) || ((command === "npm" || command === "pnpm" || command === "yarn") && PACKAGE_MANAGER_EXEC_WORDS.has(args[0] ?? ""))) {
-    const rest = skipLauncherFlags(TOOL_LAUNCHERS.has(command) ? args : args.slice(1));
+    const launcher = skipLauncherFlags(TOOL_LAUNCHERS.has(command) ? args : args.slice(1));
+    const { rest } = launcher;
+    executesResolvedTool &&= launcher.executesResolvedTool;
     command = commandBasename(rest[0] ?? "");
     args = rest.slice(1);
   }
-  return { command, args };
+  if (PACKAGE_MANAGERS.has(command) && (isPackageManagerInformationalWord(args[0]) || (args[0] === "run" && isPackageManagerRunInformationalWord(args[1])))) {
+    executesResolvedTool = false;
+  }
+  return { command, args, executesResolvedTool };
+}
+
+export function isPackageManagerInformationalWord(word: string | undefined): boolean {
+  return PACKAGE_MANAGER_INFORMATION_WORDS.has(optionName(word ?? ""));
+}
+
+export function isPackageManagerRunInformationalWord(word: string | undefined): boolean {
+  return NON_RUNNING_LAUNCHER_FLAGS.has(optionName(word ?? ""));
 }
 
 // True when a script body's exit does NOT faithfully reflect its named check, so
@@ -113,6 +242,9 @@ export function scriptNameCreditUnsafe(command: string): boolean {
     // as an exit-consuming compound.
     const first = stripFlowPrefix(words)[0];
     if (first !== undefined && (first.startsWith("!") || EXIT_CONSUMING_OPENERS.has(first) || first.startsWith("$(") || first.startsWith("`"))) {
+      return true;
+    }
+    if (!resolveToolInvocation(stripPackageManagerFlags(stripShellControlWords(words))).executesResolvedTool) {
       return true;
     }
     const wrapped = shellWrappedCommand(words);
@@ -163,11 +295,11 @@ export const NON_COMPILING_TSC_FLAG = /^(--help|-h|--version|-v|--init|--all|--s
 // True when a tsc invocation only prints info and does not typecheck, so it must
 // not satisfy a TypeScript verification check.
 export function isNonCompilingTscCommand(words: string[]): boolean {
-  const { command, args } = resolveToolInvocation(stripPackageManagerFlags(words));
+  const { command, args, executesResolvedTool } = resolveToolInvocation(stripPackageManagerFlags(words));
   if (command !== "tsc") {
     return false;
   }
-  return args.some((arg) => NON_COMPILING_TSC_FLAG.test(arg.replace(/[)}]+$/u, "")));
+  return !executesResolvedTool || args.some((arg) => NON_COMPILING_TSC_FLAG.test(arg.replace(/[)}]+$/u, "")));
 }
 
 // True when a package-script body that would otherwise count as a TypeScript
@@ -213,9 +345,11 @@ function collectToolEvidence(strippedCommand: string, evidence: ScriptToolEviden
       }
       continue;
     }
-    const { command, args } = resolveToolInvocation(words);
-    recordToolEvidence(command, args, evidence);
-    if ((command === "node" || command === "bash" || command === "sh") && !invocationIsInformational(args)) {
+    const { command, args, executesResolvedTool } = resolveToolInvocation(words);
+    if (executesResolvedTool) {
+      recordToolEvidence(command, args, evidence);
+    }
+    if (executesResolvedTool && (command === "node" || command === "bash" || command === "sh") && !invocationIsInformational(args)) {
       for (const arg of args) {
         recordVerifyScriptEvidence(commandBasename(arg), evidence);
       }

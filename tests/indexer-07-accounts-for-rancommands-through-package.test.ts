@@ -786,6 +786,13 @@ it("accounts for ranCommands through package-script coverage without over-coveri
     const npxVersion = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["npm run npxversiontypecheck"] }, { autoRefresh: false });
     expect((npxVersion.data as { verificationCoverage: Array<{ kind: string }> }).verificationCoverage.map((e) => e.kind)).not.toContain("typescript-syntax");
 
+    // Metadata modes before the apparent tool never execute it and cannot use
+    // a type-ish script name as substitute evidence.
+    for (const script of ["npxlauncherversiontypecheck", "npmrunversiontypecheck", "commandlookuptypecheck"]) {
+      const metadataOnly = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: [`npm run ${script}`] }, { autoRefresh: false });
+      expect((metadataOnly.data as { verificationCoverage: Array<{ kind: string }> }).verificationCoverage.map((e) => e.kind), script).not.toContain("typescript-syntax");
+    }
+
     // A hygiene script invoked with --help runs nothing — no lint evidence.
     const helpVerify = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["npm run helpverify"] }, { autoRefresh: false });
     expect((helpVerify.data as { verificationCoverage: Array<{ kind: string }> }).verificationCoverage.map((e) => e.kind)).not.toContain("lint");

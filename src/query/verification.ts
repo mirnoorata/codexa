@@ -37,6 +37,7 @@ import { commandNeedsFullMaskingAnalysis, segmentMasksExit, stripFlowPrefix } fr
 import { addJavaScriptTestCoverage, addPlaywrightCommandCoverage } from "./verification/javascript-tests.js";
 import {
   isNonCompilingTscCommand,
+  isPackageManagerRunInformationalWord,
   NON_COMPILING_TSC_FLAG,
   resolveToolInvocation,
   scriptBodyIsNonCompilingTsc,
@@ -758,6 +759,9 @@ function analyzeSegment(
   const effectiveWords = stripPackageManagerFlags(words);
   const first = effectiveWords[0];
   if ((first === "npm" || first === "pnpm") && effectiveWords[1] === "run" && effectiveWords[2]) {
+    if (isPackageManagerRunInformationalWord(effectiveWords[2])) {
+      return;
+    }
     expandPackageScript(effectiveWords[2], effectiveWords.slice(3), cwd, commandText, ctx);
     return;
   }
@@ -770,6 +774,9 @@ function analyzeSegment(
     return;
   }
   const invocation = resolveToolInvocation(effectiveWords);
+  if (!invocation.executesResolvedTool) {
+    return;
+  }
   if (invocation.command === "playwright") {
     addPlaywrightCommandCoverage(invocation.args, cwd, commandText, "direct playwright command", ctx);
     return;
@@ -780,7 +787,7 @@ function analyzeSegment(
   }
   if (first === "yarn" && effectiveWords[1]) {
     const scriptName = effectiveWords[1] === "run" ? effectiveWords[2] : effectiveWords[1];
-    if (scriptName) {
+    if (scriptName && !(effectiveWords[1] === "run" && isPackageManagerRunInformationalWord(scriptName))) {
       expandPackageScript(scriptName, effectiveWords.slice(effectiveWords[1] === "run" ? 3 : 2), cwd, commandText, ctx);
     }
     return;

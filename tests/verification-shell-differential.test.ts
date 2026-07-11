@@ -21,14 +21,39 @@ describePosix("verification shell differential safety", () => {
     binDir = path.join(repo, ".test-bin");
     invocationLog = path.join(repo, ".runner-invocations");
     await mkdir(path.join(repo, "tests"), { recursive: true });
+    await mkdir(path.join(repo, "playwright"), { recursive: true });
     await mkdir(binDir, { recursive: true });
-    await writeFile(path.join(repo, "package.json"), `${JSON.stringify({ name: "shell-differential-fixture" }, null, 2)}\n`, "utf8");
+    await writeFile(
+      path.join(repo, "package.json"),
+      `${JSON.stringify({ name: "shell-differential-fixture", scripts: { "--version": "playwright test tests/generated.test.ts" } }, null, 2)}\n`,
+      "utf8"
+    );
     await writeFile(path.join(repo, "tests/generated.test.ts"), "export const covered = true\n", "utf8");
     const stub = ["#!/bin/sh", "printf '%s\\n' \"${STUB_EXIT:-17}\" >> \"$STUB_LOG\"", "exit \"${STUB_EXIT:-17}\"", ""].join("\n");
     for (const runner of ["vitest", "playwright"]) {
       await writeFile(path.join(binDir, runner), stub, "utf8");
       await chmod(path.join(binDir, runner), 0o755);
     }
+    const npxStub = [
+      "#!/bin/sh",
+      "case \"${1:-}\" in",
+      "  --help|--version|-h|-v|-V) exit 0 ;;",
+      "esac",
+      "while [ \"$#\" -gt 0 ]; do",
+      "  case \"$1\" in",
+      "    -y|--yes) shift ;;",
+      "    -p|--package) shift 2 ;;",
+      "    -c|--call) shift; /bin/sh -c \"$1\"; exit $? ;;",
+      "    --package=*) shift ;;",
+      "    --) shift; break ;;",
+      "    *) break ;;",
+      "  esac",
+      "done",
+      "exec \"$@\"",
+      ""
+    ].join("\n");
+    await writeFile(path.join(binDir, "npx"), npxStub, "utf8");
+    await chmod(path.join(binDir, "npx"), 0o755);
     execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
     execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
     execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "shell differential fixture"], {
@@ -57,7 +82,7 @@ describePosix("verification shell differential safety", () => {
   });
 
   it("keeps exit-faithful successful runner controls credited", async () => {
-    const runners = ["STUB_EXIT=0 vitest run tests/generated.test.ts", "STUB_EXIT=0 playwright test tests/generated.test.ts"];
+    const runners = ["STUB_EXIT=0 vitest run tests/generated.test.ts", "STUB_EXIT=0 playwright test tests/generated.test.ts", "STUB_EXIT=0 npx -y playwright test tests/generated.test.ts"];
     for (const runner of runners) {
       const commands = [runner, `true && ${runner}`, `sh -c ${shellQuote(runner)}`];
       for (const command of commands) {
@@ -69,6 +94,26 @@ describePosix("verification shell differential safety", () => {
         expect(coverage.some((entry) => entry.kind === "javascript-tests" && entry.targetPath === "tests/generated.test.ts"), command).toBe(true);
         expect(coverage.some((entry) => entry.kind === "targeted-test" && entry.targetPath === "tests/generated.test.ts"), command).toBe(true);
       }
+    }
+  });
+
+  it("rejects lookup and launcher metadata modes that execute no runner", async () => {
+    const commands = [
+      "command -v playwright test tests/generated.test.ts",
+      "npx --version playwright test tests/generated.test.ts",
+      "npx --help vitest run tests/generated.test.ts",
+      "npx -c 'printf metadata >/dev/null' playwright test tests/generated.test.ts",
+      "npm run --version",
+      "command env --chdir playwright true tests/generated.test.ts",
+      "time -o vitest true tests/generated.test.ts"
+    ];
+    for (const command of commands) {
+      const observed = await execute(command);
+      expect(observed.invocations, command).toEqual([]);
+      expect(observed.exitCode, command).toBe(0);
+
+      const coverage = verificationCoverageForCommandReports(index, [], [{ command, cwd: repo, exitCode: observed.exitCode }], repo);
+      expect(coverage.filter((entry) => entry.kind === "javascript-tests" || entry.kind === "targeted-test"), command).toEqual([]);
     }
   });
 
