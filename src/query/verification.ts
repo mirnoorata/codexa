@@ -774,15 +774,15 @@ function analyzeSegment(
     addPlaywrightCommandCoverage(invocation.args, cwd, commandText, "direct playwright command", ctx);
     return;
   }
+  if (invocation.command === "vitest" || invocation.command === "jest") {
+    addJavaScriptTestCoverage(invocation.args, cwd, commandText, `direct ${invocation.command} command`, invocation.command, ctx);
+    return;
+  }
   if (first === "yarn" && effectiveWords[1]) {
     const scriptName = effectiveWords[1] === "run" ? effectiveWords[2] : effectiveWords[1];
     if (scriptName) {
       expandPackageScript(scriptName, effectiveWords.slice(effectiveWords[1] === "run" ? 3 : 2), cwd, commandText, ctx);
     }
-    return;
-  }
-  if (invocation.command === "vitest" || invocation.command === "jest") {
-    addJavaScriptTestCoverage(invocation.args, cwd, commandText, `direct ${invocation.command} command`, invocation.command, ctx);
     return;
   }
   if (first === "node" && effectiveWords.includes("--test")) {

@@ -55,6 +55,7 @@ describe("Playwright verification credit", () => {
     const commands = [
       `playwright test ${target}`,
       `playwright test --project=chromium ${target}`,
+      `playwright test --global-timeout=60000 ${target}`,
       `playwright test --repeat-each=2 ${target}`,
       `playwright test --config=playwright.config.ts ${target}`,
       `playwright test ${path.join(repo, target)}`,
@@ -83,6 +84,7 @@ describe("Playwright verification credit", () => {
     const commands = [
       "playwright test",
       "playwright test --project=chromium",
+      "playwright test --debug tests/e2e.spec.ts",
       "playwright test -g smoke tests/e2e.spec.ts",
       "playwright test --list tests/e2e.spec.ts",
       "playwright test --ui tests/e2e.spec.ts",
@@ -155,6 +157,15 @@ describe("Playwright verification credit", () => {
         classifierVersion: "command-coverage-v4"
       }
     ]);
+
+    for (const [command, runner] of [
+      ["yarn dlx vitest run tests/unit.test.ts", "vitest"],
+      ["yarn exec jest tests/unit.test.ts", "jest"]
+    ] as const) {
+      const launched = classify({ command, cwd: repo, exitCode: 0 });
+      expect(launched.ledger.find((entry) => entry.target === "tests/unit.test.ts"), command).toMatchObject({ status: "covered", trustTier: "reported" });
+      expect(launched.commandEnvelopes, command).toMatchObject([{ packageManager: runner, scriptName: runner, classifierVersion: "command-coverage-v4" }]);
+    }
   });
 
   it("keeps structured command envelopes aligned with raw Playwright classification", () => {

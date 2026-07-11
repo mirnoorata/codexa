@@ -104,6 +104,7 @@ function playwrightTestTargets(args: string[], cwd: string, repoRoot: string): {
     "--config",
     "-j",
     "--workers",
+    "--global-timeout",
     "--last-failed-file",
     "--max-failures",
     "--output",
@@ -115,7 +116,7 @@ function playwrightTestTargets(args: string[], cwd: string, repoRoot: string): {
     "--trace",
     "--tsconfig"
   ]);
-  const switchOptions = new Set(["--debug", "--fail-on-flaky-tests", "--forbid-only", "--fully-parallel", "--headed", "--no-deps", "--quiet", "-x"]);
+  const switchOptions = new Set(["--fail-on-flaky-tests", "--forbid-only", "--fully-parallel", "--headed", "--no-deps", "--quiet", "-x"]);
   const targets: string[] = [];
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
@@ -240,6 +241,7 @@ function hasNonRunningJavaScriptTestArg(runner: JavaScriptTestRunner, args: stri
     return hasEnabledFlag(args, ["--watch", "--test-only", "--test-name-pattern", "--test-skip-pattern", "--test-shard", "--test-update-snapshots"]);
   }
   return hasEnabledFlag(args, [
+    "--debug",
     "--list",
     "--ui",
     "--ui-host",

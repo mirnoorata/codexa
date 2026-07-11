@@ -304,3 +304,17 @@ summary now uses repository-safe descriptions, the PDF was regenerated with
 the same deterministic renderer and visually inspected, and the public-hygiene
 gate passes. This was an artifact-only failure; package smoke passed on the
 same PR head.
+
+### Round 5: Official CLI Parity
+
+A fresh comparison against the official Playwright Test option contract found
+that `--debug` had been treated as a harmless switch even though it launches
+the interactive Inspector. Debug mode now fails closed like UI mode. The same
+audit added targeted credit for the safe value-bearing `--global-timeout`
+option, avoiding an unnecessary false missing without widening test scope.
+
+The exact-head Codex review then found that raw `yarn dlx vitest` and
+`yarn exec jest` commands resolved the correct runner but entered generic Yarn
+script expansion before receiving coverage. All resolved JavaScript runners
+now classify before that branch, matching command-envelope behavior; both Yarn
+launcher forms have production-path regressions.
