@@ -82,7 +82,7 @@ function commandBasename(word: string): string {
 // to the tool that actually runs. The name-veto and the evidence extractor
 // must agree on what a command is — they once didn't, and the drift laundered
 // `npx -y tsc --version` into a credited typecheck.
-function resolveToolInvocation(words: string[]): { command: string; args: string[] } {
+export function resolveToolInvocation(words: string[]): { command: string; args: string[] } {
   const { index } = resolveCommandIndex(words);
   let command = commandBasename(words[index] ?? "");
   let args = words.slice(index + 1);

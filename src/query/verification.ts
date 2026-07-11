@@ -19,7 +19,6 @@ import { wasTestRun } from "./tests.js";
 import {
   hasBalancedQuotes,
   hasNonRunningCommandArg,
-  hasNonRunningJavaScriptTestArg,
   hasNonRunningPythonTestArg,
   hasPnpmWorkspaceFlag,
   isNonRunningCommand,
@@ -35,9 +34,11 @@ import {
   type ShellTruthiness
 } from "./verification/shell.js";
 import { commandNeedsFullMaskingAnalysis, segmentMasksExit, stripFlowPrefix } from "./verification/masking.js";
+import { addJavaScriptTestCoverage, addPlaywrightCommandCoverage } from "./verification/javascript-tests.js";
 import {
   isNonCompilingTscCommand,
   NON_COMPILING_TSC_FLAG,
+  resolveToolInvocation,
   scriptBodyIsNonCompilingTsc,
   scriptNameCreditUnsafe,
   scriptNameTrustUnsafe,
@@ -283,7 +284,11 @@ function analyzeCommandEnvelope(
     return true;
   }
   if (manager === "vitest" || manager === "jest") {
-    addJavaScriptTestCoverage(args, cwd, commandText, `reported command envelope ${manager}`, ctx);
+    addJavaScriptTestCoverage(args, cwd, commandText, `reported command envelope ${manager}`, manager, ctx);
+    return true;
+  }
+  if (manager === "playwright" || scriptName === "playwright") {
+    addPlaywrightCommandCoverage(args, cwd, commandText, "reported command envelope playwright", ctx);
     return true;
   }
   if (manager === "pytest" || scriptName === "pytest") {
@@ -760,12 +765,13 @@ function analyzeSegment(
     ctx.addCoverage({ kind: "unknown", command: commandText, source: "unsupported pnpm workspace command", confidence: "heuristic", scope: cwd, details: chain });
     return;
   }
-  if ((first === "npm" || first === "pnpm") && effectiveWords[1] === "exec" && (effectiveWords[2] === "vitest" || effectiveWords[2] === "jest")) {
-    addJavaScriptTestCoverage(effectiveWords.slice(3), cwd, commandText, `direct ${first} exec ${effectiveWords[2]} command`, ctx);
-    return;
-  }
   if ((first === "npm" || first === "pnpm") && (effectiveWords[1] === "test" || effectiveWords[1] === "t")) {
     expandPackageScript("test", effectiveWords.slice(2), cwd, commandText, ctx);
+    return;
+  }
+  const invocation = resolveToolInvocation(effectiveWords);
+  if (invocation.command === "playwright") {
+    addPlaywrightCommandCoverage(invocation.args, cwd, commandText, "direct playwright command", ctx);
     return;
   }
   if (first === "yarn" && effectiveWords[1]) {
@@ -775,13 +781,12 @@ function analyzeSegment(
     }
     return;
   }
-  if (first === "vitest" || first === "jest" || (first === "npx" && (effectiveWords[1] === "vitest" || effectiveWords[1] === "jest"))) {
-    const runner = first === "npx" ? effectiveWords[1] : first;
-    addJavaScriptTestCoverage(effectiveWords.slice(first === "npx" ? 2 : 1), cwd, commandText, `direct ${runner} command`, ctx);
+  if (invocation.command === "vitest" || invocation.command === "jest") {
+    addJavaScriptTestCoverage(invocation.args, cwd, commandText, `direct ${invocation.command} command`, invocation.command, ctx);
     return;
   }
   if (first === "node" && effectiveWords.includes("--test")) {
-    addJavaScriptTestCoverage(effectiveWords.slice(1), cwd, commandText, "direct node --test command", ctx);
+    addJavaScriptTestCoverage(effectiveWords.slice(1), cwd, commandText, "direct node --test command", "node-test", ctx);
     return;
   }
   if (first === "pytest" || (first === "uv" && effectiveWords[1] === "run" && effectiveWords[2] === "pytest")) {
@@ -889,27 +894,6 @@ function addScriptNameCoverage(
   }
   if ((allowNameOnly && lowerName.includes("audit")) || evidence.audit) {
     ctx.addCoverage({ kind: "audit", command: commandText, source: script.source, scope: script.packageRoot, details: [script.command] });
-  }
-}
-
-function addJavaScriptTestCoverage(
-  args: string[],
-  cwd: string,
-  commandText: string,
-  source: string,
-  ctx: { repoRoot: string; addCoverage: (coverage: CoverageAddInput) => void }
-): void {
-  if (hasNonRunningJavaScriptTestArg(args)) {
-    return;
-  }
-  const targets = args.map((arg) => normalizeCandidateTarget(arg, cwd, ctx.repoRoot)).filter((arg): arg is string => Boolean(arg));
-  if (targets.length === 0) {
-    ctx.addCoverage({ kind: "javascript-tests", command: commandText, source, scope: cwd, details: args });
-    return;
-  }
-  for (const target of targets) {
-    ctx.addCoverage({ kind: "javascript-tests", command: commandText, source, scope: cwd, targetPath: target, details: args });
-    ctx.addCoverage({ kind: "targeted-test", command: commandText, source, scope: cwd, targetPath: target, details: args });
   }
 }
 

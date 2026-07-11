@@ -10,6 +10,7 @@ docs/plans/*
 !docs/plans/codexa-verifier-runner-lane-2026-05-31.md
 !docs/plans/codexa-aaa-roadmap-2026-07-03.md
 !docs/plans/codexa-competitive-optimization-2026-07-10.md
+!docs/plans/codexa-verification-runner-hardening-2026-07-11.md
 docs/architecture/*-plan.md
 .codex/codebase/
 .codex/cache/
