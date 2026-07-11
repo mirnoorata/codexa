@@ -364,3 +364,11 @@ modes now make only the script name untrusted; independently resolved later
 tools remain eligible. Resolved `tsc` launchers also use the shared raw and
 structured-envelope path, with regressions for `npm --version && npm exec --
 tsc --noEmit` and direct `npm exec -- tsc --noEmit`.
+
+The sixth exact-head review found that exec-local npm workspace selectors were
+removed as launcher flags without rebasing command scope. The shared scope
+parser now resolves one `-w/--workspace` before or inside `npm exec`, `npm x`,
+and `npx`, removes only those selector tokens, and preserves the workspace in
+the command envelope. Unresolved, repeated, and broad workspace selections
+fail closed. Monorepo regressions cover path and package-name selectors,
+envelope provenance, both option positions, and aggregate-scope rejection.

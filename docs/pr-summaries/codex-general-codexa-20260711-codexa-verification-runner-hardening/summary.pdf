@@ -12,7 +12,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
 endobj
 5 0 obj
-<< /Length 2076 >>
+<< /Length 2193 >>
 stream
 BT
 /F1 10 Tf
@@ -36,6 +36,8 @@ BT
 (- Rejected informational, opaque, unknown, and value-decoy launcher/prefix) Tj T*
 (forms without losing supported package, workspace, browser, timeout, and) Tj T*
 (wrapper forms.) Tj T*
+(- Preserved exact npm exec/npx workspace scope and rejected ambiguous aggregate) Tj T*
+(workspace execution.) Tj T*
 (- Added deterministic real-shell differential tests and production-path) Tj T*
 (regressions; advanced classifier provenance to v4.) Tj T*
 (- Updated public behavior documentation and repository summary artifacts.) Tj T*
@@ -72,5 +74,5 @@ xref
 trailer
 << /Size 6 /Root 1 0 R >>
 startxref
-2438
+2555
 %%EOF

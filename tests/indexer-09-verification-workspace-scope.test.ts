@@ -123,6 +123,11 @@ describe("Codexa verification coverage workspace scopes", () => {
       "npm --workspace=web test",
       "npm -w @acme/widget test",
       "npm --workspace=@acme/widget test",
+      "npm exec -w web -- vitest run src/widget.test.ts",
+      "npm exec --workspace=@acme/widget -- playwright test src/widget.test.ts",
+      "npm x -w web -- vitest run src/widget.test.ts",
+      "npx -w web vitest run src/widget.test.ts",
+      "npx --workspace=@acme/widget playwright test src/widget.test.ts",
       "yarn --cwd web test",
       "yarn --cwd=web test",
       "yarn workspace @acme/widget test",
@@ -134,6 +139,30 @@ describe("Codexa verification coverage workspace scopes", () => {
     for (const command of coveredWorkspaceCommands) {
       const covered = await postEditReviewQuery(repo, { taskId: "verification-web-scope", ranCommands: [command] }, { autoRefresh: false });
       expect((covered.data as { testsNotRun: unknown[] }).testsNotRun).toEqual([]);
+    }
+
+    const nestedWorkspaceExec = await postEditReviewQuery(
+      repo,
+      { taskId: "verification-web-scope", ranCommandReports: [{ command: "npm exec -w web -- vitest run src/widget.test.ts", cwd: repo, exitCode: 0 }] },
+      { autoRefresh: false }
+    );
+    const nestedWorkspaceExecData = nestedWorkspaceExec.data as {
+      testsNotRun: unknown[];
+      commandEnvelopes: Array<{ packageManager?: string; packageRoot?: string; workspace?: string; args: string[] }>;
+    };
+    expect(nestedWorkspaceExecData.testsNotRun).toEqual([]);
+    expect(nestedWorkspaceExecData.commandEnvelopes).toEqual(
+      expect.arrayContaining([expect.objectContaining({ packageManager: "vitest", packageRoot: "web", workspace: "web", args: ["run", "src/widget.test.ts"] })])
+    );
+
+    for (const command of [
+      "npm exec -w @acme/missing -- vitest run src/widget.test.ts",
+      "npm exec -w web -w packages/no-scripts -- vitest run src/widget.test.ts",
+      "npm -w web exec -w packages/no-scripts -- vitest run src/widget.test.ts",
+      "npm exec --workspaces -- vitest run src/widget.test.ts"
+    ]) {
+      const ambiguous = await postEditReviewQuery(repo, { taskId: "verification-web-scope", ranCommands: [command] }, { autoRefresh: false });
+      expect((ambiguous.data as { testsNotRun: Array<{ path: string }> }).testsNotRun.map((test) => test.path), command).toContain("web/src/widget.test.ts");
     }
 
     const repeatedWorkspaceNameCheck = await postEditReviewQuery(

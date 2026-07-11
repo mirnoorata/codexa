@@ -150,11 +150,14 @@ export function scopedPackageCommand(
   if ((first === "npm" || first === "pnpm") && prefixValue) {
     return { cwd: normalizeCwd(prefixValue, repoRoot), words: [first, ...words.slice(2)] };
   }
-  const npmWorkspace = readFlagArgument(words, 1, ["-w", "--workspace"]);
-  if (first === "npm" && npmWorkspace) {
+  const npmWorkspace = npmWorkspaceSelection(words);
+  if (npmWorkspace?.multiple) {
+    return { cwd: unresolvedPackageScope("multiple-workspaces"), words: ["__codexa_ambiguous_workspace_scope__"] };
+  }
+  if (npmWorkspace) {
     return {
       cwd: resolvePackageSpecifier(npmWorkspace.value, repoRoot, packageRoots, packageNamesByRoot) ?? unresolvedPackageScope(npmWorkspace.value),
-      words: [first, ...words.slice(npmWorkspace.nextIndex)]
+      words: [...words.slice(0, npmWorkspace.index), ...words.slice(npmWorkspace.nextIndex)]
     };
   }
   const pnpmFilter = readFlagArgument(words, 1, ["--filter", "-F"]);
@@ -173,6 +176,54 @@ export function scopedPackageCommand(
     return { cwd: resolvePackageSpecifier(words[2], repoRoot, packageRoots, packageNamesByRoot) ?? unresolvedPackageScope(words[2]), words: ["yarn", ...words.slice(3)] };
   }
   return undefined;
+}
+
+export interface NpmWorkspaceSelection {
+  value: string;
+  index: number;
+  nextIndex: number;
+  multiple: boolean;
+}
+
+// npm accepts workspace selection both before a subcommand (`npm -w web test`)
+// and inside exec (`npm exec -w web -- tool`); npx exposes the same exec
+// options. Locate exactly one selector before the child command so callers can
+// rebase target paths to the workspace. Multiple selectors are an aggregate
+// scope and intentionally fail closed.
+export function npmWorkspaceSelection(words: string[]): NpmWorkspaceSelection | undefined {
+  const first = words[0];
+  const start = first === "npx" || first === "npm" ? 1 : undefined;
+  if (start === undefined) {
+    return undefined;
+  }
+  const matches: Array<Omit<NpmWorkspaceSelection, "multiple">> = [];
+  let index = start;
+  while (index < words.length) {
+    const word = words[index];
+    if (word === "--") {
+      break;
+    }
+    const workspace = readFlagArgument(words, index, ["-w", "--workspace"]);
+    if (workspace) {
+      matches.push({ value: workspace.value, index, nextIndex: workspace.nextIndex });
+      index = workspace.nextIndex;
+      continue;
+    }
+    if (!word.startsWith("-")) {
+      if (first === "npm" && (word === "exec" || word === "x")) {
+        index += 1;
+        continue;
+      }
+      break;
+    }
+    if (["-p", "--package", "-c", "--call"].includes(word) && words[index + 1]) {
+      index += 2;
+      continue;
+    }
+    index += 1;
+  }
+  const match = matches[0];
+  return match ? { ...match, multiple: matches.length > 1 } : undefined;
 }
 
 export function readFlagArgument(words: string[], start: number, flags: string[]): { value: string; nextIndex: number } | undefined {

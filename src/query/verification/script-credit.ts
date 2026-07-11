@@ -149,7 +149,8 @@ const LAUNCHER_VALUE_FLAGS = new Set(["-p", "--package"]);
 const OPAQUE_LAUNCHER_VALUE_FLAGS = new Set(["-c", "--call"]);
 const NON_RUNNING_LAUNCHER_FLAGS = new Set(["-h", "-v", "-V", "--help", "--version"]);
 const PACKAGE_MANAGER_INFORMATION_WORDS = new Set([...NON_RUNNING_LAUNCHER_FLAGS, "help"]);
-const LAUNCHER_NO_VALUE_FLAGS = new Set(["-y", "-ws", "--bun", "--ignore-existing", "--include-workspace-root", "--no-install", "--quiet", "--workspaces", "--yes"]);
+const MULTI_WORKSPACE_LAUNCHER_FLAGS = new Set(["-ws", "--include-workspace-root", "--workspaces"]);
+const LAUNCHER_NO_VALUE_FLAGS = new Set(["-y", "--bun", "--ignore-existing", "--no-install", "--quiet", "--yes"]);
 const LAUNCHER_CONTEXT_VALUE_FLAGS = new Set(["-w", "--workspace"]);
 
 function skipLauncherFlags(args: string[]): { rest: string[]; executesResolvedTool: boolean } {
@@ -173,6 +174,8 @@ function skipLauncherFlags(args: string[]): { rest: string[]; executesResolvedTo
     }
     if (arg.startsWith("-")) {
       if (NON_RUNNING_LAUNCHER_FLAGS.has(flag)) {
+        executesResolvedTool = false;
+      } else if (MULTI_WORKSPACE_LAUNCHER_FLAGS.has(flag)) {
         executesResolvedTool = false;
       } else if (!LAUNCHER_NO_VALUE_FLAGS.has(flag)) {
         // Unknown launcher flags may consume the next token. Fail closed rather

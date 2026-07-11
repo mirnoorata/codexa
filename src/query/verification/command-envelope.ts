@@ -5,6 +5,7 @@ import { isPackageManagerRunInformationalWord, resolveToolInvocation } from "./s
 import { isNonRunningCommand, shellWords, shellWrappedCommand, stripLeadingEnvironment, stripPackageManagerFlags, stripShellControlWords } from "./shell.js";
 import {
   normalizeCwd,
+  npmWorkspaceSelection,
   packageNameForRoot,
   packageRootForCwd,
   readFlagArgument,
@@ -316,8 +317,8 @@ function deriveSegmentEnvelope(segment: string, cwd: string, ctx: CommandEnvelop
 
 function workspaceSpecifierFromWords(words: string[]): string | undefined {
   const first = words[0];
-  const npmWorkspace = first === "npm" ? readFlagArgument(words, 1, ["-w", "--workspace"]) : undefined;
-  if (npmWorkspace) {
+  const npmWorkspace = npmWorkspaceSelection(words);
+  if (npmWorkspace && !npmWorkspace.multiple) {
     return npmWorkspace.value;
   }
   const pnpmFilter = first === "pnpm" ? readFlagArgument(words, 1, ["--filter", "-F"]) : undefined;

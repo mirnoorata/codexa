@@ -16,6 +16,8 @@
 - Rejected informational, opaque, unknown, and value-decoy launcher/prefix
   forms without losing supported package, workspace, browser, timeout, and
   wrapper forms.
+- Preserved exact npm exec/npx workspace scope and rejected ambiguous aggregate
+  workspace execution.
 - Added deterministic real-shell differential tests and production-path
   regressions; advanced classifier provenance to v4.
 - Updated public behavior documentation and repository summary artifacts.
