@@ -60,8 +60,10 @@ const PREFIX_VALUE_FLAGS = new Map<string, Set<string>>([
   ["doas", new Set(["-a", "-u"])],
   ["stdbuf", new Set(["-e", "-i", "-o", "--error", "--input", "--output"])],
   ["timeout", new Set(["-k", "-s", "--kill-after", "--signal"])],
-  ["env", new Set(["-C", "-S", "-u", "--argv0", "--chdir", "--split-string", "--unset"])]
+  ["env", new Set(["-C", "-u", "--argv0", "--chdir", "--unset"])]
 ]);
+
+const PREFIX_OPAQUE_VALUE_FLAGS = new Map<string, Set<string>>([["env", new Set(["-S", "--split-string"])]]);
 
 interface CommandResolution {
   word: string | undefined;
@@ -95,17 +97,30 @@ function resolveCommandIndex(words: string[]): CommandResolution {
     }
     if (activePrefix && word.startsWith("-")) {
       const flag = optionName(word);
+      const opaqueAttachedFlag = attachedShortOptionName(word, PREFIX_OPAQUE_VALUE_FLAGS.get(activePrefix));
+      const attachedValueFlag = attachedShortOptionName(word, PREFIX_VALUE_FLAGS.get(activePrefix));
       if (prefixFlagIsNonRunning(activePrefix, flag)) {
         executesResolvedTool = false;
         index += 1;
         continue;
       }
       if (PREFIX_NO_VALUE_FLAGS.get(activePrefix)?.has(flag)) {
+        if (hasAttachedOptionValue(word)) {
+          executesResolvedTool = false;
+        }
         index += 1;
         continue;
       }
-      if (PREFIX_VALUE_FLAGS.get(activePrefix)?.has(flag)) {
-        index += hasAttachedOptionValue(word) ? 1 : 2;
+      if (PREFIX_OPAQUE_VALUE_FLAGS.get(activePrefix)?.has(flag) || opaqueAttachedFlag) {
+        executesResolvedTool = false;
+        index += hasAttachedOptionValue(word) || opaqueAttachedFlag ? 1 : 2;
+        continue;
+      }
+      if (PREFIX_VALUE_FLAGS.get(activePrefix)?.has(flag) || attachedValueFlag) {
+        if (hasEmptyAttachedOptionValue(word)) {
+          executesResolvedTool = false;
+        }
+        index += hasAttachedOptionValue(word) || attachedValueFlag ? 1 : 2;
         continue;
       }
       // Unknown prefix options may consume the next runner-shaped token as a
@@ -140,6 +155,18 @@ function hasAttachedOptionValue(value: string): boolean {
   return value.includes("=");
 }
 
+function hasEmptyAttachedOptionValue(value: string): boolean {
+  const separator = value.indexOf("=");
+  return separator >= 0 && separator === value.length - 1;
+}
+
+function attachedShortOptionName(value: string, flags: Set<string> | undefined): string | undefined {
+  if (!flags || !value.startsWith("-") || value.startsWith("--") || value.includes("=")) {
+    return undefined;
+  }
+  return [...flags].find((flag) => flag.length === 2 && value.length > flag.length && value.startsWith(flag));
+}
+
 // Launchers that expose the next word as the real tool (`npx tsc`).
 const TOOL_LAUNCHERS = new Set(["npx", "bunx"]);
 const PACKAGE_MANAGER_EXEC_WORDS = new Set(["exec", "x", "dlx"]);
@@ -164,6 +191,9 @@ function skipLauncherFlags(args: string[]): { rest: string[]; executesResolvedTo
     }
     const flag = optionName(arg);
     if (LAUNCHER_VALUE_FLAGS.has(flag) || LAUNCHER_CONTEXT_VALUE_FLAGS.has(flag)) {
+      if (hasEmptyAttachedOptionValue(arg)) {
+        executesResolvedTool = false;
+      }
       index += hasAttachedOptionValue(arg) ? 1 : 2;
       continue;
     }

@@ -372,3 +372,14 @@ and `npx`, removes only those selector tokens, and preserves the workspace in
 the command envelope. Unresolved, repeated, and broad workspace selections
 fail closed. Monorepo regressions cover path and package-name selectors,
 envelope provenance, both option positions, and aggregate-scope rejection.
+
+The seventh exact-head review found the equivalent cwd boundary in GNU-style
+`env -C/--chdir`. Complex env wrappers are no longer flattened before scope
+analysis. The scope layer removes one chdir selector, resolves it relative to
+the command's current cwd, and carries the resulting package root into raw and
+structured classification; repeated or outside scopes fail closed. Opaque
+`env -S/--split-string` forms cannot expose a trailing decoy tool. Regressions
+cover inline and attached options, assignments, nested cwd, envelopes, repeated
+selectors, and opaque forms.
+Malformed empty value flags and attached values on no-value prefix options also
+fail closed.

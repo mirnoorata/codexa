@@ -128,6 +128,10 @@ describe("Codexa verification coverage workspace scopes", () => {
       "npm x -w web -- vitest run src/widget.test.ts",
       "npx -w web vitest run src/widget.test.ts",
       "npx --workspace=@acme/widget playwright test src/widget.test.ts",
+      "env -C web vitest run src/widget.test.ts",
+      "env -uCI -Cweb vitest run src/widget.test.ts",
+      "env --chdir=web playwright test src/widget.test.ts",
+      "env -i -C web CI=1 vitest run src/widget.test.ts",
       "yarn --cwd web test",
       "yarn --cwd=web test",
       "yarn workspace @acme/widget test",
@@ -155,6 +159,15 @@ describe("Codexa verification coverage workspace scopes", () => {
       expect.arrayContaining([expect.objectContaining({ packageManager: "vitest", packageRoot: "web", workspace: "web", args: ["run", "src/widget.test.ts"] })])
     );
 
+    const envChdirEnvelope = await postEditReviewQuery(
+      repo,
+      { taskId: "verification-web-scope", ranCommandReports: [{ command: "env -C web vitest run src/widget.test.ts", cwd: repo, exitCode: 0 }] },
+      { autoRefresh: false }
+    );
+    expect((envChdirEnvelope.data as { commandEnvelopes: Array<{ packageManager?: string; packageRoot?: string; args: string[] }> }).commandEnvelopes).toEqual(
+      expect.arrayContaining([expect.objectContaining({ packageManager: "vitest", packageRoot: "web", args: ["run", "src/widget.test.ts"] })])
+    );
+
     for (const command of [
       "npm exec -w @acme/missing -- vitest run src/widget.test.ts",
       "npm exec -w web -w packages/no-scripts -- vitest run src/widget.test.ts",
@@ -163,6 +176,14 @@ describe("Codexa verification coverage workspace scopes", () => {
     ]) {
       const ambiguous = await postEditReviewQuery(repo, { taskId: "verification-web-scope", ranCommands: [command] }, { autoRefresh: false });
       expect((ambiguous.data as { testsNotRun: Array<{ path: string }> }).testsNotRun.map((test) => test.path), command).toContain("web/src/widget.test.ts");
+    }
+
+    const nestedEnvChdir = await postEditReviewQuery(repo, { taskId: "verification-web-scope", ranCommands: ["cd web && env -C .. vitest run web/src/widget.test.ts"] }, { autoRefresh: false });
+    expect((nestedEnvChdir.data as { testsNotRun: unknown[] }).testsNotRun).toEqual([]);
+
+    for (const command of ["env -C @acme/missing vitest run src/widget.test.ts", "env -C web -C . vitest run src/widget.test.ts"]) {
+      const invalidEnvScope = await postEditReviewQuery(repo, { taskId: "verification-web-scope", ranCommands: [command] }, { autoRefresh: false });
+      expect((invalidEnvScope.data as { testsNotRun: Array<{ path: string }> }).testsNotRun.map((test) => test.path), command).toContain("web/src/widget.test.ts");
     }
 
     const repeatedWorkspaceNameCheck = await postEditReviewQuery(

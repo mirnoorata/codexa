@@ -2,7 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import type { CodexaIndex, Confidence, VerificationCommandEnvelope, VerificationCommandPlanEntry, VerificationCoverage, VerificationCoverageKind, VerificationWaiver } from "../../types.js";
 import { uniqueSorted } from "../../util.js";
-import { shellWords, splitShellSequence, stripLeadingEnvironment, stripQuotes, type ShellControlOperator } from "./shell.js";
+import { isEnvironmentAssignment, shellWords, splitShellSequence, stripLeadingEnvironment, stripQuotes, type ShellControlOperator } from "./shell.js";
 import { strongerVerificationTrustTier, verificationTrustTierOrNone } from "./trust.js";
 
 export interface PackageScript {
@@ -140,15 +140,26 @@ export function scopedPackageCommand(
   words: string[],
   repoRoot: string,
   packageRoots: string[],
-  packageNamesByRoot: Map<string, string | undefined>
+  packageNamesByRoot: Map<string, string | undefined>,
+  baseCwd = "."
 ): { cwd: string; words: string[] } | undefined {
   const first = words[0];
+  const envChdir = envChdirSelection(words);
+  if (envChdir?.multiple) {
+    return { cwd: unresolvedPackageScope("multiple-env-chdir"), words: ["__codexa_ambiguous_env_scope__"] };
+  }
+  if (envChdir) {
+    return {
+      cwd: normalizeScopedCwd(envChdir.value, baseCwd, repoRoot),
+      words: [...words.slice(0, envChdir.index), ...words.slice(envChdir.nextIndex)]
+    };
+  }
   if ((first === "npm" || first === "pnpm") && (words[1] === "--prefix" || words[1] === "-C" || words[1] === "--dir") && words[2]) {
-    return { cwd: normalizeCwd(words[2], repoRoot), words: [first, ...words.slice(3)] };
+    return { cwd: normalizeScopedCwd(words[2], baseCwd, repoRoot), words: [first, ...words.slice(3)] };
   }
   const prefixValue = flagValue(words[1], ["--prefix", "-C", "--dir"]);
   if ((first === "npm" || first === "pnpm") && prefixValue) {
-    return { cwd: normalizeCwd(prefixValue, repoRoot), words: [first, ...words.slice(2)] };
+    return { cwd: normalizeScopedCwd(prefixValue, baseCwd, repoRoot), words: [first, ...words.slice(2)] };
   }
   const npmWorkspace = npmWorkspaceSelection(words);
   if (npmWorkspace?.multiple) {
@@ -166,16 +177,76 @@ export function scopedPackageCommand(
     return cwd ? { cwd, words: [first, ...words.slice(pnpmFilter.nextIndex)] } : undefined;
   }
   if (first === "yarn" && words[1] === "--cwd" && words[2]) {
-    return { cwd: normalizeCwd(words[2], repoRoot), words: ["yarn", ...words.slice(3)] };
+    return { cwd: normalizeScopedCwd(words[2], baseCwd, repoRoot), words: ["yarn", ...words.slice(3)] };
   }
   const yarnCwdValue = flagValue(words[1], ["--cwd"]);
   if (first === "yarn" && yarnCwdValue) {
-    return { cwd: normalizeCwd(yarnCwdValue, repoRoot), words: ["yarn", ...words.slice(2)] };
+    return { cwd: normalizeScopedCwd(yarnCwdValue, baseCwd, repoRoot), words: ["yarn", ...words.slice(2)] };
   }
   if (first === "yarn" && words[1] === "workspace" && words[2]) {
     return { cwd: resolvePackageSpecifier(words[2], repoRoot, packageRoots, packageNamesByRoot) ?? unresolvedPackageScope(words[2]), words: ["yarn", ...words.slice(3)] };
   }
   return undefined;
+}
+
+interface EnvChdirSelection {
+  value: string;
+  index: number;
+  nextIndex: number;
+  multiple: boolean;
+}
+
+function envChdirSelection(words: string[]): EnvChdirSelection | undefined {
+  if (words[0] !== "env") {
+    return undefined;
+  }
+  const matches: Array<Omit<EnvChdirSelection, "multiple">> = [];
+  let index = 1;
+  while (index < words.length) {
+    const word = words[index];
+    if (word === "--") {
+      break;
+    }
+    const chdir = envChdirArgument(words, index);
+    if (chdir) {
+      matches.push({ value: chdir.value, index, nextIndex: chdir.nextIndex });
+      index = chdir.nextIndex;
+      continue;
+    }
+    if (isEnvironmentAssignment(word)) {
+      index += 1;
+      continue;
+    }
+    if (!word.startsWith("-")) {
+      break;
+    }
+    if (["-u", "--unset", "-S", "--split-string", "--argv0"].includes(word) && words[index + 1]) {
+      index += 2;
+      continue;
+    }
+    index += 1;
+  }
+  const match = matches[0];
+  return match ? { ...match, multiple: matches.length > 1 } : undefined;
+}
+
+function envChdirArgument(words: string[], index: number): { value: string; nextIndex: number } | undefined {
+  const argument = readFlagArgument(words, index, ["-C", "--chdir"]);
+  if (argument) {
+    return argument;
+  }
+  const word = words[index];
+  return word?.startsWith("-C") && word.length > 2 ? { value: word.slice(2), nextIndex: index + 1 } : undefined;
+}
+
+function normalizeScopedCwd(value: string, baseCwd: string, repoRoot: string): string {
+  if (path.isAbsolute(value)) {
+    return normalizeCwd(value, repoRoot);
+  }
+  if (baseCwd.startsWith("__outside_repo__:")) {
+    return baseCwd;
+  }
+  return normalizeCwd(path.posix.join(baseCwd === "." ? "" : baseCwd, value), repoRoot);
 }
 
 export interface NpmWorkspaceSelection {

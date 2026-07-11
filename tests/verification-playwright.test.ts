@@ -145,7 +145,13 @@ describe("Playwright verification credit", () => {
       "time -o vitest true tests/unit.test.ts",
       "sudo -u playwright true tests/e2e.spec.ts",
       "builtin playwright test tests/e2e.spec.ts",
-      "busybox vitest run tests/unit.test.ts"
+      "busybox vitest run tests/unit.test.ts",
+      "env -S 'true' playwright test tests/e2e.spec.ts",
+      "env -Strue playwright test tests/e2e.spec.ts",
+      "env --chdir= playwright test tests/e2e.spec.ts",
+      "env --ignore-environment=false playwright test tests/e2e.spec.ts",
+      "npx --workspace= playwright test tests/e2e.spec.ts",
+      "npx --package= playwright test tests/e2e.spec.ts"
     ];
 
     for (const command of commands) {

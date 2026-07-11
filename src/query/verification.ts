@@ -751,7 +751,9 @@ function analyzeSegment(
     analyzeCommand(shellWrapped, cwd, chain, ctx);
     return;
   }
-  const scoped = scopedPackageCommand(words, ctx.repoRoot, ctx.packageRoots, ctx.packageNamesByRoot) ?? scopedPackageCommand(stripPackageManagerFlags(words), ctx.repoRoot, ctx.packageRoots, ctx.packageNamesByRoot);
+  const scoped =
+    scopedPackageCommand(words, ctx.repoRoot, ctx.packageRoots, ctx.packageNamesByRoot, cwd) ??
+    scopedPackageCommand(stripPackageManagerFlags(words), ctx.repoRoot, ctx.packageRoots, ctx.packageNamesByRoot, cwd);
   if (scoped) {
     analyzeSegment(scoped.words.join(" "), scoped.cwd, chain, ctx);
     return;

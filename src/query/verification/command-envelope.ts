@@ -268,7 +268,9 @@ function deriveSegmentEnvelope(segment: string, cwd: string, ctx: CommandEnvelop
     return deriveCommandEnvelope(shellWrapped, cwd, ctx);
   }
   const workspace = workspaceSpecifierFromWords(words);
-  const scoped = scopedPackageCommand(words, ctx.repoRoot, ctx.packageRoots, ctx.packageNamesByRoot) ?? scopedPackageCommand(stripPackageManagerFlags(words), ctx.repoRoot, ctx.packageRoots, ctx.packageNamesByRoot);
+  const scoped =
+    scopedPackageCommand(words, ctx.repoRoot, ctx.packageRoots, ctx.packageNamesByRoot, cwd) ??
+    scopedPackageCommand(stripPackageManagerFlags(words), ctx.repoRoot, ctx.packageRoots, ctx.packageNamesByRoot, cwd);
   if (scoped) {
     const derived = deriveSegmentEnvelope(scoped.words.join(" "), scoped.cwd, ctx);
     return { ...derived, workspace: derived.workspace ?? workspace };
