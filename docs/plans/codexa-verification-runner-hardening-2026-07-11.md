@@ -295,3 +295,12 @@ Local acceptance evidence:
 
 The remaining gates are exact-head pull-request review, GitHub checks, zero
 unresolved threads, merge ancestry, and canonical post-merge sync/reindex.
+
+### Round 4: Pull-Request CI Hygiene
+
+Both initial GitHub `check` jobs rejected the generated Markdown and PDF
+summaries because they embedded local absolute worktree and artifact paths. The
+summary now uses repository-safe descriptions, the PDF was regenerated with
+the same deterministic renderer and visually inspected, and the public-hygiene
+gate passes. This was an artifact-only failure; package smoke passed on the
+same PR head.

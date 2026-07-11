@@ -12,7 +12,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
 endobj
 5 0 obj
-<< /Length 2647 >>
+<< /Length 2453 >>
 stream
 BT
 /F1 10 Tf
@@ -21,7 +21,7 @@ BT
 (Change Summary) Tj T*
 () Tj T*
 (- Project: codexa) Tj T*
-(- Worktree: /srv/worktree/codexa/codex/20260711-codexa-verification-runner-hardening) Tj T*
+(- Worktree: isolated Codexa worktree) Tj T*
 (- Branch: codex/general/codexa-20260711-codexa-verification-runner-hardening) Tj T*
 (- Base: main) Tj T*
 (- Primary commit: 9085e45) Tj T*
@@ -56,10 +56,8 @@ BT
 (- npm run smoke:package: passed) Tj T*
 (- npm run package:hygiene: passed) Tj T*
 (- npm audit --audit-level=moderate: passed) Tj T*
-(- Codexa post-edit-review: /srv/.codex/artifacts/codexa/codex-general-) Tj T*
-(codexa-20260711-codexa-verification-runner-hardening/codexa-post-edit-review.txt) Tj T*
-(- Codexa test-plan: /srv/.codex/artifacts/codexa/codex-general-codexa-20260711-codexa-) Tj T*
-(verification-runner-hardening/codexa-test-plan.txt) Tj T*
+(- Codexa post-edit-review: passed; local artifact retained outside the repository) Tj T*
+(- Codexa test-plan: generated; local artifact retained outside the repository) Tj T*
 (- git diff --cached --check: passed) Tj T*
 (- staged safety scan: passed) Tj T*
 () Tj T*
@@ -82,5 +80,5 @@ xref
 trailer
 << /Size 6 /Root 1 0 R >>
 startxref
-3009
+2815
 %%EOF

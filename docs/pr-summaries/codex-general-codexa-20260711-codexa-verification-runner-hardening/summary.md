@@ -1,7 +1,7 @@
 # Change Summary
 
 - Project: `codexa`
-- Worktree: `/srv/worktree/codexa/codex/20260711-codexa-verification-runner-hardening`
+- Worktree: isolated Codexa worktree
 - Branch: `codex/general/codexa-20260711-codexa-verification-runner-hardening`
 - Base: `main`
 - Primary commit: `9085e45`
@@ -36,8 +36,8 @@
 - npm run smoke:package: passed
 - npm run package:hygiene: passed
 - npm audit --audit-level=moderate: passed
-- Codexa post-edit-review: /srv/.codex/artifacts/codexa/codex-general-codexa-20260711-codexa-verification-runner-hardening/codexa-post-edit-review.txt
-- Codexa test-plan: /srv/.codex/artifacts/codexa/codex-general-codexa-20260711-codexa-verification-runner-hardening/codexa-test-plan.txt
+- Codexa post-edit-review: passed; local artifact retained outside the repository
+- Codexa test-plan: generated; local artifact retained outside the repository
 - git diff --cached --check: passed
 - staged safety scan: passed
 
