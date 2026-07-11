@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.9.0](https://github.com/mirnoorata/codexa/compare/v0.8.0...v0.9.0) (2026-07-10)
+
+
+### Features
+
+* **verification:** expose trust tiers and scale semantic indexing ([#91](https://github.com/mirnoorata/codexa/issues/91)) ([ac4ec47](https://github.com/mirnoorata/codexa/commit/ac4ec4700def865aea0425d3620c5d41c254cc13))
+
+
+### Bug Fixes
+
+* **core:** kill false-positive drift blocks, pin node truth, unfreeze MCP routing, prune ghost packets ([#89](https://github.com/mirnoorata/codexa/issues/89)) ([f2a1bbd](https://github.com/mirnoorata/codexa/commit/f2a1bbdbb4b9750bf4cfbf7d72dd1704ce791f87))
+
 ## [0.8.0](https://github.com/mirnoorata/codexa/compare/v0.7.2...v0.8.0) (2026-07-04)
 
 
