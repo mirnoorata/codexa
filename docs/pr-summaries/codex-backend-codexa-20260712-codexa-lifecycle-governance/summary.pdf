@@ -12,7 +12,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
 endobj
 5 0 obj
-<< /Length 3258 >>
+<< /Length 3246 >>
 stream
 BT
 /F1 10 Tf
@@ -21,7 +21,7 @@ BT
 (Change Summary) Tj T*
 () Tj T*
 (- Project: codexa) Tj T*
-(- Worktree: /srv/worktree/codexa/codex/20260712-codexa-lifecycle-governance) Tj T*
+(- Worktree: local Codexa feature worktree \(host path omitted\)) Tj T*
 (- Branch: codex/backend/codexa-20260712-codexa-lifecycle-governance) Tj T*
 (- Base: main) Tj T*
 (- Primary commit: 837f4dc) Tj T*
@@ -166,12 +166,12 @@ xref
 0000000127 00000 n 
 0000000197 00000 n 
 0000000323 00000 n 
-0000003632 00000 n 
-0000003758 00000 n 
-0000007080 00000 n 
-0000007206 00000 n 
+0000003620 00000 n 
+0000003746 00000 n 
+0000007068 00000 n 
+0000007194 00000 n 
 trailer
 << /Size 10 /Root 1 0 R >>
 startxref
-7603
+7591
 %%EOF

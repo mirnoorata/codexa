@@ -1,7 +1,7 @@
 # Change Summary
 
 - Project: `codexa`
-- Worktree: `/srv/worktree/codexa/codex/20260712-codexa-lifecycle-governance`
+- Worktree: local Codexa feature worktree (host path omitted)
 - Branch: `codex/backend/codexa-20260712-codexa-lifecycle-governance`
 - Base: `main`
 - Primary commit: `837f4dc`
