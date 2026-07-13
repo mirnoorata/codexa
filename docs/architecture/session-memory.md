@@ -359,14 +359,15 @@ Session memory protocol:
    `action: "read"` and task/file/symbol filters.
 3. After forming a non-trivial claim, decision, ruled-out path, open question,
    or durable task constraint, call `session_memory` with `action: "remember"`.
-4. Before editing concrete files, still call `change_plan` with
-   `saveSnapshot: true`; session memory does not replace snapshots.
-5. Before editing, call `test_plan` so the targeted verification surface is
-   selected while the plan can still change cheaply.
+4. For an explicit bounded edit, call `change_plan` with `saveSnapshot: true`
+   directly; session memory does not replace snapshots. Add orientation tools
+   first only when the target or context is unclear.
+5. Edit and run the tests and commands returned by `change_plan`. Call
+   `test_plan` only when verification guidance remains unresolved.
 6. After editing, call `post_edit_review`; Codexa auto-records the compact
    outcome summary and task-lifecycle state.
-7. Before final response, call `proof_card` with reported verification evidence
-   or account for why no targeted tests apply.
+7. Call `proof_card` only when a policy change, formal audit, release, artifact
+   handoff, or decision-integrity review needs an explicit proof packet.
 
 Codexa auto-records bounded `viewed` entries for context it returns. Do not log
 views manually.

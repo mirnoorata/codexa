@@ -11,8 +11,8 @@ export function renderCodexUseContract(freshness: FreshnessInfo): string {
   const nextAction = freshness.missing
     ? "Run `codexa index <repo>` or use an auto-refreshing MCP tool before relying on Codexa context."
     : dirty > 0
-      ? "For the next code task, call `task_brief` with the user's task and `diff: true`; call `diff_impact` only for broad review of existing dirty work."
-      : "For the next code task, call `task_brief` with the user's task before reading unrelated files.";
+      ? "For an explicit bounded task, call `change_plan` with `diff: true`; use `session_context`, `search`, or `task_brief` only if the dirty scope leaves the target or context unclear."
+      : "For an explicit bounded task, call `change_plan` directly; use `session_context`, `search`, or `task_brief` only when the target or context is unclear.";
 
   return `# Codexa Codex Contract
 
@@ -33,14 +33,15 @@ changes. Do not treat it as an unbounded graph dump.
 
 ## Automatic Use Rules
 
-1. Broad or ambiguous request: call \`session_context\`; if the target is unclear or actionability says \`needs_target\`, \`raw_search_better\`, or \`raw_search_sufficient\`, use first-class \`search\` or an explicit target before planning edits.
-2. Any code edit, debug, or review task: call \`search\` first when the target is unclear; otherwise call \`task_brief\` with the user's exact task and known files/symbols.
-3. Before editing concrete files: call \`change_plan\` with \`saveSnapshot: true\` and keep the returned task id.
-4. Before editing: call \`test_plan\` for the saved task so targeted checks and shared consumers are explicit while replanning is still cheap.
-5. After editing: call \`post_edit_review\` as the go-to review gate with the saved task id and tests run.
-6. Before final response: call \`proof_card\` with reported commands/tests or account for why no targeted tests apply.
-7. Route, job, queue, adapter, manifest, or runtime behavior: call \`workflow_path\`.
-8. API, rename, delete, or exported contract change: call \`callers\`, \`callees\`, or \`dependency_path\`.
+1. Explicit bounded edit, debug, or review task: call \`change_plan\` with \`saveSnapshot: true\` directly and keep the returned task id.
+2. Broad or ambiguous request: call \`session_context\`; if the target is unclear or actionability says \`needs_target\`, \`raw_search_better\`, or \`raw_search_sufficient\`, use first-class \`search\`. Use \`task_brief\` only when a plausible target still needs more repository context before planning.
+3. Edit, then run the targeted tests and verification commands returned by \`change_plan\`.
+4. Call \`test_plan\` only when the plan or review leaves verification guidance unresolved, or when a dedicated test plan is explicitly requested.
+5. After editing: call \`post_edit_review\` as the go-to review gate with the saved task id and evidence that actually ran.
+6. Call \`proof_card\` only for policy changes, formal audits, releases, artifact handoffs, or decision-integrity proof.
+7. Use \`capabilities\` to discover or invoke advanced operations in optimized/core mode without reducing logical capability. Full mode also exposes every advanced tool directly.
+8. Route, job, queue, adapter, manifest, or runtime behavior: invoke \`workflow_path\` directly or through \`capabilities\`.
+9. API, rename, delete, or exported contract change: invoke \`callers\`, \`callees\`, or \`dependency_path\` directly or through \`capabilities\`.
 
 Primary Codex loop: \`${PRIMARY_CODEX_LOOP}\`.
 Primary MCP tools: ${PRIMARY_MCP_TOOL_NAMES.map((tool) => `\`${tool}\``).join(", ")}.

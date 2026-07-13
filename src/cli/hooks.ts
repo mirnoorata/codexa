@@ -102,8 +102,11 @@ export async function runPostEditHook(repo: string): Promise<void> {
     try {
       const snapshot = await loadTaskSnapshot(activeRepoRoot);
       const taskId = snapshot.snapshot?.taskId ?? snapshot.latestTaskId;
-      const hookSnapshotAmbiguity = snapshot.snapshot?.taskId ? await latestHookSnapshotAmbiguity(activeRepoRoot, snapshot.snapshot.taskId) : undefined;
       const autoVerifyMode = await postEditAutoVerifyMode(activeRepoRoot);
+      const reviewPassPolicy = postEditHookReviewPassPolicy(autoVerifyMode);
+      const hookSnapshotAmbiguity = reviewPassPolicy.runAutoVerify && snapshot.snapshot?.taskId
+        ? await latestHookSnapshotAmbiguity(activeRepoRoot, snapshot.snapshot.taskId)
+        : undefined;
       const freshness = await getFreshness(activeRepoRoot, undefined, { recover: false });
       const signature = postEditHookReviewSignature({ freshness, taskId, autoVerifyMode });
       const previous = await loadPostEditHookReviewState(activeRepoRoot);
@@ -122,14 +125,22 @@ export async function runPostEditHook(repo: string): Promise<void> {
         activeRepoRoot,
         {
           ...reviewInput,
-          persistOutcome: false
+          persistOutcome: reviewPassPolicy.persistInitialOutcome
         },
         { autoRefresh: true, commandBudgetMs: 15_000, maxResults: 6 }
       );
-      const autoVerifySkipReason = hookSnapshotAmbiguity ?? ambiguousSnapshotAutoVerifySkipReason(initialResult.data);
-      const autoVerify = autoVerifySkipReason
-        ? { reports: [], attempted: [], skipped: [autoVerifySkipReason] }
-        : await runAutoVerifyForPostEdit(activeRepoRoot, initialResult.data);
+      const autoVerifySkipReason = reviewPassPolicy.runAutoVerify
+        ? hookSnapshotAmbiguity ?? ambiguousSnapshotAutoVerifySkipReason(initialResult.data)
+        : undefined;
+      const autoVerify = !reviewPassPolicy.runAutoVerify
+        ? {
+            reports: [],
+            attempted: [],
+            skipped: []
+          }
+        : autoVerifySkipReason
+          ? { reports: [], attempted: [], skipped: [autoVerifySkipReason] }
+          : await runAutoVerifyForPostEdit(activeRepoRoot, initialResult.data);
       if (autoVerify.attempted.length > 0) {
         console.log(`Codexa AutoVerify: ran ${autoVerify.attempted.length} targeted command(s).`);
         for (const report of autoVerify.reports) {
@@ -144,12 +155,14 @@ export async function runPostEditHook(repo: string): Promise<void> {
           console.log(`- ${sanitizeAutoVerifyText(skipped, activeRepoRoot) ?? "<redacted-command>"}`);
         }
       }
-      const result = await postEditReviewWithTrustedRunnerReports(
-        activeRepoRoot,
-        reviewInput,
-        autoVerify.reports,
-        { autoRefresh: true, commandBudgetMs: 15_000, maxResults: 6 }
-      );
+      const result = reviewPassPolicy.runFinalReview
+        ? await postEditReviewWithTrustedRunnerReports(
+            activeRepoRoot,
+            reviewInput,
+            autoVerify.reports,
+            { autoRefresh: true, commandBudgetMs: 15_000, maxResults: 6 }
+          )
+        : initialResult;
       console.log(compactHookOutput(result.text));
       const outcome = postEditOutcomeFromQueryResult(result.data);
       const autoVerifyStatus = summarizeAutoVerifyStatus(autoVerify);
@@ -241,6 +254,15 @@ async function postEditAutoVerifyMode(repoRoot: string): Promise<string> {
   return autonomy.mode === "full-access"
     ? `autoverify:${autoVerifyPolicySignature()}`
     : "autoverify:off";
+}
+
+export function postEditHookReviewPassPolicy(autoVerifyMode: string): { persistInitialOutcome: boolean; runAutoVerify: boolean; runFinalReview: boolean } {
+  const autoVerifyEnabled = autoVerifyMode !== "autoverify:off";
+  return {
+    persistInitialOutcome: !autoVerifyEnabled,
+    runAutoVerify: autoVerifyEnabled,
+    runFinalReview: autoVerifyEnabled
+  };
 }
 
 function duplicatePostEditReviewCanSkip(autoVerifyStatus: string | undefined): boolean {

@@ -62,7 +62,6 @@ export function postEditStructuredNextTools(
   }
 ): Array<ReturnType<typeof nextTool>> {
   return [
-    input.testsNotRun[0] ? nextTool("test_plan", "recommended tests remain unaccounted for", { files: input.reviewScope.slice(0, 8), diff: true }) : undefined,
     verdict === "replan" || input.degradedSnapshotTests.length > 0
       ? nextTool(
           "change_plan",

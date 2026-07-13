@@ -6,7 +6,12 @@ import { clampInt, fitLinesToTokenBudget, formatReasons } from "./formatting.js"
 import { affectedWorkflowGraphEdges, testsFromGraphEdges } from "./graph.js";
 import { contextPackQuery, focusBriefQuery } from "./context.js";
 import { formatContextQuality, type ContextQuality } from "./quality.js";
-import { freshnessBanner } from "./runtime.js";
+import {
+  assertFreshnessAuthorityCurrent,
+  FreshnessAuthorityChangedError,
+  freshnessAuthorityBlockReason,
+  freshnessBanner
+} from "./runtime.js";
 import { ensureQuerySession, type QuerySession, type QuerySessionInput } from "./session.js";
 import { normalizeSearchText } from "./search.js";
 import { formatTestRecommendations, narrowTestRecommendationsByChangeType, recommendTests, uniqueTests } from "./tests.js";
@@ -40,10 +45,12 @@ import type {
   DiffImpactGroup,
   EvidenceTier,
   FileFact,
+  FreshnessInfo,
   GraphEdgeFact,
   PostEditReviewInput,
   QueryOptions,
   QueryResult,
+  RefreshInfo,
   SymbolFact,
   TaskSnapshot,
   TaskSnapshotRiskFile,
@@ -90,6 +97,10 @@ async function postEditReviewQueryInternal(
   const limit = clampInt(input.limit ?? 10, 3, 30);
   const loadedSnapshot = await loadTaskSnapshot(repoRoot, input.taskId);
   const snapshot = loadedSnapshot.snapshot;
+  const freshnessBlockReason = freshnessAuthorityBlockReason(freshness);
+  if (freshnessBlockReason) {
+    return postEditFreshnessBlockedResult({ freshness, refresh, repoRoot, input, loadedSnapshot, reason: freshnessBlockReason });
+  }
   const snapshotAmbiguity = !input.taskId && snapshot ? await latestSnapshotAmbiguity(repoRoot, snapshot.taskId) : undefined;
   const currentEntries = await session.getChangedFileEntries();
   const dirtyScope = postEditDirtyScope({ snapshot, currentEntries, freshness, index });
@@ -247,7 +258,7 @@ async function postEditReviewQueryInternal(
   const workflows = index.workflows
     .filter((workflow) => reviewTargets.some((filePath) => workflow.relatedFiles.includes(filePath) || workflow.entryPath === filePath))
     .sort((a, b) => b.rank - a.rank || a.title.localeCompare(b.title))
-    .slice(0, 6);
+    .slice(0, 12);
   const rawWorkflowChecks = evaluateRequiredChecks(snapshot?.requiredWorkflowChecks ?? [], {
     editPaths,
     reviewTargets,
@@ -367,7 +378,10 @@ async function postEditReviewQueryInternal(
     artifactIds: selectedArtifactIds,
     externalCheckFailedTargets: failedArtifactIds,
     expectedInvariants: invariants,
-    requireExistingState: snapshot?.planRevision !== undefined
+    requireExistingState: snapshot?.planRevision !== undefined,
+    beforePersist: async () => {
+      await assertFreshnessAuthorityCurrent(repoRoot, index, freshness);
+    }
   };
   const previewLifecycle = await buildPostEditLifecycleDecision(lifecycleInput);
   const { decision: previewDecision, failureSignals: previewFailureSignals, diffFootprint: previewDiffFootprint, loopReview: previewLoopReview } = previewLifecycle;
@@ -442,7 +456,24 @@ async function postEditReviewQueryInternal(
     confidence: quality?.counts
   };
   const persistOutcome = input.persistOutcome ?? true;
-  const savedOutcome = persistOutcome ? await persistPostEditLifecycleOutcome(lifecycleInput, outcomeInput) : undefined;
+  let savedOutcome: Awaited<ReturnType<typeof persistPostEditLifecycleOutcome>> | undefined;
+  if (persistOutcome) {
+    try {
+      savedOutcome = await persistPostEditLifecycleOutcome(lifecycleInput, outcomeInput);
+    } catch (error) {
+      if (error instanceof FreshnessAuthorityChangedError) {
+        return postEditFreshnessBlockedResult({
+          freshness: error.freshness,
+          refresh: { refreshed: false },
+          repoRoot,
+          input,
+          loadedSnapshot,
+          reason: error.reason
+        });
+      }
+      throw error;
+    }
+  }
   const lifecycle = savedOutcome?.lifecycle ?? previewLifecycle;
   const { decision, failureSignals, diffFootprint, loopReview } = lifecycle;
   const {
@@ -687,6 +718,66 @@ async function postEditReviewQueryInternal(
         persisted: Boolean(savedOutcome),
         path: outcomePath
       }
+    }
+  };
+}
+
+function postEditFreshnessBlockedResult(input: {
+  freshness: FreshnessInfo;
+  refresh?: RefreshInfo;
+  repoRoot: string;
+  input: PostEditReviewInput;
+  loadedSnapshot: TaskSnapshotLoadResult;
+  reason: string;
+}): QueryResult {
+  const snapshot = input.loadedSnapshot.snapshot;
+  const task = input.input.task ?? snapshot?.task ?? "Post-edit review";
+  return {
+    freshness: input.freshness,
+    refresh: input.refresh,
+    text: [
+      freshnessBanner(input.freshness, input.refresh),
+      "Codexa post-edit review blocked.",
+      input.reason,
+      `Run: codexa index ${input.repoRoot}`,
+      "No post-edit outcome or lifecycle attempt was persisted."
+    ].join("\n"),
+    data: {
+      mode: "post_edit_review",
+      actionability: "blocked",
+      task,
+      taskId: snapshot?.taskId ?? input.input.taskId,
+      verdict: "inspect",
+      inspectMode: "blocking",
+      inspectReasons: [input.reason],
+      completionAuthority: "blocking_inspect",
+      planRevision: snapshot?.planRevision ?? 1,
+      invariants: snapshot?.invariants ?? [],
+      invariantReviews: [],
+      snapshot: compactSnapshotForData(snapshot),
+      snapshotLoad: {
+        taskId: input.loadedSnapshot.latestTaskId,
+        path: input.loadedSnapshot.path,
+        missingReason: input.loadedSnapshot.missingReason,
+        error: input.loadedSnapshot.error,
+        recoveredLatest: input.loadedSnapshot.recoveredLatest
+      },
+      files: [],
+      reviewTargets: [],
+      changedSinceSnapshot: [],
+      unplannedEditedFiles: [],
+      testsNotRun: snapshot?.plannedTests ?? [],
+      verificationLedger: [],
+      riskEscalationsNeedInspection: true,
+      loopReview: {
+        status: "not-evaluated",
+        reasons: ["freshness authority blocked before lifecycle evaluation"]
+      },
+      failureSignals: [],
+      outcome: { persisted: false },
+      nextTools: [],
+      systemMessage: `Run codexa index ${input.repoRoot}, then retry post_edit_review.`,
+      gaps: [input.reason]
     }
   };
 }

@@ -10,13 +10,13 @@ import { describe, expect, it } from "vitest";
 import { buildIndex } from "../src/indexer.js";
 import { MCP_TOOL_CATALOG, PRIMARY_CODEX_LOOP, compactNonPostEditMcpResult, compactPostEditMcpResult } from "../src/mcp.js";
 import { conciseText } from "../src/mcp/compaction.js";
-import { CORE_PROFILE_TOOL_NAMES, MCP_TOOL_NAMES, MCP_TOOL_REGISTRY } from "../src/mcp/tool-registry.js";
+import { ADVANCED_MCP_TOOL_NAMES, CORE_PROFILE_TOOL_NAMES, MCP_TOOL_NAMES, MCP_TOOL_REGISTRY } from "../src/mcp/tool-registry.js";
 import { MCP_REGISTERED_TOOL_NAMES } from "../src/mcp/tools.js";
 import { CURRENT_VERIFICATION_PROVENANCE } from "../src/types.js";
 import { CODEXA_VERSION } from "../src/version.js";
 import { freshnessFixture, seq, serializedBytes, waitForStderr, stopChild, waitForExit, createIndexedMcpRepo, createIndexedMcpAutoVerifyRepo, buildContextPacket, buildFocusBriefPacket, buildTestPlanPacket, buildChangePlanPacket } from "./mcp-fixtures.js";
 describe("core profile guidance discipline", () => {
-it("core-profile envelopes never steer to unregistered tools", async () => {
+it("core-profile envelopes steer only to directly registered or dispatcher-callable tools", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-core-guidance-"));
     const repo = await createIndexedMcpRepo(workspace, "repo", "alpha", "alphaSymbol");
     const transport = new StdioClientTransport({
@@ -28,13 +28,14 @@ it("core-profile envelopes never steer to unregistered tools", async () => {
     await client.connect(transport);
     try {
       const core = new Set<string>(CORE_PROFILE_TOOL_NAMES);
+      const dispatcherCallable = core.has("capabilities") ? new Set<string>(ADVANCED_MCP_TOOL_NAMES) : new Set<string>();
       for (const toolName of ["session_context", "task_brief", "search"]) {
         const result = await client.callTool({ name: toolName, arguments: toolName === "search" ? { query: "alphaSymbol" } : {} });
         const structured = result.structuredContent as { nextTools?: unknown[]; systemMessage?: string } | undefined;
         for (const entry of structured?.nextTools ?? []) {
           const name = typeof entry === "string" ? entry : (entry as { tool?: string })?.tool;
           if (typeof name === "string") {
-            expect(core.has(name), `tool ${toolName} steered to unregistered ${name}`).toBe(true);
+            expect(core.has(name) || dispatcherCallable.has(name), `tool ${toolName} steered to unavailable ${name}`).toBe(true);
           }
         }
       }

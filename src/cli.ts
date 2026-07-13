@@ -603,7 +603,9 @@ program
   .option("--auto-refresh", "refresh a stale or missing index before answering MCP context tools", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before answering MCP context tools")
   .option("--session-memory <mode>", "auto-record MCP session memory: auto or off", parseSessionMemoryMode, "auto")
-  .option("--tools <profile>", "server-side tool exposure: core (primary loop only, cheaper per turn) or full", parseToolProfile, "full")
+  // Preserve the historical bare-serve API for existing unmanaged launchers.
+  // Fresh managed installs pass `--tools core` explicitly.
+  .option("--tools <profile>", "server-side tool exposure: core (primary loop plus capabilities dispatcher, cheaper per turn) or full", parseToolProfile, "full")
   .option("--workspace-focus-file <path>", "workspace focus file to consult when <repo> is a workspace launch root")
   .option("--workspace-session <id>", "active WORKING.md session row to prefer when <repo> is a workspace launch root")
   .option("--transport <transport>", "MCP transport: stdio or http", parseMcpTransport, "stdio")

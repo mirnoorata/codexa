@@ -10,14 +10,16 @@ Use this skill when a task involves understanding, editing, reviewing, or verify
 ## Operating Rules
 
 1. Resolve the active repository first. If the repo has `.codex/config.toml`, use the project-local Codexa MCP server. If the MCP server is unavailable, run the equivalent `codexa` CLI command from the repository.
-2. Primary Codexa path: `session_context -> search(if target unclear) -> task_brief -> change_plan(saveSnapshot) -> post_edit_review -> test_plan -> proof_card`.
+2. Primary Codexa path for an explicit bounded task: `change_plan(saveSnapshot) -> edit/run planned verification -> post_edit_review`. Add `session_context`/`search`/`task_brief` only when target or context is unclear, `test_plan` only when verification guidance is unresolved, and `proof_card` only for policy or formal handoff.
 3. For broad tasks, call `session_context` first. If the target is unclear or `actionability` says `needs_target`, `raw_search_better`, or `raw_search_sufficient`, use first-class `search` or ask for an explicit target before planning edits.
-4. For code edits, debugging, reviews, or non-trivial refactors, call `search` first when the target is unclear; otherwise call `task_brief` before reading or editing source.
+4. For code edits, debugging, reviews, or non-trivial refactors, call `search` first when the target is unclear. If a plausible target still lacks safe repository context, call `task_brief`; otherwise call `change_plan` directly.
 5. For symbol-level changes, call `symbol_context` or `impact` when you need callers, callees, implementations, tests, risks, edge evidence, or the next exact Codexa tool.
 6. Before non-trivial edits, call `change_plan` with `saveSnapshot=true` so Codexa can compare the plan with the final dirty tree and planned-test provenance.
 7. After edits, call go-to `post_edit_review` before the final response and pass any commands or test reports that were actually run. Treat degraded snapshot tests as evidence to inspect or rerun, not as trusted coverage. MCP `post_edit_review` is review-only; AutoVerify execution is limited to the Codexa hook path when the user environment enables it.
 8. For workflow/runtime/API/rename/delete changes, use `workflow_path`, `callers`, `callees`, or `dependency_path` before editing shared surfaces.
-9. Finish with `test_plan` when the verification surface is unclear.
+9. Run the tests and commands returned by `change_plan`; call `test_plan` only when that verification surface remains unclear.
+10. Call `proof_card` for policy changes, formal audits, releases, artifact handoffs, or decision-integrity proof, not as a mandatory final call for every edit.
+11. In optimized/core mode, use `capabilities` to discover or invoke any advanced operation. Full mode also exposes every advanced tool directly; both paths use the same operation-specific validation and handler.
 
 ## Thin Adapter Rules
 

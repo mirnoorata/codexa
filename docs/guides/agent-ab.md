@@ -24,9 +24,10 @@ The harness is source-checkout evaluation tooling, not a new installed Codexa
 command. It adds no production runtime module or dependency and is excluded from
 the npm package's executable payload; the public README may still document it.
 
-## Arms
+## Schema-v1 arms
 
-Both arms receive the same task bytes, task image, agent, model, ordinary
+The frozen schema-v1 pilot's two arms receive the same task bytes, task image,
+agent, model, ordinary
 tools, budgets, retry policy, and concurrency.
 
 - **Control:** no Codexa MCP registration and no Codexa workflow instruction.
@@ -91,16 +92,222 @@ adherence claims. That avoids turning unsupported lineage or malformed evidence
 into a confident no-use result; per-agent attribution is a separate future
 analysis.
 
+## Schema-v2 stepped ablation
+
+Schema v2 preserves the verifier-owned ITT boundary while supporting arbitrary
+registered arms and explicit pairwise comparisons. It is additive: schema-v1
+configuration, assignment IDs, registration shape, analysis meaning, and the
+archived v7 report remain historical evidence and are not rewritten as v2.
+
+The recommended zero-loss-hypothesis candidate study uses the same Codexa
+binary in every Codexa arm. The name is a hypothesis, not a result; the
+optimized arm is not called zero-loss unless the held-out non-inferiority and
+guardrail-recall gates pass.
+
+| Arm | Exposure and delivery | Lifecycle cadence |
+| --- | --- | --- |
+| `control` | no Codexa | no Codexa |
+| `full-detailed-legacy` | full direct schemas, detailed delivery | fixed legacy workflow |
+| `adaptive-auto-legacy` | compact full-capability dispatcher, automatic delivery | fixed legacy workflow |
+| `adaptive-auto-bounded` | compact full-capability dispatcher, automatic delivery | adaptive bounded workflow |
+
+All Codexa arms use the same canonical detailed projection and structured-data
+target for explicit detailed responses and resource-backed automatic results.
+The delivery comparison therefore changes transport exposure, not evidence
+capacity.
+
+Preregister these comparisons to separate net value from individual overhead
+changes:
+
+- `adaptive-auto-bounded` versus `control`: optimized net value;
+- `adaptive-auto-bounded` versus `full-detailed-legacy`: total optimization;
+- `adaptive-auto-legacy` versus `full-detailed-legacy`: transport/exposure;
+- `adaptive-auto-bounded` versus `adaptive-auto-legacy`: lifecycle cadence.
+
+A v2 experiment replaces top-level `treatment` with `arms` and adds
+`analysis.comparisons`:
+
+```json
+{
+  "schemaVersion": 2,
+  "experimentId": "codexa-agent-ab-zero-loss-hypothesis-v1",
+  "framework": { "name": "harbor", "version": "0.18.0" },
+  "runner": {
+    "agent": "codex",
+    "version": "PINNED_RUNNER_VERSION",
+    "kwargs": { "reasoning_effort": "high", "web_search": "disabled" }
+  },
+  "candidate": { "codexaVersion": "PINNED_CODEXA_VERSION" },
+  "design": {
+    "seed": "PREREGISTERED_RANDOM_SEED",
+    "repetitions": 4,
+    "concurrency": 1,
+    "maxRetries": 0,
+    "timeoutMultiplier": 1,
+    "controllerTimeoutSeconds": 3600
+  },
+  "tasks": [{ "id": "TASK_ID", "name": "PACK/TASK_NAME", "path": "TASK_PATH" }],
+  "arms": [
+    { "id": "control", "kind": "control" },
+    {
+      "id": "full-detailed-legacy",
+      "kind": "codexa",
+      "mcpConfig": "config/full-detailed-legacy.mcp.json",
+      "extraInstruction": "config/full-detailed-legacy.md"
+    },
+    {
+      "id": "adaptive-auto-legacy",
+      "kind": "codexa",
+      "mcpConfig": "config/adaptive-auto-legacy.mcp.json",
+      "extraInstruction": "config/adaptive-auto-legacy.md"
+    },
+    {
+      "id": "adaptive-auto-bounded",
+      "kind": "codexa",
+      "mcpConfig": "config/adaptive-auto-bounded.mcp.json",
+      "extraInstruction": "config/adaptive-auto-bounded.md"
+    }
+  ],
+  "analysis": {
+    "primaryReward": "verified_completion",
+    "bootstrapSamples": 10000,
+    "confidenceLevel": 0.95,
+    "generalizationUnit": "task",
+    "failurePolicy": "intention-to-treat",
+    "comparisons": [
+      { "id": "optimized-net-value", "baselineArm": "control", "candidateArm": "adaptive-auto-bounded", "primary": true },
+      { "id": "total-optimization", "baselineArm": "full-detailed-legacy", "candidateArm": "adaptive-auto-bounded", "primary": false },
+      { "id": "transport-exposure", "baselineArm": "full-detailed-legacy", "candidateArm": "adaptive-auto-legacy", "primary": false },
+      { "id": "cadence", "baselineArm": "adaptive-auto-legacy", "candidateArm": "adaptive-auto-bounded", "primary": false }
+    ]
+  }
+}
+```
+
+Arm IDs and comparison IDs are unique. Exactly one arm is control and exactly
+one comparison is primary. Control carries no MCP or instruction input; every
+Codexa arm carries exactly one of each. Registration copies each input into an
+arm-specific immutable snapshot and records its hash and sandbox wrapper
+command. Trial validation compares the actual MCP command and instruction path
+with that arm's snapshot, so a copied config or swapped instruction invalidates
+the protocol rather than becoming a product failure.
+
+Within each task, the seed selects one base permutation of all arms. Repetition
+`n` cyclically rotates that permutation by `n - 1`. Thus every block contains
+every arm once, and four repetitions of a four-arm design put each arm in each
+position once. Fewer repetitions remain valid but are only partially balanced;
+the registration and summary publish the exact `positionalBalance` counts.
+This is positional balance, not a claim of complete sequence counterbalancing.
+
+### Descriptive transport evidence
+
+For ATIF-v1.7 trajectories, the analyzer correlates a Codexa call only when its
+`tool_call_id` occurs once and exactly one result with the same
+`source_call_id` appears in the same step. It reports:
+
+- UTF-8 bytes of raw string-valued arguments or JSON-serialized object-valued
+  arguments;
+- UTF-8 bytes of model-visible observation text;
+- requested and, when versioned delivery metadata is present, effective
+  response formats;
+- explicit detailed requests, actual detailed-resource fetches, automatic
+  escalations, and unchanged receipts; and
+- per-tool counts and byte totals.
+
+The generic `read_mcp_resource` adapter call counts as an actual fetch only
+when its uniquely correlated arguments contain exactly `server: "codexa"` and
+an exact content-addressed
+`codexa://repo/mcp-results/rr_<32-lowercase-hex-route>/mr_<64-lowercase-hex>`
+URI. The fixed-size route is an opaque server-session identifier and does not
+encode the checkout path.
+The fetch's argument and model-visible
+result bytes contribute to the overall totals and are also reported separately.
+A resource link offered in another result is not a fetch.
+Wrong servers, malformed or non-matching URIs, duplicate call/result IDs, or a
+mismatch with observed server fetch events make the evidence partial instead
+of silently reporting zero.
+
+This is payload accounting, not token or cost attribution. Copied context,
+duplicate IDs, unsupported continuation or subagent lineage, malformed
+evidence, and scan/byte-limit exhaustion make the transport block
+partial/unknown instead of producing a zero.
+
+An arm may additionally opt into Codexa's content-free server JSONL telemetry
+with `CODEXA_MCP_TELEMETRY_PATH`. For Harbor task packs, use a path that the
+artifact contract transfers, for example
+`/logs/artifacts/codexa-mcp-telemetry.jsonl`. The analyzer accepts exactly one
+non-symlinked `codexa-mcp-telemetry.jsonl`, at most 4 MiB, 1,000 records, and 64
+KiB per record. Relative paths resolve once against the configured MCP launch
+root and remain there if workspace focus changes; an absolute task-pack path is
+preferred when artifacts are collected outside that root. Discovery visits at
+most 10,000 artifact-tree entries. Event
+paths must be unique and absent when the MCP server starts; the writer creates
+one regular file and rejects symlinked parent or final paths. Event
+sequences must be contiguous from 1 so an advisory write failure cannot silently
+undercount later events. Each event uses schema version 1 and may identify its
+`eventKind` as `tool` (the default) or `resource-read`, plus an optional bounded
+logical operation. A resource-read event must identify `read_mcp_resource`, the
+exact content-addressed URI, detailed/detailed delivery, zero structured bytes,
+and an unchanged-receipt value of false. Optional `outcome` is restricted to
+`ok` or `error`. Optional nonzero `droppedBefore`
+marks the whole server block partial; dropped values are never imputed. Graceful
+shutdown appends a content-free `session-complete` record with the accepted event
+count. The analyzer excludes that record from event and byte totals; a missing,
+misordered, or count-mismatched completion record makes the block partial. It
+emits aggregates only and never republishes event content or result references.
+
+`efficiencyTelemetry` reports ATIF and server totals per arm together with
+observed and unknown/partial run counts. Missing or malformed telemetry is not
+imputed. These fields and the per-outcome telemetry are descriptive only: they
+cannot change verifier rewards, ITT inclusion, protocol validity, arm success
+rates, or comparison effects.
+
+Requested-format accounting follows production routing: a direct outer
+`responseFormat` wins when it is the only value, while dispatcher calls may put
+the value in the inner `arguments` object. Conflicting outer and inner values
+make trajectory transport evidence partial rather than guessing which value
+the rejected call intended.
+
+Each registered comparison also contains `pairedOverhead`, with
+candidate-minus-baseline summaries for input/cache/output tokens, cost,
+agent/controller elapsed time, and available ATIF/server call, byte, and time
+fields. `allStarted` uses every started pair. `bothCompletedSuccessfully` is a
+separately labelled selected view and can differ systematically from
+all-started. Every metric reports paired-present and paired-missing counts,
+mean and median deltas, and a candidate-to-baseline mean ratio only when the
+paired baseline mean is positive. No missing value is imputed and none of these
+descriptive summaries is a causal attribution.
+
 Codexa indexes the treatment checkout inside the sandbox. It cannot borrow an
 index from the host or another arm. Index duration and exit status are written
 as telemetry under `/logs/artifacts/`; they do not affect correctness.
 
-The checked-in MCP wrapper deliberately takes no command-line arguments. Harbor
+The checked-in schema-v1 MCP wrapper deliberately takes no command-line arguments. Harbor
 0.18's Codex adapter flattens an MCP command and its arguments into one command
 string, so the wrapper binds `/workspace/project` internally rather than
 depending on separately preserved arguments. The treatment-startup smoke must
 perform a real MCP `initialize` handshake followed by `tools/list`; process
-startup alone does not prove that the treatment is usable.
+startup alone does not prove that the treatment is usable. For schema v2, every
+task environment must copy every registered suffix wrapper to its exact command
+path with mode `0755`. Each wrapper binds `/workspace/project`, uses the
+isolated Codexa runtime, and execs its exact `codexa serve` flags. Before any
+attempt journal or timed Harbor assignment, the controller builds the immutable
+task snapshot and runs the harness-owned bounded
+`mcp-initialize-tools-list-smoke.mjs` client through every wrapper still needed
+by a pending assignment. Validation requires the canonical isolated runtime
+install to consume `${CODEXA_VERSION}`. The smoke client requires a successful
+`initialize` response whose `serverInfo` is exactly `codexa` at the registered
+candidate version, followed by a non-empty `tools/list`, with container
+networking disabled. Each successful receipt binds the task hash, command,
+smoke-helper hash, expected server identity, and observed server identity
+outside attempt journals and is reused on resume; any identity change forces a
+new preflight. Validation rejects a command suffix that any task image does not
+provision. Keeping the preflight outside the measured wrapper avoids charging
+a second server startup to Codexa arms. At analysis time, every receipt needed
+by a started Codexa task/command pair is read again as a bounded regular file.
+The JSON and Markdown reports surface the proof status plus expected and
+observed server identities; a missing, malformed, or identity-mismatched
+receipt invalidates the protocol and suppresses all effect estimates.
 
 ## Agent-inaccessible verification
 
@@ -169,9 +376,9 @@ not prove that credentials reach the model, and registration deliberately does
 not inspect or serialize provider secrets. Complete both preflights before a
 costly run.
 
-Register the exact task hashes, treatment hashes, framework, agent, model,
-agent-runner version and arguments, seed, repetitions, and counterbalanced
-within-task execution order:
+Register the exact task hashes, schema-v1 treatment or schema-v2 per-arm input
+hashes, comparisons, framework, agent, model, agent-runner version and
+arguments, seed, repetitions, and within-task execution order:
 
 ```bash
 node scripts/agent-ab.mjs register \
@@ -184,9 +391,9 @@ node scripts/agent-ab.mjs register \
 Registration is immutable. Immediately before spawning Harbor, the runner
 writes an immutable `attempts/<run-id>.json` journal bound to the exact
 registered assignment. `--resume` permits never-started registered work to
-continue only when the experiment, task, treatment, agent, and model hashes
-still match. A started assignment without final metadata remains an ITT failure
-and is never rerun.
+continue only when the experiment, task, registered arm inputs, agent, and model
+hashes still match. A started assignment without final metadata remains an ITT
+failure and is never rerun.
 
 Those hashes bind source inputs; they do not make a container build
 bit-for-bit reproducible. Exact replay also requires recording the built-image
@@ -217,7 +424,7 @@ inherited for provider authentication but never serialized by the controller.
 
 ## Analysis
 
-The summary reports:
+The schema-v1 summary reports:
 
 - the registered configuration, task, treatment, framework, and runner hashes
   or identities needed to bind the result to its inputs;
@@ -234,6 +441,11 @@ The summary reports:
 - structured per-tool Codexa call counts when the agent trajectory exposes
   them, without treating invocation as proof of benefit.
 
+Schema v2 reports the same arm metrics for every registered arm, independently
+recomputes every registered baseline/candidate comparison, identifies the
+primary comparison, publishes positional balance, and adds per-arm descriptive
+efficiency telemetry. It does not use telemetry to adjust or select effects.
+
 No effect is emitted while the experiment is incomplete. Final metadata is
 accepted only when its assignment fields and expected job path match the
 registration, and the Harbor aggregate, trial identity, and recorded task path
@@ -241,9 +453,9 @@ match the exact registered immutable task snapshot. This prevents a sibling
 job or same-named task result from being attributed to the wrong arm.
 
 The trial's recorded agent, model, exact runner kwargs, MCP servers, and
-extra-instruction paths must reproduce the registered arm. Control must record
-empty MCP and instruction lists; treatment must record exactly the
-zero-argument Codexa stdio wrapper and the registered input-snapshot workflow
+extra-instruction paths must reproduce the registered arm. A control arm must
+record empty MCP and instruction lists; every Codexa arm must record exactly
+its zero-argument Codexa stdio wrapper and registered input-snapshot workflow
 instruction. Any mismatch is an evaluator-protocol failure:
 `protocolStatus` becomes `invalid`, the outcome is not scored as a product
 failure, and the effect and claim are suppressed. Codexa setup presence,

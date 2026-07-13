@@ -10,6 +10,7 @@ const script = path.join(root, "scripts", "agent-ab.mjs");
 const config = path.join(root, "benchmarks", "agent-ab", "experiment.json");
 const reportPath = path.join(root, "reports", "benchmarks", "v0.10.0-agent-ab-pilot-v7.json");
 const reportSha256 = "80e1d15bcbcbee26467757f67bed3e60779ecdd5b9c4edf9df1709be14a35eb8";
+const historicalControllerHash = "56c79dc6e9bf26dfc5e6ca2f929e499826544153f5f7aa0b33d40c392472b54f";
 const historicalAnalyzerHash = "e9628f0d786c0ac40bc1c98fb8efcc41099e78465dfa9f072125bb471319b2fb";
 const metricFields = [
   "inputTokens",
@@ -155,7 +156,7 @@ describe("archived agent A/B report", () => {
       configHash: validation.configHash,
       framework: validation.framework,
       harness: {
-        controllerHash: validation.harness.controllerHash,
+        controllerHash: historicalControllerHash,
         analyzerHash: historicalAnalyzerHash
       },
       candidate: validation.candidate,

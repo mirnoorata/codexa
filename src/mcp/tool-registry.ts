@@ -27,9 +27,9 @@ export const MCP_TOOL_REGISTRY = [
     cost: "compact",
     writeEffects: "session-memory-auto",
     readOnly: false,
-    useWhen: "Start or resume work in a repo and choose the next focused Codexa call.",
-    avoidWhen: "You already have an explicit file or symbol target; use task_brief or change_plan instead.",
-    nextToolUse: ["search", "task_brief"]
+    useWhen: "Start or resume broad work in a repo, or recover orientation after context loss.",
+    avoidWhen: "You already have an explicit bounded target; call change_plan directly unless more context is genuinely needed.",
+    nextToolUse: ["search", "task_brief", "change_plan"]
   },
   {
     name: "search",
@@ -49,14 +49,14 @@ export const MCP_TOOL_REGISTRY = [
     name: "task_brief",
     title: "Codexa task brief",
     description:
-      "Pre-edit context brief: what to read first before changing code — read-first files, impact expansion, risks, likely tests, freshness, confidence labels, snippets. Default once a target or bounded task is known. Medium output.",
+      "Optional pre-edit context brief: what to read first before changing code — read-first files, impact expansion, risks, likely tests, freshness, confidence labels, snippets. Use when an otherwise bounded task still needs repository context. Medium output.",
     tier: "primary",
     phase: "brief",
     cost: "medium",
     writeEffects: "session-memory-auto",
     readOnly: false,
-    useWhen: "Before editing, debugging, or reviewing a specific task after search/session context has supplied a plausible target.",
-    avoidWhen: "The target is still unclear; run first-class search or provide explicit files first.",
+    useWhen: "A plausible target is known but the agent still lacks enough repository context to plan safely.",
+    avoidWhen: "The target is unclear (use search), or the bounded target and required context are already explicit (use change_plan).",
     nextToolUse: ["change_plan"]
   },
   {
@@ -69,9 +69,9 @@ export const MCP_TOOL_REGISTRY = [
     cost: "medium",
     writeEffects: "task-snapshot-cache",
     readOnly: false,
-    useWhen: "Before non-trivial edits; pass saveSnapshot=true to enable post-edit drift checks.",
+    useWhen: "Start a bounded edit directly; pass saveSnapshot=true to receive planned tests/commands and enable post-edit drift checks.",
     avoidWhen: "After edits are already made; use post_edit_review for dirty-tree accountability.",
-    nextToolUse: ["test_plan", "post_edit_review"]
+    nextToolUse: ["post_edit_review"]
   },
   {
     name: "post_edit_review",
@@ -85,7 +85,7 @@ export const MCP_TOOL_REGISTRY = [
     readOnly: false,
     useWhen: "Immediately after edits and before final response; pass the saved change_plan task id plus commands/tests that actually ran.",
     avoidWhen: "Before editing or without a meaningful diff to review.",
-    nextToolUse: ["test_plan"]
+    nextToolUse: []
   },
   {
     name: "test_plan",
@@ -96,9 +96,9 @@ export const MCP_TOOL_REGISTRY = [
     cost: "compact",
     writeEffects: "session-memory-auto",
     readOnly: false,
-    useWhen: "Select verification for explicit files, the current diff, or after post_edit_review has provided a review scope.",
-    avoidWhen: "You need proof that tests ran; recommendations are not execution evidence.",
-    nextToolUse: ["post_edit_review", "proof_card"]
+    useWhen: "Verification guidance from change_plan or post_edit_review is unresolved, or the user explicitly asks for a dedicated test plan.",
+    avoidWhen: "The change plan already returned sufficient tests/commands, or you need proof that tests ran; recommendations are not execution evidence.",
+    nextToolUse: ["post_edit_review"]
   },
   {
     name: "proof_card",
@@ -110,8 +110,22 @@ export const MCP_TOOL_REGISTRY = [
     cost: "medium",
     writeEffects: "session-memory-auto",
     readOnly: false,
-    useWhen: "Before final response or handoff; pass commands/tests/reports/waivers that actually ran so proof is ledger-backed, not just a preview.",
-    avoidWhen: "Before choosing verification; use test_plan first for recommendations.",
+    useWhen: "A policy change, formal audit, release, artifact handoff, or decision-integrity review needs an explicit proof packet.",
+    avoidWhen: "An ordinary bounded edit is already resolved by post_edit_review, or verification still needs to run.",
+    nextToolUse: []
+  },
+  {
+    name: "capabilities",
+    title: "Codexa capability dispatcher",
+    description:
+      "Discover or invoke any advanced Codexa operation through one compact, manifest-backed dispatcher. The dispatcher preserves the full logical capability set and validates each invocation with the same operation-specific schema as the direct tool. Compact output unless the selected operation returns more detail.",
+    tier: "primary",
+    phase: "inspect",
+    cost: "compact",
+    writeEffects: "dispatched-operation-dependent",
+    readOnly: false,
+    useWhen: "Discover an advanced operation or invoke one without exposing every advanced tool schema in the optimized/core profile.",
+    avoidWhen: "A primary lifecycle tool directly fits the task, or full mode already exposes the preferred direct advanced tool.",
     nextToolUse: []
   },
   {
@@ -326,7 +340,7 @@ export const CORE_PROFILE_TOOL_NAMES = Object.freeze([...PRIMARY_MCP_TOOL_NAMES,
 export const ADVANCED_MCP_TOOL_NAMES = Object.freeze(MCP_TOOL_REGISTRY.filter((tool) => tool.tier === "advanced").map((tool) => tool.name));
 export const SOURCE_CONTEXT_MCP_TOOL_NAMES = Object.freeze(MCP_TOOL_REGISTRY.filter((tool) => tool.writeEffects === "index-cache-if-auto-refresh").map((tool) => tool.name));
 export const MEMORY_RECORDING_MCP_TOOL_NAMES = Object.freeze(MCP_TOOL_REGISTRY.filter((tool) => tool.writeEffects.includes("session-memory-auto")).map((tool) => tool.name));
-export const PRIMARY_CODEX_LOOP = "session_context -> search(if target unclear) -> task_brief -> change_plan(saveSnapshot) -> test_plan -> edit -> post_edit_review -> proof_card";
+export const PRIMARY_CODEX_LOOP = "change_plan(saveSnapshot) -> edit/run planned verification -> post_edit_review; add session_context/search/task_brief only when target or context is unclear, test_plan only when verification guidance is unresolved, and proof_card only for policy or formal handoff";
 export const NO_SOURCE_MUTATION_CONTRACT = "Codexa MCP tools may write Codexa cache artifacts, but must not mutate source files.";
 
 export function mcpToolRegistryEntry(name: string): McpToolRegistryEntry | undefined {

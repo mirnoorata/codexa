@@ -690,7 +690,7 @@ it("bounds unknown-mode MCP payloads instead of bypassing compaction", () => {
     expect(data.mcp.returnedBytes).toBeLessThanOrEqual(data.mcp.targetBytes);
   });
 
-it("marks auto-recording tools as cache writers even when auto-refresh is disabled", async () => {
+it("marks auto and concise tools as cache writers even when auto-refresh is disabled", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-readonly-"));
     execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
     await mkdir(path.join(repo, "src"), { recursive: true });
@@ -704,20 +704,20 @@ it("marks auto-recording tools as cache writers even when auto-refresh is disabl
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh"],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh", "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-test", version: "0.1.0" });
     await client.connect(transport);
     const tools = await client.listTools();
-    expect(tools.tools.find((tool) => tool.name === "repo_map")?.annotations?.readOnlyHint).toBe(true);
+    expect(tools.tools.find((tool) => tool.name === "repo_map")?.annotations?.readOnlyHint).toBe(false);
     expect(tools.tools.find((tool) => tool.name === "task_brief")?.annotations?.readOnlyHint).toBe(false);
     expect(tools.tools.find((tool) => tool.name === "task_brief")?.annotations?.idempotentHint).toBe(false);
     expect(tools.tools.find((tool) => tool.name === "context_pack")?.annotations?.readOnlyHint).toBe(false);
     expect(tools.tools.find((tool) => tool.name === "context_pack")?.annotations?.idempotentHint).toBe(false);
     expect(tools.tools.find((tool) => tool.name === "impact")?.annotations?.readOnlyHint).toBe(false);
     expect(tools.tools.find((tool) => tool.name === "focus_brief")?.annotations?.readOnlyHint).toBe(false);
-    expect(tools.tools.find((tool) => tool.name === "callers")?.annotations?.readOnlyHint).toBe(true);
+    expect(tools.tools.find((tool) => tool.name === "callers")?.annotations?.readOnlyHint).toBe(false);
     expect(tools.tools.find((tool) => tool.name === "post_edit_review")?.annotations?.readOnlyHint).toBe(false);
     await client.close();
   });

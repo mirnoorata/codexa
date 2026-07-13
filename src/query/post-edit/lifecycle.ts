@@ -32,6 +32,7 @@ export interface PostEditLifecycleInput {
   externalCheckFailedTargets?: string[];
   expectedInvariants?: TaskInvariant[];
   requireExistingState?: boolean;
+  beforePersist?: () => Promise<void>;
 }
 
 export async function buildPostEditLifecycleDecision(input: PostEditLifecycleInput): Promise<{
@@ -110,6 +111,7 @@ export async function buildPostEditLifecycleDecision(input: PostEditLifecycleInp
 export async function persistPostEditLifecycleOutcome(lifecycleInput: PostEditLifecycleInput, outcomeInput: PostEditOutcomeInput) {
   return withTaskLifecycleLock(lifecycleInput.repoRoot, lifecycleInput.lifecycleTaskId, async () => {
     const lifecycle = await buildPostEditLifecycleDecision(lifecycleInput);
+    await lifecycleInput.beforePersist?.();
     // Publish the safety latch before the audit record. An interrupted outcome
     // write may require a retry, but it must never leave a mandatory stop
     // visible only in an outcome file that the pre-edit gate does not read.

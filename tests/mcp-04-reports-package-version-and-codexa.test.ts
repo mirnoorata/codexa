@@ -1,5 +1,5 @@
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdtemp, mkdir, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -56,9 +56,11 @@ it("serves Codexa tools over explicit Streamable HTTP transport", async () => {
       stdio: "ignore"
     });
     await buildIndex({ repoRoot: repo });
+    const telemetryPath = path.join(repo, ".codex/cache/http-telemetry.jsonl");
 
     const child = spawn(process.execPath, [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--transport", "http", "--port", "0", "--no-auto-refresh"], {
       cwd: process.cwd(),
+      env: { ...process.env, CODEXA_MCP_TELEMETRY_PATH: telemetryPath },
       stdio: ["ignore", "pipe", "pipe"]
     });
     try {
@@ -116,12 +118,43 @@ it("serves Codexa tools over explicit Streamable HTTP transport", async () => {
         expect(tools.tools.map((tool) => tool.name)).toContain("search");
         const result = await client.callTool({ name: "search", arguments: { query: "httpMarker", limit: 3 } });
         expect(JSON.stringify(result)).toContain("httpMarker");
+        const firstCapability = await client.callTool({ name: "capabilities", arguments: { action: "list" } });
+        const firstData = (firstCapability.structuredContent as { data?: { delivery?: { resultUri?: string; unchangedReceipt?: boolean } } })?.data;
+        const resultUri = firstData?.delivery?.resultUri;
+        expect(resultUri).toMatch(/^codexa:\/\/repo\/mcp-results\/rr_[a-f0-9]{32}\/mr_[a-f0-9]{64}$/u);
+        const nativeResourceLink = (firstCapability.content as Array<{ type?: string; uri?: string }>).find(
+          (entry) => entry.type === "resource_link" && entry.uri === resultUri
+        );
+        expect(nativeResourceLink).toMatchObject({ uri: resultUri });
+        const resource = await client.readResource({ uri: nativeResourceLink!.uri! });
+        const resourceText = (resource.contents[0] as { text?: unknown } | undefined)?.text;
+        expect(typeof resourceText).toBe("string");
+        expect(JSON.parse(resourceText as string)).toMatchObject({ data: { mode: "capabilities" } });
+
+        // Each stateless HTTP exchange constructs an SDK server, but bounded
+        // delivery state belongs to the listener and must survive requests.
+        const secondCapability = await client.callTool({ name: "capabilities", arguments: { action: "list" } });
+        const secondData = (secondCapability.structuredContent as { data?: { delivery?: { resultUri?: string; unchangedReceipt?: boolean } } })?.data;
+        expect(secondData?.delivery).toMatchObject({ resultUri, unchangedReceipt: true });
+        const telemetry = await waitForHttpTelemetry(telemetryPath, 4);
+        expect(telemetry.map((event) => [event.sequence, event.eventKind ?? "tool", event.tool])).toEqual([
+          [1, "tool", "search"],
+          [2, "tool", "capabilities"],
+          [3, "resource-read", "read_mcp_resource"],
+          [4, "tool", "capabilities"]
+        ]);
       } finally {
         await client.close();
       }
     } finally {
       await stopChild(child);
     }
+    expect((await waitForHttpTelemetry(telemetryPath, 5)).at(-1)).toEqual({
+      schemaVersion: 1,
+      recordKind: "session-complete",
+      sequence: 5,
+      eventCount: 4
+    });
   });
 
 it("refuses Streamable HTTP binds on non-loopback hosts without auth", async () => {
@@ -134,7 +167,7 @@ it("refuses Streamable HTTP binds on non-loopback hosts without auth", async () 
     expect(result.stderr).toContain("requires a loopback host");
   });
 
-it("can disable MCP session-memory auto-recording for a strict read-only launch", async () => {
+it("can disable MCP session-memory auto-recording while retaining truthful result-cache annotations", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-memory-off-"));
     execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
     await mkdir(path.join(repo, "src"), { recursive: true });
@@ -155,7 +188,7 @@ it("can disable MCP session-memory auto-recording for a strict read-only launch"
     await client.connect(transport);
     try {
       const tools = await client.listTools();
-      expect(tools.tools.find((tool) => tool.name === "task_brief")?.annotations?.readOnlyHint).toBe(true);
+      expect(tools.tools.find((tool) => tool.name === "task_brief")?.annotations?.readOnlyHint).toBe(false);
       expect(tools.tools.find((tool) => tool.name === "task_brief")?.annotations?.idempotentHint).toBe(true);
       await client.callTool({ name: "task_brief", arguments: { task: "inspect main", tokenBudget: 900, limit: 5 } });
       await expect(readdir(path.join(repo, ".codex/cache/codexa-session-memory"))).rejects.toThrow();
@@ -211,7 +244,7 @@ it("reports session_memory auto-refresh cache effects when auto-refresh is enabl
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-test", version: "0.1.0" });
@@ -220,7 +253,7 @@ it("reports session_memory auto-refresh cache effects when auto-refresh is enabl
       const result = await client.callTool({ name: "session_memory", arguments: { action: "summary", limit: 3 } });
       expect((result.structuredContent as { toolPolicy?: { readOnly?: boolean; writeEffects?: string } }).toolPolicy).toMatchObject({
         readOnly: false,
-        writeEffects: "index-cache-if-auto-refresh"
+        writeEffects: "mcp-detailed-result-cache+index-cache-if-auto-refresh"
       });
       const remembered = await client.callTool({
         name: "session_memory",
@@ -237,7 +270,7 @@ it("reports session_memory auto-refresh cache effects when auto-refresh is enabl
           ]
         }
       });
-      expect((remembered.structuredContent as { toolPolicy?: { writeEffects?: string } }).toolPolicy?.writeEffects).toBe("explicit-memory-cache+index-cache-if-auto-refresh");
+      expect((remembered.structuredContent as { toolPolicy?: { writeEffects?: string } }).toolPolicy?.writeEffects).toBe("mcp-detailed-result-cache+explicit-memory-cache+index-cache-if-auto-refresh");
     } finally {
       await client.close();
     }
@@ -353,7 +386,7 @@ it("discovers module and playbook resources after auto-refresh without restartin
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-test", version: "0.1.0" });
@@ -382,14 +415,14 @@ it("returns a bounded missing-index packet instead of a tool error when auto-ref
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh"],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh", "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-test", version: "0.1.0" });
     await client.connect(transport);
     const result = await client.callTool({ name: "focus_brief", arguments: { task: "start work", limit: 4 } });
     expect(JSON.stringify(result)).toContain("Codexa index missing");
-    expect(JSON.stringify(result)).toContain("missingIndex");
+    expect(JSON.stringify(result)).toContain("missing-index");
     await client.close();
   });
 
@@ -407,7 +440,7 @@ it("keeps concurrent MCP tool calls bounded and JSON-RPC clean", async () => {
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--tools", "full"],
       stderr: "pipe"
     });
     const stderrChunks: Buffer[] = [];
@@ -433,3 +466,26 @@ it("keeps concurrent MCP tool calls bounded and JSON-RPC clean", async () => {
     await client.close();
   });
 });
+
+async function waitForHttpTelemetry(filePath: string, count: number): Promise<Array<{
+  schemaVersion?: number;
+  recordKind?: string;
+  sequence: number;
+  eventKind?: string;
+  tool?: string;
+  eventCount?: number;
+}>> {
+  for (let attempt = 0; attempt < 100; attempt += 1) {
+    try {
+      const records = (await readFile(filePath, "utf8"))
+        .split("\n")
+        .filter(Boolean)
+        .map((line) => JSON.parse(line) as { schemaVersion?: number; recordKind?: string; sequence: number; eventKind?: string; tool?: string; eventCount?: number });
+      if (records.length >= count) return records;
+    } catch {
+      // The bounded off-path writer may not have created the file yet.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  throw new Error(`Timed out waiting for ${count} HTTP MCP telemetry records`);
+}

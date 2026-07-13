@@ -100,15 +100,19 @@ Codexa is most useful when it brackets real edits. For a small issue such as
 "rename this CLI option in the docs and help text", use this loop:
 
 ```bash
-codexa brief /path/to/project --task "rename this CLI option in docs and help text"
 codexa change-plan /path/to/project \
   --task "rename this CLI option in docs and help text" \
   --file README.md \
   --save-snapshot
 ```
 
+Because the task already names a bounded target, no separate brief is needed.
+For a broad task, add `session-context`, `search`, and `brief` only as needed to
+identify a target and obtain enough repository context to plan safely.
+
 Then make the source or docs edits with your normal editor or agent. Codexa MCP
-tools do not edit source files.
+tools do not edit source files. Run the targeted tests and verification commands
+returned by the change plan.
 
 After editing, review the real dirty tree against the saved plan:
 
@@ -137,13 +141,16 @@ codexa test-plan /path/to/project --file src/index.ts
 The same flow is available through MCP tools inside an agent host:
 
 ```text
-session_context -> search(if target unclear) -> task_brief ->
-change_plan(saveSnapshot) -> test_plan -> edit -> post_edit_review -> proof_card
+change_plan(saveSnapshot) -> edit/run planned verification -> post_edit_review
+add session_context/search/task_brief only when target or context is unclear
+add test_plan only when verification guidance is unresolved
+add proof_card only for policy or formal handoff
 ```
 
 ## 5. Print a proof card
 
-When you need a compact handoff, run:
+When a policy change, formal audit, release, or artifact handoff needs an
+explicit proof packet, run:
 
 ```bash
 codexa prove /path/to/project --task "rename this CLI option in docs and help text" --diff

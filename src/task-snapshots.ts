@@ -15,6 +15,7 @@ export interface SaveTaskSnapshotInput {
   repoRoot: string;
   input: ChangePlanInput;
   snapshot: Omit<TaskSnapshot, "schemaVersion" | "taskId" | "repoRoot" | "createdAt" | "input">;
+  beforePersist?: () => Promise<void>;
 }
 
 export interface SaveBlockedTaskSnapshotInput {
@@ -45,7 +46,7 @@ export interface BlockedTaskSnapshotMarker {
   details?: unknown;
 }
 
-export async function saveTaskSnapshot({ repoRoot, input, snapshot }: SaveTaskSnapshotInput): Promise<{ snapshot: TaskSnapshot; path: string }> {
+export async function saveTaskSnapshot({ repoRoot, input, snapshot, beforePersist }: SaveTaskSnapshotInput): Promise<{ snapshot: TaskSnapshot; path: string }> {
   const repo = path.resolve(repoRoot);
   const createdAt = new Date().toISOString();
   const taskId = allocateTaskSnapshotId(repo, input, createdAt);
@@ -71,6 +72,7 @@ export async function saveTaskSnapshot({ repoRoot, input, snapshot }: SaveTaskSn
       },
       repo
     ) as TaskSnapshot;
+    await beforePersist?.();
     await atomicJsonWrite(snapshotPath, saved);
     await fs.rm(path.join(dir, `${taskId}.blocked.json`), { force: true });
     await atomicJsonWrite(path.join(dir, LATEST_FILE), { schemaVersion: 1, taskId, path: path.basename(snapshotPath), createdAt });

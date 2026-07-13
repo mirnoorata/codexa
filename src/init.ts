@@ -469,6 +469,9 @@ async function upsertCodexConfig(
 function renderMcpServerBlock(options: { autoRefresh: boolean; launch: LaunchSpec; repoRoot: string; serverName: string; toolProfile: InitToolProfile }): string {
   const args = [...options.launch.args, "serve", options.repoRoot];
   args.push(options.autoRefresh ? "--auto-refresh" : "--no-auto-refresh");
+  // Keep every generated profile explicit. Bare `serve` remains full for
+  // backward compatibility with managed blocks written before profiles existed.
+  args.push("--tools", options.toolProfile);
   const toolProfileLines =
     options.toolProfile === "core"
       ? [
@@ -515,9 +518,7 @@ async function upsertClaudeMcpConfig(
   }
   const args = [...options.launch.args, "serve", options.repoRoot];
   args.push(options.autoRefresh ? "--auto-refresh" : "--no-auto-refresh");
-  if (options.toolProfile === "core") {
-    args.push("--tools", "core");
-  }
+  args.push("--tools", options.toolProfile);
   servers[options.serverName] = {
     command: options.launch.command,
     args
@@ -571,10 +572,10 @@ async function upsertManagedDoc(repoRoot: string, fileName: string, serverName: 
     "",
     "Codexa serves evidence-backed repository context. Prefer it over raw grep for cross-file questions.",
     "",
-    "- Orient: call `session_context` at session start; `search` when the target is unclear.",
-    "- Before non-trivial edits: `task_brief`, `change_plan` with `saveSnapshot=true`, then `test_plan`.",
-    "- After edits: `post_edit_review` with the commands that actually ran; finish with `proof_card`.",
-    "- Inspect: `impact` before API/rename/delete changes; `callers`/`callees` for graph evidence.",
+    "- Explicit bounded edit: call `change_plan` with `saveSnapshot=true` directly; edit and run its planned verification, then call `post_edit_review` with the evidence that actually ran.",
+    "- Ambiguous or degraded context: add `session_context`, `search`, and then `task_brief` only as needed before `change_plan`.",
+    "- Call `test_plan` only when verification guidance remains unresolved; call `proof_card` only for policy, formal audit, release, or artifact handoff proof.",
+    "- Inspect: use `capabilities` to discover or invoke advanced operations in core mode; full mode also exposes every advanced tool directly.",
     "",
     "Each tool description states its output cost; prefer the cheapest sufficient tool.",
     MANAGED_DOC_END

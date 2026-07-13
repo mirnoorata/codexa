@@ -5,6 +5,7 @@ import { nextToolNames } from "../query/next-tools.js";
 import { CURRENT_VERIFICATION_PROVENANCE } from "../types.js";
 import type { FreshnessInfo, QueryResult } from "../types.js";
 import { compactNextTools, inferMcpDataMode } from "./compaction.js";
+import { deriveMcpActionability, mcpAuthorityBlocked } from "./decision-kernel.js";
 import { MEMORY_RECORDING_MCP_TOOL_NAMES, SOURCE_CONTEXT_MCP_TOOL_NAMES } from "./tool-registry.js";
 
 export const MCP_ACTIONABILITY_VALUES = ["orientation", "edit_ready", "blocked", "review", "verify", "done", "needs_target", "raw_search_better", "raw_search_sufficient", "inspect_first"] as const;
@@ -197,13 +198,13 @@ function buildMcpEnvelope(result: { data: unknown; freshness: unknown; refresh?:
     lifecycle.nextTools = lifecycle.nextTools.filter((tool) => enabled.has(tool));
   }
   const guidance = guidanceForMcpEnvelope(record, lifecycle.nextTools, policyOptions.enabledTools);
-  const relatedResources = relatedResourcesForMode(mode);
+  const relatedResources = relatedResourcesForMode(mode, record);
   const worktree = worktreeForMcpData(record);
   const toolPolicy = mcpToolPolicyForTool(toolName, { ...policyOptions, data: record });
   return {
     schemaVersion: 1,
     mode,
-    actionability: actionabilityForMcpData(mode, record, lifecycle),
+    actionability: actionabilityForMcpData(mode, record, result.freshness, lifecycle),
     data,
     freshness: result.freshness,
     refresh: result.refresh ?? { refreshed: false },
@@ -262,6 +263,9 @@ function effectiveMcpToolReadOnly(toolName: string, options: McpToolPolicyOption
   if (toolName === "freshness") {
     return true;
   }
+  if (mcpResultCacheWrites(options.data)) {
+    return false;
+  }
   if (toolName === "change_plan") {
     return !options.autoRefresh && options.sessionMemoryMode === "off" && !changePlanWritesTaskSnapshot(options);
   }
@@ -284,6 +288,9 @@ function effectiveMcpToolWriteEffects(toolName: string, catalogWriteEffects: str
     return "none";
   }
   const effects = new Set<string>();
+  if (mcpResultCacheWrites(options.data)) {
+    effects.add("mcp-detailed-result-cache");
+  }
   if (toolName === "change_plan") {
     if (changePlanWritesTaskSnapshot(options)) {
       effects.add("task-snapshot-cache");
@@ -319,6 +326,11 @@ function effectiveMcpToolWriteEffects(toolName: string, catalogWriteEffects: str
     return "none";
   }
   return effects.size > 0 ? [...effects].join("+") : catalogWriteEffects === "none" ? "none" : catalogWriteEffects;
+}
+
+function mcpResultCacheWrites(data: Record<string, unknown> | undefined): boolean {
+  const delivery = isRecord(data?.delivery) ? data.delivery : undefined;
+  return typeof delivery?.resultUri === "string";
 }
 
 function inputBoolean(input: Record<string, unknown> | undefined, key: string): boolean {
@@ -385,53 +397,35 @@ function lifecyclePhaseForMode(mode: string): string {
 }
 
 function preconditionsForMode(mode: string, snapshotStatus: string | undefined): string[] {
-  if (mode === "change_plan") return ["task_brief or explicit target should identify edit-ready files", "use saveSnapshot=true before editing"];
+  if (mode === "change_plan") return ["an explicit bounded target or edit-ready context should identify the files", "use saveSnapshot=true before editing"];
   if (mode === "post_edit_review") return snapshotStatus === "loaded" || snapshotStatus === "saved" ? ["saved change_plan snapshot loaded"] : ["exact taskId is recommended when more than one snapshot exists"];
-  if (mode === "test_plan") return ["run before edits for a saved plan or after review when verification gaps remain"];
-  if (mode === "proof_card") return ["reported commands/tests are classified as evidence but are not executed by Codexa"];
+  if (mode === "test_plan") return ["use when change_plan or post_edit_review leaves verification guidance unresolved"];
+  if (mode === "proof_card") return ["use for policy, formal audit, release, or artifact handoff proof", "reported commands/tests are classified as evidence but are not executed by Codexa"];
   return [];
 }
 
 function nextToolsForMode(mode: string, data: Record<string, unknown>, snapshotStatus: string | undefined): string[] {
+  const explicitNextTools = Array.isArray(data.nextTools);
   const structured = nextToolNames(data.nextTools);
-  if (structured.length > 0) {
+  if (explicitNextTools) {
     return structured;
   }
   if (mode === "focus_brief" || mode === "session_context") return ["task_brief", "search"];
   if (mode === "task_brief" || mode === "context_pack") return ["change_plan"];
-  if (mode === "change_plan") return snapshotStatus === "blocked" ? ["search", "task_brief"] : ["test_plan"];
-  if (mode === "post_edit_review") return ["test_plan"];
+  if (mode === "change_plan") return snapshotStatus === "blocked" ? ["search", "task_brief"] : ["post_edit_review"];
+  if (mode === "post_edit_review") return [];
   if (mode === "test_plan") return stringArray(data.verificationCommands).length > 0 ? ["post_edit_review"] : ["search"];
-  if (mode === "proof_card") {
-    const verification = isRecord(data.verification) ? data.verification : undefined;
-    const reported = isRecord(verification?.reported) ? verification.reported : undefined;
-    return reported?.hasEvidence === true ? [] : ["test_plan"];
-  }
+  if (mode === "proof_card") return [];
   return [];
 }
 
 function actionabilityForMcpData(
   mode: string,
   data: Record<string, unknown>,
+  freshness: unknown,
   lifecycle: { blockingReasons: string[]; snapshotStatus?: string }
 ): McpActionability {
-  if (lifecycle.blockingReasons.length > 0 || lifecycle.snapshotStatus === "blocked") {
-    return "blocked";
-  }
-  const queryActionability = mcpActionabilityValue(data.actionability);
-  if (queryActionability) {
-    return queryActionability;
-  }
-  if (mode === "post_edit_review") return "review";
-  if (mode === "test_plan" || mode === "proof_card") return "verify";
-  const editReadiness = isRecord(data.editReadiness) ? data.editReadiness : undefined;
-  if (editReadiness?.editable === true || data.packetVerdict === "edit-ready") {
-    return "edit_ready";
-  }
-  if (mode === "change_plan" && Array.isArray(data.plannedEditTargets) && data.plannedEditTargets.length > 0) {
-    return "edit_ready";
-  }
-  return "orientation";
+  return mcpActionabilityValue(deriveMcpActionability(mode, data, mcpAuthorityBlocked(data, freshness) || lifecycle.blockingReasons.length > 0 || lifecycle.snapshotStatus === "blocked")) ?? "blocked";
 }
 
 function mcpActionabilityValue(value: unknown): McpActionability | undefined {
@@ -460,7 +454,7 @@ function worktreeForMcpData(data: Record<string, unknown>): { knownClean: boolea
   };
 }
 
-function relatedResourcesForMode(mode: string): Array<{ uri: string; name: string; mimeType?: string; description?: string }> {
+function relatedResourcesForMode(mode: string, data: Record<string, unknown>): Array<{ uri: string; name: string; mimeType?: string; description?: string }> {
   const resources = [
     {
       uri: "codexa://repo/codebase/codex-contract.md",
@@ -483,6 +477,16 @@ function relatedResourcesForMode(mode: string): Array<{ uri: string; name: strin
       name: "Codexa test map",
       mimeType: "text/markdown",
       description: "Detected tests and test relationships"
+    });
+  }
+  const delivery = isRecord(data.delivery) ? data.delivery : undefined;
+  const resultUri = stringValue(delivery?.resultUri);
+  if (resultUri?.match(/^codexa:\/\/repo\/mcp-results\/rr_[a-f0-9]{32}\/mr_[a-f0-9]{64}$/u)) {
+    resources.push({
+      uri: resultUri,
+      name: "Codexa detailed MCP result",
+      mimeType: "application/json",
+      description: "Content-addressed detailed packet for this concise decision receipt"
     });
   }
   return resources;

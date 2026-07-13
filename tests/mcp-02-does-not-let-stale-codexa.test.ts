@@ -23,7 +23,7 @@ it("does not let stale CODEXA_REPO override an explicit git repo argument", asyn
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", explicitRepo],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", explicitRepo, "--tools", "full"],
       env: { CODEXA_REPO: staleEnvRepo },
       stderr: "pipe"
     });
@@ -35,7 +35,7 @@ it("does not let stale CODEXA_REPO override an explicit git repo argument", asyn
       expect(JSON.stringify(freshness)).toContain(explicitRepo);
       expect(JSON.stringify(freshness)).not.toContain(staleEnvRepo);
 
-      const repoMap = await client.callTool({ name: "repo_map", arguments: { limit: 5 } });
+      const repoMap = await client.callTool({ name: "repo_map", arguments: { limit: 5, responseFormat: "detailed" } });
       expect(JSON.stringify(repoMap)).toContain("src/explicit.ts");
       expect(JSON.stringify(repoMap)).not.toContain("src/stale.ts");
     } finally {
@@ -64,7 +64,7 @@ it("does not let stale workspace focus env override an explicit wired MCP repo",
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", explicitRepo],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", explicitRepo, "--tools", "full"],
       env: { CODEXA_WORKSPACE_FOCUS_FILE: focusFile, SESSION_ID: "stale-session" },
       stderr: "pipe"
     });
@@ -72,7 +72,7 @@ it("does not let stale workspace focus env override an explicit wired MCP repo",
     await client.connect(transport);
 
     try {
-      const repoMap = await client.callTool({ name: "repo_map", arguments: { limit: 5 } });
+      const repoMap = await client.callTool({ name: "repo_map", arguments: { limit: 5, responseFormat: "detailed" } });
       const serialized = JSON.stringify(repoMap);
       expect(serialized).toContain("src/explicit.ts");
       expect(serialized).not.toContain("src/stale.ts");
@@ -127,7 +127,7 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--tools", "full"],
       stderr: "pipe"
     });
     const stderrChunks: Buffer[] = [];
@@ -239,7 +239,7 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
 	    expect(Array.isArray(symbolData?.edgeEvidence)).toBe(true);
 	    expect(symbolData?.nextTools?.some((tool) => tool.tool === "impact")).toBe(true);
 
-	    const rejectedFollow = await client.callTool({ name: "change_plan", arguments: { taskId: "missing-mcp-follow", followCandidate: "candidate-missing" } });
+	    const rejectedFollow = await client.callTool({ name: "change_plan", arguments: { taskId: "missing-mcp-follow", followCandidate: "candidate-missing", responseFormat: "detailed" } });
     expect(JSON.stringify(rejectedFollow)).toContain("Follow candidate: rejected");
     expect(((rejectedFollow.structuredContent as { data?: { followCandidate?: { status?: string; requested?: string } } }).data?.followCandidate)).toMatchObject({
       status: "rejected",
@@ -311,17 +311,16 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
     expect(result.structuredContent).toBeTruthy();
     expect(JSON.stringify(result)).toContain("fresh");
 
-    const repoMap = await client.callTool({ name: "repo_map", arguments: { limit: 3 } });
+    const repoMap = await client.callTool({ name: "repo_map", arguments: { limit: 3, responseFormat: "detailed" } });
     expect(JSON.stringify(repoMap)).toContain("src/index.ts");
 
-    const cleanTestPlan = await client.callTool({ name: "test_plan", arguments: { diff: true } });
-    const cleanTestPlanData = cleanTestPlan.structuredContent as { actionability?: string; data?: { tests?: unknown[]; verificationCommands?: unknown[] } };
+    const cleanTestPlan = await client.callTool({ name: "test_plan", arguments: { diff: true, responseFormat: "detailed" } });
+    const cleanTestPlanData = cleanTestPlan.structuredContent as { actionability?: string; data?: { decisionKernel?: { verification?: { testCount?: number; commandCount?: number } } } };
     expect(cleanTestPlanData.actionability).toBe("needs_target");
-    expect(cleanTestPlanData.data?.tests).toEqual([]);
-    expect(cleanTestPlanData.data?.verificationCommands).toEqual([]);
+    expect(cleanTestPlanData.data?.decisionKernel?.verification).toMatchObject({ testCount: 0, commandCount: 0 });
     expect(JSON.stringify(cleanTestPlan)).toContain("No targeted test plan");
 
-    const targetedTestPlan = await client.callTool({ name: "test_plan", arguments: { files: ["src/index.ts"], diff: false } });
+    const targetedTestPlan = await client.callTool({ name: "test_plan", arguments: { files: ["src/index.ts"], diff: false, responseFormat: "detailed" } });
     const targetedTestPlanData = targetedTestPlan.structuredContent as { actionability?: string; data?: { targetFiles?: string[] } };
     expect(targetedTestPlanData.actionability).toBe("verify");
     expect(targetedTestPlanData.data?.targetFiles).toEqual(["src/index.ts"]);
@@ -350,24 +349,24 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
     const dirtyFreshnessResource = await client.readResource({ uri: "codexa://repo/codebase/freshness.json" });
     expect(JSON.parse(String(dirtyFreshnessResource.contents?.[0]?.text)).stale).toBe(true);
     const refreshed = await client.callTool({ name: "find_context", arguments: { query: "changedSymbol", limit: 3 } });
-    expect(JSON.stringify(refreshed)).toContain("auto-refreshed from dirty-files-changed");
+    expect((refreshed.structuredContent as { refresh?: { refreshed?: boolean; reason?: string } }).refresh).toMatchObject({ refreshed: true, reason: "dirty-files-changed" });
     expect(JSON.stringify(refreshed)).toContain("changedSymbol");
     const refreshedFreshnessResource = await client.readResource({ uri: "codexa://repo/codebase/freshness.json" });
     expect(JSON.parse(String(refreshedFreshnessResource.contents?.[0]?.text)).stale).toBe(false);
 
-    const search = await client.callTool({ name: "search", arguments: { query: "changedSymbol", patterns: ["changedSymbol", "changed_symbol"], limit: 3 } });
+    const search = await client.callTool({ name: "search", arguments: { query: "changedSymbol", patterns: ["changedSymbol", "changed_symbol"], limit: 3, responseFormat: "detailed" } });
     expect(JSON.stringify(search)).toContain("Codexa value");
     expect(JSON.stringify(search)).toContain("changedSymbol");
     expect(JSON.stringify(search)).toContain("Search patterns");
 
-    const impact = await client.callTool({ name: "impact", arguments: { file: "src/index.ts", changeType: "api", depth: 2 } });
+    const impact = await client.callTool({ name: "impact", arguments: { file: "src/index.ts", changeType: "api", depth: 2, responseFormat: "detailed" } });
     expect(JSON.stringify(impact)).toContain("Impact target");
     expect(JSON.stringify(impact)).toContain("Change type: api");
 
-    const testPlan = await client.callTool({ name: "test_plan", arguments: { diff: true } });
+    const testPlan = await client.callTool({ name: "test_plan", arguments: { diff: true, responseFormat: "detailed" } });
     expect(JSON.stringify(testPlan)).toContain("Test plan");
 
-    const contextPack = await client.callTool({ name: "context_pack", arguments: { query: "changedSymbol", changeType: "behavior", tokenBudget: 800, limit: 5 } });
+    const contextPack = await client.callTool({ name: "context_pack", arguments: { query: "changedSymbol", changeType: "behavior", tokenBudget: 800, limit: 5, responseFormat: "detailed" } });
     expect(JSON.stringify(contextPack)).toContain("Codexa context pack");
     expect(JSON.stringify(contextPack)).toContain("changedSymbol");
     const contextPackData = contextPack.structuredContent as {
@@ -388,7 +387,7 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
     expect(contextPackData.data?.sessionMemory?.writes?.revision).toBeGreaterThan(0);
     expect(contextPackData.data?.sessionMemory?.writes?.recordedEntryIds?.length).toBeGreaterThan(0);
 
-    const taskBrief = await client.callTool({ name: "task_brief", arguments: { files: ["src/index.ts"], task: "change behavior", tokenBudget: 900, limit: 5 } });
+    const taskBrief = await client.callTool({ name: "task_brief", arguments: { files: ["src/index.ts"], task: "change behavior", tokenBudget: 900, limit: 5, responseFormat: "detailed" } });
     expect(JSON.stringify(taskBrief)).toContain("Codexa task brief");
     expect(JSON.stringify(taskBrief)).toContain("mode");
     const taskBriefData = taskBrief.structuredContent as {
@@ -404,12 +403,12 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
     expect(taskBriefData.data?.verificationCoverage?.length).toBeGreaterThan(0);
     expect(taskBriefData.data?.verificationCommandPlan?.length).toBeGreaterThan(0);
 
-    const focusBrief = await client.callTool({ name: "focus_brief", arguments: { task: "understand the main workflow", tokenBudget: 900, limit: 5 } });
+    const focusBrief = await client.callTool({ name: "focus_brief", arguments: { task: "understand the main workflow", tokenBudget: 900, limit: 5, responseFormat: "detailed" } });
     expect(JSON.stringify(focusBrief)).toContain("Codexa focus brief");
 
     const autoMemorySummary = await client.callTool({
       name: "session_memory",
-      arguments: { action: "summary", kinds: ["viewed", "verification"], limit: 10 }
+      arguments: { action: "summary", kinds: ["viewed", "verification"], limit: 10, responseFormat: "detailed" }
     });
     expect(JSON.stringify(autoMemorySummary)).toContain("Recently viewed:");
     expect(JSON.stringify(autoMemorySummary)).toContain("context_pack returned");
@@ -423,6 +422,7 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
         taskId: "mcp-changed-symbol",
         files: ["src/index.ts"],
         topics: ["mcp test"],
+        responseFormat: "detailed",
         entries: [
           {
             kind: "decision",
@@ -442,13 +442,13 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
 
     const recalled = await client.callTool({
       name: "session_memory",
-      arguments: { action: "read", sessionId: "mcp-test-session", taskId: "mcp-changed-symbol", kinds: ["decision"], files: ["src/index.ts"] }
+      arguments: { action: "read", sessionId: "mcp-test-session", taskId: "mcp-changed-symbol", kinds: ["decision"], files: ["src/index.ts"], responseFormat: "detailed" }
     });
     expect(JSON.stringify(recalled)).toContain("Use the session_memory MCP tool");
 
     const memorySummary = await client.callTool({
       name: "session_memory",
-      arguments: { action: "summary", sessionId: "mcp-test-session", taskId: "mcp-changed-symbol" }
+      arguments: { action: "summary", sessionId: "mcp-test-session", taskId: "mcp-changed-symbol", responseFormat: "detailed" }
     });
     expect(JSON.stringify(memorySummary)).toContain("Decisions:");
     const cliMemorySummary = execFileSync(process.execPath, [path.join(process.cwd(), "dist/cli.js"), "session-memory", repo, "--action", "summary", "--session-id", "mcp-test-session", "--task-id", "mcp-changed-symbol"], {
@@ -457,14 +457,14 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
     expect(cliMemorySummary).toContain("Codexa session memory");
     expect(cliMemorySummary).toContain("Use the session_memory MCP tool");
 
-    const callers = await client.callTool({ name: "callers", arguments: { symbol: "changedSymbol", limit: 5 } });
+    const callers = await client.callTool({ name: "callers", arguments: { symbol: "changedSymbol", limit: 5, responseFormat: "detailed" } });
     expect(JSON.stringify(callers)).toContain("Callers/importers");
 
     const unsavedChangePlan = await client.callTool({
       name: "change_plan",
       arguments: { task: "change changedSymbol safely", symbols: ["changedSymbol"], tokenBudget: 1000, limit: 5 }
     });
-    expect((unsavedChangePlan.structuredContent as { toolPolicy?: { writeEffects?: string } }).toolPolicy?.writeEffects).toBe("session-memory-auto+index-cache-if-auto-refresh");
+    expect((unsavedChangePlan.structuredContent as { toolPolicy?: { writeEffects?: string } }).toolPolicy?.writeEffects).toBe("mcp-detailed-result-cache+session-memory-auto+index-cache-if-auto-refresh");
 
     const changePlan = await client.callTool({
       name: "change_plan",
@@ -475,6 +475,7 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
         limit: 5,
         saveSnapshot: true,
         taskId: "mcp-changed-symbol",
+        responseFormat: "detailed",
         invariants: ["Keep the exported function signature stable."]
       }
     });
@@ -487,7 +488,7 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
       };
     }).data;
     const invariant = changePlanData?.snapshot?.invariants?.[0];
-    expect(changePlanData?.nextTools?.map((entry) => entry.tool).slice(0, 2)).toEqual(["test_plan", "post_edit_review"]);
+    expect(changePlanData?.nextTools?.map((entry) => entry.tool)).toEqual(["post_edit_review"]);
     expect(changePlanData?.snapshot?.planRevision).toBe(1);
     expect(invariant).toMatchObject({ statement: "Keep the exported function signature stable." });
     expect(invariant?.id).toEqual(expect.any(String));
@@ -503,6 +504,7 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
         taskId: "mcp-changed-symbol",
         ranTests: [],
         ranCommands: ["npm test"],
+        responseFormat: "detailed",
         invariantReviews: [{ invariantId: invariant?.id, status: "satisfied", evidence: ["The export remains a zero-argument function."] }],
         ranCommandReports: [{ command: "npm test", cwd: repo, packageManager: "npm", packageRoot: ".", scriptName: "test", args: [], exitCode: 0, durationMs: 50, stdoutSummary: "vitest passed" }]
       }
@@ -559,6 +561,7 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
       name: "proof_card",
       arguments: {
         taskId: "mcp-changed-symbol",
+        responseFormat: "detailed",
         ranCommandReports: [{ command: "npm test", cwd: repo, packageManager: "npm", packageRoot: ".", scriptName: "test", args: [], exitCode: 0, durationMs: 50, stdoutSummary: "vitest passed" }]
       }
     });
@@ -597,16 +600,18 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
         taskId: "mcp-changed-symbol",
         ranTests: [],
         ranCommands: [],
+        responseFormat: "detailed",
         invariantReviews: [{ invariantId: invariant?.id, status: "satisfied", evidence: ["The export remains stable."] }]
       }
     });
     const unverifiedEnvelope = unverifiedPostEdit.structuredContent as {
-      data: { nextTools?: Array<{ tool?: string; reason?: string; readOnly?: boolean; writes?: string[] }>; systemMessage?: string };
+      data: { nextTools?: Array<{ tool?: string; reason?: string; readOnly?: boolean; writes?: string[] }>; systemMessage?: string; testsNotRun?: unknown[] };
       nextTools?: unknown[];
       systemMessage?: string;
     };
-    expect(unverifiedEnvelope.data.nextTools?.some((tool) => tool.tool === "test_plan" && tool.reason && tool.readOnly === true)).toBe(true);
-    expect(unverifiedEnvelope.nextTools?.some((tool) => typeof tool === "object" && tool !== null && "tool" in tool)).toBe(true);
+    expect(unverifiedEnvelope.data.testsNotRun?.length).toBeGreaterThan(0);
+    expect(unverifiedEnvelope.data.nextTools?.some((tool) => tool.tool === "test_plan") ?? false).toBe(false);
+    expect(unverifiedEnvelope.nextTools?.some((tool) => typeof tool === "object" && tool !== null && "tool" in tool && tool.tool === "test_plan") ?? false).toBe(false);
     expect(unverifiedEnvelope.systemMessage).toBe(unverifiedEnvelope.data.systemMessage);
 
     const outsideCwd = path.join(os.tmpdir(), "codexa-secret-outside");
@@ -616,6 +621,7 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
       arguments: {
         taskId: "mcp-changed-symbol",
         ranTests: [],
+        responseFormat: "detailed",
         invariantReviews: [{ invariantId: invariant?.id, status: "satisfied", evidence: ["The export remains stable."] }],
         ranCommandReports: [{ command: "npm test", cwd: outsideCwd, exitCode: 0, stdoutSummary: longSummary }]
       }
@@ -634,6 +640,7 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
         ranCommands: [],
         invariantReviews: [{ invariantId: invariant?.id, status: "satisfied", evidence: ["The export remains stable."] }],
         artifactIds: [missingArtifactId],
+        responseFormat: "detailed",
         waivers: [{ kind: "test", target: "tests/index.test.ts", reason: "manual browser regression" }]
       }
     });
@@ -680,14 +687,14 @@ it("does not execute AutoVerify through MCP even when CODEXA_AUTOVERIFY is enabl
     try {
       const changePlan = await client.callTool({
         name: "change_plan",
-        arguments: { task: "change main safely", files: ["src/main.js"], saveSnapshot: true, taskId: "mcp-autoverify-no-exec", limit: 5, tokenBudget: 1000 }
+        arguments: { task: "change main safely", files: ["src/main.js"], saveSnapshot: true, taskId: "mcp-autoverify-no-exec", limit: 5, tokenBudget: 1000, responseFormat: "detailed" }
       });
       expect(JSON.stringify(changePlan)).toContain("Task snapshot: mcp-autoverify-no-exec");
       await writeFile(path.join(repo, "src/main.js"), "export function main() {\n  return 1;\n}\n", "utf8");
 
       const postEdit = await client.callTool({
         name: "post_edit_review",
-        arguments: { taskId: "mcp-autoverify-no-exec", ranTests: [], ranCommands: [] }
+        arguments: { taskId: "mcp-autoverify-no-exec", ranTests: [], ranCommands: [], responseFormat: "detailed" }
       });
       expect(JSON.stringify(postEdit)).toContain("tests/main.test.js");
       const data = (postEdit.structuredContent as { data?: { ranCommandReports?: unknown[]; autoVerifyRunnerEvidence?: unknown[] } }).data;
@@ -708,17 +715,63 @@ it("does not execute AutoVerify through MCP even when CODEXA_AUTOVERIFY is enabl
               runner: { reportKind: "codexa-autoverify-report", runnerName: "codexa" }
             }
           ],
-          trustedRunnerReports: [{ command: "npm test", cwd: repo, exitCode: 0 }]
+          trustedRunnerReports: [{ command: "npm test", cwd: repo, exitCode: 0 }],
+          responseFormat: "detailed"
         }
       });
       const spoofedData = (spoofed.structuredContent as { data?: { autoVerifyRunnerEvidence?: unknown[]; verificationCoverage?: Array<{ kind?: string }> } }).data;
       expect(spoofedData?.autoVerifyRunnerEvidence ?? []).toEqual([]);
-      expect(spoofedData?.verificationCoverage?.some((entry) => entry.kind === "javascript-tests")).toBe(false);
+      expect(spoofedData?.verificationCoverage?.some((entry) => entry.kind === "javascript-tests") ?? false).toBe(false);
       expect(JSON.stringify(spoofed)).not.toContain("codexa-autoverify-report");
     } finally {
       await client.close();
     }
   });
+
+it("blocks stale lifecycle authority before snapshot or outcome persistence", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-stale-lifecycle-"));
+    const repo = await createIndexedMcpRepo(workspace, "repo", "alpha", "alphaSymbol");
+    await writeFile(path.join(repo, "src/alpha.ts"), "export function alphaSymbol() { return 'changed-after-index' }\n", "utf8");
+    execFileSync("git", ["add", "src/alpha.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "advance head"], { cwd: repo, stdio: "ignore" });
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh", "--tools", "core"],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-stale-lifecycle-guard-test", version: "0.1.0" });
+    await client.connect(transport);
+    try {
+      const taskId = "stale-lifecycle-guard";
+      const changePlan = await client.callTool({
+        name: "change_plan",
+        arguments: { task: "change alpha", files: ["src/alpha.ts"], saveSnapshot: true, taskId, responseFormat: "detailed" }
+      });
+      const planEnvelope = changePlan.structuredContent as {
+        actionability?: string;
+        freshness?: { stale?: boolean };
+        data?: { actionability?: string; editReadiness?: { editable?: boolean }; snapshotBlock?: { status?: string }; decisionKernel?: { scope?: { plannedEditTargetCount?: number } } };
+      };
+      expect(planEnvelope.freshness?.stale).toBe(true);
+      expect(planEnvelope.actionability).toBe("blocked");
+      expect(planEnvelope.data).toMatchObject({ actionability: "blocked", editReadiness: { editable: false }, snapshotBlock: { status: "not-saved" }, decisionKernel: { scope: { plannedEditTargetCount: 0 } } });
+      await expect(stat(path.join(repo, ".codex/cache/codexa-task-snapshots", `${taskId}.json`))).rejects.toThrow();
+      await expect(stat(path.join(repo, ".codex/cache/codexa-task-snapshots", `${taskId}.blocked.json`))).rejects.toThrow();
+
+      const postEdit = await client.callTool({ name: "post_edit_review", arguments: { taskId, responseFormat: "detailed" } });
+      const postEnvelope = postEdit.structuredContent as {
+        actionability?: string;
+        data?: { completionAuthority?: string; outcome?: { persisted?: boolean }; loopReview?: { status?: string } };
+      };
+      expect(postEnvelope.actionability).toBe("blocked");
+      expect(postEnvelope.data).toMatchObject({ completionAuthority: "blocking_inspect", outcome: { persisted: false }, loopReview: { status: "not-evaluated" } });
+      const outcomes = await readdir(path.join(repo, ".codex/cache/codexa-outcomes")).catch(() => []);
+      expect(outcomes.filter((name) => name.endsWith(".json"))).toEqual([]);
+    } finally {
+      await client.close();
+    }
+  }, 90_000);
 
 it("serves placeholder report tool output and placeholder map resource", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-placeholder-"));
@@ -737,12 +790,12 @@ it("serves placeholder report tool output and placeholder map resource", async (
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-placeholder-test", version: "0.1.0" });
     await client.connect(transport);
-    const report = await client.callTool({ name: "placeholder_report", arguments: { limit: 10 } });
+    const report = await client.callTool({ name: "placeholder_report", arguments: { limit: 10, responseFormat: "detailed" } });
     const data = (report.structuredContent as { data?: { findings?: Array<{ path: string; signal: string }>; filters?: { includeTests: boolean } } }).data;
     expect(JSON.stringify(report)).toContain("Codexa placeholder report");
     expect(data?.findings?.some((finding) => finding.path === "src/index.ts" && finding.signal === "placeholder.not-implemented")).toBe(true);

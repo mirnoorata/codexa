@@ -20,8 +20,20 @@ import { fileURLToPath } from "node:url";
 import { analyzeAgentAb } from "./agent-ab-analysis.mjs";
 
 const TERMINATION_GRACE_MS = 5000;
+const MCP_PREFLIGHT_BUILD_TIMEOUT_MS = 10 * 60 * 1000;
+const MCP_PREFLIGHT_HANDSHAKE_TIMEOUT_MS = 60 * 1000;
+const MCP_PREFLIGHT_CLEANUP_TIMEOUT_MS = 60 * 1000;
 const CONTROLLER_PATH = fileURLToPath(import.meta.url);
 const ANALYZER_PATH = path.join(path.dirname(CONTROLLER_PATH), "agent-ab-analysis.mjs");
+const MCP_PREFLIGHT_BASENAME = "mcp-initialize-tools-list-smoke.mjs";
+const MCP_PREFLIGHT_REFERENCE_PATH = path.join(
+  path.dirname(CONTROLLER_PATH),
+  "..",
+  "benchmarks",
+  "agent-ab",
+  "support",
+  MCP_PREFLIGHT_BASENAME
+);
 
 const command = process.argv[2];
 const options = parseOptions(process.argv.slice(3));
@@ -37,6 +49,7 @@ try {
   } else if (command === "run") {
     const loaded = loadAndValidateConfig(requiredOption(options, "config"));
     const registration = createOrLoadRegistration({ loaded, options, allowExisting: Boolean(options.resume) });
+    await preflightSchemaV2Assignments({ registration });
     await executeAssignments({ loaded, registration, options });
     const summary = analyzeAgentAb({ config: loaded.config, outputDir: registration.outputDir });
     printJson({
@@ -115,37 +128,81 @@ function loadAndValidateConfig(inputPath) {
   }
   validateConfigObject(config);
   const baseDir = path.dirname(absolute);
+  const arms = experimentArms(config).map((arm) => {
+    if (arm.kind === "control") {
+      return arm;
+    }
+    const mcpConfigPath = resolveContainedPath(baseDir, arm.mcpConfig, `${arm.id} MCP config`);
+    const extraInstructionPath = resolveContainedPath(baseDir, arm.extraInstruction, `${arm.id} instruction`);
+    const serverCommand = validateArmFiles({
+      mcpConfigPath,
+      instructionPath: extraInstructionPath,
+      label: config.schemaVersion === 1 ? "treatment" : `arm ${arm.id}`,
+      legacy: config.schemaVersion === 1
+    });
+    return {
+      ...arm,
+      mcpConfigPath,
+      extraInstructionPath,
+      mcpConfigHash: hashFile(mcpConfigPath),
+      extraInstructionHash: hashFile(extraInstructionPath),
+      serverCommand
+    };
+  });
+  const schemaV2ServerCommands = config.schemaVersion === 2
+    ? arms.filter((arm) => arm.kind === "codexa").map((arm) => arm.serverCommand)
+    : [];
   const taskEntries = config.tasks.map((task) => {
     const taskPath = resolveContainedPath(baseDir, task.path, `task ${task.id}`);
-    validateTask(taskPath, config.candidate.codexaVersion, task.name);
+    validateTask(taskPath, config.candidate.codexaVersion, task.name, {
+      schemaVersion: config.schemaVersion,
+      serverCommands: schemaV2ServerCommands
+    });
     return { ...task, absolutePath: taskPath, hash: hashDirectory(taskPath) };
   });
-  const mcpConfigPath = resolveContainedPath(baseDir, config.treatment.mcpConfig, "treatment MCP config");
-  const extraInstructionPath = resolveContainedPath(baseDir, config.treatment.extraInstruction, "treatment instruction");
-  validateTreatmentFiles(mcpConfigPath, extraInstructionPath);
-  return {
+  const loaded = {
     absolute,
     baseDir,
     config,
     configHash: sha256(raw),
     tasks: taskEntries,
-    mcpConfigPath,
-    extraInstructionPath,
-    mcpConfigHash: hashFile(mcpConfigPath),
-    extraInstructionHash: hashFile(extraInstructionPath),
-    harness: {
-      controllerHash: hashFile(CONTROLLER_PATH),
-      analyzerHash: hashFile(ANALYZER_PATH)
-    }
+    arms,
+    harness: config.schemaVersion === 2
+      ? {
+          controllerHash: hashFile(CONTROLLER_PATH),
+          analyzerHash: hashFile(ANALYZER_PATH),
+          mcpPreflightHash: hashFile(MCP_PREFLIGHT_REFERENCE_PATH)
+        }
+      : {
+          controllerHash: hashFile(CONTROLLER_PATH),
+          analyzerHash: hashFile(ANALYZER_PATH)
+        }
   };
+  if (config.schemaVersion === 1) {
+    const treatment = arms.find((arm) => arm.id === "treatment");
+    return {
+      ...loaded,
+      mcpConfigPath: treatment.mcpConfigPath,
+      extraInstructionPath: treatment.extraInstructionPath,
+      mcpConfigHash: treatment.mcpConfigHash,
+      extraInstructionHash: treatment.extraInstructionHash
+    };
+  }
+  return loaded;
 }
 
 function validateConfigObject(config) {
   assertObject(config, "experiment configuration");
-  assertKeys(config, ["schemaVersion", "experimentId", "framework", "runner", "candidate", "design", "tasks", "treatment", "analysis"], "experiment configuration");
-  if (config.schemaVersion !== 1) {
-    throw new Error("schemaVersion must be 1");
+  if (config.schemaVersion !== 1 && config.schemaVersion !== 2) {
+    throw new Error("schemaVersion must be 1 or 2");
   }
+  assertKeys(
+    config,
+    config.schemaVersion === 1
+      ? ["schemaVersion", "experimentId", "framework", "runner", "candidate", "design", "tasks", "treatment", "analysis"]
+      : ["schemaVersion", "experimentId", "framework", "runner", "candidate", "design", "tasks", "arms", "analysis"],
+    "experiment configuration"
+  );
   assertIdentifier(config.experimentId, "experimentId");
   assertObject(config.framework, "framework");
   assertKeys(config.framework, ["name", "version"], "framework");
@@ -159,7 +216,6 @@ function validateConfigObject(config) {
     throw new Error("candidate.codexaVersion must be an exact stable semver");
   }
   validateDesign(config.design);
-  validateAnalysis(config.analysis);
   if (!Array.isArray(config.tasks) || config.tasks.length < 1 || config.tasks.length > 100) {
     throw new Error("tasks must contain between 1 and 100 entries");
   }
@@ -175,10 +231,16 @@ function validateConfigObject(config) {
     }
     taskIds.add(task.id);
   }
-  assertObject(config.treatment, "treatment");
-  assertKeys(config.treatment, ["mcpConfig", "extraInstruction"], "treatment");
-  assertSafeRelative(config.treatment.mcpConfig, "treatment.mcpConfig");
-  assertSafeRelative(config.treatment.extraInstruction, "treatment.extraInstruction");
+  if (config.schemaVersion === 1) {
+    assertObject(config.treatment, "treatment");
+    assertKeys(config.treatment, ["mcpConfig", "extraInstruction"], "treatment");
+    assertSafeRelative(config.treatment.mcpConfig, "treatment.mcpConfig");
+    assertSafeRelative(config.treatment.extraInstruction, "treatment.extraInstruction");
+    validateAnalysis(config.analysis, 1);
+    return;
+  }
+  validateArms(config.arms);
+  validateAnalysis(config.analysis, 2, new Set(config.arms.map((arm) => arm.id)));
 }
 
 function validateRunner(runner) {
@@ -219,9 +281,15 @@ function validateDesign(design) {
   integerInRange(design.controllerTimeoutSeconds, 1, 7200, "design.controllerTimeoutSeconds");
 }
 
-function validateAnalysis(analysis) {
+function validateAnalysis(analysis, schemaVersion, armIds = new Set()) {
   assertObject(analysis, "analysis");
-  assertKeys(analysis, ["primaryReward", "bootstrapSamples", "confidenceLevel", "generalizationUnit", "failurePolicy"], "analysis");
+  assertKeys(
+    analysis,
+    schemaVersion === 1
+      ? ["primaryReward", "bootstrapSamples", "confidenceLevel", "generalizationUnit", "failurePolicy"]
+      : ["primaryReward", "bootstrapSamples", "confidenceLevel", "generalizationUnit", "failurePolicy", "comparisons"],
+    "analysis"
+  );
   assertIdentifier(analysis.primaryReward, "analysis.primaryReward");
   integerInRange(analysis.bootstrapSamples, 1000, 100000, "analysis.bootstrapSamples");
   numberInRange(analysis.confidenceLevel, 0.8, 0.999, "analysis.confidenceLevel");
@@ -231,14 +299,86 @@ function validateAnalysis(analysis) {
   if (analysis.failurePolicy !== "intention-to-treat") {
     throw new Error("analysis.failurePolicy must be intention-to-treat");
   }
+  if (schemaVersion === 1) {
+    return;
+  }
+  if (!Array.isArray(analysis.comparisons) || analysis.comparisons.length < 1 || analysis.comparisons.length > 32) {
+    throw new Error("analysis.comparisons must contain between 1 and 32 entries");
+  }
+  const comparisonIds = new Set();
+  let primaryCount = 0;
+  for (const comparison of analysis.comparisons) {
+    assertObject(comparison, "analysis comparison");
+    assertKeys(comparison, ["id", "baselineArm", "candidateArm", "primary"], "analysis comparison");
+    assertIdentifier(comparison.id, "analysis comparison id");
+    if (comparisonIds.has(comparison.id)) {
+      throw new Error(`duplicate analysis comparison id: ${comparison.id}`);
+    }
+    comparisonIds.add(comparison.id);
+    if (!armIds.has(comparison.baselineArm) || !armIds.has(comparison.candidateArm)) {
+      throw new Error(`analysis comparison ${comparison.id} references an unknown arm`);
+    }
+    if (comparison.baselineArm === comparison.candidateArm) {
+      throw new Error(`analysis comparison ${comparison.id} must compare two different arms`);
+    }
+    if (typeof comparison.primary !== "boolean") {
+      throw new Error(`analysis comparison ${comparison.id} primary must be boolean`);
+    }
+    primaryCount += Number(comparison.primary);
+  }
+  if (primaryCount !== 1) {
+    throw new Error("analysis.comparisons must designate exactly one primary comparison");
+  }
 }
 
-function validateTask(taskPath, codexaVersion, expectedTaskName) {
+function validateArms(arms) {
+  if (!Array.isArray(arms) || arms.length < 2 || arms.length > 8) {
+    throw new Error("arms must contain between 2 and 8 entries");
+  }
+  const ids = new Set();
+  let controlCount = 0;
+  for (const arm of arms) {
+    assertObject(arm, "arm");
+    if (arm.kind === "control") {
+      assertKeys(arm, ["id", "kind"], `arm ${String(arm.id)}`);
+      controlCount += 1;
+    } else if (arm.kind === "codexa") {
+      assertKeys(arm, ["id", "kind", "mcpConfig", "extraInstruction"], `arm ${String(arm.id)}`);
+      assertSafeRelative(arm.mcpConfig, `arm ${String(arm.id)} mcpConfig`);
+      assertSafeRelative(arm.extraInstruction, `arm ${String(arm.id)} extraInstruction`);
+    } else {
+      throw new Error(`arm ${String(arm.id)} kind must be control or codexa`);
+    }
+    assertIdentifier(arm.id, "arm id");
+    if (ids.has(arm.id)) {
+      throw new Error(`duplicate arm id: ${arm.id}`);
+    }
+    ids.add(arm.id);
+  }
+  if (controlCount !== 1) {
+    throw new Error("schema-v2 requires exactly one control arm");
+  }
+}
+
+function experimentArms(config) {
+  return config.schemaVersion === 1
+    ? [
+        { id: "control", kind: "control" },
+        {
+          id: "treatment",
+          kind: "codexa",
+          mcpConfig: config.treatment.mcpConfig,
+          extraInstruction: config.treatment.extraInstruction
+        }
+      ]
+    : config.arms.map((arm) => ({ ...arm }));
+}
+
+function validateTask(taskPath, codexaVersion, expectedTaskName, options = { schemaVersion: 1, serverCommands: [] }) {
   const required = [
     "instruction.md",
     "task.toml",
     "environment/Dockerfile",
-    "environment/codexa-mcp-entrypoint.sh",
     "environment/project/.gitignore",
     "solution/solve.sh",
     "tests/Dockerfile",
@@ -246,6 +386,9 @@ function validateTask(taskPath, codexaVersion, expectedTaskName) {
     "tests/public_test_runner.py",
     "tests/test.sh"
   ];
+  if (options.schemaVersion === 1) {
+    required.push("environment/codexa-mcp-entrypoint.sh");
+  }
   for (const file of required) {
     const target = path.join(taskPath, file);
     if (!existsSync(target) || !statSync(target).isFile()) {
@@ -286,8 +429,15 @@ function validateTask(taskPath, codexaVersion, expectedTaskName) {
   if (!dockerfile.includes(`ARG CODEXA_VERSION=${codexaVersion}`)) {
     throw new Error("agent Dockerfile Codexa version does not match experiment candidate");
   }
-  if (!dockerfile.includes("npm install --global --prefix /opt/codexa-runtime")) {
-    throw new Error("agent Dockerfile must keep Codexa out of the control agent PATH");
+  const canonicalInstall = 'npm install --global --prefix /opt/codexa-runtime "@mirnoorata/codexa@${CODEXA_VERSION}"';
+  const installsPinnedCandidate = dockerfile.split(/\r?\n/u).some((line) => {
+    const trimmed = line.trim();
+    return !trimmed.startsWith("#")
+      && (trimmed.startsWith("RUN ") || trimmed.startsWith("&& "))
+      && trimmed.includes(canonicalInstall);
+  });
+  if (!installsPinnedCandidate) {
+    throw new Error("agent Dockerfile must install @mirnoorata/codexa from ${CODEXA_VERSION} into the isolated runtime");
   }
   if (/^\s*(?:COPY|ADD)\s+(?:\.\.?\/|tests\/)/imu.test(dockerfile)) {
     throw new Error("agent Dockerfile may not copy the task root or agent-inaccessible verifier tests");
@@ -300,31 +450,72 @@ function validateTask(taskPath, codexaVersion, expectedTaskName) {
   if (!gitignore.split(/\r?\n/u).includes(".codex/")) {
     throw new Error("fixture .gitignore must ignore .codex/");
   }
-  const entrypoint = readBoundedText(path.join(taskPath, "environment/codexa-mcp-entrypoint.sh"), 128 * 1024, "Codexa MCP entrypoint");
-  if (!entrypoint.includes("repo=/workspace/project") || !entrypoint.includes("codexa=/opt/codexa-runtime/bin/codexa")) {
-    throw new Error("Codexa MCP entrypoint must use the sandbox checkout and isolated runtime");
+  if (options.schemaVersion === 1) {
+    const entrypoint = readBoundedText(path.join(taskPath, "environment/codexa-mcp-entrypoint.sh"), 128 * 1024, "Codexa MCP entrypoint");
+    if (!entrypoint.includes("repo=/workspace/project") || !entrypoint.includes("codexa=/opt/codexa-runtime/bin/codexa")) {
+      throw new Error("Codexa MCP entrypoint must use the sandbox checkout and isolated runtime");
+    }
+  } else {
+    validateSchemaV2TaskArmProvisioning(taskPath, dockerfile, options.serverCommands);
   }
 }
 
-function validateTreatmentFiles(mcpConfigPath, instructionPath) {
-  const mcp = JSON.parse(readBoundedText(mcpConfigPath, 128 * 1024, "treatment MCP config"));
-  assertObject(mcp, "treatment MCP config");
-  assertKeys(mcp, ["mcpServers"], "treatment MCP config");
-  assertObject(mcp.mcpServers, "treatment MCP servers");
-  assertKeys(mcp.mcpServers, ["codexa"], "treatment MCP servers");
+function validateSchemaV2TaskArmProvisioning(taskPath, dockerfile, serverCommands) {
+  if (!Array.isArray(serverCommands) || serverCommands.length === 0 || new Set(serverCommands).size !== serverCommands.length) {
+    throw new Error("schema-v2 task validation requires unique registered Codexa arm commands");
+  }
+  for (const serverCommand of serverCommands) {
+    const basename = path.posix.basename(serverCommand);
+    const sourceName = `${basename}.sh`;
+    const sourcePath = path.join(taskPath, "environment", sourceName);
+    if (!existsSync(sourcePath) || !lstatSync(sourcePath).isFile() || lstatSync(sourcePath).isSymbolicLink()) {
+      throw new Error(`schema-v2 task does not provision registered arm command ${serverCommand}`);
+    }
+    const wrapper = readBoundedText(sourcePath, 128 * 1024, `schema-v2 MCP wrapper ${basename}`);
+    const activeLines = wrapper.split(/\r?\n/u).map((line) => line.trim()).filter((line) => line.length > 0 && !line.startsWith("#"));
+    const serveIndex = activeLines.findIndex((line) => line === 'exec "$codexa" serve "$repo"' || line.startsWith('exec "$codexa" serve "$repo" '));
+    if (
+      !activeLines.includes("repo=/workspace/project")
+      || !activeLines.includes("codexa=/opt/codexa-runtime/bin/codexa")
+      || serveIndex < 0
+    ) {
+      throw new Error(`schema-v2 MCP wrapper ${sourceName} must serve the sandbox checkout through the isolated runtime`);
+    }
+    requireCanonicalDockerCopy(dockerfile, sourceName, serverCommand, "0755", `schema-v2 arm command ${serverCommand}`);
+  }
+}
+
+function requireCanonicalDockerCopy(dockerfile, source, destination, mode, label) {
+  const expected = `COPY --chmod=${mode} ${source} ${destination}`;
+  const matches = dockerfile.split(/\r?\n/u).filter((line) => line.trim() === expected);
+  if (matches.length !== 1) {
+    throw new Error(`${label} must be provisioned exactly once with: ${expected}`);
+  }
+}
+
+function validateArmFiles({ mcpConfigPath, instructionPath, label, legacy }) {
+  const mcp = JSON.parse(readBoundedText(mcpConfigPath, 128 * 1024, `${label} MCP config`));
+  assertObject(mcp, `${label} MCP config`);
+  assertKeys(mcp, ["mcpServers"], `${label} MCP config`);
+  assertObject(mcp.mcpServers, `${label} MCP servers`);
+  assertKeys(mcp.mcpServers, ["codexa"], `${label} MCP servers`);
   const server = mcp.mcpServers.codexa;
   assertObject(server, "Codexa MCP server");
   assertKeys(server, ["command", "args"], "Codexa MCP server");
-  if (server.command !== "/opt/codexa-agent-ab/start-codexa-mcp") {
+  const commandAllowed = legacy
+    ? server.command === "/opt/codexa-agent-ab/start-codexa-mcp"
+    : /^\/opt\/codexa-agent-ab\/start-codexa-mcp(?:-[a-z0-9-]+)?$/u.test(server.command);
+  if (!commandAllowed) {
     throw new Error("Codexa MCP command must use the sandbox-local entrypoint");
   }
   if (JSON.stringify(server.args) !== JSON.stringify([])) {
     throw new Error("Codexa MCP args must be empty for Harbor 0.18 Codex compatibility");
   }
-  const instruction = readBoundedText(instructionPath, 128 * 1024, "treatment instruction");
+  const instruction = readBoundedText(instructionPath, 128 * 1024, `${label} instruction`);
   if (!/\bCodexa\b/u.test(instruction) || instruction.length > 4000) {
-    throw new Error("treatment instruction must name Codexa and stay under 4000 characters");
+    throw new Error(`${label} instruction must name Codexa and stay under 4000 characters`);
   }
+  return server.command;
 }
 
 function createOrLoadRegistration({ loaded, options, allowExisting }) {
@@ -346,8 +537,9 @@ function createOrLoadRegistration({ loaded, options, allowExisting }) {
   outputDir = validateOutputPath(outputInput, loaded);
   registrationPath = path.join(outputDir, "registration.json");
   const inputs = inputSnapshotLayout(loaded.config);
-  const registration = {
-    schemaVersion: 1,
+  const assignments = buildAssignments(loaded.config);
+  const common = {
+    schemaVersion: loaded.config.schemaVersion,
     experimentId: loaded.config.experimentId,
     createdAt: new Date().toISOString(),
     outputDir,
@@ -358,14 +550,32 @@ function createOrLoadRegistration({ loaded, options, allowExisting }) {
     candidate: loaded.config.candidate,
     agent,
     model,
-    treatment: {
-      mcpConfigHash: loaded.mcpConfigHash,
-      extraInstructionHash: loaded.extraInstructionHash
-    },
     tasks: loaded.tasks.map((task) => ({ id: task.id, name: task.name, hash: task.hash })),
     inputs,
-    assignments: buildAssignments(loaded.config)
+    assignments
   };
+  const registration = loaded.config.schemaVersion === 1
+    ? {
+        ...common,
+        treatment: {
+          mcpConfigHash: loaded.mcpConfigHash,
+          extraInstructionHash: loaded.extraInstructionHash
+        }
+      }
+    : {
+        ...common,
+        arms: loaded.arms.map((arm) => arm.kind === "control"
+          ? { id: arm.id, kind: arm.kind }
+          : {
+              id: arm.id,
+              kind: arm.kind,
+              mcpConfigHash: arm.mcpConfigHash,
+              extraInstructionHash: arm.extraInstructionHash,
+              serverCommand: arm.serverCommand
+            }),
+        comparisons: loaded.config.analysis.comparisons,
+        positionalBalance: summarizePositionalBalance(assignments, loaded.arms.map((arm) => arm.id))
+      };
   snapshotExperimentInputs(loaded, registration, outputDir);
   writeExclusiveJson(registrationPath, publicRegistration(registration));
   return registration;
@@ -378,8 +588,17 @@ function requireMatchingRegistration(loaded, outputDir, options) {
   }
   requireRegularFile(file, "registration.json");
   const registration = JSON.parse(readBoundedText(file, 2 * 1024 * 1024, "registration"));
+  if (registration.schemaVersion !== loaded.config.schemaVersion) {
+    throw new Error("registration schemaVersion differs from the experiment configuration");
+  }
   if (registration.configHash !== loaded.configHash) {
     throw new Error("experiment configuration changed after registration");
+  }
+  if (JSON.stringify(registration.framework) !== JSON.stringify(loaded.config.framework)) {
+    throw new Error("framework differs from the immutable registration");
+  }
+  if (JSON.stringify(registration.candidate) !== JSON.stringify(loaded.config.candidate)) {
+    throw new Error("candidate differs from the immutable registration");
   }
   if (options.agent && registration.agent !== options.agent) {
     throw new Error("agent differs from the immutable registration");
@@ -403,25 +622,64 @@ function requireMatchingRegistration(loaded, outputDir, options) {
   if (JSON.stringify(registration.inputs) !== JSON.stringify(inputSnapshotLayout(loaded.config))) {
     throw new Error("registered input snapshot layout changed after registration");
   }
+  if (loaded.config.schemaVersion === 2) {
+    const expectedArms = loaded.arms.map((arm) => arm.kind === "control"
+      ? { id: arm.id, kind: arm.kind }
+      : {
+          id: arm.id,
+          kind: arm.kind,
+          mcpConfigHash: arm.mcpConfigHash,
+          extraInstructionHash: arm.extraInstructionHash,
+          serverCommand: arm.serverCommand
+        });
+    if (JSON.stringify(registration.arms) !== JSON.stringify(expectedArms)) {
+      throw new Error("registered arms changed after registration");
+    }
+    if (JSON.stringify(registration.comparisons) !== JSON.stringify(loaded.config.analysis.comparisons)) {
+      throw new Error("registered comparisons changed after registration");
+    }
+  }
   const expectedAssignments = buildAssignments(loaded.config);
   if (JSON.stringify(registration.assignments) !== JSON.stringify(expectedAssignments)) {
     throw new Error("registered assignments do not match the deterministic experiment design");
+  }
+  if (loaded.config.schemaVersion === 2) {
+    const expectedBalance = summarizePositionalBalance(expectedAssignments, loaded.arms.map((arm) => arm.id));
+    if (JSON.stringify(registration.positionalBalance) !== JSON.stringify(expectedBalance)) {
+      throw new Error("registered positional balance changed after registration");
+    }
   }
   resolveRegisteredInputs(registration, outputDir);
   return { ...registration, outputDir };
 }
 
 function inputSnapshotLayout(config) {
-  return {
-    schemaVersion: 1,
+  const common = {
+    schemaVersion: config.schemaVersion,
     tasks: config.tasks.map((task) => ({
       id: task.id,
       path: path.posix.join("inputs", "tasks", task.id)
-    })),
-    treatment: {
-      mcpConfig: path.posix.join("inputs", "treatment", "mcp", path.posix.basename(config.treatment.mcpConfig)),
-      extraInstruction: path.posix.join("inputs", "treatment", "instruction", path.posix.basename(config.treatment.extraInstruction))
-    }
+    }))
+  };
+  if (config.schemaVersion === 1) {
+    return {
+      ...common,
+      treatment: {
+        mcpConfig: path.posix.join("inputs", "treatment", "mcp", path.posix.basename(config.treatment.mcpConfig)),
+        extraInstruction: path.posix.join("inputs", "treatment", "instruction", path.posix.basename(config.treatment.extraInstruction))
+      }
+    };
+  }
+  return {
+    ...common,
+    arms: config.arms.map((arm) => arm.kind === "control"
+      ? { id: arm.id, kind: arm.kind }
+      : {
+          id: arm.id,
+          kind: arm.kind,
+          mcpConfig: path.posix.join("inputs", "arms", arm.id, "mcp", path.posix.basename(arm.mcpConfig)),
+          extraInstruction: path.posix.join("inputs", "arms", arm.id, "instruction", path.posix.basename(arm.extraInstruction))
+        })
   };
 }
 
@@ -440,17 +698,34 @@ function snapshotExperimentInputs(loaded, registration, outputDir) {
     const target = path.resolve(outputDir, layout.path);
     cpSync(task.absolutePath, target, { recursive: true, dereference: false, preserveTimestamps: true });
   }
-  const mcpDirectory = path.join(inputsRoot, "treatment", "mcp");
-  const instructionDirectory = path.join(inputsRoot, "treatment", "instruction");
-  mkdirSync(mcpDirectory, { recursive: true, mode: 0o700 });
-  mkdirSync(instructionDirectory, { recursive: true, mode: 0o700 });
-  copyFileSync(loaded.mcpConfigPath, path.resolve(outputDir, registration.inputs.treatment.mcpConfig));
-  copyFileSync(loaded.extraInstructionPath, path.resolve(outputDir, registration.inputs.treatment.extraInstruction));
+  if (loaded.config.schemaVersion === 1) {
+    const mcpDirectory = path.join(inputsRoot, "treatment", "mcp");
+    const instructionDirectory = path.join(inputsRoot, "treatment", "instruction");
+    mkdirSync(mcpDirectory, { recursive: true, mode: 0o700 });
+    mkdirSync(instructionDirectory, { recursive: true, mode: 0o700 });
+    copyFileSync(loaded.mcpConfigPath, path.resolve(outputDir, registration.inputs.treatment.mcpConfig));
+    copyFileSync(loaded.extraInstructionPath, path.resolve(outputDir, registration.inputs.treatment.extraInstruction));
+  } else {
+    for (const arm of loaded.arms.filter((entry) => entry.kind === "codexa")) {
+      const layout = registration.inputs.arms.find((entry) => entry.id === arm.id);
+      if (!layout) {
+        throw new Error(`input snapshot layout is missing arm ${arm.id}`);
+      }
+      mkdirSync(path.dirname(path.resolve(outputDir, layout.mcpConfig)), { recursive: true, mode: 0o700 });
+      mkdirSync(path.dirname(path.resolve(outputDir, layout.extraInstruction)), { recursive: true, mode: 0o700 });
+      copyFileSync(arm.mcpConfigPath, path.resolve(outputDir, layout.mcpConfig));
+      copyFileSync(arm.extraInstructionPath, path.resolve(outputDir, layout.extraInstruction));
+    }
+  }
   resolveRegisteredInputs(registration, outputDir);
 }
 
 function resolveRegisteredInputs(registration, outputDir) {
-  if (!registration.inputs || registration.inputs.schemaVersion !== 1 || !Array.isArray(registration.inputs.tasks)) {
+  if (
+    !registration.inputs
+    || registration.inputs.schemaVersion !== registration.schemaVersion
+    || !Array.isArray(registration.inputs.tasks)
+  ) {
     throw new Error("registration is missing its immutable input snapshot layout");
   }
   if (!Array.isArray(registration.tasks)) {
@@ -464,26 +739,69 @@ function resolveRegisteredInputs(registration, outputDir) {
     }
     const taskPath = resolveSnapshotPath(outputDir, layout.path, `task snapshot ${registeredTask.id}`, "directory");
     rejectSymlinksAndOversizedFiles(taskPath);
-    validateTask(taskPath, registration.candidate?.codexaVersion, registeredTask.name);
+    validateTask(taskPath, registration.candidate?.codexaVersion, registeredTask.name, {
+      schemaVersion: registration.schemaVersion,
+      serverCommands: registration.schemaVersion === 2
+        ? registration.arms.filter((arm) => arm.kind === "codexa").map((arm) => arm.serverCommand)
+        : []
+    });
     if (hashDirectory(taskPath) !== registeredTask.hash) {
       throw new Error(`task input snapshot hash differs from registration: ${registeredTask.id}`);
     }
     tasksById.set(registeredTask.id, taskPath);
   }
-  const treatmentLayout = registration.inputs.treatment;
-  if (!treatmentLayout || typeof treatmentLayout.mcpConfig !== "string" || typeof treatmentLayout.extraInstruction !== "string") {
-    throw new Error("registration is missing treatment input snapshot paths");
+  const armInputs = new Map();
+  if (registration.schemaVersion === 1) {
+    const treatmentLayout = registration.inputs.treatment;
+    if (!treatmentLayout || typeof treatmentLayout.mcpConfig !== "string" || typeof treatmentLayout.extraInstruction !== "string") {
+      throw new Error("registration is missing treatment input snapshot paths");
+    }
+    const mcpConfigPath = resolveSnapshotPath(outputDir, treatmentLayout.mcpConfig, "treatment MCP snapshot", "file");
+    const extraInstructionPath = resolveSnapshotPath(outputDir, treatmentLayout.extraInstruction, "treatment instruction snapshot", "file");
+    validateArmFiles({ mcpConfigPath, instructionPath: extraInstructionPath, label: "treatment", legacy: true });
+    if (hashFile(mcpConfigPath) !== registration.treatment?.mcpConfigHash) {
+      throw new Error("treatment MCP input snapshot hash differs from registration");
+    }
+    if (hashFile(extraInstructionPath) !== registration.treatment?.extraInstructionHash) {
+      throw new Error("treatment instruction input snapshot hash differs from registration");
+    }
+    armInputs.set("treatment", { mcpConfigPath, extraInstructionPath });
+    return { tasksById, armInputs, mcpConfigPath, extraInstructionPath };
   }
-  const mcpConfigPath = resolveSnapshotPath(outputDir, treatmentLayout.mcpConfig, "treatment MCP snapshot", "file");
-  const extraInstructionPath = resolveSnapshotPath(outputDir, treatmentLayout.extraInstruction, "treatment instruction snapshot", "file");
-  validateTreatmentFiles(mcpConfigPath, extraInstructionPath);
-  if (hashFile(mcpConfigPath) !== registration.treatment?.mcpConfigHash) {
-    throw new Error("treatment MCP input snapshot hash differs from registration");
+  if (!Array.isArray(registration.arms) || !Array.isArray(registration.inputs.arms)) {
+    throw new Error("registration is missing schema-v2 arm snapshots");
   }
-  if (hashFile(extraInstructionPath) !== registration.treatment?.extraInstructionHash) {
-    throw new Error("treatment instruction input snapshot hash differs from registration");
+  for (const registeredArm of registration.arms) {
+    const layout = registration.inputs.arms.find((entry) => entry?.id === registeredArm.id);
+    if (!layout || layout.kind !== registeredArm.kind) {
+      throw new Error(`input snapshot layout is missing arm ${registeredArm.id}`);
+    }
+    if (registeredArm.kind === "control") {
+      if (Object.hasOwn(layout, "mcpConfig") || Object.hasOwn(layout, "extraInstruction")) {
+        throw new Error(`control arm ${registeredArm.id} may not have Codexa input snapshots`);
+      }
+      continue;
+    }
+    const mcpConfigPath = resolveSnapshotPath(outputDir, layout.mcpConfig, `${registeredArm.id} MCP snapshot`, "file");
+    const extraInstructionPath = resolveSnapshotPath(outputDir, layout.extraInstruction, `${registeredArm.id} instruction snapshot`, "file");
+    const serverCommand = validateArmFiles({
+      mcpConfigPath,
+      instructionPath: extraInstructionPath,
+      label: `arm ${registeredArm.id}`,
+      legacy: false
+    });
+    if (serverCommand !== registeredArm.serverCommand) {
+      throw new Error(`arm ${registeredArm.id} MCP command differs from registration`);
+    }
+    if (hashFile(mcpConfigPath) !== registeredArm.mcpConfigHash) {
+      throw new Error(`arm ${registeredArm.id} MCP input snapshot hash differs from registration`);
+    }
+    if (hashFile(extraInstructionPath) !== registeredArm.extraInstructionHash) {
+      throw new Error(`arm ${registeredArm.id} instruction input snapshot hash differs from registration`);
+    }
+    armInputs.set(registeredArm.id, { mcpConfigPath, extraInstructionPath });
   }
-  return { tasksById, mcpConfigPath, extraInstructionPath };
+  return { tasksById, armInputs };
 }
 
 function resolveSnapshotPath(outputDir, relative, label, expectedType) {
@@ -506,6 +824,9 @@ function resolveSnapshotPath(outputDir, relative, label, expectedType) {
 }
 
 function buildAssignments(config) {
+  if (config.schemaVersion === 2) {
+    return buildSchemaV2Assignments(config);
+  }
   const assignments = [];
   for (const task of config.tasks) {
     const treatmentFirstForFirstRepetition = createHash("sha256").update(`${config.design.seed}\0${task.id}`).digest()[0] % 2 === 1;
@@ -525,6 +846,267 @@ function buildAssignments(config) {
     }
   }
   return assignments;
+}
+
+function buildSchemaV2Assignments(config) {
+  const assignments = [];
+  const armIds = config.arms.map((arm) => arm.id);
+  for (const task of config.tasks) {
+    const base = deterministicPermutation(armIds, `${config.design.seed}\0${task.id}`);
+    for (let repetition = 1; repetition <= config.design.repetitions; repetition += 1) {
+      const offset = (repetition - 1) % base.length;
+      const rotated = [...base.slice(offset), ...base.slice(0, offset)];
+      for (let order = 0; order < rotated.length; order += 1) {
+        const arm = rotated[order];
+        const runId = createHash("sha256")
+          .update(`${config.experimentId}\0${config.design.seed}\0${task.id}\0${repetition}\0${arm}`)
+          .digest("hex")
+          .slice(0, 20);
+        assignments.push({ runId, taskId: task.id, taskName: task.name, repetition, arm, order: order + 1, jobName: `agent-ab-${runId}` });
+      }
+    }
+  }
+  return assignments;
+}
+
+function deterministicPermutation(values, seed) {
+  return values
+    .map((value) => ({
+      value,
+      key: createHash("sha256").update(`${seed}\0${value}`).digest("hex")
+    }))
+    .sort((left, right) => compareText(left.key, right.key) || compareText(left.value, right.value))
+    .map((entry) => entry.value);
+}
+
+function summarizePositionalBalance(assignments, armIds) {
+  const positions = Object.fromEntries(armIds.map((arm) => [
+    arm,
+    Object.fromEntries(armIds.map((_, index) => [String(index + 1), 0]))
+  ]));
+  for (const assignment of assignments) {
+    const arm = positions[assignment.arm];
+    arm[String(assignment.order)] = (arm[String(assignment.order)] ?? 0) + 1;
+  }
+  const counts = Object.values(positions).flatMap((record) => Object.values(record));
+  return {
+    schemaVersion: 1,
+    method: "seed-derived base permutation with cyclic rotation by repetition",
+    positions,
+    fullyBalanced: counts.length > 0 && Math.max(...counts) === Math.min(...counts),
+    note: "positional balance is reported directly; this design does not claim full counterbalancing"
+  };
+}
+
+async function preflightSchemaV2Assignments({ registration }) {
+  if (registration.schemaVersion !== 2) {
+    return;
+  }
+  const attemptsDir = path.join(registration.outputDir, "attempts");
+  const armsById = new Map(registration.arms.map((arm) => [arm.id, arm]));
+  const tasksById = new Map(registration.tasks.map((task) => [task.id, task]));
+  const pendingPairs = new Map();
+  for (const assignment of registration.assignments) {
+    if (pathEntryExists(path.join(attemptsDir, `${assignment.runId}.json`))) {
+      continue;
+    }
+    const arm = armsById.get(assignment.arm);
+    if (arm?.kind !== "codexa") {
+      continue;
+    }
+    const registeredTask = tasksById.get(assignment.taskId);
+    if (!registeredTask) {
+      throw new Error(`registration is missing schema-v2 preflight task ${assignment.taskId}`);
+    }
+    pendingPairs.set(`${assignment.taskId}\0${arm.serverCommand}`, {
+      registeredTask,
+      serverCommand: arm.serverCommand
+    });
+  }
+  if (pendingPairs.size === 0) {
+    return;
+  }
+  const preflightDir = ensureOutputSubdirectory(registration.outputDir, "preflight");
+  const missingByTask = new Map();
+  for (const pair of pendingPairs.values()) {
+    const expected = schemaV2PreflightReceiptIdentity(registration, pair.registeredTask, pair.serverCommand);
+    const receiptPath = schemaV2PreflightReceiptPath(preflightDir, expected);
+    if (pathEntryExists(receiptPath)) {
+      requireMatchingSchemaV2PreflightReceipt(receiptPath, expected);
+      continue;
+    }
+    const taskReceipts = missingByTask.get(pair.registeredTask.id) ?? [];
+    taskReceipts.push({ expected, receiptPath });
+    missingByTask.set(pair.registeredTask.id, taskReceipts);
+  }
+  if (missingByTask.size === 0) {
+    return;
+  }
+  const snapshots = resolveRegisteredInputs(registration, registration.outputDir);
+  for (const [taskId, receipts] of missingByTask) {
+    const registeredTask = tasksById.get(taskId);
+    const taskPath = snapshots.tasksById.get(registeredTask.id);
+    if (!taskPath) {
+      throw new Error(`registered task is unavailable for schema-v2 MCP preflight: ${registeredTask.id}`);
+    }
+    const imageTag = [
+      "codexa-agent-ab-preflight",
+      registeredTask.hash.slice(0, 16),
+      registration.configHash.slice(0, 8),
+      String(process.pid)
+    ].join("-");
+    let imageBuilt = false;
+    let failure;
+    try {
+      const build = await runProcess({
+        executable: "docker",
+        args: ["build", "--tag", imageTag, path.join(taskPath, "environment")],
+        timeoutMs: MCP_PREFLIGHT_BUILD_TIMEOUT_MS,
+        env: process.env
+      });
+      if (build.exitCode !== 0 || build.timedOut) {
+        throw new Error(`schema-v2 task image preflight build failed for ${registeredTask.id}`);
+      }
+      imageBuilt = true;
+      for (const receipt of receipts) {
+        const { expected } = receipt;
+        const observationPath = path.join(
+          preflightDir,
+          `.mcp-observation-${sha256(`${registeredTask.id}\0${expected.serverCommand}`).slice(0, 24)}-${process.pid}-${Date.now()}.json`
+        );
+        try {
+          const smoke = await runProcess({
+            executable: process.execPath,
+            args: [
+              MCP_PREFLIGHT_REFERENCE_PATH,
+              "--expected-version",
+              expected.expectedServerInfo.version,
+              "--result",
+              observationPath,
+              "--",
+              "docker",
+              "run",
+              "--rm",
+              "--interactive",
+              "--network",
+              "none",
+              imageTag,
+              expected.serverCommand
+            ],
+            timeoutMs: MCP_PREFLIGHT_HANDSHAKE_TIMEOUT_MS,
+            env: {
+              ...process.env,
+              CODEXA_AGENT_AB_MCP_PREFLIGHT_TIMEOUT_MS: String(MCP_PREFLIGHT_HANDSHAKE_TIMEOUT_MS)
+            }
+          });
+          if (smoke.exitCode !== 0 || smoke.timedOut) {
+            throw new Error(`schema-v2 MCP initialize/tools-list preflight failed for ${registeredTask.id} command ${expected.serverCommand}`);
+          }
+          receipt.observedServerInfo = readSchemaV2McpPreflightObservation(
+            observationPath,
+            expected.expectedServerInfo,
+            registeredTask.id
+          );
+        } finally {
+          if (existsSync(observationPath)) {
+            unlinkSync(observationPath);
+          }
+        }
+      }
+    } catch (error) {
+      failure = error instanceof Error ? error : new Error(String(error));
+    }
+    let cleanupFailure;
+    if (imageBuilt) {
+      try {
+        const cleanup = await runProcess({
+          executable: "docker",
+          args: ["image", "rm", "--force", imageTag],
+          timeoutMs: MCP_PREFLIGHT_CLEANUP_TIMEOUT_MS,
+          env: process.env
+        });
+        if (cleanup.exitCode !== 0 || cleanup.timedOut) {
+          cleanupFailure = new Error(`schema-v2 task image preflight cleanup failed for ${registeredTask.id}`);
+        }
+      } catch (error) {
+        cleanupFailure = error instanceof Error ? error : new Error(String(error));
+      }
+    }
+    if (failure) {
+      if (cleanupFailure) {
+        throw new Error(`${failure.message}; additionally, ${cleanupFailure.message}`);
+      }
+      throw failure;
+    }
+    if (cleanupFailure) {
+      throw cleanupFailure;
+    }
+    const completedAt = new Date().toISOString();
+    for (const { expected, observedServerInfo, receiptPath } of receipts) {
+      if (!observedServerInfo) {
+        throw new Error(`schema-v2 MCP preflight did not record server identity for ${expected.taskId}`);
+      }
+      writeExclusiveJson(receiptPath, { ...expected, observedServerInfo, completedAt });
+    }
+  }
+}
+
+function schemaV2PreflightReceiptIdentity(registration, registeredTask, serverCommand) {
+  return {
+    schemaVersion: 1,
+    kind: "schema-v2-mcp-preflight",
+    experimentId: registration.experimentId,
+    configHash: registration.configHash,
+    taskId: registeredTask.id,
+    taskHash: registeredTask.hash,
+    serverCommand,
+    expectedServerInfo: {
+      name: "codexa",
+      version: registration.candidate.codexaVersion
+    },
+    mcpPreflightHash: registration.harness.mcpPreflightHash
+  };
+}
+
+function schemaV2PreflightReceiptPath(preflightDir, identity) {
+  const commandHash = sha256(identity.serverCommand).slice(0, 24);
+  return path.join(preflightDir, `${identity.taskId}-${commandHash}.json`);
+}
+
+function requireMatchingSchemaV2PreflightReceipt(file, expected) {
+  requireRegularFile(file, `schema-v2 MCP preflight receipt for ${expected.taskId}`);
+  const receipt = JSON.parse(readBoundedText(file, 128 * 1024, "schema-v2 MCP preflight receipt"));
+  assertObject(receipt, "schema-v2 MCP preflight receipt");
+  assertKeys(receipt, [...Object.keys(expected), "observedServerInfo", "completedAt"], "schema-v2 MCP preflight receipt");
+  if (typeof receipt.completedAt !== "string" || !Number.isFinite(Date.parse(receipt.completedAt))) {
+    throw new Error(`schema-v2 MCP preflight receipt has an invalid completion time for ${expected.taskId}`);
+  }
+  const identity = Object.fromEntries(Object.keys(expected).map((key) => [key, receipt[key]]));
+  if (JSON.stringify(identity) !== JSON.stringify(expected)) {
+    throw new Error(`schema-v2 MCP preflight receipt identity differs from registration for ${expected.taskId}`);
+  }
+  requireExactServerInfo(receipt.observedServerInfo, expected.expectedServerInfo, `schema-v2 MCP preflight receipt for ${expected.taskId}`);
+}
+
+function readSchemaV2McpPreflightObservation(file, expectedServerInfo, taskId) {
+  requireRegularFile(file, `schema-v2 MCP preflight observation for ${taskId}`);
+  const observation = JSON.parse(readBoundedText(file, 16 * 1024, "schema-v2 MCP preflight observation"));
+  assertObject(observation, "schema-v2 MCP preflight observation");
+  assertKeys(observation, ["schemaVersion", "expectedServerInfo", "observedServerInfo"], "schema-v2 MCP preflight observation");
+  if (observation.schemaVersion !== 1) {
+    throw new Error(`schema-v2 MCP preflight observation has an unsupported schema for ${taskId}`);
+  }
+  requireExactServerInfo(observation.expectedServerInfo, expectedServerInfo, `schema-v2 MCP preflight expected identity for ${taskId}`);
+  requireExactServerInfo(observation.observedServerInfo, expectedServerInfo, `schema-v2 MCP preflight observed identity for ${taskId}`);
+  return observation.observedServerInfo;
+}
+
+function requireExactServerInfo(value, expected, label) {
+  assertObject(value, label);
+  assertKeys(value, ["name", "version"], label);
+  if (value.name !== expected.name || value.version !== expected.version) {
+    throw new Error(`${label} does not match ${expected.name}@${expected.version}`);
+  }
 }
 
 async function executeAssignments({ loaded, registration, options }) {
@@ -587,12 +1169,13 @@ async function executeAssignments({ loaded, registration, options }) {
     for (const [key, value] of Object.entries(registration.runner.kwargs).sort(([left], [right]) => compareText(left, right))) {
       harborArgs.push("--agent-kwarg", `${key}=${value}`);
     }
-    if (assignment.arm === "treatment") {
+    const armInput = snapshots.armInputs.get(assignment.arm);
+    if (armInput) {
       harborArgs.push(
         "--mcp-config",
-        snapshots.mcpConfigPath,
+        armInput.mcpConfigPath,
         "--extra-instruction-path",
-        snapshots.extraInstructionPath
+        armInput.extraInstructionPath
       );
     }
     writeExclusiveJson(attemptPath, { ...expectedAttempt, startedAt: new Date().toISOString() });
@@ -730,8 +1313,8 @@ function runProcess({ executable, args, timeoutMs, env }) {
 }
 
 function validationSummary(loaded) {
-  return {
-    schemaVersion: 1,
+  const common = {
+    schemaVersion: loaded.config.schemaVersion,
     experimentId: loaded.config.experimentId,
     framework: loaded.config.framework,
     harness: loaded.harness,
@@ -739,11 +1322,31 @@ function validationSummary(loaded) {
     candidate: loaded.config.candidate,
     configHash: loaded.configHash,
     tasks: loaded.tasks.map((task) => ({ id: task.id, name: task.name, hash: task.hash })),
-    treatment: { mcpConfigHash: loaded.mcpConfigHash, extraInstructionHash: loaded.extraInstructionHash },
     inputs: inputSnapshotLayout(loaded.config),
-    registeredRuns: loaded.config.tasks.length * loaded.config.design.repetitions * 2,
+    registeredRuns: loaded.config.tasks.length * loaded.config.design.repetitions * loaded.arms.length,
     primaryReward: loaded.config.analysis.primaryReward,
     generalizationUnit: loaded.config.analysis.generalizationUnit
+  };
+  if (loaded.config.schemaVersion === 1) {
+    return {
+      ...common,
+      treatment: { mcpConfigHash: loaded.mcpConfigHash, extraInstructionHash: loaded.extraInstructionHash }
+    };
+  }
+  const assignments = buildAssignments(loaded.config);
+  return {
+    ...common,
+    arms: loaded.arms.map((arm) => arm.kind === "control"
+      ? { id: arm.id, kind: arm.kind }
+      : {
+          id: arm.id,
+          kind: arm.kind,
+          mcpConfigHash: arm.mcpConfigHash,
+          extraInstructionHash: arm.extraInstructionHash,
+          serverCommand: arm.serverCommand
+        }),
+    comparisons: loaded.config.analysis.comparisons,
+    positionalBalance: summarizePositionalBalance(assignments, loaded.arms.map((arm) => arm.id))
   };
 }
 

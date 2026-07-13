@@ -23,7 +23,7 @@ describe("Codexa project init", () => {
     expect(config).toContain("hooks = true");
     expect(config).not.toContain("codex_hooks");
     expect(config).toContain(`[mcp_servers.${result.serverName}]`);
-    expect(config).toContain(`args = ["/opt/codexa/dist/cli.js", "serve", "${repo}", "--auto-refresh"]`);
+    expect(config).toContain(`args = ["/opt/codexa/dist/cli.js", "serve", "${repo}", "--auto-refresh", "--tools", "core"]`);
 
     const hooks = JSON.parse(await readFile(path.join(repo, ".codex/hooks.json"), "utf8")) as {
       hooks: {
@@ -45,7 +45,8 @@ describe("Codexa project init", () => {
     const summary = await sessionStartSummary(repo, false);
     expect(summary).toContain(`Codexa context for ${repo}`);
     expect(summary).toContain("Codexa MCP is ready");
-    expect(summary).toContain("primary loop session_context -> search(if target unclear) -> task_brief -> change_plan(saveSnapshot) -> test_plan -> edit -> post_edit_review -> proof_card");
+    expect(summary).toContain("primary loop change_plan(saveSnapshot) -> edit/run planned verification -> post_edit_review");
+    expect(summary).toContain("test_plan only when verification guidance is unresolved");
     expect(summary).not.toContain("broad task -> focus_brief/session_context");
   });
 
@@ -126,6 +127,7 @@ describe("Codexa project init", () => {
     expect(config).toContain("enabled_tools = [");
     expect(config).toContain('"session_context"');
     expect(config).toContain('"post_edit_review"');
+    expect(config).toContain('"capabilities"');
     expect(config).toContain('"impact"');
     expect(config).toContain("startup_timeout_sec = 20");
 
@@ -134,6 +136,9 @@ describe("Codexa project init", () => {
     expect(agentsMd).toContain("Keep this content.");
     expect(agentsMd).toContain("<!-- >>> codexa managed -->");
     expect(agentsMd).toContain("change_plan");
+    expect(agentsMd).toContain("Call `test_plan` only when verification guidance remains unresolved");
+    expect(agentsMd).toContain("use `capabilities` to discover or invoke advanced operations in core mode");
+    expect(agentsMd).not.toContain("then `test_plan`");
 
     // Re-run init: managed block must be replaced, not duplicated.
     await initializeProject(repo, {
@@ -694,10 +699,29 @@ describe("init profile preservation and entry safety", () => {
     await initializeProject(repo, { cliPath: "/opt/codexa/dist/cli.js", index: false, toolProfile: "full" });
     const firstConfig = await readFile(path.join(repo, ".codex/config.toml"), "utf8");
     expect(firstConfig).not.toContain("enabled_tools");
+    expect(firstConfig).toContain('"--tools", "full"');
 
     await initializeProject(repo, { cliPath: "/opt/codexa/dist/cli.js", index: false });
     const rerunConfig = await readFile(path.join(repo, ".codex/config.toml"), "utf8");
     expect(rerunConfig).not.toContain("enabled_tools");
+    expect(rerunConfig).toContain('"--tools", "full"');
+  });
+
+  it("renders an explicit full profile for Claude Code", async () => {
+    const repo = await createInitRepo();
+    const result = await initializeProject(repo, { cliPath: "/opt/codexa/dist/cli.js", claude: true, index: false, toolProfile: "full" });
+
+    const parsed = JSON.parse(await readFile(path.join(repo, ".mcp.json"), "utf8")) as {
+      mcpServers: Record<string, { args: string[] }>;
+    };
+    expect(parsed.mcpServers[result.serverName].args).toEqual([
+      "/opt/codexa/dist/cli.js",
+      "serve",
+      repo,
+      "--auto-refresh",
+      "--tools",
+      "full"
+    ]);
   });
 
   it("re-running plain init preserves an existing core profile and fresh installs default to core", async () => {

@@ -61,11 +61,17 @@ They do not maintain a separate index, ranking layer, planner, or source-editing
 path. The primary Codexa path stays:
 
 ```text
-session_context -> task_brief -> change_plan(saveSnapshot) -> test_plan -> edit -> post_edit_review -> proof_card
+change_plan(saveSnapshot) -> edit/run planned verification -> post_edit_review
+add session_context/search/task_brief only when target or context is unclear
+add test_plan only when verification guidance is unresolved
+add proof_card only for policy or formal handoff
 ```
 
-Use `symbol_context`, `impact`, `callers`, and `callees` when Claude needs to
-audit who uses a symbol, what may break, and which tests are relationship-backed.
+In core mode, `capabilities` discovers or invokes every advanced operation
+through the same operation-specific schema and handler; full mode also exposes
+those advanced tools directly. Use `symbol_context`, `impact`, `callers`, and
+`callees` when Claude needs to audit who uses a symbol, what may break, and
+which tests are relationship-backed.
 For non-TypeScript/JavaScript/Python repositories, the shared engine can consume
 `CodexaSymbolReportV1` reports through
 `codexa static-analysis <repo> --symbol-report <path>` and labels those
@@ -148,7 +154,7 @@ Environment variables the hooks honor:
 | `CLAUDIO_DEBUG`                    | unset                                  | Set to `1` for `[claudio]` stderr traces                                     |
 | `CLAUDIO_STOP_BLOCK`               | `1`                                    | Set to `0` to keep drift verdicts stderr-only (never block)                  |
 | `CODEXA_REPO`                      | session project dir                    | Repository the plugin MCP server serves                                      |
-| `CODEXA_PLUGIN_TOOLS`              | `core`                                 | MCP tool profile served by the plugin (`full` exposes all 20 tools)          |
+| `CODEXA_PLUGIN_TOOLS`              | `core`                                 | MCP tool profile served by the plugin (`full` exposes every direct tool)     |
 | `CODEXA_PLUGIN_AUTO_REFRESH`       | `1`                                    | Set to `0` to stop the MCP server refreshing stale indexes                   |
 | `CODEXA_PLUGIN_ALLOW_NPX_FALLBACK` | unset                                  | Set to `1` to let the MCP launcher fall back to `npx -y @mirnoorata/codexa`  |
 
