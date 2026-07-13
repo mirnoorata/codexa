@@ -641,7 +641,10 @@ evidence partial. A content-free completion record is written only at graceful
 shutdown, excluded from event totals, and required before the analyzer calls
 the stream observed. The server captures its telemetry destination at launch;
 relative paths resolve against the configured launch root and do not follow
-later active-checkout routing.
+later active-checkout routing. Each server session uses a unique destination
+that is absent at startup. The runner must enforce that freshness precondition;
+exclusive creation prevents mutation or mixing but cannot make a later analyzer
+distinguish an untouched valid stale stream from current evidence.
 
 MCP prompts are intentionally workflow-shaped and small: `impact_before_edit`,
 `dirty_diff_review`, `snapshot_edit_loop`, and `targeted_test_plan`. The

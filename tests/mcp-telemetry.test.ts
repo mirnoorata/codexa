@@ -1,4 +1,4 @@
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, readdir, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -70,6 +70,24 @@ describe("MCP overhead telemetry", () => {
       structuredBytes: Buffer.byteLength(JSON.stringify(result.structuredContent), "utf8"),
       totalBytes: Buffer.byteLength(JSON.stringify(result), "utf8")
     });
+  });
+
+  it("refuses a pre-existing regular log without mutating prior evidence", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-telemetry-existing-"));
+    const telemetryPath = path.join(repo, "telemetry.jsonl");
+    const priorEvidence = `${JSON.stringify(event(1))}\n`;
+    await writeFile(telemetryPath, priorEvidence, { encoding: "utf8", mode: 0o600 });
+    process.env.CODEXA_MCP_TELEMETRY_PATH = telemetryPath;
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      appendMcpOverheadTelemetry(repo, event(1));
+      await finalizeMcpOverheadTelemetry(repo);
+      expect(await readFile(telemetryPath, "utf8")).toBe(priorEvidence);
+      expect(errorLog).toHaveBeenCalledWith(expect.stringContaining("must be absent"));
+    } finally {
+      errorLog.mockRestore();
+    }
   });
 
   it("leaves a valid prefix unfinalized when a later append fails", async () => {
@@ -154,6 +172,33 @@ describe("MCP overhead telemetry", () => {
     await flushMcpOverheadTelemetry();
     expect(await readdir(outsideDirectory)).toEqual([]);
   });
+
+  it.skipIf(process.platform === "win32")("fails boundedly when an active telemetry path is replaced by a FIFO", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-telemetry-fifo-swap-"));
+    const moduleUrl = new URL("../src/mcp/telemetry.ts", import.meta.url).href;
+    const source = `
+      import { execFileSync } from "node:child_process";
+      import { rm } from "node:fs/promises";
+      import { appendMcpOverheadTelemetry, finalizeMcpOverheadTelemetry, flushMcpOverheadTelemetry } from ${JSON.stringify(moduleUrl)};
+      const repo = ${JSON.stringify(repo)};
+      const telemetryPath = ${JSON.stringify(path.join(repo, "telemetry.jsonl"))};
+      process.env.CODEXA_MCP_TELEMETRY_PATH = telemetryPath;
+      const first = ${JSON.stringify(event(1))};
+      appendMcpOverheadTelemetry(repo, first);
+      await flushMcpOverheadTelemetry();
+      await rm(telemetryPath);
+      execFileSync("mkfifo", [telemetryPath]);
+      appendMcpOverheadTelemetry(repo, { ...first, sequence: 2 });
+      await finalizeMcpOverheadTelemetry(repo);
+      process.stdout.write("complete\\n");
+    `;
+
+    const outcome = await runTelemetryChild(source, 4_000);
+    expect(outcome.timedOut).toBe(false);
+    expect(outcome.code).toBe(0);
+    expect(outcome.stdout).toBe("complete\n");
+    expect(outcome.stderr).toContain("Codexa MCP telemetry write failed");
+  }, 8_000);
 
   it("bounds bursts and emits a terminal partial marker without requiring a later event", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-telemetry-burst-"));
@@ -337,4 +382,42 @@ async function waitForTelemetryCompletion(filePath: string): Promise<McpOverhead
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error("Timed out waiting for MCP telemetry completion record");
+}
+
+async function runTelemetryChild(source: string, timeoutMs: number): Promise<{
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  stdout: string;
+  stderr: string;
+  timedOut: boolean;
+}> {
+  const child = spawn(process.execPath, ["--import", "tsx", "--input-type=module", "--eval", source], {
+    cwd: process.cwd(),
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  let stdout = "";
+  let stderr = "";
+  let timedOut = false;
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk: string) => {
+    stdout += chunk;
+  });
+  child.stderr.on("data", (chunk: string) => {
+    stderr += chunk;
+  });
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      timedOut = true;
+      child.kill("SIGKILL");
+    }, timeoutMs);
+    child.once("error", (error) => {
+      clearTimeout(timer);
+      reject(error);
+    });
+    child.once("close", (code, signal) => {
+      clearTimeout(timer);
+      resolve({ code, signal, stdout, stderr, timedOut });
+    });
+  });
 }

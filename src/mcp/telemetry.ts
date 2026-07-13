@@ -1,4 +1,5 @@
 import { constants, promises as fs } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 
 export interface McpOverheadTelemetryEvent {
@@ -275,9 +276,20 @@ async function ensureTelemetryDirectory(directory: string): Promise<void> {
 }
 
 async function appendTelemetryBatch(filePath: string, writer: TelemetryWriter, batch: string): Promise<void> {
-  const flags = constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW
-    | (writer.fileIdentity ? 0 : constants.O_CREAT | constants.O_EXCL);
-  const handle = await fs.open(filePath, flags, 0o600);
+  const appendFlags = constants.O_WRONLY | constants.O_APPEND | constants.O_NOFOLLOW | constants.O_NONBLOCK;
+  let handle: FileHandle;
+  try {
+    handle = await fs.open(
+      filePath,
+      appendFlags | (writer.fileIdentity ? 0 : constants.O_CREAT | constants.O_EXCL),
+      0o600
+    );
+  } catch (error) {
+    if (!writer.fileIdentity && errorCode(error) === "EEXIST") {
+      throw new Error("telemetry destination must be absent at MCP server start; use a unique path per server session");
+    }
+    throw error;
+  }
   try {
     const stat = await handle.stat();
     if (!stat.isFile() || stat.nlink !== 1) {

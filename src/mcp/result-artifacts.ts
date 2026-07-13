@@ -1,5 +1,6 @@
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { constants, promises as fs } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import type { QueryResult } from "../types.js";
 
@@ -9,6 +10,7 @@ const MCP_RESULT_ARTIFACT_MAX_FILES = 256;
 const MCP_RESULT_RECORD_MAX_BYTES = MCP_RESULT_ARTIFACT_MAX_BYTES * 2 + 32_768;
 const MCP_RESULT_PRUNE_LOCK_STALE_MS = 30_000;
 const MCP_RESULT_PRUNE_LOCK_WAIT_MS = 500;
+const MCP_RESULT_IN_PROCESS_LOCK_STALL_MS = 2_000;
 const MCP_RESULT_PRUNE_LOCK_NAME = ".prune.lock";
 const MCP_RESULT_PRUNE_LOCK_OWNER = "owner.json";
 const MCP_RESULT_PRUNE_LOCK_REAPER = "reaper.json";
@@ -22,6 +24,8 @@ const MCP_RESULT_REPO_LOCATOR_PATTERN = /^rr_[a-f0-9]{32}$/u;
 const MCP_RESULT_SESSION_ID_PATTERN = /^ms_[a-f0-9]{32}$/u;
 const MCP_RESULT_LOCK_TOKEN_PATTERN = /^ml_[a-f0-9]{32}$/u;
 const MCP_RESULT_ROUTER_MAX_ROOTS = 256;
+const MCP_RESULT_IN_PROCESS_LOCK_MAX_WAITERS = MCP_RESULT_ARTIFACT_MAX_FILES - 1;
+const inProcessPruneLocks = new Map<string, InProcessPruneLock>();
 
 export interface McpResultArtifactReference {
   id: string;
@@ -92,6 +96,18 @@ interface StoredMcpResultLockOwner {
   processStartToken?: string;
   acquiredAt: string;
 }
+
+interface InProcessPruneLockWaiter {
+  resolve: (release: InProcessPruneLockRelease) => void;
+  reject: (error: Error) => void;
+}
+
+interface InProcessPruneLock {
+  waiters: InProcessPruneLockWaiter[];
+  stallTimer?: ReturnType<typeof setTimeout>;
+}
+
+type InProcessPruneLockRelease = (acquisitionFailure?: Error) => void;
 
 export async function persistMcpResultArtifact(
   repoRoot: string,
@@ -178,17 +194,13 @@ async function readStoredMcpResultArtifact(filePath: string): Promise<StoredMcpR
   if (!beforeOpen.isFile()) {
     throw new Error("Codexa MCP result is not a regular file");
   }
-  const handle = await fs.open(filePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const handle = await fs.open(filePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
-    const stat = await handle.stat();
-    if (!stat.isFile() || stat.size > MCP_RESULT_RECORD_MAX_BYTES) {
+    const loaded = await readBoundedRegularHandle(handle, MCP_RESULT_RECORD_MAX_BYTES);
+    if (!loaded) {
       throw new Error("Codexa MCP result record is invalid or exceeds its byte limit");
     }
-    const text = await handle.readFile({ encoding: "utf8" });
-    if (Buffer.byteLength(text, "utf8") !== stat.size) {
-      throw new Error("Codexa MCP result changed while it was being read");
-    }
-    const parsed: unknown = JSON.parse(text);
+    const parsed: unknown = JSON.parse(loaded.text);
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       throw new Error("Codexa MCP result record is malformed");
     }
@@ -517,14 +529,13 @@ async function readStoredMcpResultLease(filePath: string, expectedSessionId: str
   if (!beforeOpen.isFile() || beforeOpen.isSymbolicLink() || beforeOpen.size > MCP_RESULT_LEASE_MAX_BYTES) {
     throw new Error("Codexa MCP result lease is invalid");
   }
-  const handle = await fs.open(filePath, constants.O_RDONLY | constants.O_NOFOLLOW);
+  const handle = await fs.open(filePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
-    const stat = await handle.stat();
-    const text = await handle.readFile({ encoding: "utf8" });
-    if (!stat.isFile() || Buffer.byteLength(text, "utf8") !== stat.size || stat.size > MCP_RESULT_LEASE_MAX_BYTES) {
+    const loaded = await readBoundedRegularHandle(handle, MCP_RESULT_LEASE_MAX_BYTES);
+    if (!loaded) {
       throw new Error("Codexa MCP result lease changed while being read");
     }
-    const parsed = JSON.parse(text) as StoredMcpResultLease;
+    const parsed = JSON.parse(loaded.text) as StoredMcpResultLease;
     if (
       parsed.schemaVersion !== 1 ||
       parsed.sessionId !== expectedSessionId ||
@@ -540,7 +551,7 @@ async function readStoredMcpResultLease(filePath: string, expectedSessionId: str
     ) {
       throw new Error("Codexa MCP result lease metadata is invalid");
     }
-    return { lease: parsed, mtimeMs: stat.mtimeMs };
+    return { lease: parsed, mtimeMs: loaded.mtimeMs };
   } finally {
     await handle.close();
   }
@@ -560,7 +571,7 @@ function leasePath(leaseDirectoryOrArtifactDirectory: string, sessionId: string)
 
 async function heartbeatMcpResultLease(directory: string, sessionId: string): Promise<void> {
   const filePath = leasePath(directory, sessionId);
-  const handle = await fs.open(filePath, constants.O_RDONLY | constants.O_NOFOLLOW).catch((error: unknown) => {
+  const handle = await fs.open(filePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK).catch((error: unknown) => {
     if (errorCode(error) === "ENOENT") return undefined;
     throw error;
   });
@@ -613,6 +624,87 @@ async function artifactRecordNames(directory: string): Promise<string[]> {
 }
 
 async function acquirePruneLock(directory: string): Promise<() => Promise<void>> {
+  const releaseInProcess = await acquireInProcessPruneLock(directory);
+  let releaseFilesystem: (() => Promise<void>) | undefined;
+  try {
+    releaseFilesystem = await acquireFilesystemPruneLock(directory);
+  } catch (error) {
+    releaseInProcess(error instanceof Error ? error : new Error(String(error)));
+    throw error;
+  }
+
+  let released = false;
+  return async () => {
+    if (released) return;
+    released = true;
+    try {
+      await releaseFilesystem();
+    } finally {
+      releaseInProcess();
+    }
+  };
+}
+
+/**
+ * Serialize callers already sharing this process before they contend on the
+ * cross-process directory lock. The filesystem timeout therefore measures a
+ * genuinely foreign holder, not useful work queued in this process. One
+ * progress timer per directory rejects bounded waiters only when the active
+ * local holder stops handing off, so normal bursts add no polling.
+ */
+async function acquireInProcessPruneLock(directory: string): Promise<InProcessPruneLockRelease> {
+  const existing = inProcessPruneLocks.get(directory);
+  if (!existing) {
+    const lock: InProcessPruneLock = { waiters: [] };
+    inProcessPruneLocks.set(directory, lock);
+    return inProcessPruneLockRelease(directory, lock);
+  }
+  if (existing.waiters.length >= MCP_RESULT_IN_PROCESS_LOCK_MAX_WAITERS) {
+    throw new Error("Codexa MCP result in-process retention queue is full; return the detailed result inline");
+  }
+  return new Promise<InProcessPruneLockRelease>((resolve, reject) => {
+    existing.waiters.push({ resolve, reject });
+    armInProcessPruneLockStallTimer(existing);
+  });
+}
+
+function inProcessPruneLockRelease(directory: string, lock: InProcessPruneLock): InProcessPruneLockRelease {
+  let released = false;
+  return (acquisitionFailure) => {
+    if (released) return;
+    released = true;
+    if (lock.stallTimer) clearTimeout(lock.stallTimer);
+    lock.stallTimer = undefined;
+    if (acquisitionFailure) {
+      const waiters = lock.waiters.splice(0);
+      for (const waiter of waiters) waiter.reject(acquisitionFailure);
+      if (inProcessPruneLocks.get(directory) === lock) inProcessPruneLocks.delete(directory);
+      return;
+    }
+    const next = lock.waiters.shift();
+    if (!next) {
+      if (inProcessPruneLocks.get(directory) === lock) inProcessPruneLocks.delete(directory);
+      return;
+    }
+    next.resolve(inProcessPruneLockRelease(directory, lock));
+    armInProcessPruneLockStallTimer(lock);
+  };
+}
+
+function armInProcessPruneLockStallTimer(lock: InProcessPruneLock): void {
+  if (lock.stallTimer || lock.waiters.length === 0) return;
+  lock.stallTimer = setTimeout(() => {
+    lock.stallTimer = undefined;
+    const waiters = lock.waiters.splice(0);
+    for (const waiter of waiters) {
+      waiter.reject(new Error("Timed out waiting for in-process Codexa MCP result retention progress"));
+    }
+    // The active holder still owns the filesystem lock. Keep its one bounded
+    // map entry until release rather than allowing a second local owner.
+  }, MCP_RESULT_IN_PROCESS_LOCK_STALL_MS);
+}
+
+async function acquireFilesystemPruneLock(directory: string): Promise<() => Promise<void>> {
   const lockPath = path.join(directory, MCP_RESULT_PRUNE_LOCK_NAME);
   const ownerPath = path.join(lockPath, MCP_RESULT_PRUNE_LOCK_OWNER);
   const deadline = Date.now() + MCP_RESULT_PRUNE_LOCK_WAIT_MS;
@@ -694,7 +786,7 @@ async function reapUnownedPruneLock(lockPath: string, observedOwner: StoredMcpRe
     const currentOwner = await readStoredMcpResultLockOwner(path.join(lockPath, MCP_RESULT_PRUNE_LOCK_OWNER));
     if (currentOwner?.token !== observedOwner?.token) return false;
     if (currentOwner && await processIdentityIsLive(currentOwner.pid, currentOwner.processStartToken)) return false;
-    if (await fs.readFile(markerPath, "utf8").catch(() => "") !== markerToken) return false;
+    if (await readSmallRegularFile(markerPath, 128) !== markerToken) return false;
 
     const tombstone = `${lockPath}.stale.${randomUUID()}`;
     try {
@@ -714,7 +806,7 @@ async function reapUnownedPruneLock(lockPath: string, observedOwner: StoredMcpRe
 }
 
 async function removeOwnedReaperMarker(markerPath: string, markerToken: string): Promise<void> {
-  const existing = await fs.readFile(markerPath, "utf8").catch(() => undefined);
+  const existing = await readSmallRegularFile(markerPath, 128);
   if (existing !== markerToken) return;
   await fs.unlink(markerPath).catch((error: unknown) => {
     if (errorCode(error) !== "ENOENT") throw error;
@@ -723,28 +815,53 @@ async function removeOwnedReaperMarker(markerPath: string, markerToken: string):
 
 async function readStoredMcpResultLockOwner(ownerPath: string): Promise<StoredMcpResultLockOwner | undefined> {
   try {
-    const handle = await fs.open(ownerPath, constants.O_RDONLY | constants.O_NOFOLLOW);
+    const text = await readSmallRegularFile(ownerPath, 2_048);
+    if (text === undefined) return undefined;
+    const parsed = JSON.parse(text) as StoredMcpResultLockOwner;
+    if (
+      parsed.schemaVersion !== 1 ||
+      !MCP_RESULT_LOCK_TOKEN_PATTERN.test(parsed.token) ||
+      !Number.isSafeInteger(parsed.pid) ||
+      parsed.pid < 1 ||
+      !isIsoTimestamp(parsed.acquiredAt) ||
+      (parsed.processStartToken !== undefined && (typeof parsed.processStartToken !== "string" || parsed.processStartToken.length > 120))
+    ) {
+      return undefined;
+    }
+    return parsed;
+  } catch {
+    return undefined;
+  }
+}
+
+async function readSmallRegularFile(filePath: string, maxBytes: number): Promise<string | undefined> {
+  try {
+    const handle = await fs.open(filePath, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
     try {
-      const stat = await handle.stat();
-      if (!stat.isFile() || stat.size > 2_048) return undefined;
-      const parsed = JSON.parse(await handle.readFile({ encoding: "utf8" })) as StoredMcpResultLockOwner;
-      if (
-        parsed.schemaVersion !== 1 ||
-        !MCP_RESULT_LOCK_TOKEN_PATTERN.test(parsed.token) ||
-        !Number.isSafeInteger(parsed.pid) ||
-        parsed.pid < 1 ||
-        !isIsoTimestamp(parsed.acquiredAt) ||
-        (parsed.processStartToken !== undefined && (typeof parsed.processStartToken !== "string" || parsed.processStartToken.length > 120))
-      ) {
-        return undefined;
-      }
-      return parsed;
+      return (await readBoundedRegularHandle(handle, maxBytes))?.text;
     } finally {
       await handle.close();
     }
   } catch {
     return undefined;
   }
+}
+
+async function readBoundedRegularHandle(handle: FileHandle, maxBytes: number): Promise<{ text: string; mtimeMs: number } | undefined> {
+  const before = await handle.stat();
+  if (!before.isFile() || before.size > maxBytes) return undefined;
+  const buffer = Buffer.alloc(maxBytes + 1);
+  let bytesRead = 0;
+  while (bytesRead < buffer.length) {
+    const result = await handle.read(buffer, bytesRead, buffer.length - bytesRead, bytesRead);
+    if (result.bytesRead === 0) break;
+    bytesRead += result.bytesRead;
+  }
+  const after = await handle.stat();
+  if (bytesRead !== before.size || after.size !== before.size || bytesRead > maxBytes) return undefined;
+  const text = buffer.subarray(0, bytesRead).toString("utf8");
+  if (Buffer.byteLength(text, "utf8") !== bytesRead) return undefined;
+  return { text, mtimeMs: before.mtimeMs };
 }
 
 async function releaseOwnedPruneLock(lockPath: string, token: string): Promise<void> {

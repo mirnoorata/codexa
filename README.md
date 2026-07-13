@@ -354,6 +354,10 @@ adds a content-free `session-complete` record; analysis excludes that footer
 from event totals and treats a missing footer as partial evidence. A relative
 telemetry path is resolved once against the configured MCP launch root, so a
 later workspace-focus change cannot split one server sequence across files.
+Each server session must use a unique destination that is absent at startup;
+the runner is responsible for enforcing that freshness precondition. The
+writer creates the path exclusively and leaves an existing path untouched,
+but an analyzer cannot infer from valid file contents alone which run wrote it.
 Telemetry never changes tool authority or completion scoring.
 
 Adaptive primary MCP loop:

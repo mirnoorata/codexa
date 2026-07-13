@@ -517,14 +517,39 @@ only a preregistered held-out agent comparison can determine whether Codexa's
 added bytes buy enough task value and whether optimized use is non-inferior.
 
 Repository verification before publication: `npm run check` passed 63 files,
-594 tests, and 113 integration-hook smokes; the one real-release compatibility
-test was explicitly skipped in the routine gate and passed separately under
-`CODEXA_RUN_V012_TRANSPORT_COMPAT=1` (2/2 focused tests passed).
+598 tests, one explicit opt-in skip, and 113 integration-hook smokes; the one
+real-release compatibility test was explicitly skipped in the routine gate and
+passed separately under `CODEXA_RUN_V012_TRANSPORT_COMPAT=1` (2/2 focused tests
+passed).
 `npm run benchmark:ci` passed all hot-path thresholds. On the exact clean PR
 candidate, `npm run eval:ci` passed 21 scenarios with score 1 and
 `rawRgBetter=0`; `npm run security:check` also passed the complete check,
 zero-vulnerability audit, clean public snapshot, package/plugin hygiene, and
 25-check installed-package smoke.
+
+### PR hardening evidence
+
+Independent push and pull-request CI runs exposed a same-process retention-lock
+race that local runs had not reproduced. Callers had shared one arrival-time
+500 ms filesystem deadline, so a productive burst could time out under runner
+load. The corrected design uses a bounded 256-participant per-checkout FIFO,
+keeps the 500 ms budget only for foreign-process contention, and uses a separate
+two-second no-progress budget for the active local holder. A 64-call burst and
+a deliberately slowed 650 ms production write both retain resource delivery;
+failed foreign acquisition rejects the queued batch once and the same router
+recovers cleanly.
+
+Adversarial review also rejected automatic telemetry-path reuse: replacing or
+appending a prior stream would either create a destructive file boundary or
+make objective run attribution ambiguous. Telemetry therefore requires a
+runner-enforced unique, absent path per server session, creates it exclusively,
+and preserves any existing evidence. Documentation states explicitly that the
+analyzer cannot infer a valid stream's origin time. Telemetry and result-store
+opens are nonblocking, all repository-controlled reads use fixed byte bounds,
+and FIFO substitution tests prove graceful bounded failure. The final focused
+production-path suites passed 24/24, and the final adversarial re-review reported
+no release-blocking findings and no domain-, fixture-, screenplay-, or
+model-specific production behavior.
 
 ## Rollout acceptance gate
 

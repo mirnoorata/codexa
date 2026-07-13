@@ -240,9 +240,12 @@ non-symlinked `codexa-mcp-telemetry.jsonl`, at most 4 MiB, 1,000 records, and 64
 KiB per record. Relative paths resolve once against the configured MCP launch
 root and remain there if workspace focus changes; an absolute task-pack path is
 preferred when artifacts are collected outside that root. Discovery visits at
-most 10,000 artifact-tree entries. Event
-paths must be unique and absent when the MCP server starts; the writer creates
-one regular file and rejects symlinked parent or final paths. Event
+most 10,000 artifact-tree entries. Each trial and MCP server session must use a
+unique event path that is absent when the server starts. The writer creates the
+file exclusively and leaves any existing path untouched. The registered runner
+must enforce that freshness precondition because the analyzer cannot infer the
+origin time of an otherwise valid completed stream. The writer rejects
+symlinked parent or final paths. Event
 sequences must be contiguous from 1 so an advisory write failure cannot silently
 undercount later events. Each event uses schema version 1 and may identify its
 `eventKind` as `tool` (the default) or `resource-read`, plus an optional bounded

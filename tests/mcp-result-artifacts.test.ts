@@ -1,8 +1,9 @@
-import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
+import { promises as fs } from "node:fs";
 import { mkdtemp, mkdir, readFile, readdir, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   MCP_RESULT_ARTIFACT_DIR,
   createMcpResultArtifactRouter,
@@ -186,19 +187,44 @@ describe("content-addressed MCP result artifacts", () => {
     await utimes(lockPath, new Date(0), new Date(0));
 
     const contender = createMcpResultArtifactRouter();
-    await expect(
-      persistMcpResultArtifact(repo, result(2), { ...binding, checkout: { ...binding.checkout, repoRoot: repo } }, contender)
-    ).rejects.toThrow(/retention lock/u);
+    const stalled = await Promise.allSettled([
+      persistMcpResultArtifact(repo, result(2), { ...binding, checkout: { ...binding.checkout, repoRoot: repo } }, contender),
+      persistMcpResultArtifact(repo, result(3), { ...binding, checkout: { ...binding.checkout, repoRoot: repo } }, contender)
+    ]);
+    expect(stalled).toHaveLength(2);
+    for (const outcome of stalled) {
+      expect(outcome.status).toBe("rejected");
+      if (outcome.status === "rejected") expect(String(outcome.reason)).toMatch(/retention/u);
+    }
     expect(JSON.parse(await readFile(path.join(lockPath, "owner.json"), "utf8"))).toEqual(owner);
     expect(await readdir(lockPath)).toEqual(["owner.json"]);
-    await contender.close();
     await rm(lockPath, { recursive: true });
+    const recovered = await persistMcpResultArtifact(repo, result(4), { ...binding, checkout: { ...binding.checkout, repoRoot: repo } }, contender);
+    expect(await readMcpResultArtifact(repo, recovered.id)).toContain('"index":4');
+    await contender.close();
   });
+
+  it.skipIf(process.platform === "win32")("reaps special-file lock metadata without blocking persistence", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-result-fifo-owner-"));
+    const lockPath = path.join(repo, MCP_RESULT_ARTIFACT_DIR, ".prune.lock");
+    await mkdir(lockPath, { recursive: true });
+    execFileSync("mkfifo", [path.join(lockPath, "owner.json")]);
+    await utimes(lockPath, new Date(0), new Date(0));
+
+    const session = await launchArtifactSession(repo, 9, 1, 2_000);
+    try {
+      expect(session.references).toHaveLength(1);
+      expect(await readMcpResultArtifact(repo, session.references[0]!.id)).toContain('"index":9');
+    } finally {
+      session.child.stdin.end();
+      await session.exit;
+    }
+  }, 5_000);
 
   it("serializes concurrent issuances and cleans a stale crash temp before the next promise", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-result-parallel-"));
     const router = createMcpResultArtifactRouter();
-    const references = await Promise.all(Array.from({ length: 32 }, (_, index) =>
+    const references = await Promise.all(Array.from({ length: 64 }, (_, index) =>
       persistMcpResultArtifact(repo, result(index), { ...binding, checkout: { ...binding.checkout, repoRoot: repo } }, router, new Set())
     ));
     for (const [index, reference] of references.entries()) {
@@ -213,7 +239,34 @@ describe("content-addressed MCP result artifacts", () => {
     const next = await persistMcpResultArtifact(repo, result(999), { ...binding, checkout: { ...binding.checkout, repoRoot: repo } }, router, new Set());
     expect(await readMcpResultArtifact(repo, next.id)).toContain('"index":999');
     expect((await readdir(directory)).filter((name) => name.endsWith(".tmp"))).toEqual([]);
+    await router.close();
   }, 30_000);
+
+  it("keeps queued issuances compact during a slow but progressing local write", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-result-slow-local-"));
+    const router = createMcpResultArtifactRouter();
+    const realUtimes = fs.utimes.bind(fs);
+    let delayed = false;
+    const utimes = vi.spyOn(fs, "utimes").mockImplementation(async (...args) => {
+      if (!delayed && String(args[0]).endsWith(".json")) {
+        delayed = true;
+        await new Promise((resolve) => setTimeout(resolve, 650));
+      }
+      return realUtimes(...args);
+    });
+    try {
+      const references = await Promise.all([
+        persistMcpResultArtifact(repo, result(1), { ...binding, checkout: { ...binding.checkout, repoRoot: repo } }, router),
+        persistMcpResultArtifact(repo, result(2), { ...binding, checkout: { ...binding.checkout, repoRoot: repo } }, router)
+      ]);
+      expect(references).toHaveLength(2);
+      expect(await readMcpResultArtifact(repo, references[0]!.id)).toContain('"index":1');
+      expect(await readMcpResultArtifact(repo, references[1]!.id)).toContain('"index":2');
+    } finally {
+      utimes.mockRestore();
+      await router.close();
+    }
+  }, 5_000);
 
   it("keeps committed routes readable and refuses new URIs when a server exceeds its bounded root capacity", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-result-routing-"));
@@ -281,7 +334,8 @@ async function fsRealpath(value: string): Promise<string> {
 async function launchArtifactSession(
   repo: string,
   start: number,
-  count: number
+  count: number,
+  readinessTimeoutMs = 15_000
 ): Promise<{
   child: ChildProcessWithoutNullStreams;
   references: Array<{ id: string; uri: string }>;
@@ -333,23 +387,36 @@ async function launchArtifactSession(
       else reject(new Error(`artifact child exited with code=${String(code)} signal=${String(signal)}: ${stderr}`));
     });
   });
+  void exit.catch(() => undefined);
   const references = await new Promise<Array<{ id: string; uri: string }>>((resolve, reject) => {
     let stdout = "";
+    let settled = false;
+    const finish = (callback: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      callback();
+    };
+    const timer = setTimeout(() => {
+      child.kill("SIGKILL");
+      finish(() => reject(new Error(`artifact child timed out after ${readinessTimeoutMs}ms: ${stderr}`)));
+    }, readinessTimeoutMs);
     const onData = (chunk: Buffer) => {
       stdout += chunk.toString("utf8");
       const newline = stdout.indexOf("\n");
       if (newline < 0) return;
       child.stdout.off("data", onData);
       try {
-        resolve(JSON.parse(stdout.slice(0, newline)) as Array<{ id: string; uri: string }>);
+        const parsed = JSON.parse(stdout.slice(0, newline)) as Array<{ id: string; uri: string }>;
+        finish(() => resolve(parsed));
       } catch (error) {
-        reject(error);
+        finish(() => reject(error));
       }
     };
     child.stdout.on("data", onData);
-    child.once("error", reject);
+    child.once("error", (error) => finish(() => reject(error)));
     child.once("exit", (code, signal) => {
-      reject(new Error(`artifact child exited before readiness with code=${String(code)} signal=${String(signal)}: ${stderr}`));
+      finish(() => reject(new Error(`artifact child exited before readiness with code=${String(code)} signal=${String(signal)}: ${stderr}`)));
     });
   });
   return { child, references, exit };
