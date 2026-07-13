@@ -1,0 +1,45 @@
+{
+  "schemaVersion": 1,
+  "experimentId": "codexa-agent-ab-pilot-v7",
+  "framework": {
+    "name": "harbor",
+    "version": "0.18.0"
+  },
+  "runner": {
+    "agent": "codex",
+    "version": "0.144.1",
+    "kwargs": {
+      "reasoning_effort": "high",
+      "web_search": "disabled"
+    }
+  },
+  "candidate": {
+    "codexaVersion": "0.10.0"
+  },
+  "design": {
+    "seed": "codexa-agent-ab-pilot-v7",
+    "repetitions": 2,
+    "concurrency": 1,
+    "maxRetries": 0,
+    "timeoutMultiplier": 1,
+    "controllerTimeoutSeconds": 1800
+  },
+  "tasks": [
+    {
+      "id": "path-target-normalization",
+      "name": "codexa-agent-ab/path-target-normalization",
+      "path": "tasks/path-target-normalization"
+    }
+  ],
+  "treatment": {
+    "mcpConfig": "config/codexa.mcp.json",
+    "extraInstruction": "config/codexa-instructions.md"
+  },
+  "analysis": {
+    "primaryReward": "verified_completion",
+    "bootstrapSamples": 10000,
+    "confidenceLevel": 0.95,
+    "generalizationUnit": "task",
+    "failurePolicy": "intention-to-treat"
+  }
+}

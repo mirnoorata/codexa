@@ -797,6 +797,55 @@ the archived report. The previous run is kept at
 Do not update public benchmark claims without rerunning the eval on the current
 checkout and current target.
 
+### Agent-level A/B evaluation
+
+The retrieval gate above does not establish that an agent completes coding
+tasks better with Codexa. The opt-in
+[agent A/B harness](docs/guides/agent-ab.md) uses version-pinned Harbor
+execution and digest-pinned base images to run the same coding agent and model
+in control and Codexa-treatment arms. A separate no-network verifier produces
+the binary completion outcome; Codexa does not grade itself.
+
+The checked-in task is a plumbing pilot, not a product benchmark. Credible
+effect claims require preregistered held-out tasks, paired repetitions, and
+task-clustered analysis.
+
+The archived GPT-5.6 Sol plumbing run is intentionally reported even though it
+does not demonstrate a Codexa completion benefit. Both arms completed both
+repetitions (two both-pass pairs; descriptive absolute risk difference 0),
+while this easy task showed a large treatment efficiency penalty:
+
+| Mean per run | Control | Treatment | Treatment / control |
+| --- | ---: | ---: | ---: |
+| Verified completion | 2/2 | 2/2 | no difference |
+| Input tokens | 104,448 | 620,053 | 5.94x |
+| Cached input tokens | 86,272 | 552,064 | 6.40x |
+| Output tokens | 3,212 | 6,680.5 | 2.08x |
+| Reported cost | $0.230376 | $0.816392 | 3.54x |
+| Agent time | 87.849s | 164.996s | 1.88x |
+| Controller time | 128.603s | 205.863s | 1.60x |
+| Verifier-counted changed files | 2 | 2 | 1.00x |
+| Verifier-counted changed lines | 62 | 67 | 1.08x |
+
+This is descriptive evidence from one simple task and two pairs, with no
+task-clustered interval; it cannot establish a product effect or a causal
+mechanism. Agent-reported treatment setup succeeded in both runs and structured
+trajectories recorded 13 Codexa calls, while controls recorded none. Both
+treatment runs also received a blocking `post_edit_review` inspection warning
+for changed symbols even though the edited files exactly matched the saved file
+plan. One run made a second review call after supplying initially omitted
+invariant evidence. That is observed process friction, not demonstrated safety
+value.
+The immutable hashes, arm metrics, fidelity telemetry, and per-run outcomes are
+archived in
+[`reports/benchmarks/v0.10.0-agent-ab-pilot-v7.json`](reports/benchmarks/v0.10.0-agent-ab-pilot-v7.json).
+
+The task now specifies Unicode General Category `Cc` explicitly. The separate
+verifier covers embedded plus leading/trailing C0, DEL, and C1 cases, including
+generated edge cases, and validation rejects transient task artifacts before
+hashing. Run a real authenticated provider preflight and validate an
+artifact-clean task tree before spending tokens on a registered experiment.
+
 ## GitHub Release Timeline
 
 Use GitHub Releases as the visible source timeline for the current project.

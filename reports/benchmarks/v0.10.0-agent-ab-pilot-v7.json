@@ -1,0 +1,682 @@
+{
+  "schemaVersion": 1,
+  "experimentId": "codexa-agent-ab-pilot-v7",
+  "registeredAt": "2026-07-13T07:54:53.904Z",
+  "runWindow": {
+    "firstAttemptStartedAt": "2026-07-13T07:54:58.415Z",
+    "lastAttemptStartedAt": "2026-07-13T08:02:47.394Z",
+    "firstAgentStartedAt": "2026-07-13T07:55:10.849Z",
+    "lastAgentFinishedAt": "2026-07-13T08:05:39.418Z"
+  },
+  "configHash": "15fab474bed2e1fa816e890939e07e9b7d692fe65f55ad8863c8391c54b29cd0",
+  "framework": {
+    "name": "harbor",
+    "version": "0.18.0"
+  },
+  "harness": {
+    "controllerHash": "56c79dc6e9bf26dfc5e6ca2f929e499826544153f5f7aa0b33d40c392472b54f",
+    "analyzerHash": "e9628f0d786c0ac40bc1c98fb8efcc41099e78465dfa9f072125bb471319b2fb"
+  },
+  "candidate": {
+    "codexaVersion": "0.10.0"
+  },
+  "runner": {
+    "agent": "codex",
+    "version": "0.144.1",
+    "kwargs": {
+      "reasoning_effort": "high",
+      "web_search": "disabled"
+    }
+  },
+  "agent": "codex",
+  "model": "openai/gpt-5.6-sol",
+  "registeredArtifacts": {
+    "tasks": [
+      {
+        "id": "path-target-normalization",
+        "name": "codexa-agent-ab/path-target-normalization",
+        "hash": "8440b3708e654d86bc25a71197e393572c3d534fabdedad94ec0192f5d57b9a8"
+      }
+    ],
+    "treatment": {
+      "mcpConfigHash": "ef44349c12abf6c43f82c949828a38cd675bcc1663f5669fb7872610c3880d1c",
+      "extraInstructionHash": "c0ba30da3469259578e294d4ab394e488dfb5b7db12f66b20b8c5714dd030bf6"
+    },
+    "inputs": {
+      "schemaVersion": 1,
+      "tasks": [
+        {
+          "id": "path-target-normalization",
+          "path": "inputs/tasks/path-target-normalization"
+        }
+      ],
+      "treatment": {
+        "mcpConfig": "inputs/treatment/mcp/codexa.mcp.json",
+        "extraInstruction": "inputs/treatment/instruction/codexa-instructions.md"
+      }
+    }
+  },
+  "status": "complete",
+  "protocolStatus": "valid",
+  "protocolFailures": [],
+  "confirmatory": false,
+  "claimStatus": "non-confirmatory-pilot",
+  "primaryReward": "verified_completion",
+  "estimand": "intention-to-treat effect of offering the Codexa MCP plus Codexa workflow-instruction bundle on verified completion",
+  "treatmentDefinition": {
+    "control": "Codexa MCP and Codexa workflow instruction are not offered",
+    "treatment": "Codexa MCP and Codexa workflow instruction are offered as one bundle",
+    "adherencePolicy": "usage telemetry is descriptive only; no run is excluded for adherence or contamination"
+  },
+  "generalizationUnit": "task",
+  "registeredTasks": 1,
+  "registeredRuns": 4,
+  "startedRuns": 4,
+  "finalizedRuns": 4,
+  "observedRuns": 4,
+  "neverStartedRuns": 0,
+  "completePairs": 2,
+  "arms": {
+    "control": {
+      "registeredRuns": 2,
+      "runs": 2,
+      "startedRuns": 2,
+      "finalizedRuns": 2,
+      "neverStartedRuns": 0,
+      "protocolInvalidRuns": 0,
+      "successes": 2,
+      "failures": 0,
+      "successRate": 1,
+      "rewardMetrics": {
+        "behavior": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 2,
+          "mean": 1
+        },
+        "changed_files": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 4,
+          "mean": 2
+        },
+        "changed_lines": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 124,
+          "mean": 62
+        },
+        "genericity": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 2,
+          "mean": 1
+        },
+        "public_tests": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 2,
+          "mean": 1
+        },
+        "regression": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 2,
+          "mean": 1
+        },
+        "scope": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 2,
+          "mean": 1
+        },
+        "verified_completion": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 2,
+          "mean": 1
+        }
+      },
+      "metrics": {
+        "inputTokens": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 208896,
+          "mean": 104448
+        },
+        "cacheTokens": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 172544,
+          "mean": 86272
+        },
+        "outputTokens": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 6424,
+          "mean": 3212
+        },
+        "costUsd": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 0.46075200000000005,
+          "mean": 0.23037600000000003
+        },
+        "agentElapsedMs": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 175698,
+          "mean": 87849
+        },
+        "controllerElapsedMs": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 257205,
+          "mean": 128602.5
+        },
+        "codexaIndexElapsedMs": {
+          "eligibleRuns": 2,
+          "presentRuns": 0,
+          "missingRuns": 2,
+          "total": null,
+          "mean": null
+        }
+      },
+      "completionConditionedMetrics": {
+        "inputTokens": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 208896,
+          "mean": 104448
+        },
+        "cacheTokens": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 172544,
+          "mean": 86272
+        },
+        "outputTokens": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 6424,
+          "mean": 3212
+        },
+        "costUsd": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 0.46075200000000005,
+          "mean": 0.23037600000000003
+        },
+        "agentElapsedMs": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 175698,
+          "mean": 87849
+        },
+        "controllerElapsedMs": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 257205,
+          "mean": 128602.5
+        },
+        "codexaIndexElapsedMs": {
+          "eligibleRuns": 2,
+          "presentRuns": 0,
+          "missingRuns": 2,
+          "total": null,
+          "mean": null
+        }
+      },
+      "failureClasses": {}
+    },
+    "treatment": {
+      "registeredRuns": 2,
+      "runs": 2,
+      "startedRuns": 2,
+      "finalizedRuns": 2,
+      "neverStartedRuns": 0,
+      "protocolInvalidRuns": 0,
+      "successes": 2,
+      "failures": 0,
+      "successRate": 1,
+      "rewardMetrics": {
+        "behavior": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 2,
+          "mean": 1
+        },
+        "changed_files": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 4,
+          "mean": 2
+        },
+        "changed_lines": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 134,
+          "mean": 67
+        },
+        "genericity": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 2,
+          "mean": 1
+        },
+        "public_tests": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 2,
+          "mean": 1
+        },
+        "regression": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 2,
+          "mean": 1
+        },
+        "scope": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 2,
+          "mean": 1
+        },
+        "verified_completion": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 2,
+          "mean": 1
+        }
+      },
+      "metrics": {
+        "inputTokens": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 1240106,
+          "mean": 620053
+        },
+        "cacheTokens": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 1104128,
+          "mean": 552064
+        },
+        "outputTokens": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 13361,
+          "mean": 6680.5
+        },
+        "costUsd": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 1.632784,
+          "mean": 0.816392
+        },
+        "agentElapsedMs": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 329991,
+          "mean": 164995.5
+        },
+        "controllerElapsedMs": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 411725,
+          "mean": 205862.5
+        },
+        "codexaIndexElapsedMs": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 1301,
+          "mean": 650.5
+        }
+      },
+      "completionConditionedMetrics": {
+        "inputTokens": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 1240106,
+          "mean": 620053
+        },
+        "cacheTokens": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 1104128,
+          "mean": 552064
+        },
+        "outputTokens": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 13361,
+          "mean": 6680.5
+        },
+        "costUsd": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 1.632784,
+          "mean": 0.816392
+        },
+        "agentElapsedMs": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 329991,
+          "mean": 164995.5
+        },
+        "controllerElapsedMs": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 411725,
+          "mean": 205862.5
+        },
+        "codexaIndexElapsedMs": {
+          "eligibleRuns": 2,
+          "presentRuns": 2,
+          "missingRuns": 0,
+          "total": 1301,
+          "mean": 650.5
+        }
+      },
+      "failureClasses": {}
+    }
+  },
+  "treatmentFidelity": {
+    "candidateVersion": "0.10.0",
+    "control": {
+      "startedRuns": 2,
+      "traceObservedRuns": 2,
+      "traceUnknownRuns": 0,
+      "codexaInvokedRuns": 0,
+      "codexaCallsByTool": {},
+      "noCodexaInvocationObservedRuns": 2,
+      "contaminationRuns": 0,
+      "nonadherentRuns": 0,
+      "setupObservedRuns": 0,
+      "setupSuccessfulRuns": 0,
+      "setupFailedRuns": 0,
+      "setupVersionMismatchRuns": 0,
+      "note": "agent-reported trajectory and setup telemetry are descriptive and never change ITT inclusion"
+    },
+    "treatment": {
+      "startedRuns": 2,
+      "traceObservedRuns": 2,
+      "traceUnknownRuns": 0,
+      "codexaInvokedRuns": 2,
+      "codexaCallsByTool": {
+        "change_plan": 2,
+        "post_edit_review": 3,
+        "proof_card": 2,
+        "session_context": 2,
+        "task_brief": 2,
+        "test_plan": 2
+      },
+      "noCodexaInvocationObservedRuns": 0,
+      "contaminationRuns": 0,
+      "nonadherentRuns": 0,
+      "setupObservedRuns": 2,
+      "setupSuccessfulRuns": 2,
+      "setupFailedRuns": 0,
+      "setupVersionMismatchRuns": 0,
+      "note": "agent-reported trajectory and setup telemetry are descriptive and never change ITT inclusion"
+    }
+  },
+  "effect": {
+    "absoluteRiskDifference": 0,
+    "treatmentOnlyPairs": 0,
+    "controlOnlyPairs": 0,
+    "bothPassPairs": 2,
+    "bothFailPairs": 0,
+    "taskClusteredBootstrap": {
+      "lower": null,
+      "upper": null,
+      "samples": 0,
+      "tasks": 1,
+      "confidenceLevel": 0.95,
+      "note": "at least two tasks are required; a one-task pilot is non-confirmatory"
+    }
+  },
+  "outcomes": [
+    {
+      "runId": "297b57be9c02b536cdc7",
+      "taskId": "path-target-normalization",
+      "taskName": "codexa-agent-ab/path-target-normalization",
+      "repetition": 1,
+      "arm": "treatment",
+      "order": 1,
+      "started": true,
+      "finalized": true,
+      "observed": true,
+      "success": true,
+      "failureClass": null,
+      "protocolStatus": "valid",
+      "protocolFailure": null,
+      "attemptStartedAt": "2026-07-13T07:54:58.415Z",
+      "agentStartedAt": "2026-07-13T07:55:10.849Z",
+      "agentFinishedAt": "2026-07-13T07:58:02.204Z",
+      "rewards": {
+        "behavior": 1,
+        "changed_files": 2,
+        "changed_lines": 61,
+        "genericity": 1,
+        "public_tests": 1,
+        "regression": 1,
+        "scope": 1,
+        "verified_completion": 1
+      },
+      "inputTokens": 621016,
+      "cacheTokens": 553472,
+      "outputTokens": 6749,
+      "costUsd": 0.816926,
+      "agentElapsedMs": 171355,
+      "controllerElapsedMs": 211766,
+      "codexaIndexElapsedMs": 652,
+      "codexaSetup": {
+        "status": "observed",
+        "evidenceTrust": "agent-reported",
+        "codexaVersion": "0.10.0",
+        "versionMatchesCandidate": true,
+        "indexExitCode": 0,
+        "indexElapsedMs": 652
+      },
+      "codexaUsage": {
+        "status": "observed",
+        "codexaInvoked": true,
+        "codexaCallCount": 7,
+        "callsByTool": {
+          "change_plan": 1,
+          "post_edit_review": 2,
+          "proof_card": 1,
+          "session_context": 1,
+          "task_brief": 1,
+          "test_plan": 1
+        }
+      }
+    },
+    {
+      "runId": "f5797d386b208c79f937",
+      "taskId": "path-target-normalization",
+      "taskName": "codexa-agent-ab/path-target-normalization",
+      "repetition": 1,
+      "arm": "control",
+      "order": 2,
+      "started": true,
+      "finalized": true,
+      "observed": true,
+      "success": true,
+      "failureClass": null,
+      "protocolStatus": "valid",
+      "protocolFailure": null,
+      "attemptStartedAt": "2026-07-13T07:58:30.184Z",
+      "agentStartedAt": "2026-07-13T07:58:42.574Z",
+      "agentFinishedAt": "2026-07-13T08:00:16.665Z",
+      "rewards": {
+        "behavior": 1,
+        "changed_files": 2,
+        "changed_lines": 61,
+        "genericity": 1,
+        "public_tests": 1,
+        "regression": 1,
+        "scope": 1,
+        "verified_completion": 1
+      },
+      "inputTokens": 104173,
+      "cacheTokens": 90880,
+      "outputTokens": 3345,
+      "costUsd": 0.21225500000000003,
+      "agentElapsedMs": 94091,
+      "controllerElapsedMs": 134413,
+      "codexaIndexElapsedMs": null,
+      "codexaSetup": {
+        "status": "missing"
+      },
+      "codexaUsage": {
+        "status": "observed",
+        "codexaInvoked": false,
+        "codexaCallCount": 0,
+        "callsByTool": {}
+      }
+    },
+    {
+      "runId": "d002dc6307c9560f0dd1",
+      "taskId": "path-target-normalization",
+      "taskName": "codexa-agent-ab/path-target-normalization",
+      "repetition": 2,
+      "arm": "control",
+      "order": 1,
+      "started": true,
+      "finalized": true,
+      "observed": true,
+      "success": true,
+      "failureClass": null,
+      "protocolStatus": "valid",
+      "protocolFailure": null,
+      "attemptStartedAt": "2026-07-13T08:00:44.600Z",
+      "agentStartedAt": "2026-07-13T08:00:57.557Z",
+      "agentFinishedAt": "2026-07-13T08:02:19.164Z",
+      "rewards": {
+        "behavior": 1,
+        "changed_files": 2,
+        "changed_lines": 63,
+        "genericity": 1,
+        "public_tests": 1,
+        "regression": 1,
+        "scope": 1,
+        "verified_completion": 1
+      },
+      "inputTokens": 104723,
+      "cacheTokens": 81664,
+      "outputTokens": 3079,
+      "costUsd": 0.24849700000000002,
+      "agentElapsedMs": 81607,
+      "controllerElapsedMs": 122792,
+      "codexaIndexElapsedMs": null,
+      "codexaSetup": {
+        "status": "missing"
+      },
+      "codexaUsage": {
+        "status": "observed",
+        "codexaInvoked": false,
+        "codexaCallCount": 0,
+        "callsByTool": {}
+      }
+    },
+    {
+      "runId": "1d7db228b186258956c9",
+      "taskId": "path-target-normalization",
+      "taskName": "codexa-agent-ab/path-target-normalization",
+      "repetition": 2,
+      "arm": "treatment",
+      "order": 2,
+      "started": true,
+      "finalized": true,
+      "observed": true,
+      "success": true,
+      "failureClass": null,
+      "protocolStatus": "valid",
+      "protocolFailure": null,
+      "attemptStartedAt": "2026-07-13T08:02:47.394Z",
+      "agentStartedAt": "2026-07-13T08:03:00.782Z",
+      "agentFinishedAt": "2026-07-13T08:05:39.418Z",
+      "rewards": {
+        "behavior": 1,
+        "changed_files": 2,
+        "changed_lines": 73,
+        "genericity": 1,
+        "public_tests": 1,
+        "regression": 1,
+        "scope": 1,
+        "verified_completion": 1
+      },
+      "inputTokens": 619090,
+      "cacheTokens": 550656,
+      "outputTokens": 6612,
+      "costUsd": 0.815858,
+      "agentElapsedMs": 158636,
+      "controllerElapsedMs": 199959,
+      "codexaIndexElapsedMs": 649,
+      "codexaSetup": {
+        "status": "observed",
+        "evidenceTrust": "agent-reported",
+        "codexaVersion": "0.10.0",
+        "versionMatchesCandidate": true,
+        "indexExitCode": 0,
+        "indexElapsedMs": 649
+      },
+      "codexaUsage": {
+        "status": "observed",
+        "codexaInvoked": true,
+        "codexaCallCount": 6,
+        "callsByTool": {
+          "change_plan": 1,
+          "post_edit_review": 1,
+          "proof_card": 1,
+          "session_context": 1,
+          "task_brief": 1,
+          "test_plan": 1
+        }
+      }
+    }
+  ]
+}

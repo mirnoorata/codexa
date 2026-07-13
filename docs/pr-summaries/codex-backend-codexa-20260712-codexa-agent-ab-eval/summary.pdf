@@ -1,0 +1,85 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 2619 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(Change Summary) Tj T*
+() Tj T*
+(- Project: codexa) Tj T*
+(- Worktree: local session path omitted) Tj T*
+(- Branch: codex/backend/codexa-20260712-codexa-agent-ab-eval) Tj T*
+(- Base: main) Tj T*
+(- Primary commit: 95bef4c) Tj T*
+(- Subject: fix\(eval\): harden agent A/B evidence) Tj T*
+() Tj T*
+(Changed Files) Tj T*
+() Tj T*
+(95bef4c fix\(eval\): harden agent A/B evidence) Tj T*
+(README.md                                          |  51 +++--) Tj T*
+(benchmarks/agent-ab/README.md                      |  29 ++-) Tj T*
+(benchmarks/agent-ab/experiment.json                |   4 +-) Tj T*
+(.../tasks/path-target-normalization/instruction.md |   5 +-) Tj T*
+(.../solution/solution.patch                        |   7 +-) Tj T*
+(.../path-target-normalization/tests/verify.py      |  25 ++-) Tj T*
+(docs/guides/agent-ab.md                            |  69 ++++--) Tj T*
+(.../plans/codexa-agent-ab-evaluation-2026-07-12.md |  74 ++++---) Tj T*
+(...ilot-v3.json => v0.10.0-agent-ab-pilot-v7.json} | 245 ++++++++++-----------) Tj T*
+(scripts/agent-ab-analysis.mjs                      |  29 ++-) Tj T*
+(scripts/agent-ab.mjs                               |  15 +-) Tj T*
+(tests/agent-ab-analysis-validity.test.ts           |  44 ++++) Tj T*
+(tests/agent-ab-report.test.ts                      |  12 +-) Tj T*
+(tests/agent-ab-runner.test.ts                      |  36 +++) Tj T*
+(14 files changed, 434 insertions\(+\), 211 deletions\(-\)) Tj T*
+(rename reports/benchmarks/{v0.10.0-agent-ab-pilot-v3.json => v0.10.0-agent-ab-pilot-v7.json}) Tj T*
+(\(77%\)) Tj T*
+() Tj T*
+(Verification) Tj T*
+() Tj T*
+(- git diff --check: passed) Tj T*
+(- PYTHONDONTWRITEBYTECODE=1 npm run check: passed) Tj T*
+(- node scripts/agent-ab.mjs validate --config benchmarks/agent-ab/experiment.json: passed) Tj T*
+(- npm run package:hygiene: passed) Tj T*
+(- Codexa post-edit-review: completed; local artifact omitted) Tj T*
+(- Codexa test-plan: completed; local artifact omitted) Tj T*
+(- git diff --cached --check: passed) Tj T*
+(- staged safety scan: passed) Tj T*
+() Tj T*
+(Notes) Tj T*
+() Tj T*
+(Addresses both automated review findings, rejects transient task artifacts before hashing,) Tj T*
+(aligns the reference and verifier on raw Unicode General Category Cc, and archives only the) Tj T*
+(clean v7 run. V7 is non-confirmatory: both arms passed 2/2; Codexa showed no completion) Tj T*
+(benefit and used 3.54x cost, 1.88x agent time, and 5.94x input tokens. V4-v6 are excluded) Tj T*
+(diagnostics. No production runtime, package dependency, bin, lockfile, or packed evaluator) Tj T*
+(surface changed.) Tj T*
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000185 00000 n 
+0000000311 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+2981
+%%EOF
