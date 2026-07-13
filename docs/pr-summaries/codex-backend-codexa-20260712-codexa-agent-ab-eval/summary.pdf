@@ -12,7 +12,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
 endobj
 5 0 obj
-<< /Length 3226 >>
+<< /Length 3196 >>
 stream
 BT
 /F1 10 Tf
@@ -21,7 +21,7 @@ BT
 (Change Summary) Tj T*
 () Tj T*
 (- Project: codexa) Tj T*
-(- Worktree: /srv/worktree/codexa/codex/20260712-codexa-agent-ab-eval) Tj T*
+(- Worktree: local session path omitted) Tj T*
 (- Branch: codex/backend/codexa-20260712-codexa-agent-ab-eval) Tj T*
 (- Base: main) Tj T*
 (- Primary commit: ab7c3c2) Tj T*
@@ -142,16 +142,14 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 9 0 R >>
 endobj
 9 0 obj
-<< /Length 1061 >>
+<< /Length 902 >>
 stream
 BT
 /F1 10 Tf
 14 TL
 50 760 Td
-(- Codexa post-edit-review: /srv/.codex/artifacts/codexa/codex-backend-) Tj T*
-(codexa-20260712-codexa-agent-ab-eval/codexa-post-edit-review.txt) Tj T*
-(- Codexa test-plan: /srv/.codex/artifacts/codexa/codex-backend-codexa-20260712-codexa-agent-) Tj T*
-(ab-eval/codexa-test-plan.txt) Tj T*
+(- Codexa post-edit-review: completed; local artifact omitted) Tj T*
+(- Codexa test-plan: completed; local artifact omitted) Tj T*
 (- git diff --cached --check: passed) Tj T*
 (- staged safety scan: passed) Tj T*
 () Tj T*
@@ -175,12 +173,12 @@ xref
 0000000127 00000 n 
 0000000197 00000 n 
 0000000323 00000 n 
-0000003600 00000 n 
-0000003726 00000 n 
-0000006950 00000 n 
-0000007076 00000 n 
+0000003570 00000 n 
+0000003696 00000 n 
+0000006920 00000 n 
+0000007046 00000 n 
 trailer
 << /Size 10 /Root 1 0 R >>
 startxref
-8188
+7998
 %%EOF

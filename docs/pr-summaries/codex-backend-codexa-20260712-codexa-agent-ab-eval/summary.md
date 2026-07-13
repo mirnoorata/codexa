@@ -1,7 +1,7 @@
 # Change Summary
 
 - Project: `codexa`
-- Worktree: `/srv/worktree/codexa/codex/20260712-codexa-agent-ab-eval`
+- Worktree: local session path omitted
 - Branch: `codex/backend/codexa-20260712-codexa-agent-ab-eval`
 - Base: `main`
 - Primary commit: `ab7c3c2`
@@ -87,8 +87,8 @@ ab7c3c2 feat(eval): add external agent A/B harness
 
 - git diff --check: passed
 - PYTHONDONTWRITEBYTECODE=1 npm run check: passed
-- Codexa post-edit-review: /srv/.codex/artifacts/codexa/codex-backend-codexa-20260712-codexa-agent-ab-eval/codexa-post-edit-review.txt
-- Codexa test-plan: /srv/.codex/artifacts/codexa/codex-backend-codexa-20260712-codexa-agent-ab-eval/codexa-test-plan.txt
+- Codexa post-edit-review: completed; local artifact omitted
+- Codexa test-plan: completed; local artifact omitted
 - git diff --cached --check: passed
 - staged safety scan: passed
 
