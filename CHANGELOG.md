@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.13.0](https://github.com/mirnoorata/codexa/compare/v0.12.0...v0.13.0) (2026-07-13)
+
+
+### Features
+
+* **mcp:** reduce transport overhead with decision-safe parity ([#102](https://github.com/mirnoorata/codexa/issues/102)) ([a7c5492](https://github.com/mirnoorata/codexa/commit/a7c5492cfc78ef49764de183857631ed05078773))
+
 ## [0.12.0](https://github.com/mirnoorata/codexa/compare/v0.11.0...v0.12.0) (2026-07-13)
 
 
