@@ -24,13 +24,22 @@ type HookActionResult = Omit<CodexaHookEventInput, "hook" | "durationMs"> | void
 
 export async function runPreEditHook(repo: string): Promise<void> {
   const configuredRoot = path.resolve(repo);
+  let activeRepoRoot: string;
+  try {
+    ({ activeRepoRoot } = await resolveHookRepoRoots(repo));
+  } catch (error) {
+    await runAdvisoryHook(configuredRoot, "pre-edit", "change-plan snapshot check", async () => {
+      throw error;
+    });
+    return;
+  }
   let lifecycleBlock: Awaited<ReturnType<typeof pendingPreEditLifecycleBlock>>;
   try {
-    lifecycleBlock = await pendingPreEditLifecycleBlock(repo);
+    lifecycleBlock = await pendingPreEditLifecycleBlock(activeRepoRoot);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
     console.log(`Codexa: edit blocked because task lifecycle state could not be validated (${reason}).`);
-    await safeRecordHookEvent(configuredRoot, {
+    await safeRecordHookEvent(activeRepoRoot, {
       hook: "pre-edit",
       status: "failed",
       durationMs: 0,
@@ -53,7 +62,6 @@ export async function runPreEditHook(repo: string): Promise<void> {
     throw new Error("Codexa task lifecycle requires replan before another managed edit");
   }
   await runAdvisoryHook(configuredRoot, "pre-edit", "change-plan snapshot check", async () => {
-    const { activeRepoRoot } = await resolveHookRepoRoots(repo);
     const baseline = await saveImplicitBaselineSnapshot(activeRepoRoot);
     if (baseline.status === "existing-snapshot") {
       console.log(`Codexa: change-plan snapshot ready (${baseline.taskId}). After edits, post_edit_review will compare planned vs actual work.`);
@@ -72,8 +80,7 @@ export async function runPreEditHook(repo: string): Promise<void> {
   });
 }
 
-async function pendingPreEditLifecycleBlock(repo: string): Promise<{ repoRoot: string; taskId: string; reasons: string[] } | undefined> {
-  const { activeRepoRoot } = await resolveHookRepoRoots(repo);
+async function pendingPreEditLifecycleBlock(activeRepoRoot: string): Promise<{ repoRoot: string; taskId: string; reasons: string[] } | undefined> {
   const loaded = await loadTaskSnapshot(activeRepoRoot);
   const review = await pendingTaskLifecycleReplan(activeRepoRoot, loaded.snapshot);
   if (review && loaded.snapshot) {
@@ -203,8 +210,10 @@ export async function recordAdvisoryHookEvent(repoRoot: string, event: CodexaHoo
 
 async function resolveHookRepoRoots(repo: string): Promise<{ configuredRoot: string; activeRepoRoot: string }> {
   const configuredRoot = path.resolve(repo);
+  const preferConfiguredRoot = await shouldPreferConfiguredRepoRoot(configuredRoot);
   const resolution = await resolveMcpRepoRoot(configuredRoot, {
-    preferConfiguredRoot: await shouldPreferConfiguredRepoRoot(configuredRoot)
+    preferConfiguredRoot,
+    requireValidDeclaredFocus: !preferConfiguredRoot
   });
   return { configuredRoot, activeRepoRoot: resolution.repoRoot };
 }

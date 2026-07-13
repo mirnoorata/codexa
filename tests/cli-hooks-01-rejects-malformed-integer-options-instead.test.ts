@@ -593,6 +593,47 @@ it("does not fall back to the workspace root when hook focus routing is ambiguou
     expect(preEdit.stdout).not.toContain("Codexa: no change-plan snapshot is available");
   });
 
+it.each(["Focused project", "Default repo"])("does not fall back to the workspace root when a declared %s hook focus is missing", async (focusLabel) => {
+    const workspace = await trackedTmpDir("codexa-hook-missing-focus-");
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const missingRepo = path.join(workspace, "deleted-repo");
+    await mkdir(path.join(workspace, ".codex"), { recursive: true });
+    await writeFile(path.join(workspace, ".codex", "WORKING.md"), `- ${focusLabel}: \`${missingRepo}\`.\n`, "utf8");
+
+    const preEdit = spawnSync(process.execPath, [path.resolve(process.cwd(), "dist/cli.js"), "hook-pre-edit", workspace], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: testEnv({ CODEXA_REPO: "", CODEXA_FOCUSED_REPO: "" })
+    });
+
+    expect(preEdit.status).toBe(0);
+    expect(preEdit.stdout).toContain("Codexa: change-plan snapshot check unavailable:");
+    expect(preEdit.stdout).toContain("invalid or out-of-workspace repo");
+    expect(preEdit.stdout).not.toContain("saved an implicit pre-edit baseline");
+    await expect(readFile(path.join(workspace, ".codex/cache/codexa-tasks/latest.json"), "utf8")).rejects.toThrow();
+  });
+
+it.each(["Focused project", "Default repo"])("does not follow an out-of-workspace declared %s hook focus", async (focusLabel) => {
+    const workspace = await trackedTmpDir("codexa-hook-outside-focus-");
+    const outsideRepo = await trackedTmpDir("codexa-hook-outside-repo-");
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    execFileSync("git", ["init"], { cwd: outsideRepo, stdio: "ignore" });
+    await mkdir(path.join(workspace, ".codex"), { recursive: true });
+    await writeFile(path.join(workspace, ".codex", "WORKING.md"), `- ${focusLabel}: \`${outsideRepo}\`.\n`, "utf8");
+
+    const preEdit = spawnSync(process.execPath, [path.resolve(process.cwd(), "dist/cli.js"), "hook-pre-edit", workspace], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: testEnv({ CODEXA_REPO: "", CODEXA_FOCUSED_REPO: "" })
+    });
+
+    expect(preEdit.status).toBe(0);
+    expect(preEdit.stdout).toContain("Codexa: change-plan snapshot check unavailable:");
+    expect(preEdit.stdout).toContain("invalid or out-of-workspace repo");
+    expect(preEdit.stdout).not.toContain("saved an implicit pre-edit baseline");
+    await expect(readFile(path.join(outsideRepo, ".codex/cache/codexa-tasks/latest.json"), "utf8")).rejects.toThrow();
+  });
+
 it("skips AutoVerify execution by default and records recommended commands as skipped", async () => {
     const repo = await createAutoVerifyFixtureRepo({ test: "node --test" });
     const cli = path.resolve(process.cwd(), "dist/cli.js");

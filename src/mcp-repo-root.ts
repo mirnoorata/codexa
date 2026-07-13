@@ -6,6 +6,7 @@ export interface McpRepoRootResolutionOptions {
   workspaceFocusFile?: string;
   workspaceSessionId?: string;
   preferConfiguredRoot?: boolean;
+  requireValidDeclaredFocus?: boolean;
 }
 
 export interface McpRepoRootResolution {
@@ -63,7 +64,7 @@ export async function resolveMcpRepoRoot(configuredRootInput: string, options: M
   const configuredRootIsGitRepo = (await gitRootFor(configuredRoot)) !== null;
   const workspaceRoutingRequested = Boolean(options.workspaceFocusFile || options.workspaceSessionId);
 
-  if (configuredRootIsGitRepo && options.preferConfiguredRoot && !workspaceRoutingRequested) {
+  if (configuredRootIsGitRepo && options.preferConfiguredRoot && !workspaceRoutingRequested && !options.requireValidDeclaredFocus) {
     return { configuredRoot, repoRoot: configuredRoot, source: "configured-root" };
   }
 
@@ -81,7 +82,7 @@ export async function resolveMcpRepoRoot(configuredRootInput: string, options: M
         warnings: candidate.warnings
       };
     }
-    if (candidate.strict) {
+    if (candidate.strict || options.requireValidDeclaredFocus) {
       throw new Error(
         `Codexa MCP workspace session${candidate.workspaceSessionId ? ` ${candidate.workspaceSessionId}` : ""} resolved to an invalid or out-of-workspace repo in ${candidate.focusFile ?? "workspace focus"}: ${candidate.path}`
       );
@@ -241,6 +242,7 @@ async function readFocusedRepoPaths(focusFile: string, options: McpRepoRootResol
       { paths: explicitPaths, focusReason: "explicit-focus", allowFallbackWhenAmbiguous: false, strict: false, conflictPaths: [...defaultPathGroups.focused, ...activeSessionPaths] },
       { paths: defaultPathGroups.focused, focusReason: "workspace-default", allowFallbackWhenAmbiguous: false, strict: false },
       { paths: activeSessionPaths, focusReason: "active-session", allowFallbackWhenAmbiguous: false, strict: false },
+      { paths: defaultPathGroups.invalid, focusReason: "workspace-default", allowFallbackWhenAmbiguous: false, strict: false },
       { paths: defaultPathGroups.configuredRoot, focusReason: "workspace-default", allowFallbackWhenAmbiguous: false, strict: false }
     ],
     focusFile,
@@ -446,7 +448,7 @@ async function localWorkspaceFocusOverridesConfiguredRoot(configuredRoot: string
   for (const candidatePath of selection.paths) {
     const repoRoot = await validatedRepoRoot({ path: candidatePath, source: "workspace-focus-file" });
     if (!repoRoot || !(await isInsideOrSamePath(repoRoot, configuredRoot))) {
-      continue;
+      return true;
     }
     if (!(await isSamePath(repoRoot, configuredRoot))) {
       return true;
@@ -455,12 +457,13 @@ async function localWorkspaceFocusOverridesConfiguredRoot(configuredRoot: string
   return false;
 }
 
-async function partitionDefaultPaths(paths: string[], configuredRoot?: string): Promise<{ focused: string[]; configuredRoot: string[] }> {
+async function partitionDefaultPaths(paths: string[], configuredRoot?: string): Promise<{ focused: string[]; configuredRoot: string[]; invalid: string[] }> {
   if (!configuredRoot) {
-    return { focused: paths, configuredRoot: [] };
+    return { focused: paths, configuredRoot: [], invalid: [] };
   }
   const focused: string[] = [];
   const configuredRootPaths: string[] = [];
+  const invalid: string[] = [];
   for (const candidate of paths) {
     const normalized = normalizeCandidatePath(candidate);
     if (normalized && (await isSamePath(normalized, configuredRoot))) {
@@ -474,7 +477,9 @@ async function partitionDefaultPaths(paths: string[], configuredRoot?: string): 
     }
     if (repoRoot && (await isInsideOrSamePath(repoRoot, configuredRoot))) {
       focused.push(candidate);
+      continue;
     }
+    invalid.push(candidate);
   }
-  return { focused, configuredRoot: configuredRootPaths };
+  return { focused, configuredRoot: configuredRootPaths, invalid };
 }
