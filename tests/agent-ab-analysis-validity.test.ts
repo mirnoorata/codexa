@@ -16,6 +16,12 @@ type Assignment = {
   order: number;
   jobName: string;
 };
+type PostEditStepFixture = {
+  [key: string]: unknown;
+  observation: {
+    results: Array<{ source_call_id: string; content: unknown }>;
+  };
+};
 const EXPERIMENT_ID = "analysis-validity-test";
 const CONFIG_HASH = "config-hash";
 const AGENT = "codex";
@@ -309,7 +315,23 @@ describe("agent A/B analysis validity", () => {
       rewards: { verified_completion: 1 },
       trajectory: {
         schema_version: "ATIF-v1.7",
-        steps: [{ tool_calls: [{ tool_call_id: "call-control", function_name: "shell", arguments: { command: "echo codexa brief . --task check" } }] }]
+        steps: [
+          {
+            is_copied_context: true,
+            tool_calls: [{
+              tool_call_id: "copied-control",
+              function_name: "mcp__codexa__task_brief",
+              arguments: { task: "prior interaction" }
+            }]
+          },
+          {
+            tool_calls: [{
+              tool_call_id: "call-control",
+              function_name: "shell",
+              arguments: { command: "echo codexa brief . --task check" }
+            }]
+          }
+        ]
       }
     });
     await writeFinalizedRun(experiment.output, treatment, {
@@ -387,6 +409,246 @@ describe("agent A/B analysis validity", () => {
     expect(summary.treatmentFidelity.treatment.codexaCallsByTool).toEqual({ "cli:brief": 1 });
   });
 
+  it("reports ordered post-edit decisions without changing verified completion or ITT", async () => {
+    const experiment = await createExperiment(["task-a"]);
+    const control = findAssignment(experiment.assignments, "task-a", "control");
+    const treatment = findAssignment(experiment.assignments, "task-a", "treatment");
+    await writeFinalizedRun(experiment.output, control, {
+      rewards: { verified_completion: 1 },
+      trajectory: { schema_version: "ATIF-v1.7", steps: [] }
+    });
+    await writeFinalizedRun(experiment.output, treatment, {
+      rewards: { verified_completion: 1 },
+      trajectory: {
+        schema_version: "ATIF-v1.7",
+        steps: [
+          postEditReviewStep(1, "inspect", "blocking", "blocking_inspect", "python-repr"),
+          postEditReviewStep(2, "continue", "none", "complete")
+        ]
+      }
+    });
+
+    const summary = analyzeAgentAb(experiment);
+    const markdown = await readFile(path.join(experiment.output, "summary.md"), "utf8");
+    const controlOutcome = summary.outcomes.find((outcome: { arm: Arm }) => outcome.arm === "control");
+    const treatmentOutcome = summary.outcomes.find((outcome: { arm: Arm }) => outcome.arm === "treatment");
+
+    expect(summary.arms.control.successes).toBe(1);
+    expect(summary.arms.treatment.successes).toBe(1);
+    expect(summary.effect.absoluteRiskDifference).toBe(0);
+    expect(summary.treatmentDefinition.adherencePolicy).toBe(
+      "usage telemetry is descriptive only; no run is excluded for adherence or contamination"
+    );
+    expect(controlOutcome.codexaUsage.postEditDecisionTrace).toMatchObject({
+      schemaVersion: 1,
+      status: "not-invoked",
+      reviewCallCount: 0,
+      finalState: "not-reviewed"
+    });
+    expect(treatmentOutcome.codexaUsage.postEditDecisionTrace).toMatchObject({
+      schemaVersion: 1,
+      evidenceTrust: "agent-reported-structured-trajectory",
+      status: "observed",
+      reviewCallCount: 2,
+      decisions: [
+        {
+          verdict: "inspect",
+          completionAuthority: "blocking_inspect"
+        },
+        {
+          verdict: "continue",
+          completionAuthority: "complete"
+        }
+      ],
+      finalState: "nonblocking-after-blocking"
+    });
+    expect(summary.treatmentFidelity.control.postEditFinalStateCounts).toMatchObject({
+      "not-reviewed": 1,
+      unknown: 0
+    });
+    expect(summary.treatmentFidelity.treatment).toMatchObject({
+      postEditReviewObservedRuns: 1,
+      postEditFinalStateCounts: {
+        "nonblocking-after-blocking": 1,
+        unknown: 0
+      }
+    });
+    expect(markdown).toContain("Post-edit decision telemetry is agent-reported and descriptive");
+    expect(markdown).not.toMatch(/\b(useful|prevented|ignored|overridden)\b/iu);
+  });
+
+  it("keeps advisory, unresolved, and unknown review states distinct", async () => {
+    const experiment = await createExperiment(["task-a", "task-b"]);
+    const taskAControl = findAssignment(experiment.assignments, "task-a", "control");
+    const taskATreatment = findAssignment(experiment.assignments, "task-a", "treatment");
+    const taskBControl = findAssignment(experiment.assignments, "task-b", "control");
+    const taskBTreatment = findAssignment(experiment.assignments, "task-b", "treatment");
+
+    const duplicateResult = postEditReviewStep(1, "continue", "none", "complete");
+    duplicateResult.observation.results.push({ ...duplicateResult.observation.results[0] });
+    await writeFinalizedRun(experiment.output, taskAControl, {
+      trajectory: { schema_version: "ATIF-v1.7", steps: [duplicateResult] }
+    });
+    await writeFinalizedRun(experiment.output, taskATreatment, {
+      trajectory: {
+        schema_version: "ATIF-v1.7",
+        steps: [postEditReviewStep(1, "inspect", "advisory", "advisory_inspect")]
+      }
+    });
+    const decoyResult = postEditReviewStep(1, "continue", "none", "complete");
+    decoyResult.observation.results[0].content = JSON.stringify({
+      note: "unrelated object",
+      data: {
+        mode: "post_edit_review",
+        verdict: "continue",
+        inspectMode: "none",
+        completionAuthority: "complete"
+      }
+    });
+    await writeFinalizedRun(experiment.output, taskBControl, {
+      trajectory: {
+        schema_version: "ATIF-v1.7",
+        steps: [decoyResult]
+      }
+    });
+    await writeFinalizedRun(experiment.output, taskBTreatment, {
+      trajectory: {
+        schema_version: "ATIF-v1.7",
+        steps: [postEditReviewStep(1, "replan", "none", "replan_required")]
+      }
+    });
+
+    const summary = analyzeAgentAb(experiment);
+    const byRunId = new Map(summary.outcomes.map((outcome: { runId: string }) => [outcome.runId, outcome]));
+
+    expect(summary.arms.control.successes).toBe(2);
+    expect(summary.arms.treatment.successes).toBe(2);
+    expect(summary.effect.absoluteRiskDifference).toBe(0);
+    expect(byRunId.get("task-a-control").codexaUsage.postEditDecisionTrace).toMatchObject({
+      status: "unknown",
+      reviewCallCount: 1,
+      finalState: "unknown"
+    });
+    expect(byRunId.get("task-a-treatment").codexaUsage.postEditDecisionTrace).toMatchObject({
+      status: "observed",
+      finalState: "advisory"
+    });
+    expect(byRunId.get("task-b-control").codexaUsage.postEditDecisionTrace).toMatchObject({
+      status: "unknown",
+      finalState: "unknown"
+    });
+    expect(byRunId.get("task-b-treatment").codexaUsage.postEditDecisionTrace).toMatchObject({
+      status: "observed",
+      finalState: "blocking-unresolved"
+    });
+    expect(summary.treatmentFidelity.control).toMatchObject({
+      postEditReviewObservedRuns: 2,
+      postEditFinalStateCounts: { unknown: 2 }
+    });
+    expect(summary.treatmentFidelity.treatment).toMatchObject({
+      postEditReviewObservedRuns: 2,
+      postEditFinalStateCounts: { advisory: 1, "blocking-unresolved": 1, unknown: 0 }
+    });
+  });
+
+  it("does not infer decisions across steps or incomplete trajectory lineage", async () => {
+    const experiment = await createExperiment(["task-a", "task-b"]);
+    const { observation: lateObservation, ...crossStepCall } =
+      postEditReviewStep(1, "continue", "none", "complete");
+
+    await writeFinalizedRun(
+      experiment.output,
+      findAssignment(experiment.assignments, "task-a", "control"),
+      {
+        trajectory: {
+          schema_version: "ATIF-v1.7",
+          steps: [
+            crossStepCall,
+            { step_id: 2, observation: lateObservation }
+          ]
+        }
+      }
+    );
+    await writeFinalizedRun(
+      experiment.output,
+      findAssignment(experiment.assignments, "task-a", "treatment"),
+      {
+        trajectory: {
+          schema_version: "ATIF-v1.7",
+          continued_trajectory_ref: "next-segment.json",
+          steps: [postEditReviewStep(1, "continue", "none", "complete")]
+        }
+      }
+    );
+    await writeFinalizedRun(
+      experiment.output,
+      findAssignment(experiment.assignments, "task-b", "control"),
+      {
+        trajectory: {
+          schema_version: "ATIF-v1.7",
+          steps: [{ step_id: 1, tool_calls: [{}] }]
+        }
+      }
+    );
+    await writeFinalizedRun(
+      experiment.output,
+      findAssignment(experiment.assignments, "task-b", "treatment"),
+      {
+        trajectory: {
+          schema_version: "ATIF-v1.7",
+          steps: [],
+          subagent_trajectories: [{
+            schema_version: "ATIF-v1.7",
+            trajectory_id: "delegated-agent",
+            steps: [postEditReviewStep(1, "continue", "none", "complete")]
+          }]
+        }
+      }
+    );
+
+    const summary = analyzeAgentAb(experiment);
+    const byRunId = new Map(summary.outcomes.map((outcome: { runId: string }) => [outcome.runId, outcome]));
+
+    expect(summary.arms.control.successes).toBe(2);
+    expect(summary.arms.treatment.successes).toBe(2);
+    expect(summary.effect.absoluteRiskDifference).toBe(0);
+    expect(byRunId.get("task-a-control").codexaUsage.postEditDecisionTrace).toMatchObject({
+      status: "unknown",
+      reviewCallCount: 1,
+      finalState: "unknown"
+    });
+    expect(byRunId.get("task-a-treatment").codexaUsage).toMatchObject({
+      status: "partial",
+      codexaInvoked: null,
+      codexaCallCount: null,
+      callsByTool: null,
+      postEditDecisionTrace: {
+        status: "unknown",
+        reviewCallCount: 1,
+        finalState: "unknown"
+      }
+    });
+    expect(byRunId.get("task-b-control").codexaUsage).toMatchObject({
+      status: "partial",
+      codexaInvoked: null,
+      codexaCallCount: null,
+      callsByTool: null,
+      postEditDecisionTrace: {
+        status: "unknown",
+        reviewCallCount: 0,
+        finalState: "unknown"
+      }
+    });
+    expect(byRunId.get("task-b-treatment").codexaUsage).toMatchObject({
+      status: "partial",
+      codexaInvoked: null,
+      postEditDecisionTrace: {
+        status: "unknown",
+        finalState: "unknown"
+      }
+    });
+  });
+
   it("resamples tasks while preserving repetitions as within-task observations", async () => {
     const experiment = await createExperiment(["task-a", "task-b"], 0.9, 2_000);
     for (const assignment of experiment.assignments) {
@@ -407,6 +669,43 @@ describe("agent A/B analysis validity", () => {
     });
   });
 });
+
+function postEditReviewStep(
+  stepId: number,
+  verdict: "continue" | "run_tests" | "inspect" | "replan",
+  inspectMode: "none" | "advisory" | "blocking",
+  completionAuthority: "complete" | "tests_required" | "advisory_inspect" | "blocking_inspect" | "replan_required",
+  carrier: "json" | "python-repr" = "json"
+): PostEditStepFixture {
+  const toolCallId = `review-${stepId}`;
+  const serialized = JSON.stringify({
+    structuredContent: {
+      schemaVersion: 1,
+      mode: "post_edit_review",
+      data: { mode: "post_edit_review", verdict, inspectMode, completionAuthority }
+    }
+  });
+  return {
+    step_id: stepId,
+    source: "agent",
+    message: "",
+    tool_calls: [{
+      tool_call_id: toolCallId,
+      function_name: "exec",
+      arguments: {
+        input: "const r = await tools.mcp__codexa__post_edit_review({taskId:'generic-task'}); text(r);"
+      }
+    }],
+    observation: {
+      results: [{
+        source_call_id: toolCallId,
+        content: carrier === "python-repr"
+          ? `[{'type': 'input_text', 'text': '${serialized}'}]`
+          : serialized
+      }]
+    }
+  };
+}
 
 async function createExperiment(taskIds: string[], confidenceLevel = 0.95, bootstrapSamples = 1_000) {
   const output = await mkdtemp(path.join(os.tmpdir(), "codexa-agent-ab-validity-"));

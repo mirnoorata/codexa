@@ -24,6 +24,12 @@ To evaluate another candidate, create a new experiment ID and update both
 `candidate.codexaVersion` and the task Dockerfile's `CODEXA_VERSION` pin; never
 reuse or overwrite the archived registration.
 
+Future reports may add descriptive `post_edit_review` decision telemetry from
+uniquely correlated structured trajectory results. Generate it only with a new
+experiment ID and the matching current analyzer. The v7 JSON must not be
+backfilled; its recorded manual trajectory observation is not independently
+reproducible because the underlying trajectories are not published.
+
 Validate the pack:
 
 ```bash

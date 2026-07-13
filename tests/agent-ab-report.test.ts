@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -8,6 +9,8 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const script = path.join(root, "scripts", "agent-ab.mjs");
 const config = path.join(root, "benchmarks", "agent-ab", "experiment.json");
 const reportPath = path.join(root, "reports", "benchmarks", "v0.10.0-agent-ab-pilot-v7.json");
+const reportSha256 = "80e1d15bcbcbee26467757f67bed3e60779ecdd5b9c4edf9df1709be14a35eb8";
+const historicalAnalyzerHash = "e9628f0d786c0ac40bc1c98fb8efcc41099e78465dfa9f072125bb471319b2fb";
 const metricFields = [
   "inputTokens",
   "cacheTokens",
@@ -128,7 +131,9 @@ describe("archived agent A/B report", () => {
     });
     expect(validated.status, validated.stderr).toBe(0);
     const validation = JSON.parse(validated.stdout);
-    const report = JSON.parse(await readFile(reportPath, "utf8"));
+    const reportBytes = await readFile(reportPath);
+    expect(createHash("sha256").update(reportBytes).digest("hex")).toBe(reportSha256);
+    const report = JSON.parse(reportBytes.toString("utf8"));
 
     expect(validation).toMatchObject({
       schemaVersion: 1,
@@ -149,7 +154,10 @@ describe("archived agent A/B report", () => {
       experimentId: validation.experimentId,
       configHash: validation.configHash,
       framework: validation.framework,
-      harness: validation.harness,
+      harness: {
+        controllerHash: validation.harness.controllerHash,
+        analyzerHash: historicalAnalyzerHash
+      },
       candidate: validation.candidate,
       runner: validation.runner,
       agent: "codex",

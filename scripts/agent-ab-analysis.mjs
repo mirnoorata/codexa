@@ -29,6 +29,18 @@ const ATTEMPT_KEYS = [
   "startedAt"
 ];
 const MAX_STRINGIFIED_TOOL_ARGUMENT_CHARACTERS = 256 * 1024;
+const MAX_POST_EDIT_OBSERVATION_CHARACTERS = 256 * 1024;
+const MAX_POST_EDIT_JSON_CANDIDATES = 64;
+const MAX_POST_EDIT_REVIEW_CALLS = 100;
+const POST_EDIT_FINAL_STATES = [
+  "not-reviewed",
+  "complete",
+  "advisory",
+  "nonblocking-after-blocking",
+  "blocking-unresolved",
+  "unknown"
+];
+const BLOCKING_COMPLETION_AUTHORITIES = new Set(["tests_required", "blocking_inspect", "replan_required"]);
 
 class ProtocolIdentityError extends Error {}
 
@@ -267,7 +279,13 @@ function normalizeOutcome({ assignment, attempt, metadata, outputDir, primaryRew
     controllerElapsedMs: metadata?.controllerElapsedMs ?? null,
     codexaIndexElapsedMs: null,
     codexaSetup: { status: "unavailable" },
-    codexaUsage: { status: "unavailable", codexaInvoked: null, codexaCallCount: null, callsByTool: null }
+    codexaUsage: {
+      status: "unavailable",
+      codexaInvoked: null,
+      codexaCallCount: null,
+      callsByTool: null,
+      postEditDecisionTrace: null
+    }
   };
   if (!attempt || !metadata) {
     return base;
@@ -633,6 +651,12 @@ function fidelityForArm(outcomes, arm) {
   const observed = selected.filter((outcome) => outcome.codexaUsage.status === "observed");
   const invoked = observed.filter((outcome) => outcome.codexaUsage.codexaInvoked);
   const setupObserved = selected.filter((outcome) => outcome.codexaSetup.status === "observed");
+  const postEditFinalStates = selected.map(
+    (outcome) => outcome.codexaUsage.postEditDecisionTrace?.finalState ?? "unknown"
+  );
+  const postEditFinalStateCounts = Object.fromEntries(
+    POST_EDIT_FINAL_STATES.map((state) => [state, postEditFinalStates.filter((entry) => entry === state).length])
+  );
   return {
     startedRuns: selected.length,
     traceObservedRuns: observed.length,
@@ -646,6 +670,10 @@ function fidelityForArm(outcomes, arm) {
     setupSuccessfulRuns: setupObserved.filter((outcome) => outcome.codexaSetup.indexExitCode === 0).length,
     setupFailedRuns: setupObserved.filter((outcome) => Number.isInteger(outcome.codexaSetup.indexExitCode) && outcome.codexaSetup.indexExitCode !== 0).length,
     setupVersionMismatchRuns: setupObserved.filter((outcome) => outcome.codexaSetup.versionMatchesCandidate === false).length,
+    postEditReviewObservedRuns: selected.filter(
+      (outcome) => (outcome.codexaUsage.postEditDecisionTrace?.reviewCallCount ?? 0) > 0
+    ).length,
+    postEditFinalStateCounts,
     note: "agent-reported trajectory and setup telemetry are descriptive and never change ITT inclusion"
   };
 }
@@ -653,32 +681,409 @@ function fidelityForArm(outcomes, arm) {
 function inferCodexaUsage(trialDir) {
   const matches = findFiles(trialDir, "trajectory.json", 6);
   if (matches.length === 0) {
-    return { status: "missing", codexaInvoked: null, codexaCallCount: null, callsByTool: null };
+    return unavailableCodexaUsage("missing");
   }
   if (matches.length !== 1) {
-    return { status: "ambiguous", codexaInvoked: null, codexaCallCount: null, callsByTool: null };
+    return unavailableCodexaUsage("ambiguous");
   }
   try {
     if (statSync(matches[0]).size > 32 * 1024 * 1024) {
-      return { status: "too-large", codexaInvoked: null, codexaCallCount: null, callsByTool: null };
+      return unavailableCodexaUsage("too-large");
     }
     const trajectory = readJson(matches[0], "Harbor trajectory");
     if (!trajectory || typeof trajectory !== "object" || trajectory.schema_version !== "ATIF-v1.7" || !Array.isArray(trajectory.steps)) {
-      return { status: "unsupported", codexaInvoked: null, codexaCallCount: null, callsByTool: null };
+      return unavailableCodexaUsage("unsupported");
     }
-    const scan = scanStructuredToolCalls(trajectory.steps);
+    const currentSteps = trajectory.steps.filter(
+      (step) => !step || typeof step !== "object" || Array.isArray(step) || step.is_copied_context !== true
+    );
+    const scan = scanStructuredToolCalls(currentSteps);
     if (!scan.complete) {
-      return { status: "scan-limit", codexaInvoked: null, codexaCallCount: null, callsByTool: null };
+      return unavailableCodexaUsage("scan-limit");
     }
+    const partial = hasUnsupportedTrajectoryLineage(trajectory) || hasMalformedUsageStructure(trajectory);
     return {
-      status: "observed",
-      codexaInvoked: scan.codexaCalls > 0,
-      codexaCallCount: scan.codexaCalls,
-      callsByTool: scan.callsByTool
+      status: partial ? "partial" : "observed",
+      codexaInvoked: partial ? null : scan.codexaCalls > 0,
+      codexaCallCount: partial ? null : scan.codexaCalls,
+      callsByTool: partial ? null : scan.callsByTool,
+      postEditDecisionTrace: inferPostEditDecisionTrace(trajectory)
     };
   } catch {
-    return { status: "malformed", codexaInvoked: null, codexaCallCount: null, callsByTool: null };
+    return unavailableCodexaUsage("malformed");
   }
+}
+
+function unavailableCodexaUsage(status) {
+  return {
+    status,
+    codexaInvoked: null,
+    codexaCallCount: null,
+    callsByTool: null,
+    postEditDecisionTrace: null
+  };
+}
+
+function hasMalformedUsageStructure(trajectory) {
+  return trajectory.steps.some((step) => {
+    if (!step || typeof step !== "object" || Array.isArray(step)) {
+      return true;
+    }
+    if (
+      step.tool_calls !== undefined
+      && (!Array.isArray(step.tool_calls) || step.tool_calls.some(isMalformedToolCall))
+    ) {
+      return true;
+    }
+    return step.observation !== undefined && (
+      !step.observation
+      || typeof step.observation !== "object"
+      || Array.isArray(step.observation)
+      || !Array.isArray(step.observation.results)
+      || step.observation.results.some((result) => !result || typeof result !== "object" || Array.isArray(result))
+    );
+  });
+}
+
+function isMalformedToolCall(call) {
+  if (!call || typeof call !== "object" || Array.isArray(call)) {
+    return true;
+  }
+  const argumentsValue = call.arguments;
+  const hasUsableArguments = typeof argumentsValue === "string" || (
+    argumentsValue
+    && typeof argumentsValue === "object"
+    && !Array.isArray(argumentsValue)
+  );
+  return typeof call.tool_call_id !== "string"
+    || call.tool_call_id.length === 0
+    || typeof call.function_name !== "string"
+    || call.function_name.length === 0
+    || !hasUsableArguments;
+}
+
+function hasUnsupportedTrajectoryLineage(trajectory) {
+  if (trajectory.continued_trajectory_ref !== undefined && trajectory.continued_trajectory_ref !== null) {
+    return true;
+  }
+  if (
+    trajectory.subagent_trajectories !== undefined
+    && (!Array.isArray(trajectory.subagent_trajectories) || trajectory.subagent_trajectories.length > 0)
+  ) {
+    return true;
+  }
+  return trajectory.steps.some((step) => {
+    const results = Array.isArray(step?.observation?.results) ? step.observation.results : [];
+    return results.some(
+      (result) =>
+        result
+        && typeof result === "object"
+        && !Array.isArray(result)
+        && Object.hasOwn(result, "subagent_trajectory_ref")
+        && (!Array.isArray(result.subagent_trajectory_ref) || result.subagent_trajectory_ref.length > 0)
+    );
+  });
+}
+
+function inferPostEditDecisionTrace(trajectory) {
+  const steps = trajectory.steps;
+  const base = {
+    schemaVersion: 1,
+    evidenceTrust: "agent-reported-structured-trajectory"
+  };
+  const callIdCounts = new Map();
+  const reviewCalls = [];
+  let copiedReviewObserved = false;
+  const malformed = hasMalformedUsageStructure(trajectory);
+  let reviewCallCount = 0;
+
+  for (let stepIndex = 0; stepIndex < steps.length; stepIndex += 1) {
+    const step = steps[stepIndex];
+    if (!step || typeof step !== "object" || Array.isArray(step)) {
+      continue;
+    }
+    const toolCalls = Array.isArray(step.tool_calls) ? step.tool_calls : [];
+    if (step.is_copied_context === true) {
+      copiedReviewObserved ||= toolCalls.some((call) => postEditReviewOccurrenceCount(call) > 0);
+      continue;
+    }
+    const results = Array.isArray(step.observation?.results) ? step.observation.results : [];
+    for (const call of toolCalls) {
+      if (!call || typeof call !== "object" || Array.isArray(call)) {
+        continue;
+      }
+      const toolCallId = typeof call.tool_call_id === "string" && call.tool_call_id.length > 0
+        ? call.tool_call_id
+        : null;
+      if (toolCallId) {
+        callIdCounts.set(toolCallId, (callIdCounts.get(toolCallId) ?? 0) + 1);
+      }
+      const occurrences = postEditReviewOccurrenceCount(call);
+      if (occurrences === 0) {
+        continue;
+      }
+      reviewCallCount += occurrences;
+      reviewCalls.push({
+        stepIndex,
+        toolCallId,
+        occurrences,
+        matchingResults: toolCallId
+          ? results.filter((result) => result?.source_call_id === toolCallId)
+          : []
+      });
+    }
+  }
+
+  const lineageUnsupported = hasUnsupportedTrajectoryLineage(trajectory);
+  if (reviewCallCount > MAX_POST_EDIT_REVIEW_CALLS || copiedReviewObserved || malformed || lineageUnsupported) {
+    return unknownPostEditDecisionTrace(base, reviewCallCount, []);
+  }
+  if (reviewCallCount === 0) {
+    return {
+      ...base,
+      status: "not-invoked",
+      reviewCallCount: 0,
+      decisions: [],
+      finalState: "not-reviewed"
+    };
+  }
+
+  const callsByStep = new Map();
+  for (const call of reviewCalls) {
+    const existing = callsByStep.get(call.stepIndex) ?? [];
+    existing.push(call);
+    callsByStep.set(call.stepIndex, existing);
+  }
+
+  const decisions = [];
+  let unknownReviewCount = 0;
+  for (const call of reviewCalls) {
+    if (call.occurrences !== 1 || (callsByStep.get(call.stepIndex)?.length ?? 0) !== 1) {
+      unknownReviewCount += call.occurrences;
+      continue;
+    }
+    if (!call.toolCallId || callIdCounts.get(call.toolCallId) !== 1) {
+      unknownReviewCount += 1;
+      continue;
+    }
+    if (call.matchingResults.length !== 1) {
+      unknownReviewCount += 1;
+      continue;
+    }
+    const decision = extractPostEditDecision(call.matchingResults[0]?.content);
+    if (!decision) {
+      unknownReviewCount += 1;
+      continue;
+    }
+    decisions.push({
+      stepIndex: call.stepIndex,
+      ...decision
+    });
+  }
+
+  if (unknownReviewCount > 0 || decisions.length !== reviewCallCount) {
+    return unknownPostEditDecisionTrace(base, reviewCallCount, decisions);
+  }
+  return {
+    ...base,
+    status: "observed",
+    reviewCallCount,
+    decisions,
+    finalState: classifyPostEditFinalState(decisions)
+  };
+}
+
+function unknownPostEditDecisionTrace(base, reviewCallCount, decisions) {
+  return {
+    ...base,
+    status: "unknown",
+    reviewCallCount,
+    decisions,
+    finalState: "unknown"
+  };
+}
+
+function postEditReviewOccurrenceCount(call) {
+  return identifyCodexaCalls(call).filter(
+    (name) => name === "post_edit_review" || name === "cli:post-edit-review" || name === "cli:post-edit"
+  ).length;
+}
+
+function classifyPostEditFinalState(decisions) {
+  const finalDecision = decisions.at(-1);
+  if (!finalDecision) {
+    return "unknown";
+  }
+  if (BLOCKING_COMPLETION_AUTHORITIES.has(finalDecision.completionAuthority)) {
+    return "blocking-unresolved";
+  }
+  if (decisions.slice(0, -1).some((decision) => BLOCKING_COMPLETION_AUTHORITIES.has(decision.completionAuthority))) {
+    return "nonblocking-after-blocking";
+  }
+  return finalDecision.completionAuthority === "advisory_inspect" ? "advisory" : "complete";
+}
+
+function extractPostEditDecision(content) {
+  const strings = observationContentStrings(content);
+  if (!strings) {
+    return null;
+  }
+  const candidates = new Map();
+  let totalCharacters = 0;
+  let parsedCandidateCount = 0;
+
+  for (const text of strings) {
+    totalCharacters += text.length;
+    if (totalCharacters > MAX_POST_EDIT_OBSERVATION_CHARACTERS) {
+      return null;
+    }
+
+    const parsedValues = [];
+    let parsedWholeValue = false;
+    try {
+      parsedValues.push(JSON.parse(text));
+      parsedWholeValue = true;
+    } catch {
+      // The Harbor Codex adapter may wrap serialized tool output in a
+      // Python-repr carrier. Bounded JSON-object extraction below handles
+      // only the embedded JSON and never evaluates the wrapper.
+    }
+    if (!parsedWholeValue) {
+      const embedded = extractEmbeddedJsonObjects(text);
+      if (!embedded.complete) {
+        return null;
+      }
+      parsedValues.push(...embedded.values);
+    }
+    for (const value of parsedValues) {
+      parsedCandidateCount += 1;
+      if (parsedCandidateCount > MAX_POST_EDIT_JSON_CANDIDATES) {
+        return null;
+      }
+      const decision = postEditDecisionFromEnvelope(value);
+      if (decision) {
+        candidates.set(postEditDecisionKey(decision), decision);
+      }
+    }
+  }
+
+  return candidates.size === 1 ? [...candidates.values()][0] : null;
+}
+
+function observationContentStrings(content) {
+  if (typeof content === "string") {
+    return [content];
+  }
+  if (!Array.isArray(content)) {
+    return null;
+  }
+  const strings = [];
+  for (const part of content) {
+    if (
+      !part
+      || typeof part !== "object"
+      || Array.isArray(part)
+      || part.type !== "text"
+      || typeof part.text !== "string"
+    ) {
+      return null;
+    }
+    strings.push(part.text);
+  }
+  return strings;
+}
+
+function extractEmbeddedJsonObjects(text) {
+  const values = [];
+  let starts = 0;
+  for (let start = 0; start < text.length; start += 1) {
+    if (text[start] !== "{") {
+      continue;
+    }
+    starts += 1;
+    if (starts > MAX_POST_EDIT_JSON_CANDIDATES) {
+      return { complete: false, values: [] };
+    }
+    let depth = 0;
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < text.length; index += 1) {
+      const character = text[index];
+      if (inString) {
+        if (escaped) {
+          escaped = false;
+        } else if (character === "\\") {
+          escaped = true;
+        } else if (character === "\"") {
+          inString = false;
+        }
+        continue;
+      }
+      if (character === "\"") {
+        inString = true;
+      } else if (character === "{") {
+        depth += 1;
+      } else if (character === "}") {
+        depth -= 1;
+        if (depth === 0) {
+          try {
+            values.push(JSON.parse(text.slice(start, index + 1)));
+            start = index;
+          } catch {
+            // Not a JSON object; continue looking for a later bounded
+            // candidate rather than interpreting arbitrary wrapper syntax.
+          }
+          break;
+        }
+      }
+    }
+  }
+  return { complete: true, values };
+}
+
+function postEditDecisionFromEnvelope(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const envelope = value.structuredContent && typeof value.structuredContent === "object" && !Array.isArray(value.structuredContent)
+    ? value.structuredContent
+    : value;
+  if (
+    envelope.schemaVersion !== 1
+    || envelope.mode !== "post_edit_review"
+    || !envelope.data
+    || typeof envelope.data !== "object"
+    || Array.isArray(envelope.data)
+    || envelope.data.mode !== "post_edit_review"
+  ) {
+    return null;
+  }
+  return normalizePostEditDecision(
+    envelope.data.verdict,
+    envelope.data.inspectMode,
+    envelope.data.completionAuthority
+  );
+}
+
+function normalizePostEditDecision(verdict, inspectMode, completionAuthority) {
+  const expected = {
+    continue: ["none", "complete"],
+    run_tests: ["none", "tests_required"],
+    inspect: inspectMode === "advisory"
+      ? ["advisory", "advisory_inspect"]
+      : inspectMode === "blocking"
+        ? ["blocking", "blocking_inspect"]
+        : null,
+    replan: ["none", "replan_required"]
+  }[verdict];
+  if (!expected || inspectMode !== expected[0] || completionAuthority !== expected[1]) {
+    return null;
+  }
+  return { verdict, inspectMode, completionAuthority };
+}
+
+function postEditDecisionKey(decision) {
+  return [decision.verdict, decision.inspectMode, decision.completionAuthority].join("\u0000");
 }
 
 function scanStructuredToolCalls(root) {
@@ -877,6 +1282,11 @@ function renderMarkdown(summary, confidenceLevel) {
     `- Control contamination observed: ${summary.treatmentFidelity.control.contaminationRuns}`,
     `- Treatment nonadherence observed: ${summary.treatmentFidelity.treatment.nonadherentRuns}`,
     `- Treatment setup observed/success/failed/version-mismatch: ${summary.treatmentFidelity.treatment.setupObservedRuns}/${summary.treatmentFidelity.treatment.setupSuccessfulRuns}/${summary.treatmentFidelity.treatment.setupFailedRuns}/${summary.treatmentFidelity.treatment.setupVersionMismatchRuns}`,
+    "- Control post-edit state (not-reviewed/complete/advisory/nonblocking-after-blocking/blocking-unresolved/unknown): "
+      + renderPostEditFinalStateCounts(summary.treatmentFidelity.control),
+    "- Treatment post-edit state (not-reviewed/complete/advisory/nonblocking-after-blocking/blocking-unresolved/unknown): "
+      + renderPostEditFinalStateCounts(summary.treatmentFidelity.treatment),
+    "- Post-edit decision telemetry is agent-reported and descriptive; it does not change ITT inclusion or verified completion.",
     "",
     summary.registeredTasks < 2
       ? "This one-task run is a non-confirmatory plumbing pilot and cannot support a product-effect claim."
@@ -884,6 +1294,10 @@ function renderMarkdown(summary, confidenceLevel) {
     ""
   );
   return lines.join("\n");
+}
+
+function renderPostEditFinalStateCounts(fidelity) {
+  return POST_EDIT_FINAL_STATES.map((state) => fidelity.postEditFinalStateCounts[state]).join("/");
 }
 
 function formatConfidenceLevel(confidenceLevel) {
