@@ -310,7 +310,9 @@ function validateTreatmentFiles(mcpConfigPath, instructionPath) {
   const mcp = JSON.parse(readBoundedText(mcpConfigPath, 128 * 1024, "treatment MCP config"));
   assertObject(mcp, "treatment MCP config");
   assertKeys(mcp, ["mcpServers"], "treatment MCP config");
-  const server = mcp.mcpServers?.codexa;
+  assertObject(mcp.mcpServers, "treatment MCP servers");
+  assertKeys(mcp.mcpServers, ["codexa"], "treatment MCP servers");
+  const server = mcp.mcpServers.codexa;
   assertObject(server, "Codexa MCP server");
   assertKeys(server, ["command", "args"], "Codexa MCP server");
   if (server.command !== "/opt/codexa-agent-ab/start-codexa-mcp") {
@@ -855,6 +857,17 @@ function rejectSymlinksAndOversizedFiles(root) {
   const walk = (directory) => {
     for (const entry of readdirSync(directory, { withFileTypes: true })) {
       const target = path.join(directory, entry.name);
+      const relative = path.relative(root, target).split(path.sep).join("/");
+      if (
+        entry.name === "__pycache__" ||
+        entry.name === ".pytest_cache" ||
+        entry.name === ".mypy_cache" ||
+        entry.name === ".ruff_cache" ||
+        entry.name === ".DS_Store" ||
+        /\.(?:pyc|pyo)$/u.test(entry.name)
+      ) {
+        throw new Error(`task contains a transient artifact: ${relative}`);
+      }
       const stat = lstatSync(target);
       if (stat.isSymbolicLink()) {
         throw new Error("task directories may not contain symlinks");

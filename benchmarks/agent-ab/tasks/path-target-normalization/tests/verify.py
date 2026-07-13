@@ -45,7 +45,18 @@ def main() -> None:
         (["", "  ", "valid/file.py"], ["valid/file.py"]),
         (["/absolute.py", "../parent.py", "safe/../escape.py", "safe/file.py"], ["safe/file.py"]),
         (["C:/drive.py", "C:\\drive.py", "\\\\server\\share.py", "safe\\file.py"], []),
-        (["safe/line\nfeed.py", "safe/tab\tname.py", "safe/delete\x7fname.py"], []),
+        (
+            [
+                "safe/line\nfeed.py",
+                "safe/tab\tname.py",
+                "safe/delete\x7fname.py",
+                "safe/c1\x85name.py",
+                "\x85safe/leading-c1.py",
+                "safe/trailing-tab.py\t",
+                "\n safe/leading-line-feed.py ",
+            ],
+            [],
+        ),
     ]
     regression_cases = [
         ([" src/main.py ", "tests/test_main.py", "src/main.py"], ["src/main.py", "tests/test_main.py"]),
@@ -90,7 +101,17 @@ def make_generated_cases() -> list[tuple[list[str], list[str]]]:
     for _ in range(40):
         left = f"pkg_{rng.randrange(10_000)}/mod_{rng.randrange(10_000)}.py"
         right = f"tests_{rng.randrange(10_000)}/test_{rng.randrange(10_000)}.py"
-        values = [f" {left} ", right, left, f"../{rng.randrange(10_000)}.py", f"{left}/../escape.py"]
+        leading_control = f"\x85unsafe_{rng.randrange(10_000)}/leading.py"
+        trailing_control = f"unsafe_{rng.randrange(10_000)}/trailing.py\t"
+        values = [
+            f" {left} ",
+            right,
+            left,
+            f"../{rng.randrange(10_000)}.py",
+            f"{left}/../escape.py",
+            leading_control,
+            trailing_control,
+        ]
         cases.append((values, [left, right]))
     return cases
 

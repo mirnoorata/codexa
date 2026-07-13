@@ -2,10 +2,11 @@ diff --git a/src/targets.py b/src/targets.py
 index 018dd80..fdd3e09 100644
 --- a/src/targets.py
 +++ b/src/targets.py
-@@ -1,11 +1,28 @@
+@@ -1,11 +1,31 @@
  """Normalize repository-relative target selectors."""
  
 +import re
++import unicodedata
 +
 +
 +_WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:")
@@ -21,6 +22,8 @@ index 018dd80..fdd3e09 100644
 +    normalized: list[str] = []
 +    seen: set[str] = set()
 +    for raw_target in targets:
++        if any(unicodedata.category(character) == "Cc" for character in raw_target):
++            continue
 +        target = raw_target.strip()
 +        if not target or target in seen or not _is_safe_relative_target(target):
 +            continue
@@ -33,6 +36,6 @@ index 018dd80..fdd3e09 100644
 +def _is_safe_relative_target(target: str) -> bool:
 +    if target.startswith("/") or target.startswith("\\") or _WINDOWS_DRIVE.match(target):
 +        return False
-+    if "\\" in target or any(ord(character) < 32 or ord(character) == 127 for character in target):
++    if "\\" in target:
 +        return False
 +    return ".." not in target.split("/")

@@ -87,6 +87,42 @@ describe("agent A/B runner lifecycle", () => {
     expect(staleBaseline.stderr).toContain("must exactly match environment/project");
   });
 
+  it("rejects transient artifacts before hashing a task snapshot", async () => {
+    const fixture = await copyBenchmark({});
+    const fixtureConfig = path.join(fixture, "experiment.json");
+    const bytecodeDirectory = path.join(
+      fixture,
+      "tasks",
+      "path-target-normalization",
+      "tests",
+      "__pycache__"
+    );
+    await mkdir(bytecodeDirectory);
+    await writeFile(path.join(bytecodeDirectory, "verify.cpython-312.pyc"), "local bytecode\n");
+
+    const result = run(["validate", "--config", fixtureConfig]);
+
+    expect(result.status).toBe(1);
+    expect(result.stderr).toContain("task contains a transient artifact");
+    expect(result.stderr).toContain("tests/__pycache__");
+  });
+
+  it("rejects treatment MCP configs with any server other than Codexa", async () => {
+    const fixture = await copyBenchmark({});
+    const fixtureConfig = path.join(fixture, "experiment.json");
+    const mcpConfig = path.join(fixture, "config", "codexa.mcp.json");
+    const value = JSON.parse(await readFile(mcpConfig, "utf8"));
+    value.mcpServers.unregistered = {
+      command: "/opt/unregistered-mcp",
+      args: []
+    };
+    await writeFile(mcpConfig, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+
+    const extraServer = run(["validate", "--config", fixtureConfig]);
+    expect(extraServer.status).toBe(1);
+    expect(extraServer.stderr).toContain("treatment MCP servers contains unknown field: unregistered");
+  });
+
   it("does not accept commented decoys for verifier isolation or artifact transfer", async () => {
     const fixture = await copyBenchmark({});
     const fixtureConfig = path.join(fixture, "experiment.json");

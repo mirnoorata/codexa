@@ -28,6 +28,7 @@ const ATTEMPT_KEYS = [
   "jobName",
   "startedAt"
 ];
+const MAX_STRINGIFIED_TOOL_ARGUMENT_CHARACTERS = 256 * 1024;
 
 class ProtocolIdentityError extends Error {}
 
@@ -780,8 +781,32 @@ function extractMcpCallNames(value) {
 }
 
 function extractCodexaCliNames(value) {
+  if (typeof value === "string") {
+    const parsed = parseStringifiedToolArguments(value);
+    return parsed === null ? [] : extractCodexaCliNamesFromStructured(parsed);
+  }
+  return extractCodexaCliNamesFromStructured(value);
+}
+
+function parseStringifiedToolArguments(value) {
+  if (value.length > MAX_STRINGIFIED_TOOL_ARGUMENT_CHARACTERS) {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+    return null;
+  }
+  try {
+    const parsed = JSON.parse(trimmed);
+    return parsed && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function extractCodexaCliNamesFromStructured(value) {
   if (Array.isArray(value)) {
-    return value.flatMap((entry) => extractCodexaCliNames(entry));
+    return value.flatMap((entry) => extractCodexaCliNamesFromStructured(entry));
   }
   if (!value || typeof value !== "object") {
     return [];
@@ -795,7 +820,7 @@ function extractCodexaCliNames(value) {
       }
       continue;
     }
-    names.push(...extractCodexaCliNames(entry));
+    names.push(...extractCodexaCliNamesFromStructured(entry));
   }
   return names;
 }

@@ -120,6 +120,14 @@ Validate before registration:
 node scripts/agent-ab.mjs validate --config benchmarks/agent-ab/experiment.json
 ```
 
+Validate from an artifact-clean task tree. Validation rejects symlinks,
+oversized input, and transient artifacts such as bytecode and tool caches
+before the task hash is computed. Then make a real authenticated no-op request
+through the exact selected agent adapter and model. Installation-only checks do
+not prove that credentials reach the model, and registration deliberately does
+not inspect or serialize provider secrets. Complete both preflights before a
+costly run.
+
 Register the exact task hashes, treatment hashes, framework, agent, model,
 agent-runner version and arguments, seed, repetitions, and counterbalanced
 within-task execution order:
@@ -270,16 +278,51 @@ The experiment is not designed to claim that Codexa changes a model's intrinsic
 reasoning capability.
 
 The checked-in one-task GPT-5.6 Sol run is archived at
-[`reports/benchmarks/v0.10.0-agent-ab-pilot-v3.json`](../../reports/benchmarks/v0.10.0-agent-ab-pilot-v3.json).
-It found equal verified completion and higher treatment cost, tokens, time, and
-diff size. Both treatment runs also received a blocking post-edit drift warning
-for planned symbols despite satisfied invariants and passing external
-verification. Those are descriptive plumbing-pilot observations, not a
-product-effect estimate.
+[`reports/benchmarks/v0.10.0-agent-ab-pilot-v7.json`](../../reports/benchmarks/v0.10.0-agent-ab-pilot-v7.json).
+It completed all four registered assignments with a valid protocol. Both arms
+passed 2/2, giving a descriptive absolute risk difference of zero and two
+both-pass pairs:
 
-One post-run audit limitation narrows even that completion claim: the
-registered oracle interpreted "control characters" as ASCII C0 plus DEL and
-did not test Unicode C1. The result is valid against the preregistered oracle,
-but it does not prove the task wording's broadest Unicode interpretation. The
-immutable task is preserved for provenance; any successor must specify the
-Unicode contract and add cases under a new experiment ID.
+| Mean per run | Control | Treatment | Treatment / control |
+| --- | ---: | ---: | ---: |
+| Verified completion | 2/2 | 2/2 | no difference |
+| Input tokens | 104,448 | 620,053 | 5.94x |
+| Cached input tokens | 86,272 | 552,064 | 6.40x |
+| Output tokens | 3,212 | 6,680.5 | 2.08x |
+| Reported cost | $0.230376 | $0.816392 | 3.54x |
+| Agent elapsed time | 87.849s | 164.996s | 1.88x |
+| Controller elapsed time | 128.603s | 205.863s | 1.60x |
+| Verifier-counted changed files | 2 | 2 | 1.00x |
+| Verifier-counted changed lines | 62 | 67 | 1.08x |
+
+Agent-reported treatment setup succeeded in both runs. Structured trajectories
+recorded 13 Codexa calls: 2 each to `session_context`, `task_brief`,
+`change_plan`, `test_plan`, and `proof_card`, plus 3 to `post_edit_review`;
+controls recorded no Codexa invocation. Mean agent-reported indexing time was
+650.5 ms.
+
+Both treatment runs received a blocking `post_edit_review` inspection warning
+for changed symbols even though the actual edited files exactly matched the
+saved file plan. One run called the review twice after its first call omitted
+two explicit invariant reviews; the symbol warning remained after the evidence
+was supplied. This is measured process friction. It is not evidence that the
+review prevented an error, and the trajectories do not establish a causal
+mechanism.
+
+The pilot therefore demonstrates neither a completion benefit nor net agent
+value on this easy task and shows a large efficiency penalty. It is one
+non-confirmatory task with two pairs and no task-clustered interval, so it
+cannot establish how Codexa performs on diverse or difficult work, or that it
+never helps.
+
+The task and verifier now share an explicit Unicode General Category `Cc`
+contract. The verifier covers embedded plus leading/trailing C0, DEL, and C1
+controls, including generated edge cases, and pack validation rejects transient
+artifacts before task hashing.
+
+Only v7 is published evidence. Three intermediate diagnostics are excluded:
+v4 was stopped after provider authentication returned 401 before any useful
+observation, which exposed the missing explicit preflight; v5 exposed a
+post-run oracle gap; and v6 had a locally contaminated task hash and was
+interrupted before a usable observation. None is counted in the archived
+outcome.

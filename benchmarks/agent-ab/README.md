@@ -9,11 +9,15 @@ The checked-in pilot is deliberately too small for a product-effect claim. Use
 held-out external task packs for real conclusions.
 
 The hardened GPT-5.6 Sol plumbing run is archived in
-[`reports/benchmarks/v0.10.0-agent-ab-pilot-v3.json`](../../reports/benchmarks/v0.10.0-agent-ab-pilot-v3.json).
-Both arms passed; the run descriptively observed higher treatment token use,
-time, cost, and changed lines. That pass is against the registered oracle,
-which checked ASCII C0 plus DEL but not Unicode C1 controls; see the full guide
-before interpreting the result.
+[`reports/benchmarks/v0.10.0-agent-ab-pilot-v7.json`](../../reports/benchmarks/v0.10.0-agent-ab-pilot-v7.json).
+Both arms passed both repetitions. On this one easy task, Codexa therefore
+showed no completion benefit and substantially increased tokens, cost, and
+elapsed time. This is a non-confirmatory two-pair observation, not a product
+effect or causal-mechanism claim; see the full guide before interpreting it.
+
+The task specifies Unicode General Category `Cc`; the separate verifier covers
+embedded plus leading/trailing C0, DEL, and C1 controls, including generated
+edge cases. Pack validation rejects transient task artifacts before hashing.
 
 `experiment.json` intentionally remains frozen to that Codexa 0.10.0 pilot.
 To evaluate another candidate, create a new experiment ID and update both
@@ -27,7 +31,13 @@ node scripts/agent-ab.mjs validate \
   --config benchmarks/agent-ab/experiment.json
 ```
 
-Register a run before spending model tokens:
+Run validation on an artifact-clean task tree, then make a real authenticated
+no-op call through the exact selected provider adapter and model. Do not infer
+credential readiness from CLI installation or configuration alone.
+Registration is not an authentication check, so complete this preflight before
+spending tokens on the paired run.
+
+Register a run before spending tokens on the paired trials:
 
 ```bash
 node scripts/agent-ab.mjs register \
@@ -56,6 +66,13 @@ Use a scoped, disposable credential with only the required model access and a
 bounded spend limit; never expose repository, publishing, cloud-administration,
 or other broad credentials to an agent task, and revoke or rotate the credential
 afterward.
+
+Only v7 is published evidence. Earlier diagnostics were discarded: v4 was
+stopped after provider authentication returned 401 before any useful
+observation, exposing the need for the explicit preflight above; v5 exposed a
+post-run oracle gap; and v6 used a locally contaminated task hash and was
+interrupted before a usable observation. None contributes an outcome to the
+archived result.
 
 Registration hashes bind the source inputs but not the fully resolved container
 build. Exact replay additionally requires the built-image digest and resolved

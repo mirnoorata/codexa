@@ -343,6 +343,50 @@ describe("agent A/B analysis validity", () => {
     expect(summary.treatmentFidelity.treatment.codexaCallsByTool).toEqual({ task_brief: 1 });
   });
 
+  it("parses stringified shell arguments without treating prose as a Codexa invocation", async () => {
+    const experiment = await createExperiment(["task-a"]);
+    const control = findAssignment(experiment.assignments, "task-a", "control");
+    const treatment = findAssignment(experiment.assignments, "task-a", "treatment");
+    await writeFinalizedRun(experiment.output, control, {
+      trajectory: {
+        schema_version: "ATIF-v1.7",
+        steps: [{
+          tool_calls: [
+            {
+              tool_call_id: "call-control-prose",
+              function_name: "shell",
+              arguments: "For example, use {\"command\":\"codexa brief .\"} in an agent trajectory."
+            },
+            {
+              tool_call_id: "call-control-json",
+              function_name: "shell",
+              arguments: JSON.stringify({ note: "codexa brief .", command: "echo codexa brief ." })
+            }
+          ]
+        }]
+      }
+    });
+    await writeFinalizedRun(experiment.output, treatment, {
+      trajectory: {
+        schema_version: "ATIF-v1.7",
+        steps: [{
+          tool_calls: [{
+            tool_call_id: "call-treatment-json",
+            function_name: "shell",
+            arguments: JSON.stringify({ command: "codexa brief ." })
+          }]
+        }]
+      }
+    });
+
+    const summary = analyzeAgentAb(experiment);
+
+    expect(summary.treatmentFidelity.control).toMatchObject({ codexaInvokedRuns: 0, contaminationRuns: 0 });
+    expect(summary.treatmentFidelity.control.codexaCallsByTool).toEqual({});
+    expect(summary.treatmentFidelity.treatment).toMatchObject({ codexaInvokedRuns: 1, nonadherentRuns: 0 });
+    expect(summary.treatmentFidelity.treatment.codexaCallsByTool).toEqual({ "cli:brief": 1 });
+  });
+
   it("resamples tasks while preserving repetitions as within-task observations", async () => {
     const experiment = await createExperiment(["task-a", "task-b"], 0.9, 2_000);
     for (const assignment of experiment.assignments) {

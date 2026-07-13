@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "experimentId": "codexa-agent-ab-pilot-v3",
+  "experimentId": "codexa-agent-ab-pilot-v7",
   "framework": {
     "name": "harbor",
     "version": "0.18.0"
@@ -17,7 +17,7 @@
     "codexaVersion": "0.10.0"
   },
   "design": {
-    "seed": "codexa-agent-ab-pilot-v3",
+    "seed": "codexa-agent-ab-pilot-v7",
     "repetitions": 2,
     "concurrency": 1,
     "maxRetries": 0,

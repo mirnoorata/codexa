@@ -1,21 +1,21 @@
 {
   "schemaVersion": 1,
-  "experimentId": "codexa-agent-ab-pilot-v3",
-  "registeredAt": "2026-07-13T06:32:19.883Z",
+  "experimentId": "codexa-agent-ab-pilot-v7",
+  "registeredAt": "2026-07-13T07:54:53.904Z",
   "runWindow": {
-    "firstAttemptStartedAt": "2026-07-13T06:32:38.501Z",
-    "lastAttemptStartedAt": "2026-07-13T06:40:19.769Z",
-    "firstAgentStartedAt": "2026-07-13T06:32:51.575Z",
-    "lastAgentFinishedAt": "2026-07-13T06:43:22.225Z"
+    "firstAttemptStartedAt": "2026-07-13T07:54:58.415Z",
+    "lastAttemptStartedAt": "2026-07-13T08:02:47.394Z",
+    "firstAgentStartedAt": "2026-07-13T07:55:10.849Z",
+    "lastAgentFinishedAt": "2026-07-13T08:05:39.418Z"
   },
-  "configHash": "2e78ae3f31dddab2a01aef615a5a7f88cfdc223f03de1e6cf51d0d7e0b16b073",
+  "configHash": "15fab474bed2e1fa816e890939e07e9b7d692fe65f55ad8863c8391c54b29cd0",
   "framework": {
     "name": "harbor",
     "version": "0.18.0"
   },
   "harness": {
-    "controllerHash": "903ae135c88fe1cc5624b9e3c91b6a34a428f3d5a4e816cc41ababbd9c73387f",
-    "analyzerHash": "e4abd86a28cd755cd5fb64a3740ed53f845610e4b64058b967312b3a53fac987"
+    "controllerHash": "56c79dc6e9bf26dfc5e6ca2f929e499826544153f5f7aa0b33d40c392472b54f",
+    "analyzerHash": "e9628f0d786c0ac40bc1c98fb8efcc41099e78465dfa9f072125bb471319b2fb"
   },
   "candidate": {
     "codexaVersion": "0.10.0"
@@ -35,7 +35,7 @@
       {
         "id": "path-target-normalization",
         "name": "codexa-agent-ab/path-target-normalization",
-        "hash": "9870044ab51d4c2bc84c647ba795a79026a56ea31da1e2a7f0d8d06fcaf0bb9a"
+        "hash": "8440b3708e654d86bc25a71197e393572c3d534fabdedad94ec0192f5d57b9a8"
       }
     ],
     "treatment": {
@@ -99,15 +99,15 @@
           "eligibleRuns": 2,
           "presentRuns": 2,
           "missingRuns": 0,
-          "total": 2,
-          "mean": 1
+          "total": 4,
+          "mean": 2
         },
         "changed_lines": {
           "eligibleRuns": 2,
           "presentRuns": 2,
           "missingRuns": 0,
-          "total": 67,
-          "mean": 33.5
+          "total": 124,
+          "mean": 62
         },
         "genericity": {
           "eligibleRuns": 2,
@@ -150,43 +150,43 @@
           "eligibleRuns": 2,
           "presentRuns": 2,
           "missingRuns": 0,
-          "total": 169909,
-          "mean": 84954.5
+          "total": 208896,
+          "mean": 104448
         },
         "cacheTokens": {
           "eligibleRuns": 2,
           "presentRuns": 2,
           "missingRuns": 0,
-          "total": 125440,
-          "mean": 62720
+          "total": 172544,
+          "mean": 86272
         },
         "outputTokens": {
           "eligibleRuns": 2,
           "presentRuns": 2,
           "missingRuns": 0,
-          "total": 5340,
-          "mean": 2670
+          "total": 6424,
+          "mean": 3212
         },
         "costUsd": {
           "eligibleRuns": 2,
           "presentRuns": 2,
           "missingRuns": 0,
-          "total": 0.445265,
-          "mean": 0.2226325
+          "total": 0.46075200000000005,
+          "mean": 0.23037600000000003
         },
         "agentElapsedMs": {
           "eligibleRuns": 2,
           "presentRuns": 2,
           "missingRuns": 0,
-          "total": 155430,
-          "mean": 77715
+          "total": 175698,
+          "mean": 87849
         },
         "controllerElapsedMs": {
           "eligibleRuns": 2,
           "presentRuns": 2,
           "missingRuns": 0,
-          "total": 236322,
-          "mean": 118161
+          "total": 257205,
+          "mean": 128602.5
         },
         "codexaIndexElapsedMs": {
           "eligibleRuns": 2,
@@ -201,43 +201,43 @@
           "eligibleRuns": 2,
           "presentRuns": 2,
           "missingRuns": 0,
-          "total": 169909,
-          "mean": 84954.5
+          "total": 208896,
+          "mean": 104448
         },
         "cacheTokens": {
           "eligibleRuns": 2,
           "presentRuns": 2,
           "missingRuns": 0,
-          "total": 125440,
-          "mean": 62720
+          "total": 172544,
+          "mean": 86272
         },
         "outputTokens": {
           "eligibleRuns": 2,
           "presentRuns": 2,
           "missingRuns": 0,
-          "total": 5340,
-          "mean": 2670
+          "total": 6424,
+          "mean": 3212
         },
         "costUsd": {
           "eligibleRuns": 2,
           "presentRuns": 2,
           "missingRuns": 0,
-          "total": 0.445265,
-          "mean": 0.2226325
+          "total": 0.46075200000000005,
+          "mean": 0.23037600000000003
         },
         "agentElapsedMs": {
           "eligibleRuns": 2,
           "presentRuns": 2,
           "missingRuns": 0,
-          "total": 155430,
-          "mean": 77715
+          "total": 175698,
+          "mean": 87849
         },
         "controllerElapsedMs": {
           "eligibleRuns": 2,
           "presentRuns": 2,
           "missingRuns": 0,
-          "total": 236322,
-          "mean": 118161
+          "total": 257205,
+          "mean": 128602.5
         },
         "codexaIndexElapsedMs": {
           "eligibleRuns": 2,
@@ -278,8 +278,8 @@
           "eligibleRuns": 2,
           "presentRuns": 2,
           "missingRuns": 0,
-          "total": 114,
-          "mean": 57
+          "total": 134,
+          "mean": 67
         },
         "genericity": {
           "eligibleRuns": 2,
@@ -322,50 +322,50 @@
           "eligibleRuns": 2,
           "presentRuns": 2,
           "missingRuns": 0,
-          "total": 1385219,
-          "mean": 692609.5
+          "total": 1240106,
+          "mean": 620053
         },
         "cacheTokens": {
           "eligibleRuns": 2,
           "presentRuns": 2,
           "missingRuns": 0,
-          "total": 1246720,
-          "mean": 623360
+          "total": 1104128,
+          "mean": 552064
         },
         "outputTokens": {
           "eligibleRuns": 2,
           "presentRuns": 2,
           "missingRuns": 0,
-          "total": 13777,
-          "mean": 6888.5
+          "total": 13361,
+          "mean": 6680.5
         },
         "costUsd": {
           "eligibleRuns": 2,
           "presentRuns": 2,
           "missingRuns": 0,
-          "total": 1.729165,
-          "mean": 0.8645825
+          "total": 1.632784,
+          "mean": 0.816392
         },
         "agentElapsedMs": {
           "eligibleRuns": 2,
           "presentRuns": 2,
           "missingRuns": 0,
-          "total": 353943,
-          "mean": 176971.5
+          "total": 329991,
+          "mean": 164995.5
         },
         "controllerElapsedMs": {
           "eligibleRuns": 2,
           "presentRuns": 2,
           "missingRuns": 0,
-          "total": 435462,
-          "mean": 217731
+          "total": 411725,
+          "mean": 205862.5
         },
         "codexaIndexElapsedMs": {
           "eligibleRuns": 2,
           "presentRuns": 2,
           "missingRuns": 0,
-          "total": 1235,
-          "mean": 617.5
+          "total": 1301,
+          "mean": 650.5
         }
       },
       "completionConditionedMetrics": {
@@ -373,50 +373,50 @@
           "eligibleRuns": 2,
           "presentRuns": 2,
           "missingRuns": 0,
-          "total": 1385219,
-          "mean": 692609.5
+          "total": 1240106,
+          "mean": 620053
         },
         "cacheTokens": {
           "eligibleRuns": 2,
           "presentRuns": 2,
           "missingRuns": 0,
-          "total": 1246720,
-          "mean": 623360
+          "total": 1104128,
+          "mean": 552064
         },
         "outputTokens": {
           "eligibleRuns": 2,
           "presentRuns": 2,
           "missingRuns": 0,
-          "total": 13777,
-          "mean": 6888.5
+          "total": 13361,
+          "mean": 6680.5
         },
         "costUsd": {
           "eligibleRuns": 2,
           "presentRuns": 2,
           "missingRuns": 0,
-          "total": 1.729165,
-          "mean": 0.8645825
+          "total": 1.632784,
+          "mean": 0.816392
         },
         "agentElapsedMs": {
           "eligibleRuns": 2,
           "presentRuns": 2,
           "missingRuns": 0,
-          "total": 353943,
-          "mean": 176971.5
+          "total": 329991,
+          "mean": 164995.5
         },
         "controllerElapsedMs": {
           "eligibleRuns": 2,
           "presentRuns": 2,
           "missingRuns": 0,
-          "total": 435462,
-          "mean": 217731
+          "total": 411725,
+          "mean": 205862.5
         },
         "codexaIndexElapsedMs": {
           "eligibleRuns": 2,
           "presentRuns": 2,
           "missingRuns": 0,
-          "total": 1235,
-          "mean": 617.5
+          "total": 1301,
+          "mean": 650.5
         }
       },
       "failureClasses": {}
@@ -445,9 +445,8 @@
       "traceUnknownRuns": 0,
       "codexaInvokedRuns": 2,
       "codexaCallsByTool": {
-        "callers": 2,
         "change_plan": 2,
-        "post_edit_review": 2,
+        "post_edit_review": 3,
         "proof_card": 2,
         "session_context": 2,
         "task_brief": 2,
@@ -480,7 +479,7 @@
   },
   "outcomes": [
     {
-      "runId": "19919bafd0655fe996ac",
+      "runId": "297b57be9c02b536cdc7",
       "taskId": "path-target-normalization",
       "taskName": "codexa-agent-ab/path-target-normalization",
       "repetition": 1,
@@ -493,42 +492,41 @@
       "failureClass": null,
       "protocolStatus": "valid",
       "protocolFailure": null,
-      "attemptStartedAt": "2026-07-13T06:32:38.501Z",
-      "agentStartedAt": "2026-07-13T06:32:51.575Z",
-      "agentFinishedAt": "2026-07-13T06:35:55.606Z",
+      "attemptStartedAt": "2026-07-13T07:54:58.415Z",
+      "agentStartedAt": "2026-07-13T07:55:10.849Z",
+      "agentFinishedAt": "2026-07-13T07:58:02.204Z",
       "rewards": {
         "behavior": 1,
         "changed_files": 2,
-        "changed_lines": 58,
+        "changed_lines": 61,
         "genericity": 1,
         "public_tests": 1,
         "regression": 1,
         "scope": 1,
         "verified_completion": 1
       },
-      "inputTokens": 659774,
-      "cacheTokens": 587520,
-      "outputTokens": 7181,
-      "costUsd": 0.87046,
-      "agentElapsedMs": 184031,
-      "controllerElapsedMs": 224940,
-      "codexaIndexElapsedMs": 633,
+      "inputTokens": 621016,
+      "cacheTokens": 553472,
+      "outputTokens": 6749,
+      "costUsd": 0.816926,
+      "agentElapsedMs": 171355,
+      "controllerElapsedMs": 211766,
+      "codexaIndexElapsedMs": 652,
       "codexaSetup": {
         "status": "observed",
         "evidenceTrust": "agent-reported",
         "codexaVersion": "0.10.0",
         "versionMatchesCandidate": true,
         "indexExitCode": 0,
-        "indexElapsedMs": 633
+        "indexElapsedMs": 652
       },
       "codexaUsage": {
         "status": "observed",
         "codexaInvoked": true,
         "codexaCallCount": 7,
         "callsByTool": {
-          "callers": 1,
           "change_plan": 1,
-          "post_edit_review": 1,
+          "post_edit_review": 2,
           "proof_card": 1,
           "session_context": 1,
           "task_brief": 1,
@@ -537,7 +535,7 @@
       }
     },
     {
-      "runId": "864f0b9f04068106cb37",
+      "runId": "f5797d386b208c79f937",
       "taskId": "path-target-normalization",
       "taskName": "codexa-agent-ab/path-target-normalization",
       "repetition": 1,
@@ -550,25 +548,25 @@
       "failureClass": null,
       "protocolStatus": "valid",
       "protocolFailure": null,
-      "attemptStartedAt": "2026-07-13T06:36:23.444Z",
-      "agentStartedAt": "2026-07-13T06:36:36.052Z",
-      "agentFinishedAt": "2026-07-13T06:37:52.029Z",
+      "attemptStartedAt": "2026-07-13T07:58:30.184Z",
+      "agentStartedAt": "2026-07-13T07:58:42.574Z",
+      "agentFinishedAt": "2026-07-13T08:00:16.665Z",
       "rewards": {
         "behavior": 1,
-        "changed_files": 1,
-        "changed_lines": 36,
+        "changed_files": 2,
+        "changed_lines": 61,
         "genericity": 1,
         "public_tests": 1,
         "regression": 1,
         "scope": 1,
         "verified_completion": 1
       },
-      "inputTokens": 79129,
-      "cacheTokens": 48640,
-      "outputTokens": 2537,
-      "costUsd": 0.252875,
-      "agentElapsedMs": 75977,
-      "controllerElapsedMs": 116403,
+      "inputTokens": 104173,
+      "cacheTokens": 90880,
+      "outputTokens": 3345,
+      "costUsd": 0.21225500000000003,
+      "agentElapsedMs": 94091,
+      "controllerElapsedMs": 134413,
       "codexaIndexElapsedMs": null,
       "codexaSetup": {
         "status": "missing"
@@ -581,7 +579,7 @@
       }
     },
     {
-      "runId": "f69b088f68b2a5c25cfd",
+      "runId": "d002dc6307c9560f0dd1",
       "taskId": "path-target-normalization",
       "taskName": "codexa-agent-ab/path-target-normalization",
       "repetition": 2,
@@ -594,25 +592,25 @@
       "failureClass": null,
       "protocolStatus": "valid",
       "protocolFailure": null,
-      "attemptStartedAt": "2026-07-13T06:38:19.849Z",
-      "agentStartedAt": "2026-07-13T06:38:32.447Z",
-      "agentFinishedAt": "2026-07-13T06:39:51.900Z",
+      "attemptStartedAt": "2026-07-13T08:00:44.600Z",
+      "agentStartedAt": "2026-07-13T08:00:57.557Z",
+      "agentFinishedAt": "2026-07-13T08:02:19.164Z",
       "rewards": {
         "behavior": 1,
-        "changed_files": 1,
-        "changed_lines": 31,
+        "changed_files": 2,
+        "changed_lines": 63,
         "genericity": 1,
         "public_tests": 1,
         "regression": 1,
         "scope": 1,
         "verified_completion": 1
       },
-      "inputTokens": 90780,
-      "cacheTokens": 76800,
-      "outputTokens": 2803,
-      "costUsd": 0.19239,
-      "agentElapsedMs": 79453,
-      "controllerElapsedMs": 119919,
+      "inputTokens": 104723,
+      "cacheTokens": 81664,
+      "outputTokens": 3079,
+      "costUsd": 0.24849700000000002,
+      "agentElapsedMs": 81607,
+      "controllerElapsedMs": 122792,
       "codexaIndexElapsedMs": null,
       "codexaSetup": {
         "status": "missing"
@@ -625,7 +623,7 @@
       }
     },
     {
-      "runId": "94bd6fe2d52ea7b20239",
+      "runId": "1d7db228b186258956c9",
       "taskId": "path-target-normalization",
       "taskName": "codexa-agent-ab/path-target-normalization",
       "repetition": 2,
@@ -638,40 +636,39 @@
       "failureClass": null,
       "protocolStatus": "valid",
       "protocolFailure": null,
-      "attemptStartedAt": "2026-07-13T06:40:19.769Z",
-      "agentStartedAt": "2026-07-13T06:40:32.313Z",
-      "agentFinishedAt": "2026-07-13T06:43:22.225Z",
+      "attemptStartedAt": "2026-07-13T08:02:47.394Z",
+      "agentStartedAt": "2026-07-13T08:03:00.782Z",
+      "agentFinishedAt": "2026-07-13T08:05:39.418Z",
       "rewards": {
         "behavior": 1,
         "changed_files": 2,
-        "changed_lines": 56,
+        "changed_lines": 73,
         "genericity": 1,
         "public_tests": 1,
         "regression": 1,
         "scope": 1,
         "verified_completion": 1
       },
-      "inputTokens": 725445,
-      "cacheTokens": 659200,
-      "outputTokens": 6596,
-      "costUsd": 0.858705,
-      "agentElapsedMs": 169912,
-      "controllerElapsedMs": 210522,
-      "codexaIndexElapsedMs": 602,
+      "inputTokens": 619090,
+      "cacheTokens": 550656,
+      "outputTokens": 6612,
+      "costUsd": 0.815858,
+      "agentElapsedMs": 158636,
+      "controllerElapsedMs": 199959,
+      "codexaIndexElapsedMs": 649,
       "codexaSetup": {
         "status": "observed",
         "evidenceTrust": "agent-reported",
         "codexaVersion": "0.10.0",
         "versionMatchesCandidate": true,
         "indexExitCode": 0,
-        "indexElapsedMs": 602
+        "indexElapsedMs": 649
       },
       "codexaUsage": {
         "status": "observed",
         "codexaInvoked": true,
-        "codexaCallCount": 7,
+        "codexaCallCount": 6,
         "callsByTool": {
-          "callers": 1,
           "change_plan": 1,
           "post_edit_review": 1,
           "proof_card": 1,

@@ -811,33 +811,40 @@ effect claims require preregistered held-out tasks, paired repetitions, and
 task-clustered analysis.
 
 The archived GPT-5.6 Sol plumbing run is intentionally reported even though it
-does not favor Codexa. Both arms completed both repetitions, while this easy
-task descriptively showed higher treatment cost, token use, time, and diff size:
+does not demonstrate a Codexa completion benefit. Both arms completed both
+repetitions (two both-pass pairs; descriptive absolute risk difference 0),
+while this easy task showed a large treatment efficiency penalty:
 
 | Mean per run | Control | Treatment | Treatment / control |
 | --- | ---: | ---: | ---: |
 | Verified completion | 2/2 | 2/2 | no difference |
-| Input tokens | 84,954.5 | 692,609.5 | 8.15x |
-| Output tokens | 2,670 | 6,888.5 | 2.58x |
-| Reported cost | $0.2226 | $0.8646 | 3.88x |
-| Agent time | 77.7s | 177.0s | 2.28x |
-| Controller time | 118.2s | 217.7s | 1.84x |
-| Verifier-counted changed lines | 33.5 | 57 | 1.70x |
+| Input tokens | 104,448 | 620,053 | 5.94x |
+| Cached input tokens | 86,272 | 552,064 | 6.40x |
+| Output tokens | 3,212 | 6,680.5 | 2.08x |
+| Reported cost | $0.230376 | $0.816392 | 3.54x |
+| Agent time | 87.849s | 164.996s | 1.88x |
+| Controller time | 128.603s | 205.863s | 1.60x |
+| Verifier-counted changed files | 2 | 2 | 1.00x |
+| Verifier-counted changed lines | 62 | 67 | 1.08x |
 
-That is a descriptive negative-efficiency observation from one simple task, not
-an effect estimate or evidence that Codexa never helps. Both treatment runs
-also received a blocking post-edit drift warning for changes already inside the
-saved plan, despite satisfied invariants and passing external verification. The
-immutable hashes, arm metrics, fidelity telemetry, and per-run outcomes are
+This is descriptive evidence from one simple task and two pairs, with no
+task-clustered interval; it cannot establish a product effect or a causal
+mechanism. Agent-reported treatment setup succeeded in both runs and structured
+trajectories recorded 13 Codexa calls, while controls recorded none. Both
+treatment runs also received a blocking `post_edit_review` inspection warning
+for changed symbols even though the edited files exactly matched the saved file
+plan. One run made a second review call after supplying initially omitted
+invariant evidence. That is observed process friction, not demonstrated safety
+value.
+The immutable hashes, arm metrics, fidelity telemetry, and per-run outcomes are
 archived in
-[`reports/benchmarks/v0.10.0-agent-ab-pilot-v3.json`](reports/benchmarks/v0.10.0-agent-ab-pilot-v3.json).
+[`reports/benchmarks/v0.10.0-agent-ab-pilot-v7.json`](reports/benchmarks/v0.10.0-agent-ab-pilot-v7.json).
 
-The registered verifier operationalized the task's "control characters"
-requirement as ASCII C0 plus DEL; it did not test Unicode C1 controls. The
-archived completion result is therefore a result against that registered
-oracle, not evidence of broader Unicode-path robustness. A successor study
-must define the accepted Unicode categories precisely and use a new experiment
-ID rather than changing the frozen pilot task.
+The task now specifies Unicode General Category `Cc` explicitly. The separate
+verifier covers embedded plus leading/trailing C0, DEL, and C1 cases, including
+generated edge cases, and validation rejects transient task artifacts before
+hashing. Run a real authenticated provider preflight and validate an
+artifact-clean task tree before spending tokens on a registered experiment.
 
 ## GitHub Release Timeline
 

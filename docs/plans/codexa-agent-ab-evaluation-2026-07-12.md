@@ -64,7 +64,9 @@ proof output are telemetry, not correctness evidence.
 - Experiments use scoped, disposable provider credentials with only required
   model access and bounded spend; broad repository, publishing, or cloud
   credentials are never exposed to agent tasks and are revoked or rotated
-  afterward.
+  afterward. A real authenticated no-op request through the exact selected
+  adapter and model is required before a costly run; installation alone is not
+  an authentication preflight.
 - Harbor telemetry is disabled by the runner.
 - The controller writes immutable registration before execution and an exact
   attempt journal before each Harbor spawn. A started assignment is never
@@ -77,6 +79,9 @@ proof output are telemetry, not correctness evidence.
 - Registration hashes bind source inputs, not resolved container builds. Exact
   replay additionally requires the built-image digest and resolved operating-
   system and package dependency lock from the original run.
+- Task validation rejects symlinks, oversized input, and transient artifacts
+  before task hashing. Registration starts only from an artifact-clean,
+  validated task tree.
 
 ## Implementation slices
 
@@ -119,40 +124,49 @@ The completed 2026-07-13 run used Harbor 0.18.0, Codex CLI 0.144.1,
 `openai/gpt-5.6-sol`, and Codexa 0.10.0. It was protocol-valid, completed all
 four registered assignments, and is explicitly non-confirmatory.
 
-The publication run was preregistered as v3 after adversarial review added an
-exact Harbor task-snapshot path check and made agent-writable setup/version
-telemetry descriptive-only. The earlier v2 run is diagnostic, not publication
-evidence.
+The publication run was preregistered as v7 after the task and verifier were
+aligned on an explicit Unicode contract and task-tree validation rejected
+transient artifacts before hashing. Only v7 is publication evidence. v4 was
+stopped after provider authentication returned 401 before any useful
+observation, exposing the need for an explicit preflight; v5 exposed a post-run
+oracle gap; and v6 had a locally contaminated task hash and was interrupted
+before a usable observation. Those diagnostics are not counted.
 
 | Mean per run | Control | Treatment | Ratio |
 | --- | ---: | ---: | ---: |
 | Verified completion | 2/2 | 2/2 | no difference |
-| Input tokens | 84,954.5 | 692,609.5 | 8.15x |
-| Output tokens | 2,670 | 6,888.5 | 2.58x |
-| Reported cost | $0.2226 | $0.8646 | 3.88x |
-| Agent elapsed time | 77.7s | 177.0s | 2.28x |
-| Controller elapsed time | 118.2s | 217.7s | 1.84x |
-| Verifier-counted changed lines | 33.5 | 57 | 1.70x |
+| Input tokens | 104,448 | 620,053 | 5.94x |
+| Cached input tokens | 86,272 | 552,064 | 6.40x |
+| Output tokens | 3,212 | 6,680.5 | 2.08x |
+| Reported cost | $0.230376 | $0.816392 | 3.54x |
+| Agent elapsed time | 87.849s | 164.996s | 1.88x |
+| Controller elapsed time | 128.603s | 205.863s | 1.60x |
+| Verifier-counted changed files | 2 | 2 | 1.00x |
+| Verifier-counted changed lines | 62 | 67 | 1.08x |
 
 Treatment invoked Codexa in both runs. Across them the structured trajectories
-recorded 14 Codexa calls: 2 each to `session_context`, `task_brief`,
-`change_plan`, `test_plan`, `post_edit_review`, `callers`, and `proof_card`.
-Mean agent-reported Codexa indexing time was 617.5 ms, so indexing itself was
-not the dominant overhead. In both runs `post_edit_review` issued a blocking
-symbol-drift warning for changes already covered by the saved plan even while
-reporting satisfied invariants, no unplanned files, and covered verification.
+recorded 13 Codexa calls: 2 each to `session_context`, `task_brief`,
+`change_plan`, `test_plan`, and `proof_card`, plus 3 to `post_edit_review`.
+Controls recorded no Codexa calls. Agent-reported treatment setup succeeded
+2/2, and mean agent-reported Codexa indexing time was 650.5 ms.
 
-This run exercised the measurement path and produced a descriptive
-negative-efficiency observation for one easy task. It cannot establish Codexa's
-effect on diverse or difficult tasks. The sanitized report is
-[`reports/benchmarks/v0.10.0-agent-ab-pilot-v3.json`](../../reports/benchmarks/v0.10.0-agent-ab-pilot-v3.json).
+Both treatment runs received a blocking `post_edit_review` inspection warning
+for changed symbols even though the actual edited files exactly matched the
+saved file plan. One run repeated the review after supplying two initially
+omitted invariant reviews; the symbol warning remained. This is process
+friction, not evidence of error prevention or a causal mechanism.
 
-Adversarial post-run review found that the registered verifier operationalized
-the task's "control characters" wording as ASCII C0 plus DEL and did not test
-Unicode C1. Consequently, `verified_completion` proves only the registered
-oracle, not the broadest Unicode reading of the instruction. The evaluated
-bytes remain frozen; a successor task must state its Unicode categories
-explicitly, add the corresponding checks, and use a new experiment ID.
+Both arms passed 2/2, for a descriptive absolute risk difference of zero and
+two both-pass pairs. The run therefore shows no completion benefit on this easy
+task and a large treatment efficiency penalty. It is one non-confirmatory task
+with two pairs and no task-clustered interval; it cannot establish an effect on
+diverse or difficult tasks. The sanitized report is
+[`reports/benchmarks/v0.10.0-agent-ab-pilot-v7.json`](../../reports/benchmarks/v0.10.0-agent-ab-pilot-v7.json).
+
+The task explicitly rejects Unicode General Category `Cc`. The separate
+verifier covers embedded plus leading/trailing C0, DEL, and C1 controls,
+including generated edge cases, so the prior Unicode-oracle caveat no longer
+applies to v7.
 
 ## Multi-agent extension
 
@@ -174,6 +188,8 @@ the fixed-topology causal comparison.
 
 - Ran the black-box Vitest suite.
 - Validated Harbor's resolved control and treatment configurations.
+- Validated an artifact-clean task tree before hashing and ran an authenticated
+  provider preflight before the publication run.
 - Ran the oracle through the real Docker and separate-verifier boundary.
 - Ran a real MCP `initialize` and `tools/list` handshake in the treatment image.
 - Ran a deterministic simulated paired analysis with successes, crashes, and

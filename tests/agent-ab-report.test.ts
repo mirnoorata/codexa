@@ -7,7 +7,7 @@ import { describe, expect, it } from "vitest";
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const script = path.join(root, "scripts", "agent-ab.mjs");
 const config = path.join(root, "benchmarks", "agent-ab", "experiment.json");
-const reportPath = path.join(root, "reports", "benchmarks", "v0.10.0-agent-ab-pilot-v3.json");
+const reportPath = path.join(root, "reports", "benchmarks", "v0.10.0-agent-ab-pilot-v7.json");
 const metricFields = [
   "inputTokens",
   "cacheTokens",
@@ -38,7 +38,7 @@ const binaryRewardNames = [
 ] as const;
 const expectedAssignments = [
   {
-    runId: "19919bafd0655fe996ac",
+    runId: "297b57be9c02b536cdc7",
     taskId: "path-target-normalization",
     taskName: "codexa-agent-ab/path-target-normalization",
     repetition: 1,
@@ -46,7 +46,7 @@ const expectedAssignments = [
     order: 1
   },
   {
-    runId: "864f0b9f04068106cb37",
+    runId: "f5797d386b208c79f937",
     taskId: "path-target-normalization",
     taskName: "codexa-agent-ab/path-target-normalization",
     repetition: 1,
@@ -54,7 +54,7 @@ const expectedAssignments = [
     order: 2
   },
   {
-    runId: "f69b088f68b2a5c25cfd",
+    runId: "d002dc6307c9560f0dd1",
     taskId: "path-target-normalization",
     taskName: "codexa-agent-ab/path-target-normalization",
     repetition: 2,
@@ -62,7 +62,7 @@ const expectedAssignments = [
     order: 1
   },
   {
-    runId: "94bd6fe2d52ea7b20239",
+    runId: "1d7db228b186258956c9",
     taskId: "path-target-normalization",
     taskName: "codexa-agent-ab/path-target-normalization",
     repetition: 2,
@@ -132,7 +132,7 @@ describe("archived agent A/B report", () => {
 
     expect(validation).toMatchObject({
       schemaVersion: 1,
-      experimentId: "codexa-agent-ab-pilot-v3",
+      experimentId: "codexa-agent-ab-pilot-v7",
       framework: { name: "harbor", version: "0.18.0" },
       runner: {
         agent: "codex",
