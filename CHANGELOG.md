@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.10.0](https://github.com/mirnoorata/codexa/compare/v0.9.0...v0.10.0) (2026-07-13)
+
+
+### Features
+
+* **lifecycle:** enforce worktree-bound governance ([#97](https://github.com/mirnoorata/codexa/issues/97)) ([8311b0a](https://github.com/mirnoorata/codexa/commit/8311b0ac04ebb26a0d255b1aa83248a299901541))
+* **verification:** harden runner classification ([#92](https://github.com/mirnoorata/codexa/issues/92)) ([f79bbe3](https://github.com/mirnoorata/codexa/commit/f79bbe36c5ca6ec4a08427d5b6ab4eb0bc4c5e46))
+
 ## [0.9.0](https://github.com/mirnoorata/codexa/compare/v0.8.0...v0.9.0) (2026-07-10)
 
 
