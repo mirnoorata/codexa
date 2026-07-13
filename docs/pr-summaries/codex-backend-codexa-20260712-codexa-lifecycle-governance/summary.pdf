@@ -1,0 +1,177 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R 6 0 R 8 0 R] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 3258 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(Change Summary) Tj T*
+() Tj T*
+(- Project: codexa) Tj T*
+(- Worktree: /srv/worktree/codexa/codex/20260712-codexa-lifecycle-governance) Tj T*
+(- Branch: codex/backend/codexa-20260712-codexa-lifecycle-governance) Tj T*
+(- Base: main) Tj T*
+(- Primary commit: 837f4dc) Tj T*
+(- Subject: feat\(lifecycle\): enforce worktree-bound governance) Tj T*
+() Tj T*
+(Changed Files) Tj T*
+() Tj T*
+(837f4dc feat\(lifecycle\): enforce worktree-bound governance) Tj T*
+(README.md                                          |  70 ++-) Tj T*
+(docs/architecture/codexa-context-server.md         |   2 +-) Tj T*
+(docs/architecture/session-memory.md                |  10 +-) Tj T*
+(docs/guides/new-user-tutorial.md                   |   2 +-) Tj T*
+(.../codexa-lifecycle-governance-2026-07-12.md      | 504 ++++++++++++++++++++) Tj T*
+(integrations/claude-code/README.md                 |   2 +-) Tj T*
+(src/cli.ts                                         |  36 +-) Tj T*
+(src/cli/hooks.ts                                   |  40 ++) Tj T*
+(src/cli/query-commands.ts                          |  26 +-) Tj T*
+(src/codex-contract.ts                              |   9 +-) Tj T*
+(src/git.ts                                         |  11 +) Tj T*
+(src/index-identity.ts                              | 107 +++++) Tj T*
+(src/indexer/freshness.ts                           |  17 +-) Tj T*
+(src/init.ts                                        |   4 +-) Tj T*
+(src/lifecycle-contract.ts                          |  72 +++) Tj T*
+(src/mcp-repo-root.ts                               |  17 +-) Tj T*
+(src/mcp.ts                                         |  27 +-) Tj T*
+(src/mcp/compaction.ts                              |  32 +-) Tj T*
+(src/mcp/envelope.ts                                |  15 +-) Tj T*
+(src/mcp/resources.ts                               |  18 +-) Tj T*
+(src/mcp/runtime.ts                                 |  16 +-) Tj T*
+(src/mcp/session-memory.ts                          |   1 +) Tj T*
+(src/mcp/tool-registry.ts                           |  18 +-) Tj T*
+(src/mcp/tools.ts                                   |  19 +-) Tj T*
+(src/post-edit-outcomes.ts                          |  35 +-) Tj T*
+(src/prove.ts                                       | 277 ++++++++++-) Tj T*
+(src/query-data.ts                                  |   4 +) Tj T*
+(src/query/change-plan.ts                           | 150 +-----) Tj T*
+(src/query/change-plan/readiness.ts                 |  86 ++++) Tj T*
+(src/query/post-edit.ts                             | 286 ++++-------) Tj T*
+(src/query/post-edit/artifacts.ts                   |  23 +) Tj T*
+(src/query/post-edit/decision.ts                    |  25 +-) Tj T*
+(src/query/post-edit/lifecycle.ts                   | 168 +++++++) Tj T*
+(src/query/post-edit/next-actions.ts                |   5 +-) Tj T*
+(src/query/post-edit/support.ts                     | 119 +++++) Tj T*
+(src/query/runtime.ts                               |  44 +-) Tj T*
+(src/query/session-memory.ts                        |   5 +-) Tj T*
+(src/query/session.ts                               |   2 +) Tj T*
+(src/query/worktree.ts                              | 104 +++-) Tj T*
+(src/session-memory/derivation.ts                   |  38 ++) Tj T*
+ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 3271 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(src/session-memory/event-log.ts                    |   9 +-) Tj T*
+(src/session-memory/model.ts                        |  12 +) Tj T*
+(src/session-memory/runtime.ts                      | 108 ++++-) Tj T*
+(src/session-memory/store.ts                        |   5 +-) Tj T*
+(src/task-lifecycle.ts                              | 530 +++++++++++++++++++++) Tj T*
+(src/task-snapshots.ts                              | 126 +++--) Tj T*
+(src/types/facts.ts                                 |   2 +-) Tj T*
+(src/types/inputs.ts                                |   4 +) Tj T*
+(src/types/query-data.ts                            |  20 +-) Tj T*
+(src/types/snapshots.ts                             |  67 +++) Tj T*
+(src/types/verification.ts                          |  69 +++) Tj T*
+(src/verification-artifacts.ts                      | 503 +++++++++++++++++++) Tj T*
+(src/workspace-state.ts                             |   7 +) Tj T*
+(tests/git-state-degraded.test.ts                   |  86 +++-) Tj T*
+(tests/index-identity.test.ts                       | 177 +++++++) Tj T*
+(...r-05-answers-broad-focus-graph-workflow.test.ts |   7 +-) Tj T*
+(tests/indexer-08-does-not-recover-a-legacy.test.ts |   2 +-) Tj T*
+(tests/init.test.ts                                 |   2 +-) Tj T*
+(tests/lifecycle-transport-contracts.test.ts        | 122 +++++) Tj T*
+(tests/mcp-01-keeps-the-primary-mcp-happy.test.ts   |  13 +-) Tj T*
+(tests/mcp-02-does-not-let-stale-codexa.test.ts     |  68 ++-) Tj T*
+(tests/prove.test.ts                                | 284 ++++++++++-) Tj T*
+(tests/schema.test.ts                               |   7 +-) Tj T*
+(...ory-02-bounds-direct-entry-scope-arrays.test.ts |  24 +) Tj T*
+(tests/task-lifecycle.test.ts                       | 426 +++++++++++++++++) Tj T*
+(tests/verification-artifacts.test.ts               | 182 +++++++) Tj T*
+(66 files changed, 4821 insertions\(+\), 487 deletions\(-\)) Tj T*
+(create mode 100644 docs/plans/codexa-lifecycle-governance-2026-07-12.md) Tj T*
+(create mode 100644 src/index-identity.ts) Tj T*
+(create mode 100644 src/lifecycle-contract.ts) Tj T*
+(create mode 100644 src/query/change-plan/readiness.ts) Tj T*
+(create mode 100644 src/query/post-edit/artifacts.ts) Tj T*
+(create mode 100644 src/query/post-edit/lifecycle.ts) Tj T*
+(create mode 100644 src/query/post-edit/support.ts) Tj T*
+(create mode 100644 src/task-lifecycle.ts) Tj T*
+(create mode 100644 src/verification-artifacts.ts) Tj T*
+(create mode 100644 src/workspace-state.ts) Tj T*
+(create mode 100644 tests/index-identity.test.ts) Tj T*
+(create mode 100644 tests/lifecycle-transport-contracts.test.ts) Tj T*
+(create mode 100644 tests/task-lifecycle.test.ts) Tj T*
+(create mode 100644 tests/verification-artifacts.test.ts) Tj T*
+() Tj T*
+(Verification) Tj T*
+() Tj T*
+(- git diff --check: passed) Tj T*
+(- npm run typecheck: passed) Tj T*
+(- npm run package:hygiene: passed) Tj T*
+(- Codexa skipped: Explicit Codexa revision-3 full-code posteditreview with all five) Tj T*
+(invariant reviews returned continue/complete; final revision-4 docs-only review had no drift) Tj T*
+(or unaccounted checks and was advisory only because documentation context quality was) Tj T*
+(medium.) Tj T*
+(- git diff --cached --check: passed) Tj T*
+ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 347 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(- staged safety scan: passed) Tj T*
+() Tj T*
+(Notes) Tj T*
+() Tj T*
+(Implements the lifecycle-governance plan: exact checkout identity, invariant-bound) Tj T*
+(replanning, bounded loop stops, external verification artifacts, and compaction-safe) Tj T*
+(decision continuity. All behavior is project-neutral.) Tj T*
+ET
+endstream
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000127 00000 n 
+0000000197 00000 n 
+0000000323 00000 n 
+0000003632 00000 n 
+0000003758 00000 n 
+0000007080 00000 n 
+0000007206 00000 n 
+trailer
+<< /Size 10 /Root 1 0 R >>
+startxref
+7603
+%%EOF
