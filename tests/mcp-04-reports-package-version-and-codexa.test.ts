@@ -148,6 +148,13 @@ it("serves Codexa tools over explicit Streamable HTTP transport", async () => {
       }
     } finally {
       await stopChild(child);
+      // stopChild has a short generic grace period so unrelated tests cannot
+      // hang on a broken child. This test specifically verifies the graceful
+      // shutdown footer, so wait for the server's finalizers to finish when a
+      // loaded runner needs longer than that grace period.
+      if (child.exitCode === null && child.signalCode === null) {
+        await waitForExit(child, 15_000);
+      }
     }
     expect((await waitForHttpTelemetry(telemetryPath, 5)).at(-1)).toEqual({
       schemaVersion: 1,
