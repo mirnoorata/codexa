@@ -797,6 +797,48 @@ the archived report. The previous run is kept at
 Do not update public benchmark claims without rerunning the eval on the current
 checkout and current target.
 
+### Agent-level A/B evaluation
+
+The retrieval gate above does not establish that an agent completes coding
+tasks better with Codexa. The opt-in
+[agent A/B harness](docs/guides/agent-ab.md) uses version-pinned Harbor
+execution and digest-pinned base images to run the same coding agent and model
+in control and Codexa-treatment arms. A separate no-network verifier produces
+the binary completion outcome; Codexa does not grade itself.
+
+The checked-in task is a plumbing pilot, not a product benchmark. Credible
+effect claims require preregistered held-out tasks, paired repetitions, and
+task-clustered analysis.
+
+The archived GPT-5.6 Sol plumbing run is intentionally reported even though it
+does not favor Codexa. Both arms completed both repetitions, while this easy
+task descriptively showed higher treatment cost, token use, time, and diff size:
+
+| Mean per run | Control | Treatment | Treatment / control |
+| --- | ---: | ---: | ---: |
+| Verified completion | 2/2 | 2/2 | no difference |
+| Input tokens | 84,954.5 | 692,609.5 | 8.15x |
+| Output tokens | 2,670 | 6,888.5 | 2.58x |
+| Reported cost | $0.2226 | $0.8646 | 3.88x |
+| Agent time | 77.7s | 177.0s | 2.28x |
+| Controller time | 118.2s | 217.7s | 1.84x |
+| Verifier-counted changed lines | 33.5 | 57 | 1.70x |
+
+That is a descriptive negative-efficiency observation from one simple task, not
+an effect estimate or evidence that Codexa never helps. Both treatment runs
+also received a blocking post-edit drift warning for changes already inside the
+saved plan, despite satisfied invariants and passing external verification. The
+immutable hashes, arm metrics, fidelity telemetry, and per-run outcomes are
+archived in
+[`reports/benchmarks/v0.10.0-agent-ab-pilot-v3.json`](reports/benchmarks/v0.10.0-agent-ab-pilot-v3.json).
+
+The registered verifier operationalized the task's "control characters"
+requirement as ASCII C0 plus DEL; it did not test Unicode C1 controls. The
+archived completion result is therefore a result against that registered
+oracle, not evidence of broader Unicode-path robustness. A successor study
+must define the accepted Unicode categories precisely and use a new experiment
+ID rather than changing the frozen pilot task.
+
 ## GitHub Release Timeline
 
 Use GitHub Releases as the visible source timeline for the current project.

@@ -82,3 +82,14 @@ node dist/cli.js eval . --suite all --seed any-seed-you-like --json
 ```
 
 Pick your own seed — that's the point.
+
+## What this gate does not prove
+
+This gate compares Codexa's structured retrieval and verification packets with
+raw `rg` and Git output. It does not run two coding agents, produce patches, or
+measure verified task completion, tokens, attempts, or elapsed agent time.
+
+Use the separate [agent A/B guide](agent-ab.md) for the external Harbor
+experiment that runs the same agent with and without Codexa and grades the
+finished patch in an isolated deterministic verifier. Do not promote a retrieval
+gate result into an agent-performance claim.
