@@ -24,14 +24,17 @@ export function sessionMemoryCacheDir(repoRoot: string): string {
 }
 
 export async function resolveSessionId(repoRoot: string, requested?: string): Promise<string> {
-  const normalized = normalizeIdentifier(requested);
-  if (normalized) {
+  if (requested !== undefined) {
+    const normalized = normalizeIdentifier(requested);
+    if (!normalized || normalized === "." || normalized === "..") {
+      throw new Error("session id must contain a safe non-dot identifier");
+    }
     return normalized;
   }
   const latest = await readJson<LatestSessionMemoryPointer>(path.join(sessionMemoryCacheDir(repoRoot), LATEST_FILE));
   if (latest.ok && typeof latest.value.sessionId === "string") {
     const latestId = normalizeIdentifier(latest.value.sessionId);
-    if (latestId) {
+    if (latestId && latestId !== "." && latestId !== "..") {
       return latestId;
     }
   }

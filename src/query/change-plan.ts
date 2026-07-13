@@ -11,7 +11,7 @@ import { formatTestRecommendations, recommendTests, uniqueTests } from "./tests.
 import { findFile, normalizeInputPaths, resolveFileTarget, resolveSymbolTarget } from "./targets.js";
 import { compactSnapshotTests, snapshotRiskBaseline, snapshotSymbolBaseline } from "./post-edit/snapshot-contract.js";
 import { pointerForSessionMemory } from "../session-memory.js";
-import { loadTaskSnapshot, saveBlockedTaskSnapshot, saveTaskSnapshot, type TaskSnapshotLoadResult } from "../task-snapshots.js";
+import { allocateTaskSnapshotId, loadTaskSnapshot, saveBlockedTaskSnapshot, saveTaskSnapshot, type TaskSnapshotLoadResult } from "../task-snapshots.js";
 import type {
   ChangedFileEntry,
   ChangePlanInput,
@@ -30,7 +30,9 @@ import type {
 } from "../types.js";
 import { limitText, stableId, uniqueSorted } from "../util.js";
 import { formatRequiredChecks, requiredDependencyChecksForPlan, requiredWorkflowChecksForPlan } from "./change-plan/checks.js";
-
+import { getDiffFootprint } from "./worktree.js";
+import { formatTaskInvariants, nextTaskPlanLifecycle } from "../task-lifecycle.js";
+import { changePlanEditReadiness, normalizeTargetCandidateSelector, resolveChangePlanFollowBaseInput } from "./change-plan/readiness.js";
 export async function changePlanQuery(
   sessionInput: QuerySessionInput,
   input: ChangePlanInput = {},
@@ -49,6 +51,8 @@ export async function changePlanQuery(
     });
   }
   const effectiveInput = followBase?.input ?? input;
+  const priorSnapshotLoad = effectiveInput.saveSnapshot && effectiveInput.taskId ? await loadTaskSnapshot(repoRoot, effectiveInput.taskId) : undefined;
+  const { planRevision, invariants } = nextTaskPlanLifecycle(priorSnapshotLoad?.snapshot, effectiveInput.invariants);
   const focus = await focusBriefQuery(session, { task: effectiveInput.task, tokenBudget: Math.min(effectiveInput.tokenBudget ?? 2600, 3000), limit: effectiveInput.limit ?? 8, diff: effectiveInput.diff }, options);
   const pack = await contextPackQuery(session, { ...effectiveInput, tokenBudget: Math.min(effectiveInput.tokenBudget ?? 3200, 4000), limit: effectiveInput.limit ?? 10, includeSnippets: effectiveInput.includeSnippets ?? false }, options);
   const packData = pack.data as {
@@ -179,10 +183,11 @@ export async function changePlanQuery(
         "4. Re-run change_plan with an explicit file or symbol target and saveSnapshot=true before editing.",
         "5. Treat any tests below as deferred until the edit target is explicit."
       ];
+  const finalTaskId = effectiveInput.saveSnapshot && editReadiness.editable ? allocateTaskSnapshotId(repoRoot, effectiveInput) : effectiveInput.taskId;
   const structuredNextTools = editReadiness.editable
     ? [
-        nextTool("post_edit_review", "review drift and verification after completing the planned edit", { taskId: effectiveInput.taskId }, true, [".codex/cache/codexa-outcomes"]),
-        plannedTests.length > 0 ? nextTool("test_plan", "inspect planned targeted tests before editing", { files: plannedEditTargets.slice(0, 8) }) : undefined
+        plannedTests.length > 0 ? nextTool("test_plan", "inspect planned targeted tests before editing", { files: plannedEditTargets.slice(0, 8) }) : undefined,
+        nextTool("post_edit_review", "review drift and verification after completing the planned edit", { taskId: finalTaskId }, true, [".codex/cache/codexa-outcomes"])
       ].filter((tool): tool is ReturnType<typeof nextTool> => Boolean(tool))
     : [
         nextTool(editReadiness.recommendedNextTool ?? focusData.nextCall?.tool ?? "search", "narrow the task to an explicit file or symbol target before editing", { task: effectiveInput.task }),
@@ -197,10 +202,13 @@ export async function changePlanQuery(
   });
   const snapshotIndex = effectiveInput.saveSnapshot && editReadiness.editable ? session.index : undefined;
   const snapshotScope = uniqueSorted([...plannedEditTargets, ...files]);
+  const snapshotDiffFootprint = effectiveInput.saveSnapshot && editReadiness.editable ? await getDiffFootprint(repoRoot, packData.changedEntries ?? []) : undefined;
+  const snapshotInput = finalTaskId ? { ...effectiveInput, taskId: finalTaskId } : effectiveInput;
   const sessionMemoryPointer = effectiveInput.saveSnapshot && editReadiness.editable
     ? await pointerForSessionMemory({
         repoRoot,
-        taskId: effectiveInput.taskId,
+        sessionId: session.options.workspaceSessionId,
+        taskId: finalTaskId,
         files: snapshotScope,
         freshness: pack.freshness,
         limit: 8
@@ -209,10 +217,12 @@ export async function changePlanQuery(
   const savedSnapshot = effectiveInput.saveSnapshot && editReadiness.editable
     ? await saveTaskSnapshot({
         repoRoot,
-        input: effectiveInput,
+        input: snapshotInput,
         snapshot: {
           task: effectiveInput.task,
           changeType: effectiveInput.changeType ?? "unknown",
+          planRevision,
+          invariants,
           snapshotFreshness: pack.freshness,
           plannedEditTargets,
           plannedFiles: files,
@@ -229,6 +239,7 @@ export async function changePlanQuery(
           requiredDependencyChecks,
           symbolBaseline: snapshotIndex ? snapshotSymbolBaseline(snapshotIndex, snapshotScope) : undefined,
           riskBaseline: snapshotIndex ? snapshotRiskBaseline(snapshotIndex, snapshotScope) : undefined,
+          diffFootprint: snapshotDiffFootprint,
           recipes: plannedRecipes,
           dirtyBaseline: {
             changedEntries: packData.changedEntries ?? [],
@@ -250,11 +261,13 @@ export async function changePlanQuery(
     effectiveInput.task ? `Task: ${effectiveInput.task}` : undefined,
     `Edit readiness: ${editReadiness.status}; ${editReadiness.reason}`,
     savedSnapshot ? `Task snapshot: ${savedSnapshot.snapshot.taskId}` : undefined,
+    savedSnapshot ? `Plan revision: ${savedSnapshot.snapshot.planRevision ?? 1}` : undefined,
     effectiveInput.saveSnapshot && !editReadiness.editable ? "Task snapshot: not saved because this packet is orientation-only." : undefined,
     "",
     ...planSteps,
     "",
     ...formatComplexityReview(complexityReview),
+    ...formatTaskInvariants(invariants, "Task invariants:"),
     "",
     "Read first:",
     ...focusFiles.slice(0, 10).map((entry) => `- ${entry.file.path}: ${entry.tier}; ${entry.reasons.join("; ")}`),
@@ -308,129 +321,6 @@ export async function changePlanQuery(
     }
   };
 }
-
-function changePlanEditReadiness(input: {
-  input: ChangePlanInput;
-  focusFiles: Array<{ file: FileFact; reasons: string[]; tier: EvidenceTier }>;
-  explicitTargetProvided: boolean;
-  dirtyScope?: {
-    requested?: boolean;
-    mode?: "edit" | "orientation";
-    canPlan?: boolean;
-    plannedEditTargets?: string[];
-  };
-  quality?: ContextQuality;
-  packetVerdict?: string;
-  intentConfidence?: { editReady?: boolean; confidence?: number; verdict?: string; recommendedNextTool?: string; missingAnchors?: string[] };
-}): {
-  editable: boolean;
-  status: "edit-ready" | "orientation-only";
-  reason: string;
-  source: "explicit-target" | "high-confidence-context" | "dirty-worktree" | "insufficient-context";
-  explicitTargetProvided: boolean;
-  packetVerdict?: string;
-  qualityLevel?: ContextQuality["level"];
-  confidence?: number;
-  recommendedNextTool?: string;
-  missingAnchors: string[];
-  snapshotBlocked: boolean;
-} {
-  const packetVerdict = input.packetVerdict ?? input.intentConfidence?.verdict;
-  const qualityLevel = input.quality?.level;
-  const hasEvidenceBackedFocus = input.focusFiles.some((entry) => entry.tier === "authoritative" || entry.tier === "derived");
-  const highConfidenceContext = qualityLevel === "high" && hasEvidenceBackedFocus && (packetVerdict === undefined || packetVerdict === "edit-ready");
-  const dirtyWorktreeContext =
-    !input.explicitTargetProvided &&
-    input.dirtyScope?.requested === true &&
-    input.dirtyScope.mode === "edit" &&
-    input.dirtyScope.canPlan === true &&
-    (input.dirtyScope.plannedEditTargets?.length ?? 0) > 0 &&
-    hasEvidenceBackedFocus &&
-    packetVerdict !== "raw-search-better";
-  const editable = input.explicitTargetProvided || highConfidenceContext || dirtyWorktreeContext;
-  const missingAnchors = uniqueSorted([
-    ...(input.intentConfidence?.missingAnchors ?? []),
-    ...(input.explicitTargetProvided || dirtyWorktreeContext ? [] : ["file-or-symbol-target"]),
-    ...(highConfidenceContext || input.explicitTargetProvided || dirtyWorktreeContext ? [] : ["edit-ready-context"]),
-    ...(input.dirtyScope?.requested && !input.dirtyScope.canPlan ? ["known-dirty-worktree-scope"] : [])
-  ]);
-  const reason = input.explicitTargetProvided
-    ? "explicit file or symbol target provided"
-    : dirtyWorktreeContext
-      ? `current dirty worktree explicitly requested as edit scope (${input.dirtyScope?.plannedEditTargets?.length ?? 0} file(s))`
-    : highConfidenceContext
-      ? "high-confidence evidence-backed packet"
-      : packetVerdict === "raw-search-better"
-        ? "raw search is likely a cleaner first pass than this broad packet"
-        : packetVerdict === "needs-target"
-          ? "broad change plan needs an explicit file or symbol target"
-          : qualityLevel === "low"
-            ? "context quality is low"
-            : "packet is not edit-ready without an explicit file or symbol target";
-  return {
-    editable,
-    status: editable ? "edit-ready" : "orientation-only",
-    reason,
-    source: input.explicitTargetProvided ? "explicit-target" : dirtyWorktreeContext ? "dirty-worktree" : highConfidenceContext ? "high-confidence-context" : "insufficient-context",
-    explicitTargetProvided: input.explicitTargetProvided,
-    packetVerdict,
-    qualityLevel,
-    confidence: input.intentConfidence?.confidence,
-    recommendedNextTool: editable ? undefined : input.intentConfidence?.recommendedNextTool ?? (packetVerdict === "raw-search-better" || packetVerdict === "needs-target" ? "search" : "task_brief"),
-    missingAnchors,
-    snapshotBlocked: Boolean(input.input.saveSnapshot && !editable)
-  };
-}
-
-async function resolveChangePlanFollowBaseInput(
-  repoRoot: string,
-  input: ChangePlanInput
-): Promise<{ input?: ChangePlanInput; snapshotLoad?: TaskSnapshotLoadResult; reason?: string }> {
-  const directInput = withoutFollowCandidate(input);
-  if (!input.taskId && hasChangePlanReplaySeed(directInput)) {
-    return { input: directInput };
-  }
-  const snapshotLoad = await loadTaskSnapshot(repoRoot, input.taskId);
-  if (snapshotLoad.missingReason === "blocked-plan" && snapshotLoad.blockedSnapshot?.input) {
-    return {
-      input: {
-        ...withoutFollowCandidate(snapshotLoad.blockedSnapshot.input),
-        taskId: snapshotLoad.blockedSnapshot.taskId,
-        saveSnapshot: true
-      },
-      snapshotLoad
-    };
-  }
-  if (hasChangePlanReplaySeed(directInput)) {
-    return { input: directInput, snapshotLoad };
-  }
-  if (snapshotLoad.missingReason === "blocked-plan") {
-    return { snapshotLoad, reason: "blocked change-plan marker does not include replayable input" };
-  }
-  if (snapshotLoad.snapshot) {
-    return { snapshotLoad, reason: "requested task already has an edit-ready snapshot; followCandidate only applies to blocked orientation plans" };
-  }
-  return {
-    snapshotLoad,
-    reason: snapshotLoad.missingReason ? `no blocked change-plan input available (${snapshotLoad.missingReason})` : "no blocked change-plan input available"
-  };
-}
-
-function withoutFollowCandidate(input: ChangePlanInput): ChangePlanInput {
-  const rest = { ...input };
-  delete rest.followCandidate;
-  return rest;
-}
-
-function hasChangePlanReplaySeed(input: ChangePlanInput): boolean {
-  return Boolean(input.task?.trim() || input.query?.trim() || input.files?.length || input.symbols?.length);
-}
-
-function normalizeTargetCandidateSelector(value: string | undefined): string | undefined {
-  const trimmed = value?.trim();
-  return trimmed || undefined;
-}
-
 async function changePlanFollowCandidateResult(input: {
   session: QuerySession;
   options: QueryOptions;
@@ -725,7 +615,6 @@ function changePlanTargetCandidates(input: {
     .slice(0, 8)
     .map((candidate, index) => ({ ...candidate, rank: index + 1 }));
 }
-
 export function validateChangePlanTargetCandidate(
   candidate: ChangePlanTargetCandidateBase,
   context: { index: CodexaIndex; repoRoot: string }
@@ -736,7 +625,6 @@ export function validateChangePlanTargetCandidate(
   let ambiguousTarget = false;
   const requestedFiles = candidate.nextChangePlanArgs.files ?? [];
   const requestedSymbols = candidate.nextChangePlanArgs.symbols ?? [];
-
   if (requestedFiles.length === 0 && requestedSymbols.length === 0) {
     validationReasons.push("no explicit file or symbol target in nextChangePlanArgs");
     unresolvedTarget = true;

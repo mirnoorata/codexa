@@ -14,6 +14,9 @@ import { buildSemanticIndex, type SemanticProviderKind } from "./semantic-retrie
 import { updateStaticAnalysisReports } from "./static-analysis.js";
 import { initializePolicyPack } from "./policy-pack.js";
 import { proveQuery } from "./prove.js";
+import { createQuerySession } from "./query/session.js";
+import { ingestVerificationArtifact } from "./verification-artifacts.js";
+import { validateArtifactIds } from "./lifecycle-contract.js";
 import { recordAdvisoryHookEvent, runPostEditHook, runPreEditHook } from "./cli/hooks.js";
 import type { ChangeType } from "./types.js";
 import { runEval } from "./eval.js";
@@ -456,6 +459,35 @@ program
   });
 
 program
+  .command("verification-artifact")
+  .argument("[repo]", "repository root; defaults to the current directory", process.cwd())
+  .requiredOption("--file <path>", "strict codexa-verification-summary JSON file to ingest")
+  .option("--session-id <id>", "session memory ID that should retain a bounded reference to this run")
+  .option("--json", "emit structured JSON")
+  .option("--workspace-focus-file <path>", "workspace focus file to consult when <repo> is a workspace launch root")
+  .option("--workspace-session <id>", "active WORKING.md session row to prefer when <repo> is a workspace launch root")
+  .description("Ingest a bounded, state-bound external verification summary and return its immutable artifact ID.")
+  .action(async (repo: string, opts: { file: string; sessionId?: string; json?: boolean } & CliQueryOptions) => {
+    const repoRoot = await resolveQueryRepoRoot(repo, opts);
+    const session = opts.sessionId ? await createQuerySession(repoRoot, { autoRefresh: true, workspaceSessionId: opts.workspaceSession }) : undefined;
+    const result = await ingestVerificationArtifact(repoRoot, path.resolve(opts.file), {
+      sessionId: opts.sessionId,
+      freshness: session?.freshness
+    });
+    if (opts.json) {
+      console.log(JSON.stringify(result, null, 2));
+      return;
+    }
+    console.log(`Verification artifact: ${result.record.artifactId}`);
+    console.log(`Run outcome: ${result.record.manifest.run.outcome}`);
+    console.log(`Cache: ${result.relativePath}`);
+    console.log(`Created: ${result.created ? "yes" : "no (existing immutable record)"}`);
+    if (result.warnings.length > 0) {
+      console.log(`Warnings: ${result.warnings.join("; ")}`);
+    }
+  });
+
+program
   .command("prove")
   .argument("[repo]", "repository root; defaults to the current directory", process.cwd())
   .option("--task <task>", "task description to shape the proof card")
@@ -470,13 +502,14 @@ program
   .option("--ran-command-report <json...>", "structured command report JSON with command, cwd, packageManager, workspace/packageRoot/packageName, scriptName, args, exitCode, durationMs, and output summaries")
   .option("--waive-check <target...>", "legacy test-target waiver shortcut; use --waiver for workflow/dependency checks")
   .option("--waiver <json...>", "structured verification waiver JSON: {\"kind\":\"test\",\"target\":\"tests/foo.test.ts\",\"reason\":\"manual check\"}")
+  .option("--artifact-id <id...>", "ingested verification artifact ID to include in proof")
   .option("--json", "emit structured JSON")
   .option("--auto-refresh", "refresh a stale or missing index before proving", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before proving")
   .option("--workspace-focus-file <path>", "workspace focus file to consult when <repo> is a workspace launch root")
   .option("--workspace-session <id>", "active WORKING.md session row to prefer when <repo> is a workspace launch root")
   .description("Print a compact proof card: freshness, read-first files, plan snapshot, verification preview, reported evidence, policy pack, and gaps.")
-  .action(async (repo: string, opts: { task?: string; taskId?: string; diff: boolean; changeType: ChangeType; file?: string[]; budget: number; ranTest?: string[]; ranCommand?: string[]; ranCommandReport?: string[]; waiveCheck?: string[]; waiver?: string[]; json?: boolean; autoRefresh: boolean } & CliQueryOptions) => {
+  .action(async (repo: string, opts: { task?: string; taskId?: string; diff: boolean; changeType: ChangeType; file?: string[]; budget: number; ranTest?: string[]; ranCommand?: string[]; ranCommandReport?: string[]; waiveCheck?: string[]; waiver?: string[]; artifactId?: string[]; json?: boolean; autoRefresh: boolean } & CliQueryOptions) => {
     const result = await proveQuery(await resolveQueryRepoRoot(repo, opts), {
       task: opts.task,
       taskId: opts.taskId,
@@ -489,6 +522,7 @@ program
       ranCommandReports: parseCommandReportOptions(opts.ranCommandReport),
       waivedChecks: opts.waiveCheck,
       waivers: parseWaiverOptions(opts.waiver),
+      artifactIds: validateArtifactIds(opts.artifactId),
       autoRefresh: opts.autoRefresh
     });
     console.log(opts.json ? JSON.stringify(result.data, null, 2) : result.text);

@@ -1,4 +1,4 @@
-import path from "node:path";
+import { canonicalPath } from "../index-identity.js";
 import type { RepoFreshnessFiles } from "../repo-files.js";
 import type { ExternalRiskReportDiagnostic } from "../risk-ingest.js";
 import type { ExternalSymbolReportDiagnostic } from "../symbol-report-ingest.js";
@@ -48,11 +48,14 @@ export function freshnessFromStored(repo: string, current: RepoFreshnessFiles, r
   const indexedExternalSymbolReportHashes = loaded.indexedExternalSymbolReportHashes ?? loaded.externalSymbolReportHashes ?? {};
   const externalSymbolReportsChanged = stableJson(symbolReports.reportHashes) !== stableJson(indexedExternalSymbolReportHashes);
   const commitChanged = current.git.headCommit !== loaded.headCommit;
-  const repoRootChanged = path.resolve(loaded.repoRoot) !== repo || loaded.gitRoot !== current.git.gitRoot;
+  const repoRootChanged =
+    canonicalPath(loaded.repoRoot) !== canonicalPath(repo) ||
+    !sameNullableCanonicalPath(loaded.gitRoot, current.git.gitRoot);
   // A degraded probe (truncated/timed-out git) saw only part of the tree;
   // "unchanged" computed from partial dirty files is not evidence of
   // freshness. Fail closed.
-  const gitStateDegraded = current.git.degradedReasons.length > 0;
+  const degradedGitState = [...new Set([...(loaded.degradedGitState ?? []), ...current.git.degradedReasons])];
+  const gitStateDegraded = degradedGitState.length > 0;
   const stale = gitStateDegraded || dirtyChanged || externalRiskReportsChanged || externalSymbolReportsChanged || commitChanged || repoRootChanged;
   return {
     ...loaded,
@@ -66,6 +69,7 @@ export function freshnessFromStored(repo: string, current: RepoFreshnessFiles, r
     externalSymbolReportHashes: symbolReports.reportHashes,
     indexedExternalSymbolReportHashes,
     externalSymbolReportDiagnostics: symbolReports.diagnostics,
+    degradedGitState,
     missing: false,
     stale,
     reason: stale
@@ -82,6 +86,13 @@ export function freshnessFromStored(repo: string, current: RepoFreshnessFiles, r
                 : "dirty-files-changed"
       : loaded.reason
   };
+}
+
+function sameNullableCanonicalPath(left: string | null, right: string | null): boolean {
+  if (left === null || right === null) {
+    return left === right;
+  }
+  return canonicalPath(left) === canonicalPath(right);
 }
 
 function stableJson(value: Record<string, string>): string {

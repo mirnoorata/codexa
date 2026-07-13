@@ -23,7 +23,7 @@ function gitResult(partial: Partial<CommandResult>): CommandResult {
   };
 }
 
-// Stubs the four git invocations behind getGitStateAsync. Overrides replace
+// Stubs the git invocations behind getGitStateAsync. Overrides replace
 // the happy-path result for one subcommand so each test degrades exactly one
 // step while the rest of the state read stays healthy.
 function stubRunner(overrides: Partial<Record<"toplevel" | "head" | "lsFiles" | "status" | "churn", CommandResult>>): GitCommandRunner {
@@ -91,6 +91,55 @@ describe("getGitStateAsync degradation", () => {
     expect(git.degradedReasons).toEqual([]);
     expect(git.dirtyFiles).toEqual(["a.ts"]);
   });
+
+  it("degrades when HEAD changes during a single git-state probe", async () => {
+    let headReads = 0;
+    const runner: GitCommandRunner = async (_command, args) => {
+      if (args.includes("--show-toplevel")) {
+        return gitResult({ stdout: `${REPO}\n` });
+      }
+      if (args.includes("HEAD")) {
+        headReads += 1;
+        return gitResult({ stdout: headReads === 1 ? "abc123\n" : "def456\n" });
+      }
+      if (args.includes("ls-files")) {
+        return gitResult({ stdout: "a.ts\0" });
+      }
+      if (args.includes("status")) {
+        return gitResult({ stdout: "" });
+      }
+      return gitResult({ stdout: "" });
+    };
+
+    const git = await getGitStateAsync(REPO, { commandRunner: runner });
+    expect(git.headCommit).toBe("abc123");
+    expect(git.degradedReasons).toContain("git HEAD changed during probe: abc123 -> def456");
+  });
+
+  it("degrades when the git root changes during a single git-state probe", async () => {
+    let rootReads = 0;
+    const nextRoot = path.resolve("/other-worktree");
+    const runner: GitCommandRunner = async (_command, args) => {
+      if (args.includes("--show-toplevel")) {
+        rootReads += 1;
+        return gitResult({ stdout: `${rootReads === 1 ? REPO : nextRoot}\n` });
+      }
+      if (args.includes("HEAD")) {
+        return gitResult({ stdout: "abc123\n" });
+      }
+      if (args.includes("ls-files")) {
+        return gitResult({ stdout: "a.ts\0" });
+      }
+      if (args.includes("status")) {
+        return gitResult({ stdout: "" });
+      }
+      return gitResult({ stdout: "" });
+    };
+
+    const git = await getGitStateAsync(REPO, { commandRunner: runner });
+    expect(git.gitRoot).toBe(REPO);
+    expect(git.degradedReasons).toContain(`git root changed during probe: ${REPO} -> ${nextRoot}`);
+  });
 });
 
 describe("freshness under a degraded git probe", () => {
@@ -127,6 +176,41 @@ describe("freshness under a degraded git probe", () => {
     const freshness = freshnessFromStored(REPO, current, empty, empty, loaded);
     expect(freshness.stale).toBe(true);
     expect(freshness.reason).toBe("git-state-degraded");
+  });
+
+  it("keeps an index-time degraded probe stale until a clean rebuild", () => {
+    const loaded = {
+      schemaVersion: 1,
+      snapshotId: "s1",
+      repoRoot: REPO,
+      gitRoot: REPO,
+      headCommit: "abc123",
+      indexedAt: "2026-07-09T00:00:00.000Z",
+      dirtyFiles: [],
+      indexedDirtyFiles: [],
+      dirtyFileHashes: {},
+      indexedDirtyFileHashes: {},
+      missing: false,
+      stale: false,
+      reason: "fresh",
+      parserErrorCount: 0,
+      degradedGitState: ["git HEAD changed during probe: abc123 -> def456"]
+    } as FreshnessInfo;
+    const current = {
+      git: {
+        repoRoot: REPO,
+        gitRoot: REPO,
+        headCommit: "abc123",
+        files: [],
+        dirtyFiles: [],
+        churnByPath: new Map<string, number>(),
+        degradedReasons: []
+      },
+      dirtyFileHashes: {}
+    };
+    const empty = { reportHashes: {}, diagnostics: [] };
+    const freshness = freshnessFromStored(REPO, current, empty, empty, loaded);
+    expect(freshness).toMatchObject({ stale: true, reason: "git-state-degraded" });
   });
 });
 

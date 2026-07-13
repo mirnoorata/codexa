@@ -1,11 +1,17 @@
 import path from "node:path";
+import { createHash } from "node:crypto";
+import { promises as fs } from "node:fs";
 import { runCommand, type CommandResult, type RunCommandOptions } from "../command.js";
 import { commandFailureReason, GIT_STATE_MAX_BUFFER_BYTES, GIT_STATE_TIMEOUT_MS } from "../git.js";
 import type { ChangedFileEntry, ChangedSymbol, CodexaIndex } from "../types.js";
-import { normalizePath } from "../util.js";
+import { normalizePath, stableId, uniqueSorted } from "../util.js";
+import type { DiffFootprintV1 } from "../types.js";
 
 const GIT_TIMEOUT_MS = GIT_STATE_TIMEOUT_MS;
 const GIT_MAX_BUFFER_BYTES = GIT_STATE_MAX_BUFFER_BYTES;
+const MAX_FOOTPRINT_HASH_FILES = 64;
+const MAX_FOOTPRINT_HASH_FILE_BYTES = 256 * 1024;
+const MAX_FOOTPRINT_HASH_TOTAL_BYTES = 1024 * 1024;
 type WorktreeCommandRunner = (command: string, args: string[], options?: RunCommandOptions) => Promise<CommandResult>;
 
 // A degraded worktree is one where git couldn't report state reliably
@@ -68,6 +74,102 @@ export async function getChangedFileEntries(repoRoot: string, commandRunner: Wor
     entries: files.filter((entry) => !isCodexaControlPath(entry.path)).sort((a, b) => a.path.localeCompare(b.path) || a.status.localeCompare(b.status)),
     degradedReason: null
   };
+}
+
+export async function getDiffFootprint(
+  repoRoot: string,
+  changedEntries: ChangedFileEntry[],
+  modifiedSymbolCount = 0,
+  commandRunner: WorktreeCommandRunner = runCommand
+): Promise<DiffFootprintV1> {
+  const resolvedRepo = path.resolve(repoRoot);
+  const result = await commandRunner("git", ["-C", resolvedRepo, "diff", "--numstat", "--no-ext-diff", "HEAD", "--"], {
+    timeoutMs: GIT_TIMEOUT_MS,
+    maxBufferBytes: GIT_MAX_BUFFER_BYTES
+  });
+  const degradedReasons: string[] = [];
+  let insertions = 0;
+  let deletions = 0;
+  let numeric = result.ok;
+  if (!result.ok) {
+    degradedReasons.push(commandFailureReason("git diff --numstat HEAD", result));
+  } else {
+    for (const line of result.stdout.split(/\r?\n/u).filter(Boolean)) {
+      const [added, removed] = line.split("\t", 3);
+      if (added === "-" || removed === "-") {
+        numeric = false;
+        degradedReasons.push("binary diff prevents complete tracked line counts");
+        continue;
+      }
+      const addedCount = Number.parseInt(added ?? "", 10);
+      const removedCount = Number.parseInt(removed ?? "", 10);
+      if (!Number.isFinite(addedCount) || !Number.isFinite(removedCount)) {
+        numeric = false;
+        degradedReasons.push("malformed git numstat output");
+        continue;
+      }
+      insertions += addedCount;
+      deletions += removedCount;
+    }
+  }
+  const sourceEntries = changedEntries.filter((entry) => !isCodexaControlPath(entry.path));
+  const content = await boundedWorktreeContentHashes(resolvedRepo, sourceEntries);
+  return {
+    schemaVersion: 1,
+    trackedInsertions: numeric ? insertions : null,
+    trackedDeletions: numeric ? deletions : null,
+    changedFileCount: sourceEntries.length,
+    modifiedSymbolCount: Math.max(0, modifiedSymbolCount),
+    untrackedFileCount: sourceEntries.filter((entry) => entry.kind === "untracked").length,
+    fingerprint: stableId(
+      "diff-footprint-v1",
+      result.ok ? result.stdout : "unavailable",
+      sourceEntries.map((entry) => `${entry.status}:${entry.path}:${entry.oldPath ?? ""}`).sort().join("\n"),
+      String(modifiedSymbolCount),
+      Object.entries(content.hashes).map(([filePath, digest]) => `${filePath}:${digest}`).join("\n"),
+      content.degradedReasons.join("\n")
+    ),
+    degradedReasons: [...new Set(degradedReasons)].sort(),
+    contentHashes: content.hashes,
+    contentHashDegradedReasons: content.degradedReasons
+  };
+}
+
+async function boundedWorktreeContentHashes(repoRoot: string, entries: ChangedFileEntry[]): Promise<{ hashes: Record<string, string>; degradedReasons: string[] }> {
+  const hashes: Record<string, string> = {};
+  const degradedReasons: string[] = [];
+  let totalBytes = 0;
+  const sorted = [...entries].sort((left, right) => left.path.localeCompare(right.path));
+  if (sorted.length > MAX_FOOTPRINT_HASH_FILES) degradedReasons.push(`content hashing limited to ${MAX_FOOTPRINT_HASH_FILES} changed files`);
+  for (const entry of sorted.slice(0, MAX_FOOTPRINT_HASH_FILES)) {
+    const normalized = normalizePath(entry.path);
+    const absolute = path.resolve(repoRoot, normalized);
+    if (absolute !== repoRoot && !absolute.startsWith(`${repoRoot}${path.sep}`)) {
+      degradedReasons.push(`content hash path escapes repository: ${normalized}`);
+      continue;
+    }
+    if (entry.kind === "deleted") {
+      hashes[normalized] = createHash("sha256").update("deleted\0").digest("hex");
+      continue;
+    }
+    try {
+      const stat = await fs.lstat(absolute);
+      if (!stat.isFile() || stat.isSymbolicLink()) {
+        degradedReasons.push(`content hash skipped non-regular file: ${normalized}`);
+        continue;
+      }
+      if (stat.size > MAX_FOOTPRINT_HASH_FILE_BYTES || totalBytes + stat.size > MAX_FOOTPRINT_HASH_TOTAL_BYTES) {
+        degradedReasons.push(`content hash byte budget skipped: ${normalized}`);
+        continue;
+      }
+      const bytes = await fs.readFile(absolute);
+      totalBytes += bytes.length;
+      hashes[normalized] = createHash("sha256").update(bytes).digest("hex");
+    } catch (error) {
+      degradedReasons.push(`content hash unavailable for ${normalized}: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  return { hashes: Object.fromEntries(Object.entries(hashes).sort(([left], [right]) => left.localeCompare(right))), degradedReasons: uniqueSorted(degradedReasons) };
 }
 
 export async function getChangedSymbols(repoRoot: string, index: CodexaIndex, commandRunner: WorktreeCommandRunner = runCommand): Promise<ChangedSymbolsResult> {

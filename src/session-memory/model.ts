@@ -48,6 +48,18 @@ export interface SessionMemoryEvent {
   revision: number;
 }
 
+export interface SessionMemoryCompactionArchive {
+  schemaVersion: 1;
+  sessionId: string;
+  fromRevision: number;
+  toRevision: number;
+  compactedAt: string;
+  sourceEventCount: number;
+  preCompactionDigest: string;
+  retainedEntryIds: string[];
+  droppedEntries: SessionMemoryEntryFact[];
+}
+
 export interface SessionMemoryReadFilter {
   repoRoot: string;
   sessionId?: string;

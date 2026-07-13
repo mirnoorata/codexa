@@ -32,7 +32,7 @@ export interface ServeMcpHttpOptions {
 
 const MCP_SERVER_INSTRUCTIONS = [
   `Codexa is a Codex-native codebase context and edit-safety server. Loop: ${PRIMARY_CODEX_LOOP}.`,
-  "Target unclear -> search first. Before edits -> change_plan(saveSnapshot=true). After edits -> post_edit_review with the commands that actually ran. Before final response -> test_plan, then proof_card with reported evidence.",
+  "Target unclear -> search first. Before edits -> change_plan(saveSnapshot=true), then test_plan. After edits -> post_edit_review with the commands that actually ran. Before final response -> proof_card with reported evidence.",
   "Each tool description states its typical output cost (compact/medium/large); prefer the cheapest sufficient tool. Tools refresh stale Codexa artifacts automatically when auto-refresh is enabled.",
   `Trust rules: ${NO_SOURCE_MUTATION_CONTRACT} Semantic retrieval is used only when configured; verify heuristic-heavy packets against source before editing.`,
   "Structured results are budget-compacted with truncation records naming dropped fields. Hosts with small MCP result limits can set CODEXA_MCP_STRUCTURED_BUDGET_BYTES."
@@ -136,6 +136,11 @@ async function createCodexaMcpServer(repoRoot: string, options: QueryOptions): P
       instructions: MCP_SERVER_INSTRUCTIONS
     }
   );
+  const notifyActiveRepoRootChanged = async () => {
+    if (mcpRuntime.consumeActiveRepoRootChanged()) {
+      await Promise.resolve(server.sendResourceListChanged());
+    }
+  };
   const outputSchema = createMcpOutputSchema();
   const sourceContextAnnotations = {
     readOnlyHint: !queryOptions.autoRefresh,
@@ -270,6 +275,7 @@ async function createCodexaMcpServer(repoRoot: string, options: QueryOptions): P
     const toolInput = typeof toolContext === "string" ? undefined : toolContext.input;
     const autoRecord = typeof toolContext === "string" || toolContext.autoRecord === false ? undefined : toolContext;
     const activeResolution = await mcpRuntime.resolveActiveRepoRootResolution();
+    await notifyActiveRepoRootChanged();
     const activeRepoRoot = activeResolution.repoRoot;
     return toToolResult(
       await safeQuery(async () => {
@@ -317,6 +323,7 @@ async function createCodexaMcpServer(repoRoot: string, options: QueryOptions): P
     runTool,
     runFreshnessTool: async () => {
       const activeResolution = await mcpRuntime.resolveActiveRepoRootResolution();
+      await notifyActiveRepoRootChanged();
       return toToolResult(
         await safeQuery(async () => withRoutingRuntime(await statusQuery(activeResolution.repoRoot, { recover: false }), activeResolution), activeResolution.repoRoot),
         "freshness",
@@ -325,7 +332,23 @@ async function createCodexaMcpServer(repoRoot: string, options: QueryOptions): P
     }
   });
 
-  await registerArtifactResources(server, mcpRuntime.resolveActiveRepoRoot);
+  const resolveResourceRepoRoot = async () => {
+    const activeRepoRoot = await mcpRuntime.resolveActiveRepoRoot();
+    await notifyActiveRepoRootChanged();
+    return activeRepoRoot;
+  };
+  await registerArtifactResources(server, resolveResourceRepoRoot, async () => {
+    const activeRepoRoot = await resolveResourceRepoRoot();
+    const session = await mcpRuntime.createQuerySession(activeRepoRoot);
+    if (session.freshness.stale) {
+      throw new Error(
+        `Codexa generated artifacts unavailable: index stale (${session.freshness.reason}) for ${activeRepoRoot}. ` +
+          `Enable auto-refresh or run: codexa index ${activeRepoRoot}`
+      );
+    }
+    await notifyResourceListChangedAfterRefresh(server, session);
+    return activeRepoRoot;
+  });
   registerWorkflowPrompts(server, enabledTools);
 
   return { configuredRepoRoot, queryOptions, server };

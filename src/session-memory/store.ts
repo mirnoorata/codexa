@@ -121,7 +121,8 @@ export function upsertEntry(store: SessionMemoryStore, next: SessionMemoryEntryF
 }
 
 function normalizeWriteProvenance(provenance: SessionMemoryProvenance, source: SessionMemoryEvidence["source"], toolName: string | undefined): SessionMemoryProvenance {
-  return provenance === "codexa-derived" && !(source === "mcp_tool" && toolName) ? "agent-asserted" : provenance;
+  const codexaOwnedSource = (source === "mcp_tool" || source === "codexa_cache") && Boolean(toolName);
+  return provenance === "codexa-derived" && !codexaOwnedSource ? "agent-asserted" : provenance;
 }
 
 function normalizeWritableConfidence(confidence: Confidence, provenance: SessionMemoryProvenance): Confidence {
@@ -406,7 +407,7 @@ export function isSessionMemoryEvent(value: unknown, sessionId: string): value i
   );
 }
 
-function isSessionMemoryEntry(value: unknown): value is SessionMemoryEntryFact {
+export function isSessionMemoryEntry(value: unknown): value is SessionMemoryEntryFact {
   if (!isRecord(value)) {
     return false;
   }

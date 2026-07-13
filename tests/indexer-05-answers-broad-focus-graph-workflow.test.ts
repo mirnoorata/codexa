@@ -497,14 +497,15 @@ it("saves task snapshots and reports post-edit drift against the actual dirty tr
       },
       { autoRefresh: false }
     );
-    await expect(readFile(path.join(repo, ".codex/cache/codexa-tasks/reused-task-id.json"), "utf8")).rejects.toThrow();
+    await expect(readFile(path.join(repo, ".codex/cache/codexa-tasks/reused-task-id.json"), "utf8")).resolves.toContain('"taskId": "reused-task-id"');
     const reusedTaskReview = await postEditReviewQuery(repo, { taskId: "reused-task-id", ranTests: [], persistOutcome: false }, { autoRefresh: false });
     const reusedTaskData = reusedTaskReview.data as {
       snapshot?: unknown;
       snapshotLoad: { taskId?: string; missingReason?: string };
     };
-    expect(reusedTaskData.snapshot).toBeUndefined();
-    expect(reusedTaskData.snapshotLoad).toMatchObject({ taskId: "reused-task-id", missingReason: "blocked-plan" });
+    expect(reusedTaskData.snapshot).toBeDefined();
+    expect(reusedTaskData.snapshotLoad).toMatchObject({ taskId: "reused-task-id" });
+    expect(reusedTaskData.snapshotLoad.missingReason).toBeUndefined();
 
     await writeFile(path.join(repo, ".codex/cache/codexa-tasks/reused-task-id.blocked.json"), "{not json", "utf8");
     const malformedBlockedReview = await postEditReviewQuery(repo, { taskId: "reused-task-id", ranTests: [], persistOutcome: false }, { autoRefresh: false });

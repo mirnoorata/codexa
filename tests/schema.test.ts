@@ -56,16 +56,17 @@ describe("Codexa schema contracts", () => {
     expect(loaded?.workflows).toEqual([]);
   });
 
-  it("reports status from freshness metadata without parsing the full index bundle", async () => {
+  it("reports a corrupt index bundle without recovering or trusting detached freshness metadata", async () => {
     const repo = await createSchemaFixtureRepo();
     await buildIndex({ repoRoot: repo });
 
     await writeFile(path.join(repo, ".codex/codebase/index.json"), "{ corrupt index\n", "utf8");
 
     const status = await statusQuery(repo, { recover: false });
-    expect(status.freshness.missing).toBe(false);
-    expect(status.freshness.reason).toBe("fresh");
+    expect(status.freshness.missing).toBe(true);
+    expect(status.freshness.reason).toBe("missing-index");
     expect(status.text).toContain("Parser errors: 0");
+    expect(await readFile(path.join(repo, ".codex/codebase/index.json"), "utf8")).toBe("{ corrupt index\n");
   });
 
   it("rejects a future live schema and recovers the newest valid backup", async () => {

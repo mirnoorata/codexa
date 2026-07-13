@@ -36,10 +36,11 @@ changes. Do not treat it as an unbounded graph dump.
 1. Broad or ambiguous request: call \`session_context\`; if the target is unclear or actionability says \`needs_target\`, \`raw_search_better\`, or \`raw_search_sufficient\`, use first-class \`search\` or an explicit target before planning edits.
 2. Any code edit, debug, or review task: call \`search\` first when the target is unclear; otherwise call \`task_brief\` with the user's exact task and known files/symbols.
 3. Before editing concrete files: call \`change_plan\` with \`saveSnapshot: true\` and keep the returned task id.
-4. After editing: call \`post_edit_review\` as the go-to review gate with the saved task id and tests run.
-5. Before final response: call \`test_plan\`, then \`proof_card\` with reported commands/tests or account for why no targeted tests apply.
-6. Route, job, queue, adapter, manifest, or runtime behavior: call \`workflow_path\`.
-7. API, rename, delete, or exported contract change: call \`callers\`, \`callees\`, or \`dependency_path\`.
+4. Before editing: call \`test_plan\` for the saved task so targeted checks and shared consumers are explicit while replanning is still cheap.
+5. After editing: call \`post_edit_review\` as the go-to review gate with the saved task id and tests run.
+6. Before final response: call \`proof_card\` with reported commands/tests or account for why no targeted tests apply.
+7. Route, job, queue, adapter, manifest, or runtime behavior: call \`workflow_path\`.
+8. API, rename, delete, or exported contract change: call \`callers\`, \`callees\`, or \`dependency_path\`.
 
 Primary Codex loop: \`${PRIMARY_CODEX_LOOP}\`.
 Primary MCP tools: ${PRIMARY_MCP_TOOL_NAMES.map((tool) => `\`${tool}\``).join(", ")}.

@@ -16,7 +16,13 @@ import type {
   VerificationProvenance,
   VerificationTrustTier,
   VerificationWaiver,
-  SessionMemoryPointer
+  SessionMemoryPointer,
+  DiffFootprintV1,
+  TaskInvariant,
+  TaskInvariantReview,
+  TaskLoopFailureSignal,
+  TaskLoopReview,
+  VerificationArtifactSummary
 } from "./types.js";
 import { stableId } from "./util.js";
 
@@ -47,6 +53,12 @@ export interface PostEditOutcomeInput {
   inspectReasons: string[];
   completionAuthority: PostEditCompletionAuthority;
   freshness: FreshnessInfo;
+  planRevision: number;
+  invariants: TaskInvariant[];
+  invariantReviews: TaskInvariantReview[];
+  failureSignals: TaskLoopFailureSignal[];
+  diffFootprint: DiffFootprintV1;
+  loopReview: TaskLoopReview;
   changedFiles: string[];
   plannedEditTargets: string[];
   reviewTargets: string[];
@@ -70,6 +82,7 @@ export interface PostEditOutcomeInput {
   waivers: VerificationWaiver[];
   verificationCoverage: VerificationCoverage[];
   verificationLedger: VerificationLedgerEntry[];
+  verificationArtifacts: VerificationArtifactSummary[];
   verificationProvenance?: VerificationProvenance;
   sessionMemory?: SessionMemoryPointer;
   riskDeltas: PostEditRiskDelta[];
@@ -119,6 +132,12 @@ export interface PostEditOutcome {
   completionAuthority: PostEditCompletionAuthority;
   headCommit: string | null;
   indexSnapshotId: string;
+  planRevision?: number;
+  invariants?: TaskInvariant[];
+  invariantReviews?: TaskInvariantReview[];
+  failureSignals?: TaskLoopFailureSignal[];
+  diffFootprint?: DiffFootprintV1;
+  loopReview?: TaskLoopReview;
   changedFiles: string[];
   plannedEditTargets: string[];
   reviewTargets: string[];
@@ -142,6 +161,7 @@ export interface PostEditOutcome {
   waivers: VerificationWaiver[];
   verificationCoverage: VerificationCoverage[];
   verificationLedger: VerificationLedgerEntry[];
+  verificationArtifacts?: VerificationArtifactSummary[];
   verificationProvenance: VerificationProvenance;
   sessionMemory?: SessionMemoryPointer;
   riskDeltas: PostEditRiskDelta[];
@@ -196,6 +216,18 @@ export function buildPostEditOutcome(input: PostEditOutcomeInput, createdAt = ne
     completionAuthority: input.completionAuthority,
     headCommit: input.freshness.headCommit,
     indexSnapshotId: input.freshness.snapshotId,
+    planRevision: input.planRevision,
+    invariants: input.invariants,
+    invariantReviews: input.invariantReviews.map((review) => ({
+      ...review,
+      evidence: review.evidence.map((entry) => sanitizeText(entry, repoRoot) ?? "").filter(Boolean)
+    })),
+    failureSignals: input.failureSignals.map((signal) => ({
+      ...signal,
+      targets: signal.targets.map((target) => sanitizeText(target, repoRoot) ?? "").filter(Boolean)
+    })),
+    diffFootprint: input.diffFootprint,
+    loopReview: input.loopReview,
     changedFiles: input.changedFiles,
     plannedEditTargets: input.plannedEditTargets,
     reviewTargets: input.reviewTargets,
@@ -219,6 +251,7 @@ export function buildPostEditOutcome(input: PostEditOutcomeInput, createdAt = ne
     waivers: compactWaivers(input.waivers, repoRoot),
     verificationCoverage: compactCoverage(input.verificationCoverage, repoRoot),
     verificationLedger: compactLedger(input.verificationLedger, repoRoot),
+    verificationArtifacts: input.verificationArtifacts,
     verificationProvenance: input.verificationProvenance ?? CURRENT_VERIFICATION_PROVENANCE,
     sessionMemory: input.sessionMemory,
     riskDeltas: input.riskDeltas,

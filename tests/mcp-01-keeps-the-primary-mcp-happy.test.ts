@@ -6,6 +6,7 @@ import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
+import { ResourceListChangedNotificationSchema } from "@modelcontextprotocol/sdk/types.js";
 import { describe, expect, it } from "vitest";
 import { buildIndex } from "../src/indexer.js";
 import { MCP_TOOL_CATALOG, PRIMARY_CODEX_LOOP, compactNonPostEditMcpResult, compactPostEditMcpResult } from "../src/mcp.js";
@@ -107,6 +108,10 @@ it("routes a focus row written AFTER server spawn (no frozen configured-root pre
     });
     const client = new Client({ name: "codexa-late-focus-test", version: "0.1.0" });
     await client.connect(transport);
+    let resourceListChanges = 0;
+    client.setNotificationHandler(ResourceListChangedNotificationSchema, () => {
+      resourceListChanges += 1;
+    });
 
     try {
       const first = await client.callTool({ name: "freshness", arguments: {} });
@@ -119,12 +124,13 @@ it("routes a focus row written AFTER server spawn (no frozen configured-root pre
       const second = await client.callTool({ name: "freshness", arguments: {} });
       expect(JSON.stringify(second)).toContain(repoA);
       expect(JSON.stringify(second)).toContain('"routingSource":"workspace-focus-file"');
+      expect(resourceListChanges).toBe(1);
     } finally {
       await client.close();
     }
   });
 
-it("surfaces a warning when explicit workspace routing matches no focus row", async () => {
+it("fails closed when explicit workspace routing matches no focus row", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-focus-miss-"));
     execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
     await mkdir(path.join(workspace, "src"), { recursive: true });
@@ -147,8 +153,10 @@ it("surfaces a warning when explicit workspace routing matches no focus row", as
     try {
       const result = await client.callTool({ name: "freshness", arguments: {} });
       const serialized = JSON.stringify(result);
-      expect(serialized).toContain('"routingSource":"configured-root"');
+      expect(result.isError).toBe(true);
       expect(serialized).toContain("no focus row matched");
+      expect(serialized).toContain("refusing to serve the configured root");
+      expect(serialized).not.toContain("workspaceRootSymbol");
     } finally {
       await client.close();
     }
@@ -271,6 +279,7 @@ it("exposes configured skill hints and surfaces path-matched skills in task brie
       ),
       "utf8"
     );
+    await buildIndex({ repoRoot: repo, writeArtifacts: true });
 
     const transport = new StdioClientTransport({
       command: process.execPath,

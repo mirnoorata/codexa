@@ -6,6 +6,7 @@ export async function withAutoRecordedSessionMemory(session: QuerySession, resul
   try {
     const writes = await recordViewedMemoryForTool({
       repoRoot: session.repoRoot,
+      sessionId: session.options.workspaceSessionId,
       taskId: typeof input?.taskId === "string" ? input.taskId : undefined,
       task: typeof input?.task === "string" ? input.task : undefined,
       toolName,

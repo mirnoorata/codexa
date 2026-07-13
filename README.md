@@ -28,16 +28,23 @@ MCP. It is a context compiler, query server, and verification guide.
 
 ## Why Codexa
 
-Four capabilities are deliberately hard to find elsewhere:
+Six capabilities are deliberately hard to find elsewhere:
 
 - **A drift loop.** `change_plan` snapshots per-file hashes plus symbol and
   risk baselines before editing; `post_edit_review` diffs the real dirty tree
   against that plan afterwards, rename-aware. When no plan was saved, the
   pre-edit hook saves an implicit baseline automatically, so the review always
   has a pre-edit reference; an explicit `change_plan` upgrades it with planned
-  scope and tests. Blocking is opt-in: only reviews against an explicit plan
-  can surface a blocking verdict to the host — implicit baselines keep the
-  loop informational.
+  scope, tests, and explicit task invariants. Distinct repeated attempts are
+  counted by task and plan revision; a mandatory replan remains latched until
+  the agent saves a newer accepted plan. Blocking is opt-in: only reviews
+  against an explicit plan can surface a blocking verdict to the host —
+  implicit baselines keep the loop informational.
+- **Exact checkout identity.** Every query validates that the index belongs to
+  the selected canonical worktree and current HEAD. A mismatched checkout,
+  copied index, changing Git probe, or stale dirty-state overlay fails closed;
+  auto-refresh gets one repair attempt and must pass the same identity check
+  before any context is returned.
 - **A verification ledger.** Commands the agent reports are parsed against a
   faithful POSIX-shell subset before earning coverage credit: `npm test ||
   true` earns nothing, `tsc --help` is vetoed as non-compiling, `sh -c`
@@ -48,8 +55,14 @@ Four capabilities are deliberately hard to find elsewhere:
   project-only, list, UI, and zero-test-tolerant invocations stay uncredited.
   The opt-in AutoVerify lane exists for execution-backed evidence. Coverage,
   ledgers, and proof cards label that difference explicitly:
-  `executed-by-autoverify` evidence ranks above future witnessed/artifact lanes,
-  reported evidence, and rows with no positive proof.
+  `executed-by-autoverify` evidence ranks above imported live-run manifests and
+  reported commands, while unauthenticated imported artifacts remain explicitly
+  `reported` rather than being presented as witnessed execution.
+- **Compaction-safe continuity.** Session decisions, rejected hypotheses,
+  invariants, run-artifact references, and stopping conditions are carried by
+  bounded task/session state. Compaction archives are published before active
+  detail is removed, and proof cards verify snapshot memory pointers against
+  the active store or the bounded archive.
 - **Graph-aware relational packets.** v0.7.0 precomputes bounded process
   packets, functional module clusters, graph-view exports, and opt-in summary
   prompts. `search` now reports raw exact-hit counts beside Codexa-ranked
@@ -141,6 +154,12 @@ The worktree gets its own index (its HEAD and dirty state differ from the
 parent checkout's, so the parent's index would serve stale answers). If you
 automate worktree creation, add `codexa init` to that automation.
 
+Codexa binds an index to the canonical worktree root, Git top-level root,
+HEAD commit, and workspace-state digest. Context and review queries fail closed
+when that identity does not match the active checkout. Auto-refresh may make
+one bounded repair attempt, but Codexa validates the rebuilt index again before
+serving an answer; `--no-auto-refresh` never serves a mismatched index.
+
 Useful flags: the default tool profile for fresh installs is `core` — only the
 primary-loop tools (plus `impact`/`freshness`) are exposed, which cuts per-turn
 schema token cost; `--tools full` exposes all 20 tools, and re-running plain
@@ -184,10 +203,15 @@ It reports:
 
 - index freshness and current dirty-tree state;
 - read-first files selected from the task and graph context;
-- saved `change-plan` snapshot status, including planned edit targets and
-  planned tests when a snapshot exists;
+- saved `change-plan` snapshot status, including planned edit targets, planned
+  tests, and exact task invariants when a snapshot exists;
+- current task-lifecycle state, including any latched mandatory-replan stop;
+- a bounded decision log recovered from active session memory or its compaction
+  archive, with pointer-integrity diagnostics;
 - verification commands, ledger preview, and reported commands/tests/reports
   classified with the same command-credit rules as `post-edit-review`;
+- explicitly selected, immutable live-run artifacts bound to the exact task,
+  HEAD, and workspace-state digest;
 - explicit trust tiers on coverage and ledger rows, so an agent-reported pass
   cannot look equivalent to a fresh AutoVerify execution;
 - local policy-pack status and remaining proof gaps.
@@ -279,21 +303,28 @@ Use Codexa as a guardrail around code changes:
    and head-drift accuracy, but only an explicit plan enables unplanned-scope
    drift detection.
 
-5. Review after editing.
-   `post_edit_review` / `post-edit-review` compares the actual dirty tree with
-   the saved snapshot, reports drift, and tells you whether to continue, run
-   tests, inspect, or replan.
+5. Select targeted tests before editing.
+   `test_plan` turns the planned files and current dependency impact into a
+   bounded set of checks. Run it before the patch so blocking/streaming parity,
+   shared consumers, and other non-obvious verification surfaces are explicit.
 
-6. Finish with a test plan and proof card.
-   `test_plan` recommends targeted commands and shows what they would cover.
+6. Review after editing.
+   `post_edit_review` / `post-edit-review` compares the actual dirty tree with
+   the saved snapshot, reports drift, checks declared task invariants, and tells
+   you whether to continue, run tests, inspect, or replan. Repeated distinct
+   attempts are accounted against a task-scoped loop budget; once the budget
+   trips, the stop remains latched until a new saved plan revision is accepted.
+
+7. Finish with a proof card.
    `proof_card` / `prove` binds the handoff to freshness, a saved plan
-   snapshot, local policies, and reported verification evidence.
+   snapshot, task invariants, lifecycle status, local policies, and reported
+   verification evidence.
 
 Primary MCP loop:
 
 ```text
 session_context -> search(if target unclear) -> task_brief ->
-change_plan(saveSnapshot) -> post_edit_review -> test_plan -> proof_card
+change_plan(saveSnapshot) -> test_plan -> edit -> post_edit_review -> proof_card
 ```
 
 ## What Codexa Builds
@@ -357,8 +388,10 @@ writes are allowed; source-file mutation is not exposed through MCP tools.
 | `codexa callees <repo> --file path` | Find what a symbol/file calls or references. |
 | `codexa dependency-path <repo> ...` | Find a bounded graph path between two files/symbols. |
 | `codexa workflow-path <repo> --query "..."` | Trace route, job, manifest, or workflow paths. |
-| `codexa change-plan <repo> --task "..." --save-snapshot` | Save a pre-edit plan and dirty baseline. |
-| `codexa post-edit-review <repo> --task-id ...` | Review the final dirty tree against the saved plan. |
+| `codexa change-plan <repo> --task "..." --save-snapshot --invariant "..."` | Save a pre-edit plan, dirty baseline, and bounded task invariants. Repeat `--invariant` as needed. |
+| `codexa post-edit-review <repo> --task-id ... --invariant-review '<json>' --artifact-id ...` | Review the final dirty tree against the saved plan, exact invariants, lifecycle budget, and selected ingested run artifacts. |
+| `codexa verification-artifact <repo> --file run-summary.json` | Safely ingest one bounded external live-run manifest and return its immutable artifact ID. |
+| `codexa prove <repo> --task-id ... --artifact-id ...` | Build a proof card using only explicitly selected, state-bound artifacts. |
 | `codexa semantic-index <repo> --provider ...` | Build optional semantic retrieval cache. |
 | `codexa static-analysis <repo> ...` | Import or optionally run external scanner reports. |
 | `codexa eval <repo>` | Run structured retrieval/verification benchmark scenarios. |
@@ -628,6 +661,9 @@ scrubbed environments and write reports under `.codex/static-analysis/`.
 - `hook-pre-edit` saves an implicit pre-edit baseline when no change-plan
   snapshot exists (and reminds the agent that an explicit `change_plan`
   upgrades it with planned scope and tests).
+- `hook-pre-edit` also blocks when a task's repeated-loop budget has latched a
+  mandatory replan. Lifecycle read or validation failures fail closed with an
+  actionable diagnostic instead of silently disabling the guard.
 - `hook-post-edit` runs a bounded post-edit review after edits.
 
 AutoVerify command execution is disabled unless user-owned autonomy is

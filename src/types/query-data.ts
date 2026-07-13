@@ -1,8 +1,8 @@
 import type { EvidenceTier, FileFact, GraphEdgeFact, SymbolFact, WorkflowTraceFact } from "./facts.js";
 import type { ChangeType } from "./change.js";
 import type { GuidedNextToolV1 } from "./runtime.js";
-import type { TaskSnapshot, TaskSnapshotRequiredCheck } from "./snapshots.js";
-import type { ChangedFileEntry, DiffImpactGroup, TestRecommendation, VerificationCommandEnvelope, VerificationCommandPlanEntry, VerificationCommandReport, VerificationCoverage, VerificationLedgerEntry, VerificationProvenance, VerificationWaiver } from "./verification.js";
+import type { DiffFootprintV1, TaskInvariant, TaskInvariantReview, TaskLoopFailureSignal, TaskLoopReview, TaskSnapshot, TaskSnapshotRequiredCheck } from "./snapshots.js";
+import type { ChangedFileEntry, DiffImpactGroup, TestRecommendation, VerificationArtifactSummary, VerificationCommandEnvelope, VerificationCommandPlanEntry, VerificationCommandReport, VerificationCoverage, VerificationLedgerEntry, VerificationProvenance, VerificationWaiver } from "./verification.js";
 
 export type QueryPrimitive = string | number | boolean | null;
 export type QueryValue = QueryPrimitive | VerificationProvenance | QueryValue[] | { [key: string]: QueryValue | undefined };
@@ -70,6 +70,13 @@ export interface PostEditOutcomeData extends QueryObject {
   inspectReasons?: string[];
   completionAuthority?: "complete" | "tests_required" | "advisory_inspect" | "blocking_inspect" | "replan_required";
   path?: string;
+  planRevision?: number;
+  invariants?: QueryObject[];
+  invariantReviews?: QueryObject[];
+  failureSignals?: QueryObject[];
+  diffFootprint?: QueryObject;
+  loopReview?: QueryObject;
+  verificationArtifacts?: QueryObject[];
   driftReasons?: string[];
   ranTests?: string[];
   ranCommands?: string[];
@@ -208,6 +215,13 @@ export interface PostEditReviewData extends BaseQueryData {
   inspectMode?: "none" | "advisory" | "blocking";
   inspectReasons?: string[];
   completionAuthority?: "complete" | "tests_required" | "advisory_inspect" | "blocking_inspect" | "replan_required";
+  planRevision?: number;
+  invariants?: TaskInvariant[];
+  invariantReviews?: TaskInvariantReview[];
+  failureSignals?: TaskLoopFailureSignal[];
+  diffFootprint?: DiffFootprintV1;
+  loopReview?: TaskLoopReview;
+  verificationArtifacts?: VerificationArtifactSummary[];
   files?: string[];
   reviewTargets?: string[];
   changedSinceSnapshot?: ChangedFileEntry[];
@@ -286,6 +300,8 @@ export interface ProofCardData extends BaseQueryData {
   readFirst?: QueryObject[];
   snapshot?: QueryObject;
   verification?: QueryObject;
+  decisionLog?: QueryObject;
+  lifecycle?: QueryObject;
   policies?: QueryObject;
   trustPosture?: string[];
   nextCommands?: string[];

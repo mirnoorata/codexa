@@ -52,6 +52,75 @@ export type VerificationLedgerStatus = "covered" | "missing" | "waived" | "not_a
 
 export type VerificationTrustTier = "executed-by-autoverify" | "witnessed" | "artifact-corroborated" | "reported" | "none";
 
+export type VerificationArtifactRunOutcome = "passed" | "failed" | "cancelled" | "timed_out" | "unknown";
+export type VerificationArtifactCheckOutcome = "passed" | "failed" | "skipped" | "unknown";
+
+export interface VerificationArtifactManifest {
+  schemaVersion: 1;
+  kind: "codexa-verification-summary";
+  binding: {
+    taskId: string;
+    headCommit: string | null;
+    workspaceStateDigest: string;
+  };
+  run: {
+    id: string;
+    category: string;
+    outcome: VerificationArtifactRunOutcome;
+    startedAt?: string;
+    finishedAt?: string;
+    durationMs?: number;
+  };
+  checks: Array<{
+    kind: "workflow" | "dependency";
+    target: string;
+    outcome: VerificationArtifactCheckOutcome;
+    summary?: string;
+  }>;
+  attachments?: Array<{
+    name: string;
+    sha256?: string;
+    sizeBytes?: number;
+    mediaType?: string;
+  }>;
+  producer?: {
+    name: string;
+    version?: string;
+  };
+}
+
+export interface VerificationArtifactRecord {
+  schemaVersion: 1;
+  artifactId: string;
+  ingestedAt: string;
+  sourceSha256: string;
+  manifest: VerificationArtifactManifest;
+}
+
+export interface VerificationArtifactSummary {
+  artifactId: string;
+  runId?: string;
+  category?: string;
+  outcome?: VerificationArtifactRunOutcome;
+  status: "accepted" | "non_passing" | "missing" | "invalid" | "unbound" | "conflicting";
+  trustTier: VerificationTrustTier;
+  reasons: string[];
+  checks: Array<{
+    kind: "workflow" | "dependency";
+    target: string;
+    outcome: VerificationArtifactCheckOutcome;
+  }>;
+}
+
+export interface VerificationArtifactLedgerEvidence {
+  kind: "workflow" | "dependency";
+  target: string;
+  status: "covered" | "conflicting";
+  trustTier: Extract<VerificationTrustTier, "reported" | "none">;
+  artifactIds: string[];
+  evidence: string[];
+}
+
 export const VERIFICATION_PROVENANCE_SCHEMA_VERSION = 1 as const;
 export const VERIFICATION_COMMAND_COVERAGE_CLASSIFIER_VERSION = "command-coverage-v4";
 export const VERIFICATION_COMMAND_ENVELOPE_RULESET_VERSION = "command-envelope-v2";

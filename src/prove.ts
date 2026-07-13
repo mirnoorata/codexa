@@ -11,10 +11,14 @@ import {
   sanitizeCommandReportForDisplay,
   sanitizeCommandText,
   sanitizeCoverageForDisplay,
-  sanitizeLedgerForDisplay
+  sanitizeLedgerForDisplay,
+  sanitizeSummary
 } from "./query/verification-display.js";
 import { pruneMissingFiles, prunedFilesGap } from "./query/prune-missing.js";
 import { verificationTrustTierOrNone } from "./query/verification/trust.js";
+import { readArchivedSessionMemoryEntries, readSessionMemory, sessionMemoryPointerDigest } from "./session-memory.js";
+import { evaluateVerificationArtifacts, loadVerificationArtifacts, type VerificationArtifactEvaluation } from "./verification-artifacts.js";
+import { loadTaskLifecycleState, pendingTaskLifecycleReplan, type TaskLifecycleState, type TaskLifecycleStop } from "./task-lifecycle.js";
 import type {
   ChangeType,
   CodexaIndex,
@@ -24,10 +28,12 @@ import type {
   RefreshInfo,
   TaskSnapshot,
   TestRecommendation,
+  SessionMemoryEntryFact,
   VerificationCommandEnvelope,
   VerificationCommandReport,
   VerificationCommandPlanEntry,
   VerificationCoverage,
+  VerificationArtifactSummary,
   VerificationLedgerEntry,
   VerificationProvenance,
   VerificationWaiver
@@ -47,6 +53,7 @@ export interface ProveOptions extends QueryOptions {
   ranCommandReports?: VerificationCommandReport[];
   waivedChecks?: string[];
   waivers?: VerificationWaiver[];
+  artifactIds?: string[];
 }
 
 export interface ProveReportedVerification {
@@ -103,11 +110,45 @@ export interface ProveData {
     ledgerPreview: VerificationLedgerEntry[];
     tests: TestRecommendation[];
     reported: ProveReportedVerification;
+    artifacts: {
+      selected: VerificationArtifactSummary[];
+      accepted: VerificationArtifactSummary[];
+      rejected: VerificationArtifactSummary[];
+      ledgerEvidence: VerificationArtifactEvaluation["ledgerEvidence"];
+    };
   };
+  decisionLog: ProveDecisionLog;
+  lifecycle: ProveLifecycle;
   policies: PolicyPackSummary;
   gaps: string[];
   trustPosture: string[];
   nextCommands: string[];
+}
+
+export interface ProveLifecycle {
+  status: "loaded" | "missing" | "invalid";
+  planRevision?: number;
+  invariants: TaskLifecycleState["invariants"];
+  invariantReviews: TaskLifecycleState["latestInvariantReviews"];
+  attempts: TaskLifecycleState["attempts"];
+  pendingStop?: TaskLifecycleStop;
+  error?: string;
+}
+
+export interface ProveDecisionLog {
+  status: "loaded" | "not_recorded" | "unavailable";
+  sessionId?: string;
+  baselineRevision?: number;
+  currentRevision?: number;
+  baselineIntact?: boolean;
+  summaryHashValid?: boolean;
+  decisions: SessionMemoryEntryFact[];
+  ruledOut: SessionMemoryEntryFact[];
+  constraints: SessionMemoryEntryFact[];
+  verification: SessionMemoryEntryFact[];
+  openQuestions: SessionMemoryEntryFact[];
+  artifactIds: string[];
+  warnings: string[];
 }
 
 interface FocusFileShape {
@@ -150,7 +191,22 @@ export async function proveQuery(repoRoot: string, options: ProveOptions = {}): 
   const commandPlan = verificationCommandPlanFromData(testData.verificationCommandPlan);
   const ledgerPreview = verificationLedgerFromData(testData.verificationLedgerPreview);
   const tests = testRecommendationsFromData(testData.tests);
-  const reported = reportedVerificationData({
+  const decisionLog = await decisionLogForSnapshot(repo, snapshotLoad.snapshot, session.freshness);
+  const lifecycle = await lifecycleForProof(repo, snapshotLoad.snapshot);
+  // Historical artifact refs remain visible in the decision log, but proof
+  // credit is explicit-only so stale prior runs cannot silently satisfy a new
+  // handoff.
+  const artifactIds = uniqueSorted(options.artifactIds ?? []).slice(0, 20);
+  const artifactLoads = await loadVerificationArtifacts(repo, artifactIds);
+  const artifacts = evaluateVerificationArtifacts(artifactLoads, {
+    taskId: snapshotLoad.snapshot?.taskId,
+    freshness: session.freshness,
+    requiredChecks: [
+      ...(snapshotLoad.snapshot?.requiredWorkflowChecks ?? []),
+      ...(snapshotLoad.snapshot?.requiredDependencyChecks ?? [])
+    ]
+  });
+  const reported = applyArtifactLedger(reportedVerificationData({
     repoRoot: repo,
     index: session.index,
     snapshot: snapshotLoad.snapshot,
@@ -160,7 +216,7 @@ export async function proveQuery(repoRoot: string, options: ProveOptions = {}): 
     ranCommandReports: options.ranCommandReports ?? [],
     waivedChecks: options.waivedChecks ?? [],
     waivers: options.waivers ?? []
-  });
+  }), artifacts);
   const gaps = proofGaps({
     freshness: session.freshness,
     worktree,
@@ -169,7 +225,10 @@ export async function proveQuery(repoRoot: string, options: ProveOptions = {}): 
     reported,
     testPlanActionability: actionability,
     focusGaps: stringArray(focusData.gaps),
-    testGaps: stringArray(testData.gaps)
+    testGaps: stringArray(testData.gaps),
+    artifacts,
+    decisionLog,
+    lifecycle
   });
   if (readFirstPrune.prunedCount > 0) {
     gaps.push(prunedFilesGap(readFirstPrune.prunedCount));
@@ -189,8 +248,11 @@ export async function proveQuery(repoRoot: string, options: ProveOptions = {}): 
       commandPlan,
       ledgerPreview,
       tests,
-      reported
+      reported,
+      artifacts
     },
+    decisionLog,
+    lifecycle,
     policies,
     gaps,
     trustPosture: trustPosture(),
@@ -235,6 +297,15 @@ function renderProofCard(data: ProveData, freshness: FreshnessInfo, refresh: Ref
     "",
     "Reported verification ledger:",
     ...formatReportedLedger(data.verification.reported),
+    "",
+    "External verification artifacts:",
+    ...formatVerificationArtifacts(data.verification.artifacts.selected),
+    "",
+    "Decision log:",
+    ...formatDecisionLog(data.decisionLog),
+    "",
+    "Task lifecycle:",
+    ...formatProofLifecycle(data.lifecycle),
     "",
     "Local policies:",
     ...formatPolicies(data.policies),
@@ -386,6 +457,120 @@ function reportedVerificationData(input: {
   };
 }
 
+function applyArtifactLedger(reported: ProveReportedVerification, artifacts: VerificationArtifactEvaluation): ProveReportedVerification {
+  const byTarget = new Map(artifacts.ledgerEvidence.map((entry) => [`${entry.kind}:${entry.target}`, entry]));
+  const ledger = reported.ledger.map((entry) => {
+    if (entry.kind === "test") {
+      return entry;
+    }
+    const artifact = byTarget.get(`${entry.kind}:${entry.target}`);
+    if (!artifact) {
+      return entry;
+    }
+    if (artifact.status === "covered") {
+      return {
+        ...entry,
+        status: "covered" as const,
+        trustTier: "reported" as const,
+        evidence: artifact.evidence,
+        missingReason: undefined,
+        source: "verification-artifact"
+      };
+    }
+    return {
+      ...entry,
+      status: "missing" as const,
+      trustTier: "none" as const,
+      evidence: artifact.evidence,
+      missingReason: "selected verification artifacts conflict for this required check",
+      source: "verification-artifact"
+    };
+  });
+  return {
+    ...reported,
+    ledger,
+    waivedVerification: ledger.filter((entry) => entry.status === "waived")
+  };
+}
+
+async function decisionLogForSnapshot(repoRoot: string, snapshot: TaskSnapshot | undefined, freshness: FreshnessInfo): Promise<ProveDecisionLog> {
+  const pointer = snapshot?.sessionMemory;
+  if (!snapshot || !pointer) {
+    return emptyDecisionLog("not_recorded");
+  }
+  try {
+    const result = await readSessionMemory({
+      repoRoot,
+      sessionId: pointer.sessionId,
+      taskId: snapshot.taskId,
+      freshness,
+      includeStale: true,
+      limit: 240
+    });
+    const activeEntries = result.memory.entries;
+    const missingBaselineIds = pointer.entryIds.filter((entryId) => !activeEntries.some((entry) => entry.id === entryId));
+    const archivedEntries = await readArchivedSessionMemoryEntries({
+      repoRoot,
+      sessionId: pointer.sessionId,
+      entryIds: missingBaselineIds,
+      taskId: snapshot.taskId,
+      maxArchives: 8
+    });
+    const entriesById = new Map([...archivedEntries, ...activeEntries].map((entry) => [entry.id, entry]));
+    const baselineEntries = pointer.entryIds.map((entryId) => entriesById.get(entryId)).filter((entry): entry is SessionMemoryEntryFact => Boolean(entry));
+    const entries = [...entriesById.values()].map((entry) => redactDecisionEntry(entry, repoRoot));
+    const artifactIds = uniqueSorted(
+      entries.flatMap((entry) => entry.scope.refs.filter((ref) => ref.kind === "verification_artifact").map((ref) => ref.id))
+    ).slice(0, 20);
+    const canonicalPointer = /^[a-f0-9]{64}$/u.test(pointer.summaryHash);
+    return {
+      status: "loaded",
+      sessionId: pointer.sessionId,
+      baselineRevision: pointer.revision,
+      currentRevision: result.revision,
+      baselineIntact: baselineEntries.length === pointer.entryIds.length,
+      summaryHashValid: canonicalPointer && baselineEntries.length === pointer.entryIds.length
+        ? sessionMemoryPointerDigest(baselineEntries) === pointer.summaryHash
+        : undefined,
+      decisions: entries.filter((entry) => entry.kind === "decision").slice(0, 20),
+      ruledOut: entries.filter((entry) => entry.kind === "ruled_out").slice(0, 20),
+      constraints: entries.filter((entry) => entry.kind === "constraint").slice(0, 20),
+      verification: entries.filter((entry) => entry.kind === "verification").slice(0, 20),
+      openQuestions: entries.filter((entry) => entry.kind === "open_question").slice(0, 20),
+      artifactIds,
+      warnings: [...result.warnings, ...(!canonicalPointer ? ["plan-time session-memory pointer uses a legacy non-canonical digest"] : [])]
+    };
+  } catch (error) {
+    return {
+      ...emptyDecisionLog("unavailable"),
+      sessionId: pointer.sessionId,
+      baselineRevision: pointer.revision,
+      warnings: [error instanceof Error ? error.message : String(error)]
+    };
+  }
+}
+
+function emptyDecisionLog(status: ProveDecisionLog["status"]): ProveDecisionLog {
+  return { status, decisions: [], ruledOut: [], constraints: [], verification: [], openQuestions: [], artifactIds: [], warnings: [] };
+}
+
+function redactDecisionEntry(entry: SessionMemoryEntryFact, repoRoot: string): SessionMemoryEntryFact {
+  return {
+    ...entry,
+    summary: sanitizeSummary(entry.summary, repoRoot) ?? "<redacted>",
+    details: sanitizeSummary(entry.details, repoRoot),
+    scope: {
+      ...entry.scope,
+      topics: entry.scope.topics.map((topic) => sanitizeSummary(topic, repoRoot) ?? "<redacted>")
+    },
+    evidence: entry.evidence.map((evidence) => ({
+      ...evidence,
+      sourceRef: sanitizeSummary(evidence.sourceRef, repoRoot) ?? "<redacted>",
+      note: sanitizeSummary(evidence.note, repoRoot)
+    }))
+  };
+}
+
 function verificationCommandPlanFromData(value: unknown): VerificationCommandPlanEntry[] {
   if (!Array.isArray(value)) {
     return [];
@@ -451,6 +636,9 @@ function proofGaps(input: {
   testPlanActionability: string;
   focusGaps: string[];
   testGaps: string[];
+  artifacts: VerificationArtifactEvaluation;
+  decisionLog: ProveDecisionLog;
+  lifecycle: ProveLifecycle;
 }): string[] {
   return uniqueSorted([
     ...(input.freshness.stale ? [`index stale: ${input.freshness.reason}`] : []),
@@ -462,14 +650,66 @@ function proofGaps(input: {
     ...(input.reported.hasEvidence && input.reported.coverage.length === 0 && (input.reported.ranCommands.length > 0 || input.reported.ranCommandReports.length > 0)
       ? ["reported commands earned no classifier-backed verification coverage"]
       : []),
-    ...(input.reported.hasEvidence ? input.reported.testsNotRun.map((test) => `reported verification missing: ${test.path}`) : []),
+    ...(input.reported.hasEvidence || input.artifacts.selected.length > 0
+      ? input.reported.testsNotRun.map((test) => `reported verification missing: ${test.path}`)
+      : []),
     ...input.reported.ledger
       .filter((entry) => entry.status === "missing" && entry.kind !== "test")
       .map((entry) => `reported verification missing: ${entry.kind} ${entry.target}`),
+    ...input.artifacts.selected
+      .filter((entry) => entry.status !== "accepted" && entry.status !== "non_passing")
+      .map((entry) => `verification artifact ${entry.artifactId} ${entry.status}: ${entry.reasons.join("; ") || "no trusted binding"}`),
+    ...input.artifacts.selected
+      .filter((entry) => entry.status === "non_passing")
+      .map((entry) => `verification artifact ${entry.artifactId} is non-passing: ${entry.reasons.join("; ")}`),
+    ...(input.decisionLog.status === "unavailable" ? ["task-bound decision log is unavailable"] : []),
+    ...(input.decisionLog.baselineIntact === false ? ["task-bound decision log no longer contains every plan-time baseline entry"] : []),
+    ...(input.decisionLog.summaryHashValid === false ? ["task-bound decision log content differs from the plan-time canonical digest"] : []),
+    ...(input.lifecycle.status === "invalid" ? [`task lifecycle state is invalid${input.lifecycle.error ? `: ${input.lifecycle.error}` : ""}`] : []),
+    ...(input.lifecycle.pendingStop ? [`task lifecycle requires replan: ${input.lifecycle.pendingStop.reasons.join("; ")}`] : []),
+    ...input.lifecycle.invariants.flatMap((invariant) => {
+      const review = input.lifecycle.invariantReviews.find((entry) => entry.invariantId === invariant.id);
+      return !review ? [`task invariant unreviewed: ${invariant.id}`] : review.status === "violated" ? [`task invariant violated: ${invariant.id}`] : [];
+    }),
+    ...input.decisionLog.warnings.map((warning) => `decision log warning: ${warning}`),
     ...input.policies.warnings,
     ...input.focusGaps,
     ...input.testGaps
   ]);
+}
+
+async function lifecycleForProof(repoRoot: string, snapshot: TaskSnapshot | undefined): Promise<ProveLifecycle> {
+  if (!snapshot) return { status: "missing", invariants: [], invariantReviews: [], attempts: [] };
+  try {
+    const state = await loadTaskLifecycleState(repoRoot, snapshot.taskId);
+    const pendingStop = await pendingTaskLifecycleReplan(repoRoot, snapshot);
+    return state
+      ? { status: "loaded", planRevision: state.planRevision, invariants: state.invariants, invariantReviews: state.latestInvariantReviews, attempts: state.attempts.slice(-3), pendingStop }
+      : { status: "missing", planRevision: snapshot.planRevision, invariants: snapshot.invariants ?? [], invariantReviews: [], attempts: [], pendingStop };
+  } catch (error) {
+    return {
+      status: "invalid",
+      planRevision: snapshot.planRevision,
+      invariants: snapshot.invariants ?? [],
+      invariantReviews: [],
+      attempts: [],
+      error: error instanceof Error ? error.message : String(error)
+    };
+  }
+}
+
+function formatProofLifecycle(lifecycle: ProveLifecycle): string[] {
+  const header = `- state ${lifecycle.status}${lifecycle.planRevision ? `; plan revision ${lifecycle.planRevision}` : ""}${lifecycle.pendingStop ? "; replan required" : ""}`;
+  return [
+    header,
+    ...(lifecycle.error ? [`- error: ${lifecycle.error}`] : []),
+    ...lifecycle.invariants.map((invariant) => {
+      const review = lifecycle.invariantReviews.find((entry) => entry.invariantId === invariant.id);
+      return `- ${invariant.id}: ${review?.status ?? "unreviewed"}; ${invariant.statement}`;
+    }),
+    ...lifecycle.attempts.map((attempt) => `- attempt ${attempt.attemptId}: ${attempt.attemptStatus}; ${attempt.failureSignals.length} failure signal(s); ${attempt.changedFiles.length} changed file(s)`),
+    ...(lifecycle.pendingStop ? lifecycle.pendingStop.reasons.map((reason) => `- stop: ${reason}`) : [])
+  ];
 }
 
 function trustPosture(): string[] {
@@ -478,6 +718,7 @@ function trustPosture(): string[] {
     "Codexa MCP tools are context and review tools, not source-mutating edit tools",
     "reported commands earn verification credit only through the shared command classifier",
     "verification trust is explicit: executed-by-autoverify > witnessed > artifact-corroborated > reported > none",
+    "unauthenticated imported manifests remain reported evidence; artifact-corroborated is reserved for a future authenticated or witnessed producer lane",
     "repository policy text is bounded local evidence, not executable code"
   ];
 }
@@ -539,6 +780,30 @@ function formatReportedLedger(reported: ProveReportedVerification): string[] {
     return ["- none; preview above shows what reported commands would need to cover"];
   }
   return formatVerificationLedger(reported.ledger);
+}
+
+function formatVerificationArtifacts(artifacts: VerificationArtifactSummary[]): string[] {
+  if (artifacts.length === 0) {
+    return ["- none selected"];
+  }
+  return artifacts.slice(0, 20).map((artifact) => {
+    const run = artifact.runId ? `; run ${artifact.runId} ${artifact.outcome ?? "unknown"}` : "";
+    const reasons = artifact.reasons.length > 0 ? `; ${artifact.reasons.slice(0, 3).join(" | ")}` : "";
+    return `- ${artifact.status}: ${artifact.artifactId}${run}; trust ${artifact.trustTier}${reasons}`;
+  });
+}
+
+function formatDecisionLog(decisionLog: ProveDecisionLog): string[] {
+  if (decisionLog.status !== "loaded") {
+    return [`- ${decisionLog.status}${decisionLog.warnings.length > 0 ? `: ${decisionLog.warnings.join("; ")}` : ""}`];
+  }
+  const counts = `decisions ${decisionLog.decisions.length}; ruled out ${decisionLog.ruledOut.length}; constraints ${decisionLog.constraints.length}; verification ${decisionLog.verification.length}; open questions ${decisionLog.openQuestions.length}`;
+  const revisions = `revision ${decisionLog.baselineRevision ?? "unknown"} -> ${decisionLog.currentRevision ?? "unknown"}`;
+  const baseline = decisionLog.baselineIntact === false ? "baseline entries missing" : "baseline intact";
+  const entries = [...decisionLog.constraints, ...decisionLog.decisions, ...decisionLog.ruledOut, ...decisionLog.verification, ...decisionLog.openQuestions]
+    .slice(0, 8)
+    .map((entry) => `- ${entry.kind} (${entry.provenance}): ${entry.summary}`);
+  return [`- session ${decisionLog.sessionId ?? "unknown"}; ${revisions}; ${baseline}; ${counts}`, ...entries];
 }
 
 function formatCommandReport(report: VerificationCommandReport): string {

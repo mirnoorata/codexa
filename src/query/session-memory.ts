@@ -12,12 +12,13 @@ import type { QueryOptions, QueryResult, SessionMemoryInput } from "../types.js"
 
 export async function sessionMemoryQuery(input: QuerySessionInput, memoryInput: SessionMemoryInput = {}, options: QueryOptions = {}): Promise<QueryResult> {
   const session = await ensureQuerySession(input, options);
+  const boundSessionId = memoryInput.sessionId ?? session.options.workspaceSessionId;
   const action = memoryInput.action ?? "summary";
   const tokenBudget = clampInt(memoryInput.tokenBudget ?? 1800, 500, 8000);
   const limit = clampInt(memoryInput.limit ?? 20, 1, session.maxResults);
   const base = {
     repoRoot: session.repoRoot,
-    sessionId: memoryInput.sessionId,
+    sessionId: boundSessionId,
     taskId: memoryInput.taskId,
     kinds: memoryInput.kinds,
     refs: memoryInput.refs,
@@ -35,7 +36,7 @@ export async function sessionMemoryQuery(input: QuerySessionInput, memoryInput: 
     action === "remember"
       ? await recordSessionMemory({
           repoRoot: session.repoRoot,
-          sessionId: memoryInput.sessionId,
+          sessionId: boundSessionId,
           taskId: memoryInput.taskId,
           task: memoryInput.task,
           freshness: session.freshness,

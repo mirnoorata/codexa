@@ -172,6 +172,44 @@ export function derivedEntriesForTool(
         evidenceTier: "derived",
         scope
       }
+	    ];
+	  }
+  if (toolName === "proof_card") {
+    const verification = isRecord(record.verification) ? record.verification : undefined;
+    const reported = isRecord(verification?.reported) ? verification.reported : undefined;
+    const artifacts = isRecord(verification?.artifacts) ? verification.artifacts : undefined;
+    const selectedArtifacts = Array.isArray(artifacts?.selected) ? artifacts.selected.filter(isRecord) : [];
+    const artifactRefs: SessionMemoryRef[] = selectedArtifacts
+      .map((artifact): SessionMemoryRef | undefined => {
+        if (typeof artifact.artifactId !== "string") {
+          return undefined;
+        }
+        return {
+          kind: "verification_artifact",
+          id: artifact.artifactId,
+          evidenceTier: "derived",
+          confidence: "derived"
+        };
+      })
+      .filter((entry): entry is SessionMemoryRef => Boolean(entry));
+    const ledgerCounts = ledgerStatusCounts(reported?.ledger);
+    const gaps = arrayLength(record.gaps);
+    if (ledgerCounts.total === 0 && artifactRefs.length === 0 && gaps === 0) {
+      return [];
+    }
+    return [
+      {
+        kind: "verification",
+        key: `verification:proof_card:${stableId("proof-card", String(record.task ?? ""), artifactRefs.map((ref) => ref.id).join("\n"), String(ledgerCounts.covered), String(gaps)).slice(0, 16)}`,
+        summary: `proof_card recorded ${ledgerCounts.covered}/${ledgerCounts.total} covered ledger item(s), ${artifactRefs.length} verification artifact(s), and ${gaps} gap(s).`,
+        provenance: "codexa-derived",
+        confidence: "derived",
+        evidenceTier: "derived",
+        scope: {
+          ...scope,
+          refs: uniqueRefs([...scope.refs, ...artifactRefs]).slice(0, MAX_REFS_PER_ENTRY)
+        }
+      }
     ];
   }
   return [];

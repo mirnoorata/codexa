@@ -89,18 +89,13 @@ export async function resolveMcpRepoRoot(configuredRootInput: string, options: M
   }
 
   if (configuredRootIsGitRepo) {
-    // Explicit workspace routing that matched nothing must not LOOK routed:
-    // packets computed over the workspace monorepo are wrong-repo answers
-    // unless the caller can see the miss.
+    // Explicit routing is an identity contract, not a preference. Falling
+    // back to the workspace monorepo would return plausible wrong-repo
+    // evidence, so fail before any index or query is selected.
     if (workspaceRoutingRequested) {
-      return {
-        configuredRoot,
-        repoRoot: configuredRoot,
-        source: "configured-root",
-        warnings: [
-          `workspace routing requested${options.workspaceSessionId ? ` (session ${options.workspaceSessionId})` : ""} but no focus row matched; serving the configured root ${configuredRoot}`
-        ]
-      };
+      throw new Error(
+        `Codexa MCP workspace routing requested${options.workspaceSessionId ? ` (session ${options.workspaceSessionId})` : ""} but no focus row matched; refusing to serve the configured root ${configuredRoot}`
+      );
     }
     return { configuredRoot, repoRoot: configuredRoot, source: "configured-root" };
   }

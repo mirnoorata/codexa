@@ -183,6 +183,15 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
 	    expect(symbolContextSchema).toContain("language");
     const changePlanSchema = JSON.stringify(tools.tools.find((tool) => tool.name === "change_plan")?.inputSchema);
     expect(changePlanSchema).toContain("followCandidate");
+    expect(changePlanSchema).toContain("invariants");
+    const postEditSchema = JSON.stringify(tools.tools.find((tool) => tool.name === "post_edit_review")?.inputSchema);
+    expect(postEditSchema).toContain("invariantReviews");
+    expect(postEditSchema).toContain("artifactIds");
+    expect(tools.tools.find((tool) => tool.name === "post_edit_review")?.annotations).toMatchObject({
+      readOnlyHint: false,
+      destructiveHint: false,
+      idempotentHint: false
+    });
     const testPlanSchema = JSON.stringify(tools.tools.find((tool) => tool.name === "test_plan")?.inputSchema);
     expect(testPlanSchema).toContain("files");
     expect(testPlanSchema).toContain("changeType");
@@ -190,6 +199,7 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
     expect(proofCardSchema).toContain("files");
     expect(proofCardSchema).toContain("ranCommandReports");
     expect(proofCardSchema).toContain("waivers");
+    expect(proofCardSchema).toContain("artifactIds");
     expect(tools.tools.find((tool) => tool.name === "impact")?.annotations?.readOnlyHint).toBe(false);
     expect(tools.tools.find((tool) => tool.name === "freshness")?.annotations?.readOnlyHint).toBe(true);
 
@@ -458,10 +468,29 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
 
     const changePlan = await client.callTool({
       name: "change_plan",
-      arguments: { task: "change changedSymbol safely", symbols: ["changedSymbol"], tokenBudget: 1000, limit: 5, saveSnapshot: true, taskId: "mcp-changed-symbol" }
+      arguments: {
+        task: "change changedSymbol safely",
+        symbols: ["changedSymbol"],
+        tokenBudget: 1000,
+        limit: 5,
+        saveSnapshot: true,
+        taskId: "mcp-changed-symbol",
+        invariants: ["Keep the exported function signature stable."]
+      }
     });
     expect(JSON.stringify(changePlan)).toContain("Codexa change plan");
     expect(JSON.stringify(changePlan)).toContain("Task snapshot: mcp-changed-symbol");
+    const changePlanData = (changePlan.structuredContent as {
+      data?: {
+        nextTools?: Array<{ tool?: string }>;
+        snapshot?: { planRevision?: number; invariants?: Array<{ id?: string; statement?: string }> };
+      };
+    }).data;
+    const invariant = changePlanData?.snapshot?.invariants?.[0];
+    expect(changePlanData?.nextTools?.map((entry) => entry.tool).slice(0, 2)).toEqual(["test_plan", "post_edit_review"]);
+    expect(changePlanData?.snapshot?.planRevision).toBe(1);
+    expect(invariant).toMatchObject({ statement: "Keep the exported function signature stable." });
+    expect(invariant?.id).toEqual(expect.any(String));
     expect((changePlan.structuredContent as { toolPolicy?: { writeEffects?: string } }).toolPolicy?.writeEffects).toBe(
       "task-snapshot-cache+session-memory-auto+index-cache-if-auto-refresh"
     );
@@ -474,6 +503,7 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
         taskId: "mcp-changed-symbol",
         ranTests: [],
         ranCommands: ["npm test"],
+        invariantReviews: [{ invariantId: invariant?.id, status: "satisfied", evidence: ["The export remains a zero-argument function."] }],
         ranCommandReports: [{ command: "npm test", cwd: repo, packageManager: "npm", packageRoot: ".", scriptName: "test", args: [], exitCode: 0, durationMs: 50, stdoutSummary: "vitest passed" }]
       }
     });
@@ -482,8 +512,11 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
     expect(JSON.stringify(postEdit)).toContain("auto-refreshed");
     expect(JSON.stringify(postEdit)).toContain("verificationLedger");
     expect(JSON.stringify(postEdit)).toContain("ranCommands");
-    expect(JSON.stringify(postEdit)).toContain('"persisted":false');
+    expect(JSON.stringify(postEdit)).toContain('"persisted":true');
     const postEditEnvelope = postEdit.structuredContent as { data: unknown; nextTools?: unknown[]; systemMessage?: string };
+    expect((postEdit.structuredContent as { toolPolicy?: { writeEffects?: string } }).toolPolicy?.writeEffects).toBe(
+      "task-outcome-cache+session-memory-auto+index-cache-if-auto-refresh"
+    );
     const postEditData = postEditEnvelope.data as {
       ranCommands?: string[];
       ranCommandReports?: Array<{ command: string; exitCode?: number; durationMs?: number }>;
@@ -494,6 +527,7 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
       systemMessage?: string;
       outcome?: {
         persisted?: boolean;
+        invariantReviews?: Array<{ invariantId?: string; status?: string }>;
         ranTests?: string[];
         ranCommands?: string[];
         ranCommandReports?: Array<{ command: string; cwd?: string; stdoutSummary?: string }>;
@@ -510,7 +544,8 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
     expect(postEditData.verificationProvenance).toEqual(CURRENT_VERIFICATION_PROVENANCE);
     expect(postEditData.mcp?.verificationProvenance).toEqual(CURRENT_VERIFICATION_PROVENANCE);
     expect(postEditData.verificationLedger?.some((entry) => entry.status === "covered" && entry.evidence.some((item) => item.includes("npm test")))).toBe(true);
-    expect(postEditData.outcome?.persisted).toBe(false);
+    expect(postEditData.outcome?.persisted).toBe(true);
+    expect(postEditData.outcome?.invariantReviews).toContainEqual(expect.objectContaining({ invariantId: invariant?.id, status: "satisfied" }));
     expect(postEditData.outcome?.ranTests).toEqual([]);
     expect(postEditData.outcome?.ranCommands).toEqual(["npm test"]);
     expect(postEditData.outcome?.ranCommandReports?.[0]).toMatchObject({ command: "npm test", cwd: "<repo>", stdoutSummary: "vitest passed" });
@@ -558,7 +593,12 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
 
     const unverifiedPostEdit = await client.callTool({
       name: "post_edit_review",
-      arguments: { taskId: "mcp-changed-symbol", ranTests: [], ranCommands: [] }
+      arguments: {
+        taskId: "mcp-changed-symbol",
+        ranTests: [],
+        ranCommands: [],
+        invariantReviews: [{ invariantId: invariant?.id, status: "satisfied", evidence: ["The export remains stable."] }]
+      }
     });
     const unverifiedEnvelope = unverifiedPostEdit.structuredContent as {
       data: { nextTools?: Array<{ tool?: string; reason?: string; readOnly?: boolean; writes?: string[] }>; systemMessage?: string };
@@ -576,6 +616,7 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
       arguments: {
         taskId: "mcp-changed-symbol",
         ranTests: [],
+        invariantReviews: [{ invariantId: invariant?.id, status: "satisfied", evidence: ["The export remains stable."] }],
         ranCommandReports: [{ command: "npm test", cwd: outsideCwd, exitCode: 0, stdoutSummary: longSummary }]
       }
     });
@@ -584,26 +625,41 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
     expect(redactedSerialized).not.toContain(longSummary);
     expect(redactedSerialized).toContain("<outside-repo>");
 
+    const missingArtifactId = `va_${"0".repeat(64)}`;
     const waivedPostEdit = await client.callTool({
       name: "post_edit_review",
       arguments: {
         taskId: "mcp-changed-symbol",
         ranTests: [],
         ranCommands: [],
+        invariantReviews: [{ invariantId: invariant?.id, status: "satisfied", evidence: ["The export remains stable."] }],
+        artifactIds: [missingArtifactId],
         waivers: [{ kind: "test", target: "tests/index.test.ts", reason: "manual browser regression" }]
       }
     });
     expect(JSON.stringify(waivedPostEdit)).toContain("waivedVerification");
     const waivedData = waivedPostEdit.structuredContent as {
       data: {
+        verificationArtifacts?: Array<{ artifactId?: string; status?: string; trustTier?: string }>;
         waivedVerification?: Array<{ kind: string; target: string; status: string }>;
-        outcome?: { waivedVerification?: Array<{ kind: string; target: string; status: string }> };
+        outcome?: {
+          persisted?: boolean;
+          verificationArtifacts?: Array<{ artifactId?: string; status?: string; trustTier?: string }>;
+          waivedVerification?: Array<{ kind: string; target: string; status: string }>;
+        };
       };
     };
+    expect(waivedData.data.verificationArtifacts).toContainEqual(
+      expect.objectContaining({ artifactId: missingArtifactId, status: "missing", trustTier: "none" })
+    );
+    expect(waivedData.data.outcome?.persisted).toBe(true);
+    expect(waivedData.data.outcome?.verificationArtifacts).toContainEqual(
+      expect.objectContaining({ artifactId: missingArtifactId, status: "missing", trustTier: "none" })
+    );
     expect(waivedData.data.waivedVerification?.some((entry) => entry.kind === "test" && entry.target === "tests/index.test.ts" && entry.status === "waived")).toBe(true);
     expect(waivedData.data.outcome?.waivedVerification?.some((entry) => entry.kind === "test" && entry.target === "tests/index.test.ts" && entry.status === "waived")).toBe(true);
     expect((await stat(path.join(repo, ".codex/codebase/index.json"))).mtimeMs).toBeGreaterThanOrEqual(indexMtimeBeforePostEdit);
-    await expect(readdir(path.join(repo, ".codex/cache/codexa-outcomes"))).rejects.toThrow();
+    expect((await readdir(path.join(repo, ".codex/cache/codexa-outcomes"))).some((entry) => entry.endsWith(".json"))).toBe(true);
 
     await client.close();
     expect(Buffer.concat(stderrChunks).toString("utf8")).toContain("codexa MCP server ready");

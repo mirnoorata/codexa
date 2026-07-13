@@ -4,7 +4,11 @@ import path from "node:path";
 import { statusQuery } from "../queries.js";
 import { loadSkillHints, renderSkillHintsResource } from "../skill-hints.js";
 
-export async function registerArtifactResources(server: McpServer, resolveRepoRoot: () => Promise<string>): Promise<void> {
+export async function registerArtifactResources(
+  server: McpServer,
+  resolveRepoRoot: () => Promise<string>,
+  resolveReadyRepoRoot: () => Promise<string> = resolveRepoRoot
+): Promise<void> {
   const artifacts = [
     ["codebase-readme", "codexa://repo/codebase/README.md", ".codex/codebase/README.md", "text/markdown", "Codexa artifact overview"],
     ["codex-contract", "codexa://repo/codebase/codex-contract.md", ".codex/codebase/codex-contract.md", "text/markdown", "Codex automatic-use contract"],
@@ -38,7 +42,7 @@ export async function registerArtifactResources(server: McpServer, resolveRepoRo
                 ? await readLiveFreshnessArtifact(await resolveRepoRoot())
                 : relativePath === ".codex/skill-hints.json"
                   ? renderSkillHintsResource(await loadSkillHints(await resolveRepoRoot()))
-                : await readArtifact(await resolveRepoRoot(), relativePath)
+                : await readArtifact(await resolveReadyRepoRoot(), relativePath)
           }
         ]
       })
@@ -54,7 +58,7 @@ export async function registerArtifactResources(server: McpServer, resolveRepoRo
       mimeType: "text/markdown"
     },
     async () => {
-      const repoRoot = await resolveRepoRoot();
+      const repoRoot = await resolveReadyRepoRoot();
       const modulesDir = path.join(repoRoot, ".codex/codebase/modules");
       let text = "# Codexa Modules\n\n";
       try {
@@ -75,7 +79,7 @@ export async function registerArtifactResources(server: McpServer, resolveRepoRo
     "module-artifact",
     new ResourceTemplate("codexa://repo/codebase/modules/{name}", {
       list: async () => ({
-        resources: await listMarkdownArtifacts(await resolveRepoRoot(), ".codex/codebase/modules", "codexa://repo/codebase/modules", "Codexa module", "Generated Codexa module artifact")
+        resources: await listMarkdownArtifacts(await resolveReadyRepoRoot(), ".codex/codebase/modules", "codexa://repo/codebase/modules", "Codexa module", "Generated Codexa module artifact")
       })
     }),
     {
@@ -90,7 +94,7 @@ export async function registerArtifactResources(server: McpServer, resolveRepoRo
           {
             uri: uri.toString(),
             mimeType: "text/markdown",
-            text: await readArtifact(await resolveRepoRoot(), `.codex/codebase/modules/${name}`)
+            text: await readArtifact(await resolveReadyRepoRoot(), `.codex/codebase/modules/${name}`)
           }
         ]
       };
@@ -102,7 +106,7 @@ export async function registerArtifactResources(server: McpServer, resolveRepoRo
     new ResourceTemplate("codexa://repo/codebase/playbooks/{name}", {
       list: async () => ({
         resources: await listMarkdownArtifacts(
-          await resolveRepoRoot(),
+          await resolveReadyRepoRoot(),
           ".codex/codebase/playbooks",
           "codexa://repo/codebase/playbooks",
           "Codexa playbook",
@@ -123,7 +127,7 @@ export async function registerArtifactResources(server: McpServer, resolveRepoRo
           {
             uri: uri.toString(),
             mimeType: "text/markdown",
-            text: await readArtifact(await resolveRepoRoot(), `.codex/codebase/playbooks/${name}`)
+            text: await readArtifact(await resolveReadyRepoRoot(), `.codex/codebase/playbooks/${name}`)
           }
         ]
       };
