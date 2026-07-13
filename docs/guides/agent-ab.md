@@ -50,6 +50,47 @@ Only structured tool-call records support the usage classification. Missing,
 malformed, or ambiguous trajectories remain unknown. Adherence and
 contamination are descriptive telemetry and never alter outcome inclusion.
 
+Newly analyzed experiments also include
+`codexaUsage.postEditDecisionTrace`. This nullable, versioned block separates
+mere `post_edit_review` invocation from the decision sequence observable in the
+agent-reported ATIF trajectory. A decision is attributed only when one
+`tool_call_id` has exactly one observation result in the same ATIF step with the
+same `source_call_id`, and the result contains one internally consistent Codexa
+decision. `completionAuthority`, not `verdict` alone, distinguishes an advisory
+inspection from a blocking decision. Result parsing accepts direct JSON and
+bounded JSON embedded in Harbor 0.18's Codex-adapter carrier; it never evaluates
+the surrounding wrapper syntax.
+
+The derived `finalState` is one of:
+
+- `not-reviewed`: no review call was observed;
+- `complete` or `advisory`: the last observed decision was nonblocking;
+- `nonblocking-after-blocking`: a nonblocking decision appeared in a later
+  step after a blocking one; this does not imply the calls used the same task
+  snapshot;
+- `blocking-unresolved`: the last observed decision still required tests,
+  inspection, or replanning; or
+- `unknown`: the trace or call/result evidence was missing, copied,
+  continued elsewhere, malformed, oversized, duplicated, ambiguous, or
+  contained multiple review calls in one step.
+
+These labels describe trace order only. They do not establish that the agent
+obeyed or ignored Codexa, that Codexa was correct, or that a decision helped or
+harmed the patch. Per-arm state counts retain unknowns in the denominator and
+remain agent-reported telemetry; they never alter verifier-owned completion,
+protocol validity, inclusion, or the intention-to-treat effect.
+
+Copied-context steps are excluded from invocation counts because ATIF marks
+them as prior interactions. A trajectory with an unloaded continuation,
+embedded or externally referenced subagents, a malformed evidence-bearing
+container, or a tool call without a usable `tool_call_id`, `function_name`, or
+`arguments` is `partial`: aggregate Codexa invocation fields remain unknown and
+the post-edit state is `unknown`. This is intentionally not a complete ATIF
+conformance validator; it validates the structures used to make usage and
+adherence claims. That avoids turning unsupported lineage or malformed evidence
+into a confident no-use result; per-agent attribution is a separate future
+analysis.
+
 Codexa indexes the treatment checkout inside the sandbox. It cannot borrow an
 index from the host or another arm. Index duration and exit status are written
 as telemetry under `/logs/artifacts/`; they do not affect correctness.
@@ -301,13 +342,16 @@ recorded 13 Codexa calls: 2 each to `session_context`, `task_brief`,
 controls recorded no Codexa invocation. Mean agent-reported indexing time was
 650.5 ms.
 
-Both treatment runs received a blocking `post_edit_review` inspection warning
-for changed symbols even though the actual edited files exactly matched the
-saved file plan. One run called the review twice after its first call omitted
-two explicit invariant reviews; the symbol warning remained after the evidence
-was supplied. This is measured process friction. It is not evidence that the
-review prevented an error, and the trajectories do not establish a causal
-mechanism.
+A manual observation recorded during v7 analysis found that both treatment
+runs received a blocking `post_edit_review` inspection warning for changed
+symbols even though the actual edited files exactly matched the saved file
+plan. One run called the review twice after its first call omitted two explicit
+invariant reviews; the symbol warning remained after the evidence was supplied.
+The underlying trajectories are not published, so this observation is not
+independently reproducible. It is not output from the new decision telemetry,
+evidence that the review prevented an error, or a causal mechanism. The
+archived v7 JSON remains byte-identical and is not retroactively reanalyzed or
+backfilled.
 
 The pilot therefore demonstrates neither a completion benefit nor net agent
 value on this easy task and shows a large efficiency penalty. It is one
