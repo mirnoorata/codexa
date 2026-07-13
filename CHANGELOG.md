@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.12.0](https://github.com/mirnoorata/codexa/compare/v0.11.0...v0.12.0) (2026-07-13)
+
+
+### Features
+
+* **eval:** report post-edit decision telemetry ([#100](https://github.com/mirnoorata/codexa/issues/100)) ([8d4d078](https://github.com/mirnoorata/codexa/commit/8d4d078230ad2216d605240bd620180c1a861cdc))
+
 ## [0.11.0](https://github.com/mirnoorata/codexa/compare/v0.10.0...v0.11.0) (2026-07-13)
 
 
