@@ -12,7 +12,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
 endobj
 5 0 obj
-<< /Length 3329 >>
+<< /Length 3293 >>
 stream
 BT
 /F1 10 Tf
@@ -21,7 +21,7 @@ BT
 (Change Summary) Tj T*
 () Tj T*
 (- Project: codexa) Tj T*
-(- Worktree: /srv/worktree/codexa/codex/20260713-codexa-zero-loss-overhead) Tj T*
+(- Worktree: isolated session worktree) Tj T*
 (- Branch: codex/backend/codexa-20260713-codexa-zero-loss-overhead) Tj T*
 (- Base: main) Tj T*
 (- Primary commit: 91c88cd) Tj T*
@@ -77,7 +77,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 7 0 R >>
 endobj
 7 0 obj
-<< /Length 3199 >>
+<< /Length 3210 >>
 stream
 BT
 /F1 10 Tf
@@ -134,7 +134,7 @@ BT
 (- npm run check: passed) Tj T*
 (- npm run benchmark:ci: passed) Tj T*
 (- npm run smoke:package: passed) Tj T*
-(- Codexa post-edit-review: /srv/.codex/artifacts/codexa/codex-backend-) Tj T*
+(- Codexa post-edit-review: passed; local artifact retained outside the repository) Tj T*
 ET
 endstream
 endobj
@@ -142,15 +142,13 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 9 0 R >>
 endobj
 9 0 obj
-<< /Length 647 >>
+<< /Length 509 >>
 stream
 BT
 /F1 10 Tf
 14 TL
 50 760 Td
-(codexa-20260713-codexa-zero-loss-overhead/codexa-post-edit-review.txt) Tj T*
-(- Codexa test-plan: /srv/.codex/artifacts/codexa/codex-backend-codexa-20260713-codexa-zero-) Tj T*
-(loss-overhead/codexa-test-plan.txt) Tj T*
+(- Codexa test-plan: passed; local artifact retained outside the repository) Tj T*
 (- git diff --cached --check: passed) Tj T*
 (- staged safety scan: passed) Tj T*
 () Tj T*
@@ -170,12 +168,12 @@ xref
 0000000127 00000 n 
 0000000197 00000 n 
 0000000323 00000 n 
-0000003703 00000 n 
-0000003829 00000 n 
-0000007079 00000 n 
-0000007205 00000 n 
+0000003667 00000 n 
+0000003793 00000 n 
+0000007054 00000 n 
+0000007180 00000 n 
 trailer
 << /Size 10 /Root 1 0 R >>
 startxref
-7902
+7739
 %%EOF

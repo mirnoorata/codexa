@@ -1,7 +1,7 @@
 # Change Summary
 
 - Project: `codexa`
-- Worktree: `/srv/worktree/codexa/codex/20260713-codexa-zero-loss-overhead`
+- Worktree: isolated session worktree
 - Branch: `codex/backend/codexa-20260713-codexa-zero-loss-overhead`
 - Base: `main`
 - Primary commit: `91c88cd`
@@ -101,8 +101,8 @@
 - npm run check: passed
 - npm run benchmark:ci: passed
 - npm run smoke:package: passed
-- Codexa post-edit-review: /srv/.codex/artifacts/codexa/codex-backend-codexa-20260713-codexa-zero-loss-overhead/codexa-post-edit-review.txt
-- Codexa test-plan: /srv/.codex/artifacts/codexa/codex-backend-codexa-20260713-codexa-zero-loss-overhead/codexa-test-plan.txt
+- Codexa post-edit-review: passed; local artifact retained outside the repository
+- Codexa test-plan: passed; local artifact retained outside the repository
 - git diff --cached --check: passed
 - staged safety scan: passed
 
