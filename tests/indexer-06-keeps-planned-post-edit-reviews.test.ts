@@ -38,7 +38,7 @@ it("keeps planned post-edit reviews accountable without forcing replan when test
     const repo = await createFixtureRepo();
     await buildIndex({ repoRoot: repo });
 
-    await changePlanQuery(
+    const plan = await changePlanQuery(
       repo,
       {
         task: "Change helper normalization safely",
@@ -50,6 +50,10 @@ it("keeps planned post-edit reviews accountable without forcing replan when test
       },
       { autoRefresh: false }
     );
+    const planData = plan.data as { requiredWorkflowChecks: Array<{ paths: string[] }> };
+    // Generic task wording must not suppress exact workflow matches for a file shared by three or more workflows.
+    expect(planData.requiredWorkflowChecks.length).toBeGreaterThanOrEqual(3);
+    expect(planData.requiredWorkflowChecks.every((check) => check.paths.includes("service/helpers.py"))).toBe(true);
     const snapshotPath = path.join(repo, ".codex/cache/codexa-tasks/planned-helper-edit.json");
     const snapshot = JSON.parse(await readFile(snapshotPath, "utf8"));
 	    snapshot.plannedTests.push({

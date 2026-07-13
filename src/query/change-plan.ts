@@ -2,9 +2,14 @@ import path from "node:path";
 import { formatGaps } from "./diff.js";
 import { buildPlanComplexityReview, formatComplexityReview } from "./complexity.js";
 import { nextTool } from "./next-tools.js";
-import { contextPackQuery, focusBriefQuery } from "./context.js";
+import { contextPackQuery } from "./context.js";
 import { formatContextQuality, type ContextQuality } from "./quality.js";
-import { freshnessBanner } from "./runtime.js";
+import {
+  assertFreshnessAuthorityCurrent,
+  FreshnessAuthorityChangedError,
+  freshnessAuthorityBlockReason,
+  freshnessBanner
+} from "./runtime.js";
 import { ensureQuerySession, type QuerySession, type QuerySessionInput } from "./session.js";
 import { normalizeSearchText } from "./search.js";
 import { formatTestRecommendations, recommendTests, uniqueTests } from "./tests.js";
@@ -22,11 +27,14 @@ import type {
   GraphEdgeFact,
   QueryOptions,
   QueryResult,
+  RefreshInfo,
   SymbolFact,
+  TaskInvariant,
   TaskSnapshotRequiredCheck,
   TestRecommendation,
   TestRecommendationProvenance,
-  WorkflowTraceFact
+  WorkflowTraceFact,
+  FreshnessInfo
 } from "../types.js";
 import { limitText, stableId, uniqueSorted } from "../util.js";
 import { formatRequiredChecks, requiredDependencyChecksForPlan, requiredWorkflowChecksForPlan } from "./change-plan/checks.js";
@@ -40,6 +48,20 @@ export async function changePlanQuery(
 ): Promise<QueryResult> {
   const session = await ensureQuerySession(sessionInput, options);
   const repoRoot = session.repoRoot;
+  const freshnessBlockReason = freshnessAuthorityBlockReason(session.freshness);
+  if (freshnessBlockReason) {
+    const priorSnapshotLoad = input.taskId ? await loadTaskSnapshot(repoRoot, input.taskId) : undefined;
+    const { planRevision, invariants } = nextTaskPlanLifecycle(priorSnapshotLoad?.snapshot, input.invariants);
+    return changePlanFreshnessBlockedResult({
+      freshness: session.freshness,
+      refresh: session.refresh,
+      repoRoot,
+      input,
+      reason: freshnessBlockReason,
+      planRevision,
+      invariants
+    });
+  }
   const requestedFollowCandidate = normalizeTargetCandidateSelector(input.followCandidate);
   const followBase = requestedFollowCandidate ? await resolveChangePlanFollowBaseInput(repoRoot, input) : undefined;
   if (requestedFollowCandidate && !followBase?.input) {
@@ -53,7 +75,6 @@ export async function changePlanQuery(
   const effectiveInput = followBase?.input ?? input;
   const priorSnapshotLoad = effectiveInput.saveSnapshot && effectiveInput.taskId ? await loadTaskSnapshot(repoRoot, effectiveInput.taskId) : undefined;
   const { planRevision, invariants } = nextTaskPlanLifecycle(priorSnapshotLoad?.snapshot, effectiveInput.invariants);
-  const focus = await focusBriefQuery(session, { task: effectiveInput.task, tokenBudget: Math.min(effectiveInput.tokenBudget ?? 2600, 3000), limit: effectiveInput.limit ?? 8, diff: effectiveInput.diff }, options);
   const pack = await contextPackQuery(session, { ...effectiveInput, tokenBudget: Math.min(effectiveInput.tokenBudget ?? 3200, 4000), limit: effectiveInput.limit ?? 10, includeSnippets: effectiveInput.includeSnippets ?? false }, options);
   const packData = pack.data as {
     focusFiles?: Array<{ file: FileFact; reasons: string[]; tier: EvidenceTier }>;
@@ -76,11 +97,10 @@ export async function changePlanQuery(
     gaps?: string[];
     warnings?: string[];
   };
-  const focusData = focus.data as { nextCall?: { tool: string; reason: string; arguments?: Record<string, unknown> }; workflows?: WorkflowTraceFact[]; modules?: unknown[] };
   const focusFiles = packData.focusFiles ?? [];
   const tests = packData.tests ?? [];
   const recipes = packData.recipes ?? [];
-  const quality = packData.quality ?? (focus.data as { quality?: ContextQuality }).quality;
+  const quality = packData.quality;
   const files = focusFiles.map((entry) => entry.file.path);
   const explicitFiles = normalizeInputPaths(effectiveInput.files ?? [], repoRoot);
   const explicitSymbolFiles = focusFiles
@@ -111,8 +131,10 @@ export async function changePlanQuery(
   const focusPathSet = new Set(files);
   const explicitWorkflowPaths = new Set(normalizeInputPaths(effectiveInput.files ?? [], repoRoot));
   const workflowMatchPaths = explicitWorkflowPaths.size > 0 ? explicitWorkflowPaths : focusPathSet;
-  const relatedWorkflow = focusData.workflows?.find((workflow) => workflow.relatedFiles.some((file) => workflowMatchPaths.has(file)));
-  const requiredWorkflowChecks = requiredWorkflowChecksForPlan(focusData.workflows ?? [], workflowMatchPaths, effectiveInput.changeType ?? "unknown").slice(0, 8);
+  const relatedWorkflow = session.index.workflows.find(
+    (workflow) => workflow.relatedFiles.some((filePath) => workflowMatchPaths.has(filePath)) || workflowMatchPaths.has(workflow.entryPath)
+  );
+  const requiredWorkflowChecks = requiredWorkflowChecksForPlan(session.index.workflows, workflowMatchPaths, effectiveInput.changeType ?? "unknown").slice(0, 8);
   const requiredDependencyChecks = requiredDependencyChecksForPlan(session.index, plannedEditTargets, effectiveInput.changeType ?? "unknown").slice(0, 12);
   const dirtyScopeTests =
     editReadiness.source === "dirty-worktree"
@@ -136,7 +158,7 @@ export async function changePlanQuery(
         index: session.index,
         repoRoot,
         focusFiles,
-        workflows: focusData.workflows ?? [],
+        workflows: session.index.workflows,
         tests,
         changedEntries: packData.changedEntries ?? [],
         missingAnchors: editReadiness.missingAnchors
@@ -160,37 +182,36 @@ export async function changePlanQuery(
           ? `1. Treat the current dirty worktree as the planned edit scope (${plannedEditTargets.length} files); read representatives ${files.slice(0, 6).join(", ") || "returned by Codexa"} before editing.`
           : `1. Read ${files.slice(0, 6).join(", ") || "the focus files returned by Codexa"} before editing.`,
         relatedWorkflow
-          ? `2. Inspect workflow_path for ${relatedWorkflow.title} if the change touches runtime flow.`
+          ? `2. Inspect workflow_path directly or through capabilities for ${relatedWorkflow.title} if the change touches runtime flow.`
           : effectiveInput.files?.length || effectiveInput.symbols?.length
             ? "2. Use callers, callees, or dependency_path if this focused edit changes an exported API or runtime contract."
             : editReadiness.source === "dirty-worktree"
               ? "2. Use change groups, callers, or dependency_path to split the dirty scope only if the representative reads reveal unrelated work."
-              : `2. Use ${focusData.nextCall?.tool ?? "task_brief"} next if the edit target is still ambiguous.`,
+              : `2. Use ${editReadiness.recommendedNextTool ?? "task_brief"} next if the edit target is still ambiguous.`,
         plannedTests.length > 0
           ? `3. Keep these tests in scope: ${plannedTests.slice(0, 5).map((test) => test.path).join(", ")}.`
           : "3. No targeted tests were proven; inspect repo test metadata before inventing a command.",
         plannedRecipes.length > 0 ? `4. Verification: ${plannedRecipes.slice(0, 3).join(" ")}` : "4. Run the narrowest verified test or type check that covers the touched files.",
         editReadiness.source === "dirty-worktree"
           ? "5. Run post_edit_review after edits; the snapshot dirty baseline separates pre-existing dirty files from new changes."
-          : "5. Re-run Codexa task_brief after edits if freshness reports dirty-files-changed."
+          : "5. Run post_edit_review after edits with the saved task id and verification evidence."
       ]
     : [
         `1. Do not edit yet: ${editReadiness.reason}.`,
         `2. Read ${files.slice(0, 6).join(", ") || "the orientation files returned by Codexa"} only to choose a concrete target.`,
         targetCandidates.length > 0
           ? "3. Pick one target candidate below, then re-run change_plan with followCandidate set to its candidateId."
-          : `3. Use ${editReadiness.recommendedNextTool ?? focusData.nextCall?.tool ?? "search"} or raw search to identify the exact file or symbol.`,
+          : `3. Use ${editReadiness.recommendedNextTool ?? "search"} or raw search to identify the exact file or symbol.`,
         "4. Re-run change_plan with an explicit file or symbol target and saveSnapshot=true before editing.",
         "5. Treat any tests below as deferred until the edit target is explicit."
       ];
   const finalTaskId = effectiveInput.saveSnapshot && editReadiness.editable ? allocateTaskSnapshotId(repoRoot, effectiveInput) : effectiveInput.taskId;
   const structuredNextTools = editReadiness.editable
     ? [
-        plannedTests.length > 0 ? nextTool("test_plan", "inspect planned targeted tests before editing", { files: plannedEditTargets.slice(0, 8) }) : undefined,
         nextTool("post_edit_review", "review drift and verification after completing the planned edit", { taskId: finalTaskId }, true, [".codex/cache/codexa-outcomes"])
       ].filter((tool): tool is ReturnType<typeof nextTool> => Boolean(tool))
     : [
-        nextTool(editReadiness.recommendedNextTool ?? focusData.nextCall?.tool ?? "search", "narrow the task to an explicit file or symbol target before editing", { task: effectiveInput.task }),
+        nextTool(editReadiness.recommendedNextTool ?? "search", "narrow the task to an explicit file or symbol target before editing", { task: effectiveInput.task }),
         targetCandidates[0] ? nextTool("change_plan", "follow the highest-confidence target candidate", { taskId: blockedSnapshot?.taskId ?? effectiveInput.taskId, followCandidate: targetCandidates[0].candidateId, saveSnapshot: true }, true, [".codex/cache/codexa-task-snapshots"]) : undefined
       ].filter((tool): tool is ReturnType<typeof nextTool> => Boolean(tool));
   const complexityReview = buildPlanComplexityReview({
@@ -214,10 +235,15 @@ export async function changePlanQuery(
         limit: 8
       }).catch(() => undefined)
     : undefined;
-  const savedSnapshot = effectiveInput.saveSnapshot && editReadiness.editable
-    ? await saveTaskSnapshot({
+  let savedSnapshot: Awaited<ReturnType<typeof saveTaskSnapshot>> | undefined;
+  if (effectiveInput.saveSnapshot && editReadiness.editable) {
+    try {
+      savedSnapshot = await saveTaskSnapshot({
         repoRoot,
         input: snapshotInput,
+        beforePersist: async () => {
+          await assertFreshnessAuthorityCurrent(repoRoot, session.index, session.freshness);
+        },
         snapshot: {
           task: effectiveInput.task,
           changeType: effectiveInput.changeType ?? "unknown",
@@ -252,8 +278,22 @@ export async function changePlanQuery(
           gaps: packData.gaps ?? [],
           warnings: packData.warnings ?? []
         }
-      })
-    : undefined;
+      });
+    } catch (error) {
+      if (error instanceof FreshnessAuthorityChangedError) {
+        return changePlanFreshnessBlockedResult({
+          freshness: error.freshness,
+          refresh: { refreshed: false },
+          repoRoot,
+          input: snapshotInput,
+          reason: error.reason,
+          planRevision,
+          invariants
+        });
+      }
+      throw error;
+    }
+  }
   const text = [
     freshnessBanner(pack.freshness, pack.refresh),
     quality ? formatContextQuality(quality) : undefined,
@@ -267,7 +307,10 @@ export async function changePlanQuery(
     ...planSteps,
     "",
     ...formatComplexityReview(complexityReview),
-    ...formatTaskInvariants(invariants, "Task invariants:"),
+    // Snapshot persistence serializes same-task plans and may merge an
+    // invariant committed by a concurrent caller. Render the committed set so
+    // detailed text cannot contradict the structured snapshot it accompanies.
+    ...formatTaskInvariants(savedSnapshot?.snapshot.invariants ?? invariants, "Task invariants:"),
     "",
     "Read first:",
     ...focusFiles.slice(0, 10).map((entry) => `- ${entry.file.path}: ${entry.tier}; ${entry.reasons.join("; ")}`),
@@ -297,7 +340,6 @@ export async function changePlanQuery(
       mode: "change_plan",
       editReadiness,
       steps: planSteps,
-      focus: focus.data,
       context: pack.data,
       files,
       plannedEditTargets,
@@ -318,6 +360,61 @@ export async function changePlanQuery(
             reason: editReadiness.reason
           }
         : undefined
+    }
+  };
+}
+
+function changePlanFreshnessBlockedResult(input: {
+  freshness: FreshnessInfo;
+  refresh?: RefreshInfo;
+  repoRoot: string;
+  input: ChangePlanInput;
+  reason: string;
+  planRevision: number;
+  invariants: TaskInvariant[];
+}): QueryResult {
+  const editReadiness = {
+    editable: false,
+    status: "orientation-only" as const,
+    reason: input.reason,
+    source: "insufficient-context" as const,
+    explicitTargetProvided: Boolean(input.input.files?.length || input.input.symbols?.length),
+    recommendedNextTool: "freshness",
+    missingAnchors: ["fresh-index"],
+    snapshotBlocked: Boolean(input.input.saveSnapshot)
+  };
+  return {
+    freshness: input.freshness,
+    refresh: input.refresh,
+    text: [
+      freshnessBanner(input.freshness, input.refresh),
+      "Codexa change plan blocked.",
+      input.reason,
+      `Run: codexa index ${input.repoRoot}`,
+      "No task snapshot or blocked-plan marker was written."
+    ].join("\n"),
+    data: {
+      mode: "change_plan",
+      actionability: "blocked",
+      task: input.input.task,
+      taskId: input.input.taskId,
+      editReadiness,
+      files: [],
+      plannedEditTargets: [],
+      tests: [],
+      recipes: [],
+      invariants: input.invariants,
+      planRevision: input.planRevision,
+      requiredWorkflowChecks: [],
+      requiredDependencyChecks: [],
+      nextTools: [],
+      systemMessage: `Run codexa index ${input.repoRoot}, then retry change_plan.`,
+      snapshotBlock: {
+        taskId: input.input.taskId,
+        status: "not-saved",
+        reason: input.reason
+      },
+      gaps: [input.reason]
     }
   };
 }

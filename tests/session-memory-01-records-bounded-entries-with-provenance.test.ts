@@ -497,6 +497,65 @@ it("auto-records change plans as viewed refs, next reads, decisions, and verific
     expect(memory.memory.verification[0]?.summary).toContain("change_plan queued 1 test target");
   });
 
+it("keeps repeated equivalent auto-records byte-stable while persisting semantic freshness changes", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-session-memory-auto-noop-"));
+    const freshness = freshnessFixture("snap-auto-noop");
+    const index = indexFixture(repo, freshness, [fileFixture("src/a.ts", freshness)]);
+    const result = {
+      freshness,
+      text: "task brief",
+      data: {
+        mode: "task_brief",
+        focusFiles: [{ path: "src/a.ts" }]
+      }
+    } satisfies QueryResult;
+
+    const first = await recordViewedMemoryForTool({
+      repoRoot: repo,
+      sessionId: "sid-auto-noop",
+      task: "inspect src/a.ts",
+      toolName: "task_brief",
+      result,
+      index
+    });
+    const memoryPath = path.join(sessionMemoryCacheDir(repo), "sessions", "sid-auto-noop", "memory.json");
+    const eventsPath = path.join(sessionMemoryCacheDir(repo), "sessions", "sid-auto-noop", "events.ndjson");
+    const memoryAfterFirst = await readFile(memoryPath, "utf8");
+    const eventsAfterFirst = await readFile(eventsPath, "utf8");
+
+    const second = await recordViewedMemoryForTool({
+      repoRoot: repo,
+      sessionId: "sid-auto-noop",
+      task: "inspect src/a.ts",
+      toolName: "task_brief",
+      result,
+      index
+    });
+
+    expect(first?.revision).toBe(1);
+    expect(second).toEqual(first);
+    expect(await readFile(memoryPath, "utf8")).toBe(memoryAfterFirst);
+    expect(await readFile(eventsPath, "utf8")).toBe(eventsAfterFirst);
+
+    const changedFreshness = freshnessFixture("snap-auto-changed", {
+      headCommit: "def",
+      indexedAt: "2026-05-05T01:00:00.000Z"
+    });
+    const changedIndex = indexFixture(repo, changedFreshness, [fileFixture("src/a.ts", changedFreshness)]);
+    const changed = await recordViewedMemoryForTool({
+      repoRoot: repo,
+      sessionId: "sid-auto-noop",
+      task: "inspect src/a.ts",
+      toolName: "task_brief",
+      result: { ...result, freshness: changedFreshness },
+      index: changedIndex
+    });
+
+    expect(changed?.revision).toBe(2);
+    expect(await readFile(memoryPath, "utf8")).not.toBe(memoryAfterFirst);
+    expect((await readFile(eventsPath, "utf8")).trim().split("\n")).toHaveLength(2);
+  });
+
 it("does not auto-record nested test refs for orientation-only change plans", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-session-memory-plan-orientation-"));
     const freshness = freshnessFixture("snap-plan-orientation");

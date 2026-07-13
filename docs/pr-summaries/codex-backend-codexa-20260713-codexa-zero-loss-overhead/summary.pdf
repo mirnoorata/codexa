@@ -1,0 +1,215 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R 6 0 R 8 0 R] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 3325 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(Change Summary) Tj T*
+() Tj T*
+(- Project: codexa) Tj T*
+(- Worktree: isolated session worktree) Tj T*
+(- Branch: codex/backend/codexa-20260713-codexa-zero-loss-overhead) Tj T*
+(- Base: main) Tj T*
+(- Primary implementation commit: 91c88cd) Tj T*
+(- Verified candidate commit: ea30f6b) Tj T*
+(- Latest hardening commit: fix\(mcp\): bound concurrent artifact persistence) Tj T*
+(- Subject: feat\(mcp\): reduce agent overhead without capability loss) Tj T*
+() Tj T*
+(Primary Implementation Commit Snapshot) Tj T*
+() Tj T*
+(91c88cd feat\(mcp\): reduce agent overhead without capability loss) Tj T*
+(README.md                                          |  147 +-) Tj T*
+(benchmarks/agent-ab/README.md                      |   71 +-) Tj T*
+(.../support/mcp-initialize-tools-list-smoke.mjs    |  188 +++) Tj T*
+(docs/architecture/codexa-context-server.md         |   75 +-) Tj T*
+(docs/architecture/session-memory.md                |   13 +-) Tj T*
+(docs/guides/agent-ab.md                            |  240 +++-) Tj T*
+(docs/guides/new-user-tutorial.md                   |   17 +-) Tj T*
+(.../codexa-zero-loss-overhead-plan-2026-07-13.md   |  554 ++++++++) Tj T*
+(integrations/claude-code/README.md                 |   14 +-) Tj T*
+(package.json                                       |    2 +) Tj T*
+(plugins/codexa/skills/codexa/SKILL.md              |    8 +-) Tj T*
+(scripts/agent-ab-analysis.mjs                      | 1408 +++++++++++++++++++-) Tj T*
+(scripts/agent-ab.mjs                               |  761 +++++++++--) Tj T*
+(scripts/benchmark-mcp-transport.mjs                |  495 +++++++) Tj T*
+(scripts/verify-plugin-package.mjs                  |    4 +-) Tj T*
+(src/artifacts.ts                                   |   11 +-) Tj T*
+(src/cli.ts                                         |    4 +-) Tj T*
+(src/cli/hooks.ts                                   |   46 +-) Tj T*
+(src/codex-contract.ts                              |   21 +-) Tj T*
+(src/freshness-authority.ts                         |   12 +) Tj T*
+(src/init.ts                                        |   15 +-) Tj T*
+(src/mcp.ts                                         |  488 ++++++-) Tj T*
+(src/mcp/advanced-mode-kernel.ts                    |  497 +++++++) Tj T*
+(src/mcp/capability-kernel.ts                       |  106 ++) Tj T*
+(src/mcp/compaction.ts                              |  160 ++-) Tj T*
+(src/mcp/decision-guidance.ts                       |   75 ++) Tj T*
+(src/mcp/decision-kernel.ts                         |  954 +++++++++++++) Tj T*
+(src/mcp/decision-policy.ts                         |  107 ++) Tj T*
+(src/mcp/envelope.ts                                |   66 +-) Tj T*
+(src/mcp/resources.ts                               |   90 +-) Tj T*
+(src/mcp/result-artifacts.ts                        |  844 ++++++++++++) Tj T*
+(src/mcp/telemetry.ts                               |  340 +++++) Tj T*
+(src/mcp/tool-registry.ts                           |   44 +-) Tj T*
+(src/mcp/tools.ts                                   |  304 ++++-) Tj T*
+(src/query/change-plan.ts                           |  139 +-) Tj T*
+(src/query/post-edit.ts                             |   99 +-) Tj T*
+(src/query/post-edit/lifecycle.ts                   |    2 +) Tj T*
+(src/query/post-edit/next-actions.ts                |    1 -) Tj T*
+ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 3319 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(src/query/runtime.ts                               |   61 +-) Tj T*
+(src/session-memory/runtime.ts                      |   85 +-) Tj T*
+(src/task-snapshots.ts                              |    4 +-) Tj T*
+(tests/agent-ab-report.test.ts                      |    3 +-) Tj T*
+(tests/agent-ab-v2-identity.test.ts                 |  167 +++) Tj T*
+(tests/agent-ab-v2.test.ts                          | 1191 +++++++++++++++++) Tj T*
+(tests/benchmark-mcp-transport.test.ts              |   93 ++) Tj T*
+(...jects-malformed-integer-options-instead.test.ts |   34 +-) Tj T*
+(...s-02-launches-windows-package-local-cmd.test.ts |    8 +-) Tj T*
+(...exer-06-keeps-planned-post-edit-reviews.test.ts |    6 +-) Tj T*
+(tests/init.test.ts                                 |   28 +-) Tj T*
+(tests/mcp-01-keeps-the-primary-mcp-happy.test.ts   |   47 +-) Tj T*
+(tests/mcp-02-does-not-let-stale-codexa.test.ts     |  121 +-) Tj T*
+(...3-records-truncation-metadata-when-post.test.ts |    8 +-) Tj T*
+(...p-04-reports-package-version-and-codexa.test.ts |   76 +-) Tj T*
+(tests/mcp-05-suite.test.ts                         |  190 ++-) Tj T*
+(...p-06-core-profile-envelopes-never-steer.test.ts |    7 +-) Tj T*
+(tests/mcp-advanced-auto.test.ts                    |  233 ++++) Tj T*
+(tests/mcp-capabilities.test.ts                     |  240 ++++) Tj T*
+(tests/mcp-decision-equivalence.test.ts             |  417 ++++++) Tj T*
+(tests/mcp-decision-kernel.test.ts                  |  409 ++++++) Tj T*
+(tests/mcp-result-artifacts.test.ts                 |  362 +++++) Tj T*
+(tests/mcp-telemetry.test.ts                        |  340 +++++) Tj T*
+(...records-bounded-entries-with-provenance.test.ts |   59 +) Tj T*
+(tests/task-lifecycle.test.ts                       |  120 +-) Tj T*
+(63 files changed, 12201 insertions\(+\), 530 deletions\(-\)) Tj T*
+(create mode 100644 benchmarks/agent-ab/support/mcp-initialize-tools-list-smoke.mjs) Tj T*
+(create mode 100644 docs/plans/codexa-zero-loss-overhead-plan-2026-07-13.md) Tj T*
+(create mode 100644 scripts/benchmark-mcp-transport.mjs) Tj T*
+(create mode 100644 src/freshness-authority.ts) Tj T*
+(create mode 100644 src/mcp/advanced-mode-kernel.ts) Tj T*
+(create mode 100644 src/mcp/capability-kernel.ts) Tj T*
+(create mode 100644 src/mcp/decision-guidance.ts) Tj T*
+(create mode 100644 src/mcp/decision-kernel.ts) Tj T*
+(create mode 100644 src/mcp/decision-policy.ts) Tj T*
+(create mode 100644 src/mcp/result-artifacts.ts) Tj T*
+(create mode 100644 src/mcp/telemetry.ts) Tj T*
+(create mode 100644 tests/agent-ab-v2-identity.test.ts) Tj T*
+(create mode 100644 tests/agent-ab-v2.test.ts) Tj T*
+(create mode 100644 tests/benchmark-mcp-transport.test.ts) Tj T*
+(create mode 100644 tests/mcp-advanced-auto.test.ts) Tj T*
+(create mode 100644 tests/mcp-capabilities.test.ts) Tj T*
+(create mode 100644 tests/mcp-decision-equivalence.test.ts) Tj T*
+(create mode 100644 tests/mcp-decision-kernel.test.ts) Tj T*
+(create mode 100644 tests/mcp-result-artifacts.test.ts) Tj T*
+(create mode 100644 tests/mcp-telemetry.test.ts) Tj T*
+() Tj T*
+(Verification) Tj T*
+() Tj T*
+(- git diff --check: passed) Tj T*
+(- npm run check on ea30f6b: 63 files; 598 passed; 1 explicit opt-in skip; 113 hook smokes) Tj T*
+(- npm run benchmark:ci on ea30f6b: all hot-path thresholds passed) Tj T*
+ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 2988 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(- npm run eval:ci on ea30f6b: 21 scenarios; score 1; rawRgBetter=0; seed ci-local-) Tj T*
+(ea30f6b74101da7d7c42585d248949db56ed2909) Tj T*
+(- npm run security:check on ea30f6b: complete check, zero-vulnerability audit, clean public) Tj T*
+(snapshot, package/plugin hygiene, and 25-check installed-package smoke passed) Tj T*
+(- opt-in pinned v0.12.0 compatibility test on ea30f6b: 2/2 passed using locally built tagged) Tj T*
+(source with pinned commit, lockfile, CLI, and dist-tree identities) Tj T*
+(- fresh pinned v0.12.0 transport comparison on ea30f6b: 21 to 10 direct schemas; all 21) Tj T*
+(logical operations advertised; tools/list 59,376 to 29,554 decoded bytes \(-50.2%\);) Tj T*
+(advertisement plus discovery 59,376 to 42,481 \(-28.5%\); first task result 55,419 to 16,387) Tj T*
+(\(-70.4%\); repeated median 55,419 to 6,372 \(-88.5%\); four unchanged receipts; 58,595-byte) Tj T*
+(decoded detailed-resource response remained readable) Tj T*
+(- Codexa post-edit-review: authority complete; all seven invariants satisfied; no drift or) Tj T*
+(unaccounted tests) Tj T*
+(- Codexa test-plan: passed; local artifact retained outside the repository) Tj T*
+(- git diff --cached --check: passed) Tj T*
+(- staged safety scan: passed) Tj T*
+() Tj T*
+(The transport comparison measures JSON-serialized decoded MCP application) Tj T*
+(payloads, not wire bytes, tokens, cost, task success, or agent quality. A) Tj T*
+(held-out agent comparison is still required to measure net usefulness and) Tj T*
+(non-inferiority against no Codexa.) Tj T*
+() Tj T*
+(PR Hardening) Tj T*
+() Tj T*
+(PR CI exposed a same-process retention-lock deadline race. The follow-up uses) Tj T*
+(a bounded per-checkout FIFO so the 500 ms filesystem budget measures foreign) Tj T*
+(process contention, while a separate two-second no-progress budget bounds a) Tj T*
+(stalled local holder. Tests cover a 64-call burst, a 650 ms productive holder,) Tj T*
+(failed-batch recovery, and FIFO substitution without blocking.) Tj T*
+() Tj T*
+(Telemetry destinations now require a runner-enforced unique absent path per) Tj T*
+(server session, use exclusive nonblocking creation, and preserve prior) Tj T*
+(evidence. Bounded regular-file reads and nonblocking opens prevent special-file) Tj T*
+(substitution from hanging or causing unbounded reads. Independent adversarial) Tj T*
+(review found no release blocker, capability removal, or domain-specific) Tj T*
+(production behavior.) Tj T*
+() Tj T*
+(Notes) Tj T*
+() Tj T*
+(Implements decision-safe compact delivery, all 21 logical operations reachable) Tj T*
+(through a 10-schema core surface, bounded lifecycle and artifact persistence,) Tj T*
+(generic loop controls, and schema-v2 agent evaluation. The transport result) Tj T*
+(does not establish zero capability loss or improved agent outcomes; those) Tj T*
+(claims require held-out agent evaluation. Includes a pinned v0.12.0 transport) Tj T*
+(reproducer with explicit claim boundaries.) Tj T*
+ET
+endstream
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000127 00000 n 
+0000000197 00000 n 
+0000000323 00000 n 
+0000003699 00000 n 
+0000003825 00000 n 
+0000007195 00000 n 
+0000007321 00000 n 
+trailer
+<< /Size 10 /Root 1 0 R >>
+startxref
+10360
+%%EOF

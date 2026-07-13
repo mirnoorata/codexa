@@ -555,11 +555,12 @@ how to approach changes safely without loading the whole graph.
 
 ## General Protocol
 
-1. Run \`focus_brief\` for broad or ambiguous tasks.
-2. Run \`change_plan\` with \`saveSnapshot: true\` before editing concrete files.
-3. Run \`workflow_path\` for route, job, queue, adapter, or manifest changes.
-4. Run \`callers\`, \`callees\`, or \`dependency_path\` for API and rename work.
-5. Run \`post_edit_review\` after edits, then \`test_plan\` before final verification.
+1. Run \`change_plan\` with \`saveSnapshot: true\` directly for an explicit bounded task.
+2. Add \`session_context\`, \`search\`, or \`task_brief\` first only when the target or context is unclear.
+3. Edit, run the tests and commands returned by the plan, then run \`post_edit_review\`.
+4. Run \`test_plan\` only when verification guidance remains unresolved.
+5. Run \`proof_card\` only for policy, formal audit, release, or artifact handoff proof.
+6. Use \`capabilities\` to discover or invoke advanced operations in core mode without reducing logical capability.
 
 ## Module Playbooks
 

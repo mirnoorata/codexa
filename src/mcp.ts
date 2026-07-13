@@ -10,14 +10,23 @@ import type { QueryOptions, QueryResult } from "./types.js";
 import type { QuerySession } from "./query/session.js";
 import { semanticMayUseOpenWorldProvider } from "./semantic-retrieval.js";
 import { resolveMcpRepoRoot, shouldPreferConfiguredRepoRoot } from "./mcp-repo-root.js";
-import { compactMcpResult, conciseText } from "./mcp/compaction.js";
+import { canonicalMcpDetailedProjection, compactMcpResult } from "./mcp/compaction.js";
+import { mcpAutoEscalationReason, renderMcpConciseText, withMcpDelivery, type McpResponseFormat } from "./mcp/decision-kernel.js";
 import { createMcpOutputSchema, safeQuery, toToolResult, type McpToolPolicyOptions } from "./mcp/envelope.js";
 import { registerWorkflowPrompts } from "./mcp/prompts.js";
-import { registerArtifactResources } from "./mcp/resources.js";
+import { registerArtifactResources, type McpDetailedResultReadEvent } from "./mcp/resources.js";
 import { createMcpRuntime, notifyResourceListChangedAfterRefresh, withRoutingRuntime, withSessionRuntime } from "./mcp/runtime.js";
 import { withAutoRecordedSessionMemory } from "./mcp/session-memory.js";
 import { registerMcpTools, type McpOptionalQueryInput } from "./mcp/tools.js";
-import { CORE_PROFILE_TOOL_NAMES, NO_SOURCE_MUTATION_CONTRACT, PRIMARY_CODEX_LOOP } from "./mcp-tool-catalog.js";
+import { createMcpResultArtifactRouter, persistMcpResultArtifact, rememberProtectedMcpResultId, type McpResultArtifactBinding } from "./mcp/result-artifacts.js";
+import {
+  appendMcpOverheadTelemetryAtPath,
+  finalizeMcpOverheadTelemetryAtPath,
+  mcpTelemetryPath,
+  mcpToolResultByteCounts,
+  type McpOverheadTelemetryEvent
+} from "./mcp/telemetry.js";
+import { CORE_PROFILE_TOOL_NAMES, MCP_TOOL_NAMES, NO_SOURCE_MUTATION_CONTRACT, PRIMARY_CODEX_LOOP } from "./mcp-tool-catalog.js";
 import { CODEXA_VERSION } from "./version.js";
 export { compactMcpResult, compactNonPostEditMcpResult, compactPostEditMcpResult } from "./mcp/compaction.js";
 export { MCP_TOOL_CATALOG, PRIMARY_CODEX_LOOP, PRIMARY_MCP_TOOL_NAMES } from "./mcp-tool-catalog.js";
@@ -30,18 +39,69 @@ export interface ServeMcpHttpOptions {
   endpoint?: string;
 }
 
+interface McpDeliverySessionState {
+  resultArtifactRouter: ReturnType<typeof createMcpResultArtifactRouter>;
+  emittedResultIds: Set<string>;
+  telemetry: { sequence: number; destinationPath?: string };
+}
+
 const MCP_SERVER_INSTRUCTIONS = [
   `Codexa is a Codex-native codebase context and edit-safety server. Loop: ${PRIMARY_CODEX_LOOP}.`,
-  "Target unclear -> search first. Before edits -> change_plan(saveSnapshot=true), then test_plan. After edits -> post_edit_review with the commands that actually ran. Before final response -> proof_card with reported evidence.",
+  "Target unclear -> search first. Before edits -> change_plan(saveSnapshot=true) and run its planned verification. After edits -> post_edit_review with the commands that actually ran. Use test_plan only when verification guidance remains unresolved; use proof_card only for policy checks or a formal handoff.",
   "Each tool description states its typical output cost (compact/medium/large); prefer the cheapest sufficient tool. Tools refresh stale Codexa artifacts automatically when auto-refresh is enabled.",
   `Trust rules: ${NO_SOURCE_MUTATION_CONTRACT} Semantic retrieval is used only when configured; verify heuristic-heavy packets against source before editing.`,
-  "Structured results are budget-compacted with truncation records naming dropped fields. Hosts with small MCP result limits can set CODEXA_MCP_STRUCTURED_BUDGET_BYTES."
+  "responseFormat defaults to auto: ordinary packets return a semantic decision receipt plus a content-addressed detailed-result resource; ambiguous or blocking packets safely escalate to detailed. Structured results preserve a mandatory decision kernel across byte-budget tiers.",
+  "The core profile keeps the primary loop plus a compact capabilities dispatcher; use capabilities to discover or invoke advanced operations without paying their schemas on every turn."
 ].join("\n");
 
 export async function serveMcp(repoRoot: string, options: QueryOptions = { autoRefresh: true }): Promise<void> {
-  const { configuredRepoRoot, queryOptions, server } = await createCodexaMcpServer(repoRoot, options);
-  await server.connect(new StdioServerTransport());
+  const deliveryState = createMcpDeliverySessionState(repoRoot);
+  const { configuredRepoRoot, queryOptions, server } = await createCodexaMcpServer(repoRoot, options, deliveryState);
+  const transport = new StdioServerTransport();
+  await server.connect(transport);
+  // McpServer.connect installs its own transport close handler. Compose with
+  // that handler after connection so telemetry finalization is not overwritten.
+  const closeServer = transport.onclose;
+  let telemetryFinalization: Promise<void> | undefined;
+  const finalizeTelemetry = () => telemetryFinalization ??= finalizeMcpOverheadTelemetryAtPath(deliveryState.telemetry.destinationPath);
+  let artifactFinalization: Promise<void> | undefined;
+  const finalizeArtifacts = () => artifactFinalization ??= deliveryState.resultArtifactRouter.close();
+  transport.onclose = () => {
+    closeServer?.();
+    void finalizeArtifacts().catch((error) => {
+      console.error(`Codexa MCP result-lease finalization failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
+    void finalizeTelemetry().catch((error) => {
+      console.error(`Codexa MCP telemetry finalization failed: ${error instanceof Error ? error.message : String(error)}`);
+    });
+  };
   console.error(`codexa MCP server ready for ${configuredRepoRoot} (transport=stdio, autoRefresh=${queryOptions.autoRefresh})`);
+  await new Promise<void>((resolve) => {
+    let closing = false;
+    const shutdown = () => {
+      if (closing) return;
+      closing = true;
+      process.stdin.off("end", shutdown);
+      process.stdin.off("close", shutdown);
+      process.off("SIGINT", shutdown);
+      process.off("SIGTERM", shutdown);
+      void server.close()
+        .catch((error) => {
+          console.error(`Codexa MCP stdio shutdown failed: ${error instanceof Error ? error.message : String(error)}`);
+        })
+        .then(finalizeArtifacts)
+        .then(finalizeTelemetry)
+        .catch((error) => {
+          console.error(`Codexa MCP telemetry finalization failed: ${error instanceof Error ? error.message : String(error)}`);
+        })
+        .finally(resolve);
+    };
+    process.stdin.once("end", shutdown);
+    process.stdin.once("close", shutdown);
+    process.once("SIGINT", shutdown);
+    process.once("SIGTERM", shutdown);
+    if (process.stdin.readableEnded) queueMicrotask(shutdown);
+  });
 }
 
 export async function serveMcpHttp(repoRoot: string, options: QueryOptions = { autoRefresh: true }, httpOptions: ServeMcpHttpOptions): Promise<void> {
@@ -53,6 +113,11 @@ export async function serveMcpHttp(repoRoot: string, options: QueryOptions = { a
   }
   const port = httpOptions.port;
   const endpoint = normalizeMcpEndpoint(httpOptions.endpoint ?? "/mcp");
+  // Streamable HTTP is intentionally stateless at the protocol layer, so the
+  // SDK server is request-scoped. Delivery references, duplicate receipts,
+  // and telemetry ordering still belong to the listener lifetime: otherwise a
+  // URI emitted by one request cannot be read by the next request.
+  const deliveryState = createMcpDeliverySessionState(configuredRepoRoot);
   const httpServer = http.createServer(async (req, res) => {
     try {
       if (!isAllowedHttpOrigin(req.headers.origin)) {
@@ -68,7 +133,7 @@ export async function serveMcpHttp(repoRoot: string, options: QueryOptions = { a
         sendJsonRpcHttpError(res, 404, "MCP endpoint not found");
         return;
       }
-      const { server } = await createCodexaMcpServer(configuredRepoRoot, queryOptions);
+      const { server } = await createCodexaMcpServer(configuredRepoRoot, queryOptions, deliveryState);
       const transport = new StreamableHTTPServerTransport({ sessionIdGenerator: undefined });
       res.on("close", () => {
         void transport.close();
@@ -107,15 +172,25 @@ export async function serveMcpHttp(repoRoot: string, options: QueryOptions = { a
       closing = true;
       process.off("SIGINT", shutdown);
       process.off("SIGTERM", shutdown);
-      httpServer.close(() => resolve());
+      httpServer.close(() => {
+        void deliveryState.resultArtifactRouter.close().then(() => finalizeMcpOverheadTelemetryAtPath(deliveryState.telemetry.destinationPath)).then(resolve, (error) => {
+          console.error(`Codexa MCP telemetry finalization failed: ${error instanceof Error ? error.message : String(error)}`);
+          resolve();
+        });
+      });
     };
     process.once("SIGINT", shutdown);
     process.once("SIGTERM", shutdown);
   });
 }
 
-async function createCodexaMcpServer(repoRoot: string, options: QueryOptions): Promise<{ configuredRepoRoot: string; queryOptions: QueryOptions; server: McpServer }> {
+async function createCodexaMcpServer(
+  repoRoot: string,
+  options: QueryOptions,
+  deliveryState?: McpDeliverySessionState
+): Promise<{ configuredRepoRoot: string; queryOptions: QueryOptions; server: McpServer }> {
   const configuredRepoRoot = path.resolve(repoRoot);
+  deliveryState ??= createMcpDeliverySessionState(configuredRepoRoot);
   const queryOptions: QueryOptions = { ...options, autoRefresh: options.autoRefresh ?? true };
   const sessionMemoryMode = queryOptions.sessionMemory ?? "auto";
   const autoRecordSessionMemory = sessionMemoryMode !== "off";
@@ -127,6 +202,24 @@ async function createCodexaMcpServer(repoRoot: string, options: QueryOptions): P
     .then((resolution) => resolution.repoRoot)
     .catch(() => configuredRepoRoot);
   const mcpRuntime = createMcpRuntime({ configuredRepoRoot, queryOptions });
+  const { resultArtifactRouter, emittedResultIds } = deliveryState;
+  const telemetryProfile = queryOptions.toolProfile === "core" ? "core" as const : "full" as const;
+  const emitTelemetry = (event: Omit<McpOverheadTelemetryEvent, "schemaVersion" | "sequence" | "profile">): void => {
+    if (!deliveryState.telemetry.destinationPath) return;
+    try {
+      deliveryState.telemetry.sequence += 1;
+      appendMcpOverheadTelemetryAtPath(deliveryState.telemetry.destinationPath, {
+        schemaVersion: 1,
+        sequence: deliveryState.telemetry.sequence,
+        profile: telemetryProfile,
+        ...event
+      });
+    } catch (error) {
+      // Telemetry is opt-in evidence only. Serialization/configuration errors
+      // must never alter the MCP response path.
+      console.error(`Codexa MCP telemetry event dropped: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  };
   const server = new McpServer(
     {
       name: "codexa",
@@ -143,7 +236,10 @@ async function createCodexaMcpServer(repoRoot: string, options: QueryOptions): P
   };
   const outputSchema = createMcpOutputSchema();
   const sourceContextAnnotations = {
-    readOnlyHint: !queryOptions.autoRefresh,
+    // Auto/concise delivery writes only a bounded detailed-result cache. The
+    // hint is conservative because the requested response format is not known
+    // when tools/list is emitted.
+    readOnlyHint: false,
     destructiveHint: false,
     idempotentHint: !queryOptions.autoRefresh,
     openWorldHint: semanticMayUseOpenWorldProvider(annotationRepoRoot, queryOptions)
@@ -266,33 +362,137 @@ async function createCodexaMcpServer(repoRoot: string, options: QueryOptions): P
     lspMaxFiles: input.lspMaxFiles ?? queryOptions.lspMaxFiles
   });
   const enabledTools = queryOptions.toolProfile === "core" ? new Set<string>(CORE_PROFILE_TOOL_NAMES) : undefined;
-  const policyOptions: McpToolPolicyOptions = { autoRefresh: queryOptions.autoRefresh ?? true, sessionMemoryMode, enabledTools };
+  // The core profile registers advanced operations behind `capabilities`.
+  // Envelope guidance must therefore filter against the logical callable set,
+  // not only the directly registered tool names, or dispatched results lose
+  // valid next steps that remain callable through the dispatcher.
+  const logicalEnabledTools = enabledTools?.has("capabilities") ? new Set<string>(MCP_TOOL_NAMES) : enabledTools;
+  const policyOptions: McpToolPolicyOptions = { autoRefresh: queryOptions.autoRefresh ?? true, sessionMemoryMode, enabledTools: logicalEnabledTools };
   const runTool = async (
     producer: (session: QuerySession) => Promise<QueryResult>,
-    toolContext: string | { toolName: string; input?: Record<string, unknown>; autoRecord?: boolean }
+    toolContext: string | {
+      toolName: string;
+      input?: Record<string, unknown>;
+      autoRecord?: boolean;
+      transportToolName?: string;
+      transportInput?: Record<string, unknown>;
+    }
   ) => {
+    const startedAt = deliveryState.telemetry.destinationPath ? performance.now() : 0;
     const toolName = typeof toolContext === "string" ? toolContext : toolContext.toolName;
     const toolInput = typeof toolContext === "string" ? undefined : toolContext.input;
+    const transportToolName = typeof toolContext === "string" ? toolName : toolContext.transportToolName ?? toolName;
+    const transportInput = typeof toolContext === "string" ? toolInput : toolContext.transportInput ?? toolInput;
+    const requestedFormat: McpResponseFormat = toolInput?.responseFormat === "concise" || toolInput?.responseFormat === "detailed" ? toolInput.responseFormat : "auto";
+    const telemetryRequestedFormat = requestedMcpResponseFormat(transportInput, requestedFormat);
     const autoRecord = typeof toolContext === "string" || toolContext.autoRecord === false ? undefined : toolContext;
-    const activeResolution = await mcpRuntime.resolveActiveRepoRootResolution();
-    await notifyActiveRepoRootChanged();
-    const activeRepoRoot = activeResolution.repoRoot;
-    return toToolResult(
-      await safeQuery(async () => {
-        const session = await mcpRuntime.createQuerySession(activeRepoRoot);
-        const rawResult = withSessionRuntime(await producer(session), session, activeResolution);
-        const memoryResult = autoRecord && autoRecordSessionMemory ? await withAutoRecordedSessionMemory(session, rawResult, autoRecord.toolName, autoRecord.input) : rawResult;
-        const responseFormat = toolInput?.responseFormat === "concise" ? ("concise" as const) : undefined;
-        let result = compactMcpResult(memoryResult, responseFormat ? { format: responseFormat } : undefined);
-        if (responseFormat === "concise") {
-          result = { ...result, text: conciseText(result.text) };
-        }
-        await notifyResourceListChangedAfterRefresh(server, session);
-        return result;
-      }, activeRepoRoot),
+    let activeRepoRoot = configuredRepoRoot;
+    try {
+      const activeResolution = await mcpRuntime.resolveActiveRepoRootResolution();
+      await notifyActiveRepoRootChanged();
+      activeRepoRoot = activeResolution.repoRoot;
+    let rawResult: QueryResult;
+    try {
+      rawResult = await safeQuery(async () => {
+          const session = await mcpRuntime.createQuerySession(activeRepoRoot);
+          const runtimeResult = withSessionRuntime(await producer(session), session, activeResolution);
+          const memoryResult = autoRecord && autoRecordSessionMemory ? await withAutoRecordedSessionMemory(session, runtimeResult, autoRecord.toolName, autoRecord.input) : runtimeResult;
+          await notifyResourceListChangedAfterRefresh(server, session);
+          return memoryResult;
+        }, activeRepoRoot);
+    } catch (error) {
+      const authorityBlock = await lifecycleIdentityBlockResult(toolName, activeRepoRoot, toolInput, error);
+      if (!authorityBlock) throw error;
+      rawResult = withRoutingRuntime(authorityBlock, activeResolution);
+    }
+    const modeResult = withMcpQueryMode(rawResult, toolName);
+    const semanticEscalation = requestedFormat === "auto" ? mcpAutoEscalationReason(modeResult, toolInput) : undefined;
+    const needsResultReference = requestedFormat !== "detailed" && !semanticEscalation;
+    const artifactDetailedResult = !needsResultReference
+      ? undefined
+      : canonicalMcpDetailedProjection(modeResult);
+    let resultReference: Awaited<ReturnType<typeof persistMcpResultArtifact>> | undefined;
+    let artifactFailure: string | undefined;
+    if (needsResultReference) {
+      try {
+        resultReference = await persistMcpResultArtifact(activeRepoRoot, artifactDetailedResult!, mcpResultBinding(toolName, activeRepoRoot, artifactDetailedResult!), resultArtifactRouter, emittedResultIds);
+      } catch (error) {
+        artifactFailure = error instanceof Error ? error.message : String(error);
+      }
+    }
+    const escalationReason = artifactFailure ? "detailed-result-resource-unavailable" : semanticEscalation;
+    const effectiveFormat: "concise" | "detailed" = requestedFormat === "detailed" || Boolean(escalationReason) ? "detailed" : "concise";
+    const unchangedReceipt = effectiveFormat === "concise" && requestedFormat === "auto" && Boolean(resultReference && emittedResultIds.has(resultReference.id));
+    const delivery = {
+      schemaVersion: 1 as const,
+      requestedFormat,
+      effectiveFormat,
+      resultId: resultReference?.id,
+      resultUri: resultReference?.uri,
+      unchangedReceipt: unchangedReceipt || undefined,
+      escalationReason
+    };
+    let deliveredResult: QueryResult;
+    if (effectiveFormat === "detailed") {
+      // Build the host-bounded detailed packet only when it will actually be
+      // returned. Normal auto/concise calls therefore do artifact+concise
+      // compaction, never an unused third serialization pass.
+      deliveredResult = withMcpDelivery(canonicalMcpDetailedProjection(modeResult), delivery);
+    } else {
+      const conciseResult = withMcpDelivery(compactMcpResult(modeResult, { format: "concise" }), delivery);
+      deliveredResult = unchangedReceipt ? unchangedMcpReceipt(conciseResult) : conciseResult;
+      deliveredResult = { ...deliveredResult, text: renderMcpConciseText(deliveredResult) };
+    }
+    if (resultReference) {
+      rememberProtectedMcpResultId(emittedResultIds, resultReference.id);
+    }
+    const toolResult = toToolResult(
+      deliveredResult,
       toolName,
       { ...policyOptions, input: toolInput }
     );
+    if (deliveryState.telemetry.destinationPath) {
+      try {
+        const elapsedMs = Math.max(0, Math.round((performance.now() - startedAt) * 1000) / 1000);
+        const byteCounts = mcpToolResultByteCounts(toolResult);
+        emitTelemetry({
+          eventKind: "tool",
+          tool: transportToolName,
+          logicalOperation: toolName,
+          outcome: "ok",
+          requestedFormat: telemetryRequestedFormat,
+          effectiveFormat,
+          escalationReason,
+          requestBytes: telemetryRequestBytes(transportInput),
+          ...byteCounts,
+          elapsedMs,
+          resultReference: resultReference?.uri,
+          unchangedReceipt
+        });
+      } catch (error) {
+        console.error(`Codexa MCP telemetry event dropped: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    return toolResult;
+    } catch (error) {
+      if (deliveryState.telemetry.destinationPath) {
+        emitTelemetry({
+          eventKind: "tool",
+          tool: transportToolName,
+          logicalOperation: toolName,
+          outcome: "error",
+          requestedFormat: telemetryRequestedFormat,
+          effectiveFormat: telemetryRequestedFormat === "detailed" ? "detailed" : "concise",
+          requestBytes: telemetryRequestBytes(transportInput),
+          textBytes: 0,
+          structuredBytes: 0,
+          totalBytes: 0,
+          elapsedMs: startedAt > 0 ? Math.max(0, Math.round((performance.now() - startedAt) * 1000) / 1000) : 0,
+          unchangedReceipt: false
+        });
+      }
+      throw error;
+    }
   };
 
   registerMcpTools({
@@ -321,14 +521,59 @@ async function createCodexaMcpServer(repoRoot: string, options: QueryOptions): P
     },
     toolQueryOptions,
     runTool,
-    runFreshnessTool: async () => {
-      const activeResolution = await mcpRuntime.resolveActiveRepoRootResolution();
-      await notifyActiveRepoRootChanged();
-      return toToolResult(
-        await safeQuery(async () => withRoutingRuntime(await statusQuery(activeResolution.repoRoot, { recover: false }), activeResolution), activeResolution.repoRoot),
-        "freshness",
-        policyOptions
-      );
+    runFreshnessTool: async (toolContext) => {
+      const startedAt = deliveryState.telemetry.destinationPath ? performance.now() : 0;
+      const transportToolName = toolContext.transportToolName ?? toolContext.toolName;
+      const transportInput = toolContext.transportInput ?? toolContext.input;
+      const requestedFormat = requestedMcpResponseFormat(transportInput, "auto");
+      let activeRepoRoot = configuredRepoRoot;
+      try {
+        const activeResolution = await mcpRuntime.resolveActiveRepoRootResolution();
+        activeRepoRoot = activeResolution.repoRoot;
+        await notifyActiveRepoRootChanged();
+        const result = toToolResult(
+          await safeQuery(async () => withRoutingRuntime(await statusQuery(activeRepoRoot, { recover: false }), activeResolution), activeRepoRoot),
+          "freshness",
+          { ...policyOptions, input: toolContext.input }
+        );
+        if (deliveryState.telemetry.destinationPath) {
+          try {
+            emitTelemetry({
+              eventKind: "tool",
+              tool: transportToolName,
+              logicalOperation: "freshness",
+              outcome: "ok",
+              requestedFormat,
+              effectiveFormat: "detailed",
+              requestBytes: telemetryRequestBytes(transportInput),
+              ...mcpToolResultByteCounts(result),
+              elapsedMs: Math.max(0, Math.round((performance.now() - startedAt) * 1000) / 1000),
+              unchangedReceipt: false
+            });
+          } catch (error) {
+            console.error(`Codexa MCP telemetry event dropped: ${error instanceof Error ? error.message : String(error)}`);
+          }
+        }
+        return result;
+      } catch (error) {
+        if (deliveryState.telemetry.destinationPath) {
+          emitTelemetry({
+            eventKind: "tool",
+            tool: transportToolName,
+            logicalOperation: "freshness",
+            outcome: "error",
+            requestedFormat,
+            effectiveFormat: "detailed",
+            requestBytes: telemetryRequestBytes(transportInput),
+            textBytes: 0,
+            structuredBytes: 0,
+            totalBytes: 0,
+            elapsedMs: startedAt > 0 ? Math.max(0, Math.round((performance.now() - startedAt) * 1000) / 1000) : 0,
+            unchangedReceipt: false
+          });
+        }
+        throw error;
+      }
     }
   });
 
@@ -348,10 +593,177 @@ async function createCodexaMcpServer(repoRoot: string, options: QueryOptions): P
     }
     await notifyResourceListChangedAfterRefresh(server, session);
     return activeRepoRoot;
-  });
+  }, resultArtifactRouter, deliveryState.telemetry.destinationPath
+    ? (event) => emitDetailedResourceTelemetry(event, emitTelemetry)
+    : undefined);
   registerWorkflowPrompts(server, enabledTools);
 
   return { configuredRepoRoot, queryOptions, server };
+}
+
+function createMcpDeliverySessionState(configuredRepoRoot: string): McpDeliverySessionState {
+  return {
+    resultArtifactRouter: createMcpResultArtifactRouter(),
+    emittedResultIds: new Set<string>(),
+    telemetry: { sequence: 0, destinationPath: mcpTelemetryPath(path.resolve(configuredRepoRoot)) }
+  };
+}
+
+function mcpResultBinding(tool: string, activeRepoRoot: string, result: QueryResult): McpResultArtifactBinding {
+  const data = isRecord(result.data) ? result.data : {};
+  const runtime = isRecord(data.runtime) ? data.runtime : {};
+  const freshness: Record<string, unknown> = isRecord(result.freshness) ? result.freshness : {};
+  return {
+    tool,
+    checkout: {
+      repoRoot: typeof runtime.repoRoot === "string" ? runtime.repoRoot : activeRepoRoot,
+      gitHead: typeof runtime.gitHead === "string" || runtime.gitHead === null ? runtime.gitHead : undefined,
+      routingSource: typeof runtime.routingSource === "string" ? runtime.routingSource : undefined,
+      workspaceSessionId: typeof runtime.workspaceSessionId === "string" ? runtime.workspaceSessionId : undefined
+    },
+    freshness: {
+      snapshotId: typeof freshness.snapshotId === "string" ? freshness.snapshotId : undefined,
+      headCommit: typeof freshness.headCommit === "string" || freshness.headCommit === null ? freshness.headCommit : undefined,
+      indexedAt: typeof freshness.indexedAt === "string" ? freshness.indexedAt : undefined,
+      missing: typeof freshness.missing === "boolean" ? freshness.missing : undefined,
+      stale: typeof freshness.stale === "boolean" ? freshness.stale : undefined,
+      reason: typeof freshness.reason === "string" ? freshness.reason : undefined
+    }
+  };
+}
+
+function withMcpQueryMode(result: QueryResult, toolName: string): QueryResult {
+  if (!isRecord(result.data) || typeof result.data.mode === "string") return result;
+  return { ...result, data: { mode: toolName, ...result.data } };
+}
+
+function unchangedMcpReceipt(result: QueryResult): QueryResult {
+  if (!isRecord(result.data)) return result;
+  const kernel = isRecord(result.data.decisionKernel) ? result.data.decisionKernel : undefined;
+  const authority = kernel && isRecord(kernel.authority) ? kernel.authority : {};
+  return {
+    ...result,
+    data: {
+      mode: result.data.mode,
+      actionability: authority.actionability ?? result.data.actionability ?? "blocked",
+      verdict: authority.verdict,
+      packetVerdict: authority.packetVerdict,
+      completionAuthority: authority.completionAuthority,
+      inspectMode: authority.inspectMode,
+      decisionKernel: kernel,
+      delivery: result.data.delivery,
+      mcp: result.data.mcp
+    }
+  };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function requestedMcpResponseFormat(input: Record<string, unknown> | undefined, fallback: McpResponseFormat): McpResponseFormat {
+  const direct = input?.responseFormat;
+  if (direct === "auto" || direct === "concise" || direct === "detailed") return direct;
+  const nested = isRecord(input?.arguments) ? input.arguments.responseFormat : undefined;
+  return nested === "auto" || nested === "concise" || nested === "detailed" ? nested : fallback;
+}
+
+function telemetryRequestBytes(input: Record<string, unknown> | undefined): number {
+  try {
+    return Buffer.byteLength(JSON.stringify(input ?? {}), "utf8");
+  } catch {
+    return 0;
+  }
+}
+
+function emitDetailedResourceTelemetry(
+  event: McpDetailedResultReadEvent,
+  emit: (telemetry: Omit<McpOverheadTelemetryEvent, "schemaVersion" | "sequence" | "profile">) => void
+): void {
+  const textBytes = typeof event.text === "string" ? Buffer.byteLength(event.text, "utf8") : 0;
+  const totalBytes = event.response ? Buffer.byteLength(JSON.stringify(event.response), "utf8") : 0;
+  emit({
+    eventKind: "resource-read",
+    tool: "read_mcp_resource",
+    logicalOperation: "mcp-detailed-result",
+    outcome: event.outcome,
+    requestedFormat: "detailed",
+    effectiveFormat: "detailed",
+    requestBytes: telemetryRequestBytes({ server: "codexa", uri: event.uri }),
+    textBytes,
+    structuredBytes: 0,
+    totalBytes,
+    elapsedMs: event.elapsedMs,
+    resultReference: event.uri,
+    unchangedReceipt: false
+  });
+}
+
+async function lifecycleIdentityBlockResult(
+  toolName: string,
+  repoRoot: string,
+  input: Record<string, unknown> | undefined,
+  error: unknown
+): Promise<QueryResult | undefined> {
+  const code = error && typeof error === "object" && "code" in error ? String((error as { code?: unknown }).code) : "";
+  if (code !== "CODEXA_INDEX_IDENTITY_MISMATCH" || (toolName !== "change_plan" && toolName !== "post_edit_review")) return undefined;
+  const status = await statusQuery(repoRoot, { recover: false });
+  const reason = error instanceof Error ? error.message : String(error);
+  const taskId = typeof input?.taskId === "string" ? input.taskId : undefined;
+  const task = typeof input?.task === "string" ? input.task : undefined;
+  const common = {
+    freshness: status.freshness,
+    refresh: { refreshed: false },
+    text: `${toolName === "change_plan" ? "Codexa change plan" : "Codexa post-edit review"} blocked.\n${reason}\nNo authoritative lifecycle state was persisted.`,
+  };
+  if (toolName === "change_plan") {
+    return {
+      ...common,
+      data: {
+        mode: "change_plan",
+        actionability: "blocked",
+        task,
+        taskId,
+        editReadiness: { editable: false, status: "orientation-only", reason, source: "insufficient-context", recommendedNextTool: "freshness", missingAnchors: ["fresh-index"], snapshotBlocked: input?.saveSnapshot === true },
+        files: [],
+        plannedEditTargets: [],
+        tests: [],
+        invariants: [],
+        requiredWorkflowChecks: [],
+        requiredDependencyChecks: [],
+        snapshotBlock: { taskId, status: "not-saved", reason },
+        nextTools: [],
+        systemMessage: `Run codexa index ${repoRoot}, then retry change_plan.`,
+        gaps: [reason]
+      }
+    };
+  }
+  return {
+    ...common,
+    data: {
+      mode: "post_edit_review",
+      actionability: "blocked",
+      task: task ?? "Post-edit review",
+      taskId,
+      verdict: "inspect",
+      inspectMode: "blocking",
+      inspectReasons: [reason],
+      completionAuthority: "blocking_inspect",
+      files: [],
+      reviewTargets: [],
+      changedSinceSnapshot: [],
+      unplannedEditedFiles: [],
+      testsNotRun: [],
+      verificationLedger: [],
+      riskEscalationsNeedInspection: true,
+      loopReview: { status: "not-evaluated", reasons: ["freshness authority blocked before lifecycle evaluation"] },
+      failureSignals: [],
+      outcome: { persisted: false },
+      nextTools: [],
+      systemMessage: `Run codexa index ${repoRoot}, then retry post_edit_review.`,
+      gaps: [reason]
+    }
+  };
 }
 
 function normalizeMcpEndpoint(value: string): string {

@@ -6,6 +6,7 @@ import { runPreEditHook } from "../src/cli/hooks.js";
 import { buildIndex } from "../src/indexer.js";
 import { changePlanQuery, postEditReviewQuery } from "../src/queries.js";
 import { saveBlockedTaskSnapshot } from "../src/task-snapshots.js";
+import { createQuerySession } from "../src/query/session.js";
 import { getDiffFootprint } from "../src/query/worktree.js";
 import {
   classifyTaskLoopFailures,
@@ -55,18 +56,133 @@ describe("task lifecycle governance", () => {
     expect(secondSnapshot.invariants).toEqual(firstSnapshot.invariants);
   });
 
+  it("blocks stale lifecycle queries before snapshots, outcomes, or attempts are persisted", async () => {
+    const stalePlanRepo = await createHookFixtureRepo();
+    await buildIndex({ repoRoot: stalePlanRepo });
+    await writeFile(path.join(stalePlanRepo, "src/main.ts"), "export function main() { return 2 }\n", "utf8");
+    execFileSync("git", ["add", "src/main.ts"], { cwd: stalePlanRepo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "advance stale plan head"], {
+      cwd: stalePlanRepo,
+      stdio: "ignore"
+    });
+
+    await expect(
+      changePlanQuery(
+        stalePlanRepo,
+        { task: "Do not plan from stale context", taskId: "stale-plan", files: ["src/main.ts"], saveSnapshot: true },
+        { autoRefresh: false }
+      )
+    ).rejects.toThrow("head-commit-changed");
+    await expect(readFile(path.join(stalePlanRepo, ".codex/cache/codexa-tasks/stale-plan.json"), "utf8")).rejects.toThrow();
+    await expect(readFile(path.join(stalePlanRepo, ".codex/cache/codexa-tasks/stale-plan.blocked.json"), "utf8")).rejects.toThrow();
+
+    const staleReviewRepo = await createHookFixtureRepo();
+    await buildIndex({ repoRoot: staleReviewRepo });
+    await changePlanQuery(
+      staleReviewRepo,
+      { task: "Do not review from stale context", taskId: "stale-review", files: ["src/main.ts"], saveSnapshot: true },
+      { autoRefresh: false }
+    );
+    const lifecycleBefore = await loadTaskLifecycleState(staleReviewRepo, "stale-review");
+    await writeFile(path.join(staleReviewRepo, "src/main.ts"), "export function main() { return 3 }\n", "utf8");
+    execFileSync("git", ["add", "src/main.ts"], { cwd: staleReviewRepo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "advance stale review head"], {
+      cwd: staleReviewRepo,
+      stdio: "ignore"
+    });
+
+    await expect(
+      postEditReviewQuery(staleReviewRepo, { taskId: "stale-review", persistOutcome: true }, { autoRefresh: false })
+    ).rejects.toThrow("head-commit-changed");
+    expect(await loadTaskLifecycleState(staleReviewRepo, "stale-review")).toEqual(lifecycleBefore);
+    await expect(readdir(path.join(staleReviewRepo, ".codex/cache/codexa-outcomes"))).rejects.toThrow();
+  });
+
+  it("blocks a change plan when the checkout mutates after context collection but before snapshot persistence", async () => {
+    const repo = await createHookFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+    const session = await createQuerySession(repo, { autoRefresh: false });
+    const getChangedFileEntries = session.getChangedFileEntries.bind(session);
+    let mutated = false;
+    session.getChangedFileEntries = async () => {
+      const entries = await getChangedFileEntries();
+      if (!mutated) {
+        mutated = true;
+        await writeFile(path.join(repo, "src/main.ts"), "export function main() { return 41 }\n", "utf8");
+      }
+      return entries;
+    };
+
+    const result = await changePlanQuery(
+      session,
+      { task: "Persist only against the observed checkout", taskId: "plan-cas-race", files: ["src/main.ts"], saveSnapshot: true },
+      { autoRefresh: false }
+    );
+
+    expect(mutated).toBe(true);
+    expect(result.data).toMatchObject({
+      actionability: "blocked",
+      snapshotBlock: { taskId: "plan-cas-race", status: "not-saved" }
+    });
+    await expect(readFile(path.join(repo, ".codex/cache/codexa-tasks/plan-cas-race.json"), "utf8")).rejects.toThrow();
+    await expect(readFile(path.join(repo, ".codex/cache/codexa-tasks/plan-cas-race.blocked.json"), "utf8")).rejects.toThrow();
+    expect(await loadTaskLifecycleState(repo, "plan-cas-race")).toBeUndefined();
+  });
+
+  it("blocks post-edit persistence when the checkout mutates after review collection", async () => {
+    const repo = await createHookFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+    await changePlanQuery(
+      repo,
+      { task: "Persist only the reviewed edit", taskId: "post-edit-cas-race", files: ["src/main.ts"], saveSnapshot: true },
+      { autoRefresh: false }
+    );
+    await writeFile(path.join(repo, "src/main.ts"), "export function main() { return 42 }\n", "utf8");
+    const session = await createQuerySession(repo, { autoRefresh: true });
+    const lifecycleBefore = await loadTaskLifecycleState(repo, "post-edit-cas-race");
+    const getChangedFileEntries = session.getChangedFileEntries.bind(session);
+    let mutated = false;
+    session.getChangedFileEntries = async () => {
+      const entries = await getChangedFileEntries();
+      if (!mutated) {
+        mutated = true;
+        await writeFile(path.join(repo, "src/main.ts"), "export function main() { return 43 }\n", "utf8");
+      }
+      return entries;
+    };
+
+    const result = await postEditReviewQuery(session, { taskId: "post-edit-cas-race", persistOutcome: true }, { autoRefresh: false });
+
+    expect(mutated).toBe(true);
+    expect(result.data).toMatchObject({
+      actionability: "blocked",
+      completionAuthority: "blocking_inspect",
+      outcome: { persisted: false },
+      loopReview: { status: "not-evaluated" }
+    });
+    expect(await loadTaskLifecycleState(repo, "post-edit-cas-race")).toEqual(lifecycleBefore);
+    await expect(readdir(path.join(repo, ".codex/cache/codexa-outcomes"))).rejects.toThrow();
+  });
+
   it("serializes concurrent same-task plans into distinct revisions", async () => {
     const repo = await createHookFixtureRepo();
     await buildIndex({ repoRoot: repo });
     await changePlanQuery(repo, { task: "Concurrent plan", taskId: "plan-cas", files: ["src/main.ts"], saveSnapshot: true }, { autoRefresh: false });
     const results = await Promise.all([
-      changePlanQuery(repo, { task: "Concurrent plan A", taskId: "plan-cas", files: ["src/main.ts"], saveSnapshot: true }, { autoRefresh: false }),
-      changePlanQuery(repo, { task: "Concurrent plan B", taskId: "plan-cas", files: ["src/main.ts"], saveSnapshot: true }, { autoRefresh: false })
+      changePlanQuery(repo, { task: "Concurrent plan A", taskId: "plan-cas", files: ["src/main.ts"], invariants: ["Preserve invariant A."], saveSnapshot: true }, { autoRefresh: false }),
+      changePlanQuery(repo, { task: "Concurrent plan B", taskId: "plan-cas", files: ["src/main.ts"], invariants: ["Preserve invariant B."], saveSnapshot: true }, { autoRefresh: false })
     ]);
     const revisions = results.map((result) => (result.data as { snapshot: TaskSnapshot }).snapshot.planRevision).sort();
     expect(revisions).toEqual([2, 3]);
+    for (const result of results) {
+      const snapshot = (result.data as { snapshot: TaskSnapshot }).snapshot;
+      for (const invariant of snapshot.invariants ?? []) {
+        expect(result.text).toContain(invariant.statement);
+      }
+    }
     const stored = JSON.parse(await readFile(path.join(repo, ".codex/cache/codexa-tasks/plan-cas.json"), "utf8")) as TaskSnapshot;
     expect(stored.planRevision).toBe(3);
+    expect(stored.invariants?.map((entry) => entry.statement).sort()).toEqual(["Preserve invariant A.", "Preserve invariant B."]);
   });
 
   it("preserves a valid same-task snapshot when a later orientation-only plan is blocked", async () => {

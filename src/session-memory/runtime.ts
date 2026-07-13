@@ -119,6 +119,10 @@ export async function loadSessionMemory(input: { repoRoot: string; sessionId?: s
 }
 
 export async function recordSessionMemory(input: SessionMemoryRecordInput): Promise<SessionMemoryResult> {
+  return recordSessionMemoryInternal(input, false);
+}
+
+async function recordSessionMemoryInternal(input: SessionMemoryRecordInput, skipEquivalentAutoRecord: boolean): Promise<SessionMemoryResult> {
   const repoRoot = path.resolve(input.repoRoot);
   const release = await acquireSessionMemoryLock(repoRoot);
   try {
@@ -148,12 +152,38 @@ export async function recordSessionMemory(input: SessionMemoryRecordInput): Prom
       store = upsertEntry(store, entry);
       recordedIds.push(entry.id);
     }
-    store = {
+    const nextStore = {
       ...store,
       activeTaskId: effectiveTaskId ?? store.activeTaskId,
-      updatedAt: now,
-      revision: store.revision + 1,
       entries: sortEntries(store.entries)
+    };
+    if (
+      skipEquivalentAutoRecord &&
+      loaded.warnings.length === 0 &&
+      (await isRegularFile(loaded.path)) &&
+      sessionMemorySemanticDigest(loaded.store) === sessionMemorySemanticDigest(nextStore)
+    ) {
+      const memory = bucketMemory(markStoreStaleness(loaded.store, input.freshness).entries, { limit: 20 });
+      return {
+        sessionId,
+        taskId: effectiveTaskId,
+        revision: loaded.store.revision,
+        memory,
+        writes: {
+          sessionId,
+          taskId: effectiveTaskId,
+          revision: loaded.store.revision,
+          recordedEntryIds: uniqueSorted(recordedIds),
+          compacted: false,
+          path: relativeMemoryPath(sessionId)
+        },
+        warnings
+      };
+    }
+    store = {
+      ...nextStore,
+      updatedAt: now,
+      revision: loaded.store.revision + 1
     };
     await appendSessionMemoryEvent(repoRoot, store, {
       schemaVersion: 1,
@@ -190,6 +220,51 @@ export async function recordSessionMemory(input: SessionMemoryRecordInput): Prom
   } finally {
     await release();
   }
+}
+
+async function isRegularFile(filePath: string): Promise<boolean> {
+  return fs.stat(filePath).then((entry) => entry.isFile()).catch(() => false);
+}
+
+function sessionMemorySemanticDigest(store: SessionMemoryStore): string {
+  const entries = store.entries
+    .map(({ createdAt: _createdAt, updatedAt: _updatedAt, evidence, ...entry }) => ({
+      ...entry,
+      evidence: semanticallyUniqueEvidence(evidence)
+    }))
+    .sort((left, right) => left.id.localeCompare(right.id));
+  return createHash("sha256")
+    .update(
+      canonicalJson({
+        activeTaskId: store.activeTaskId,
+        entries
+      })
+    )
+    .digest("hex");
+}
+
+function semanticallyUniqueEvidence(evidence: SessionMemoryEvidence[]): unknown[] {
+  const bySemanticValue = new Map<string, unknown>();
+  for (const item of evidence) {
+    const normalized = normalizeAutoRecordEvidence(item);
+    bySemanticValue.set(canonicalJson(normalized), normalized);
+  }
+  return [...bySemanticValue.entries()]
+    .sort(([left], [right]) => left.localeCompare(right))
+    .map(([, item]) => item);
+}
+
+function normalizeAutoRecordEvidence(evidence: SessionMemoryEvidence): unknown {
+  const isOccurrenceOnlyFallback =
+    evidence.source === "mcp_tool" &&
+    Boolean(evidence.toolName) &&
+    Boolean(evidence.callId) &&
+    evidence.sourceRef === `${evidence.toolName}:${evidence.callId}`;
+  if (!isOccurrenceOnlyFallback) {
+    return evidence;
+  }
+  const { id: _id, sourceRef: _sourceRef, callId: _callId, ...semanticEvidence } = evidence;
+  return semanticEvidence;
 }
 
 export async function readSessionMemory(input: SessionMemoryReadFilter): Promise<SessionMemoryResult> {
@@ -359,7 +434,7 @@ export async function recordViewedMemoryForTool(input: {
   if (entries.length === 0) {
     return undefined;
   }
-  const result = await recordSessionMemory({
+  const result = await recordSessionMemoryInternal({
     repoRoot: input.repoRoot,
     sessionId: input.sessionId,
     taskId,
@@ -369,7 +444,7 @@ export async function recordViewedMemoryForTool(input: {
     toolName: input.toolName,
     callId: input.callId,
     entries
-  });
+  }, true);
   return result.writes;
 }
 

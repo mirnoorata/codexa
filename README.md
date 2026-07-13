@@ -42,9 +42,11 @@ Six capabilities are deliberately hard to find elsewhere:
   implicit baselines keep the loop informational.
 - **Exact checkout identity.** Every query validates that the index belongs to
   the selected canonical worktree and current HEAD. A mismatched checkout,
-  copied index, changing Git probe, or stale dirty-state overlay fails closed;
-  auto-refresh gets one repair attempt and must pass the same identity check
-  before any context is returned.
+  copied index, changing Git probe, or dirty overlay that changes while an
+  authoritative result is being persisted fails closed. A stable dirty overlay
+  remains valid input to change planning and post-edit review; auto-refresh gets
+  one repair attempt and must pass the same identity check before any context
+  is returned.
 - **A verification ledger.** Commands the agent reports are parsed against a
   faithful POSIX-shell subset before earning coverage credit: `npm test ||
   true` earns nothing, `tsc --help` is vetoed as non-compiling, `sh -c`
@@ -162,12 +164,13 @@ serving an answer; `--no-auto-refresh` never serves a mismatched index.
 
 Useful flags: the default tool profile for fresh installs is `core` — only the
 primary-loop tools (plus `impact`/`freshness`) are exposed, which cuts per-turn
-schema token cost; `--tools full` exposes all 20 tools, and re-running plain
-`codexa init` preserves whichever profile the repo already uses. On the Codex
-side the core profile relies on Codex CLI honoring `enabled_tools` (older
-versions ignore the key and simply expose every tool); the Claude Code
-`.mcp.json` path filters server-side via `serve --tools core` and needs no
-client support. `--agents-md` (opt-in) writes a managed
+schema token cost; the compact primary `capabilities` dispatcher keeps every
+advanced operation reachable through the same operation-specific validation.
+`--tools full` also exposes every advanced tool directly, and re-running plain
+`codexa init` preserves whichever profile the repo already uses. Fresh and
+core-profile Codex and Claude Code launches both pass `serve --tools core`, so
+the server enforces the compact surface even when a client ignores Codex's
+additional `enabled_tools` hint. `--agents-md` (opt-in) writes a managed
 Codexa workflow block into the repo's `AGENTS.md` for Codex, and `--claude-md`
 (opt-in) writes the same managed block into `CLAUDE.md` for Claude Code. The
 region between the `<!-- >>> codexa managed -->` / `<!-- <<< codexa managed -->`
@@ -247,16 +250,25 @@ provider such as OpenAI — see [Optional Lanes](#optional-lanes).)
 | Managed cloud agents | Self-hosted sandbox with Codexa on loopback | Local proof layer without exposing a public Codexa server | Public remote HTTP is intentionally not shipped. |
 
 Token discipline is built in: every tool description states its typical output
-cost, structured results are budget-compacted with truncation records naming
-dropped fields, hosts with small MCP result limits can set
-`CODEXA_MCP_STRUCTURED_BUDGET_BYTES`, and the big retrieval tools accept
-`responseFormat: "concise"` for a summary-tier packet that compacts both the
-structured payload and the text block. The `tools/list` surface is budgeted
-too: the per-tool output schema defaults to a compact top-level contract
-(measured on this repo: 123KB -> 54KB for the full 20-tool surface, 21KB with
-the core profile; `CODEXA_MCP_OUTPUT_SCHEMA=full` restores the deep schema),
-and `codexa serve --tools core` registers only the primary-loop tools for
-hosts without a client-side allowlist. Because the budget caps tokens rather
+cost, and structured results are budget-compacted with truncation records
+naming dropped fields. `CODEXA_MCP_STRUCTURED_BUDGET_BYTES` caps the
+`structuredContent.data` subobject; mandatory envelope identity, lifecycle,
+and resource metadata is additional, so telemetry's `totalBytes` is the honest
+wire-result measure rather than that data budget. Resource-backed automatic
+delivery and explicit detailed delivery use the same canonical detailed
+projection: 512 KiB by default, or the same explicit structured-budget
+override. Analysis tools whose evidence can expand
+accept `responseFormat: "auto"`, `"concise"`, or `"detailed"`; the already-bounded
+`freshness` result has no format switch. Automatic delivery is
+the default and preserves a mandatory decision receipt while ordinary detailed
+evidence remains available through an immutable resource. The `tools/list`
+surface is budgeted too: the per-tool output schema defaults to a compact
+top-level contract
+(`CODEXA_MCP_OUTPUT_SCHEMA=full` restores the deep schema). Fresh managed
+installs launch `codexa serve --tools core`; bare `codexa serve` remains full
+so older unmanaged launchers keep their direct-tool API after an upgrade. Core
+retains the same logical operations through `capabilities`.
+Because the budget caps tokens rather
 than dollars, the savings scale with the host model's price — they matter most
 on frontier-tier models.
 
@@ -284,47 +296,77 @@ shipped insecure.
 
 Use Codexa as a guardrail around code changes:
 
-1. Start with `session_context` or `codexa session-start`.
-   This tells the agent whether the index is fresh and what loop to use.
-
-2. Search when the target is unclear.
-   `search` combines bounded raw search, exact/symbol evidence, Codexa ranking,
-   optional semantic retrieval, likely tests, and known gaps.
-
-3. Ask for a task brief before editing.
-   `task_brief` / `brief` returns read-first files, impact expansion, risks,
-   snippets, test recommendations, freshness, and next tool guidance.
-
-4. Save a change plan before non-trivial edits.
+1. For an explicit bounded task, start with a saved change plan.
    `change_plan` with `saveSnapshot=true`, or CLI
-   `change-plan --save-snapshot`, records the intended scope and test plan.
-   If you skip this step, the pre-edit hooks save an implicit baseline of the
-   dirty tree on the first edit — the review still gets changed-since-baseline
-   and head-drift accuracy, but only an explicit plan enables unplanned-scope
-   drift detection.
+   `change-plan --save-snapshot`, records the intended scope, targeted tests,
+   verification commands, and task invariants.
 
-5. Select targeted tests before editing.
-   `test_plan` turns the planned files and current dependency impact into a
-   bounded set of checks. Run it before the patch so blocking/streaming parity,
-   shared consumers, and other non-obvious verification surfaces are explicit.
+2. Add orientation only when the target or context is unclear.
+   `session_context` handles broad starts and resumes. `search` locates an
+   ambiguous target. `task_brief` supplies a repository context packet when a
+   plausible target is not yet safe to plan.
 
-6. Review after editing.
+3. Edit and run the planned verification.
+   Use the targeted tests and commands already returned by `change_plan`.
+   Call `test_plan` only when that guidance remains unresolved or a dedicated
+   verification plan is explicitly requested.
+
+4. Review after editing.
    `post_edit_review` / `post-edit-review` compares the actual dirty tree with
    the saved snapshot, reports drift, checks declared task invariants, and tells
    you whether to continue, run tests, inspect, or replan. Repeated distinct
    attempts are accounted against a task-scoped loop budget; once the budget
    trips, the stop remains latched until a new saved plan revision is accepted.
 
-7. Finish with a proof card.
-   `proof_card` / `prove` binds the handoff to freshness, a saved plan
-   snapshot, task invariants, lifecycle status, local policies, and reported
-   verification evidence.
+5. Produce formal proof only when the handoff needs it.
+   `proof_card` / `prove` binds policy changes, formal audits, releases, or
+   artifact handoffs to freshness, a saved plan snapshot, task invariants,
+   lifecycle status, local policies, and reported verification evidence.
 
-Primary MCP loop:
+If you skip the explicit plan, the pre-edit hooks save an implicit baseline of
+the dirty tree on the first edit. The review still gets changed-since-baseline
+and head-drift accuracy, but only an explicit plan enables unplanned-scope
+drift detection.
+
+In core mode, use `capabilities` to discover or invoke an advanced operation;
+full mode also exposes each advanced tool directly. Both paths use the same
+operation-specific schema and handler.
+
+Automatic results that remain concise, and explicit concise results, store
+their bounded detailed packet under the active repository and return a
+content-addressed resource URI with an opaque, server-session route. Automatic
+escalations and persistence-capacity fallbacks return detailed evidence inline.
+The URI does not encode the checkout path, remains
+resolvable only for that server session, and is pinned by a durable
+live-session lease until that server shuts down. Concurrent MCP server
+processes share a hard per-repository ceiling of 256 result records and 256
+session leases; a live owner's pins are never evicted merely because they are
+old. If a new unique pin, session lease, or opaque route would exceed its
+bound, Codexa returns the detailed packet inline before emitting a URI.
+Graceful shutdown releases that server's leases; an abandoned lease is
+reclaimed only after its stale window and owner-process identity check.
+Unpinned records remain LRU-prunable within the 256-record disk bound.
+Explicit `responseFormat: "detailed"` returns the detailed packet inline.
+Optional `CODEXA_MCP_TELEMETRY_PATH`
+records bounded mechanical byte/time events; byte accounting is synchronous,
+while file writes use a bounded queue off the response path. Graceful shutdown
+adds a content-free `session-complete` record; analysis excludes that footer
+from event totals and treats a missing footer as partial evidence. A relative
+telemetry path is resolved once against the configured MCP launch root, so a
+later workspace-focus change cannot split one server sequence across files.
+Each server session must use a unique destination that is absent at startup;
+the runner is responsible for enforcing that freshness precondition. The
+writer creates the path exclusively and leaves an existing path untouched,
+but an analyzer cannot infer from valid file contents alone which run wrote it.
+Telemetry never changes tool authority or completion scoring.
+
+Adaptive primary MCP loop:
 
 ```text
-session_context -> search(if target unclear) -> task_brief ->
-change_plan(saveSnapshot) -> test_plan -> edit -> post_edit_review -> proof_card
+change_plan(saveSnapshot) -> edit/run planned verification -> post_edit_review
+add session_context/search/task_brief only when target or context is unclear
+add test_plan only when verification guidance is unresolved
+add proof_card only for policy or formal handoff
 ```
 
 ## What Codexa Builds
@@ -397,7 +439,7 @@ writes are allowed; source-file mutation is not exposed through MCP tools.
 | `codexa eval <repo>` | Run structured retrieval/verification benchmark scenarios. |
 | `codexa github-sync-check <repo>` | Diagnose GitHub source sync readiness. |
 | `codexa github-release <repo>` | Create release notes, tags, and GitHub Release entries. |
-| `codexa serve <repo>` | Start the MCP context server over stdio (`--tools core` registers only the primary-loop tools). |
+| `codexa serve <repo>` | Start the backward-compatible full MCP context server over stdio; fresh managed installs pass `--tools core`, where advanced operations remain reachable through `capabilities`. |
 | `codexa serve <repo> --transport http --host 127.0.0.1 --port 8729` | Start loopback-only HTTP MCP. |
 
 Most context commands auto-refresh stale or missing Codexa artifacts before
@@ -567,6 +609,8 @@ dependency_path
 workflow_path
 change_plan
 post_edit_review
+proof_card
+capabilities
 session_memory
 ```
 
@@ -665,6 +709,13 @@ scrubbed environments and write reports under `.codex/static-analysis/`.
   mandatory replan. Lifecycle read or validation failures fail closed with an
   actionable diagnostic instead of silently disabling the guard.
 - `hook-post-edit` runs a bounded post-edit review after edits.
+
+With read-only autonomy, the post-edit hook performs one review, persists that
+outcome once, and skips AutoVerify candidate derivation entirely. With
+full-access AutoVerify, it performs a non-persisted preview to select safe
+commands and one final persisted review enriched with
+the trusted runner reports. This keeps the two-pass path only where command
+execution can add evidence.
 
 AutoVerify command execution is disabled unless user-owned autonomy is
 `full-access` or the environment sets `CODEXA_AUTOVERIFY=1` /

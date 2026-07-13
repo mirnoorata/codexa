@@ -11,6 +11,7 @@ import { describe, expect, it } from "vitest";
 import { buildIndex } from "../src/indexer.js";
 import { MCP_TOOL_CATALOG, PRIMARY_CODEX_LOOP, compactNonPostEditMcpResult, compactPostEditMcpResult } from "../src/mcp.js";
 import { conciseText } from "../src/mcp/compaction.js";
+import { toToolResult } from "../src/mcp/envelope.js";
 import { CORE_PROFILE_TOOL_NAMES, MCP_TOOL_NAMES, MCP_TOOL_REGISTRY } from "../src/mcp/tool-registry.js";
 import { MCP_REGISTERED_TOOL_NAMES } from "../src/mcp/tools.js";
 import { loadSkillHints } from "../src/skill-hints.js";
@@ -18,10 +19,45 @@ import { CURRENT_VERIFICATION_PROVENANCE } from "../src/types.js";
 import { CODEXA_VERSION } from "../src/version.js";
 import { freshnessFixture, seq, serializedBytes, waitForStderr, stopChild, waitForExit, createIndexedMcpRepo, createIndexedMcpAutoVerifyRepo, buildContextPacket, buildFocusBriefPacket, buildTestPlanPacket, buildChangePlanPacket } from "./mcp-fixtures.js";
 describe("Codexa MCP server", () => {
+it("keeps lifecycle envelope fallbacks adaptive and honors explicit terminal guidance", () => {
+    const options = { autoRefresh: false, sessionMemoryMode: "off" };
+    const changePlan = toToolResult(
+      { text: "plan", freshness: freshnessFixture(), data: { mode: "change_plan" } },
+      "change_plan",
+      options
+    ).structuredContent as { lifecycle: { preconditions: string[]; nextTools: string[] } };
+    expect(changePlan.lifecycle.preconditions.join(" ")).toContain("explicit bounded target");
+    expect(changePlan.lifecycle.nextTools).toEqual(["post_edit_review"]);
+
+    const completedReview = toToolResult(
+      { text: "review complete", freshness: freshnessFixture(), data: { mode: "post_edit_review", verdict: "continue", nextTools: [] } },
+      "post_edit_review",
+      options
+    ).structuredContent as { lifecycle: { nextTools: string[] }; nextTools?: unknown[]; toolPolicy?: { nextToolUse?: string[] } };
+    expect(completedReview.lifecycle.nextTools).toEqual([]);
+    expect(completedReview.nextTools).toEqual([]);
+    expect(completedReview.toolPolicy?.nextToolUse).toEqual([]);
+
+    const replanReview = toToolResult(
+      { text: "replan", freshness: freshnessFixture(), data: { mode: "post_edit_review", verdict: "replan", nextTools: [{ tool: "change_plan" }] } },
+      "post_edit_review",
+      options
+    ).structuredContent as { lifecycle: { nextTools: string[] } };
+    expect(replanReview.lifecycle.nextTools).toEqual(["change_plan"]);
+
+    const proof = toToolResult(
+      { text: "proof gaps", freshness: freshnessFixture(), data: { mode: "proof_card", verification: { reported: { hasEvidence: false } } } },
+      "proof_card",
+      options
+    ).structuredContent as { lifecycle: { preconditions: string[]; nextTools: string[] } };
+    expect(proof.lifecycle.preconditions.join(" ")).toContain("formal audit");
+    expect(proof.lifecycle.nextTools).toEqual([]);
+  });
+
 it("keeps the primary MCP happy path small and demotes graph/workflow tools", () => {
     const primaryTools = MCP_TOOL_CATALOG.filter((tool) => tool.tier === "primary").map((tool) => tool.name);
 
-    expect(primaryTools).toEqual(["session_context", "search", "task_brief", "change_plan", "post_edit_review", "test_plan", "proof_card"]);
+    expect(primaryTools).toEqual(["session_context", "search", "task_brief", "change_plan", "post_edit_review", "test_plan", "proof_card", "capabilities"]);
     expect(MCP_TOOL_CATALOG.find((tool) => tool.name === "workflow_path")).toMatchObject({ tier: "advanced" });
     expect(MCP_TOOL_CATALOG.find((tool) => tool.name === "change_plan")).toMatchObject({
       useWhen: expect.stringContaining("saveSnapshot=true"),
@@ -30,8 +66,10 @@ it("keeps the primary MCP happy path small and demotes graph/workflow tools", ()
     expect(MCP_TOOL_CATALOG.find((tool) => tool.name === "search")).toMatchObject({
       readOnly: false,
       writeEffects: expect.stringContaining("index-cache-if-auto-refresh"),
-      useWhen: expect.stringContaining("Before task_brief")
+      useWhen: expect.stringContaining("target is unclear")
     });
+    expect(MCP_TOOL_CATALOG.find((tool) => tool.name === "post_edit_review")?.nextToolUse).toEqual([]);
+    expect(MCP_TOOL_CATALOG.find((tool) => tool.name === "capabilities")?.nextToolUse).toEqual([]);
     expect(MCP_TOOL_CATALOG.map((tool) => tool.name)).toEqual(MCP_TOOL_NAMES);
     expect(MCP_REGISTERED_TOOL_NAMES).toEqual(MCP_TOOL_NAMES);
     expect(MCP_TOOL_REGISTRY.map((tool) => ({ name: tool.name, title: tool.title, description: tool.description }))).toEqual(
@@ -39,7 +77,8 @@ it("keeps the primary MCP happy path small and demotes graph/workflow tools", ()
         expect.objectContaining({ name: "change_plan", title: "Codexa change plan", description: expect.stringContaining("saveSnapshot=true") }),
         expect.objectContaining({ name: "search", title: "Codexa hybrid semantic search", description: expect.stringContaining("Search the codebase") }),
         expect.objectContaining({ name: "post_edit_review", title: "Codexa post-edit review", description: expect.stringContaining("Review code changes for drift") }),
-        expect.objectContaining({ name: "proof_card", title: "Codexa proof card", description: expect.stringContaining("Final proof packet") })
+        expect.objectContaining({ name: "proof_card", title: "Codexa proof card", description: expect.stringContaining("Final proof packet") }),
+        expect.objectContaining({ name: "capabilities", title: "Codexa capability dispatcher", description: expect.stringContaining("full logical capability set") })
       ])
     );
   });
@@ -55,7 +94,7 @@ it("routes workspace-root MCP calls and resources to the focused repository", as
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace, "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-workspace-routing-test", version: "0.1.0" });

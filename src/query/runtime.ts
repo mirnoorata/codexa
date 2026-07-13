@@ -1,6 +1,7 @@
 import path from "node:path";
 import { buildIndexLocked, getFreshness, loadIndex, loadIndexReadOnly } from "../indexer.js";
-import { assertIndexIdentity, findIndexIdentityIssue } from "../index-identity.js";
+import { assertIndexIdentity, findIndexIdentityIssue, IndexIdentityError } from "../index-identity.js";
+import { freshnessBlocksAuthority } from "../freshness-authority.js";
 import { workspaceStateDigest } from "../workspace-state.js";
 import type { CodexaIndex, FileFact, FreshnessInfo, QueryOptions, QueryResult, RefreshInfo, SymbolFact } from "../types.js";
 
@@ -74,6 +75,64 @@ export function freshnessBanner(freshness: FreshnessInfo, refresh?: RefreshInfo)
     return `Freshness: ${freshness.reason} (auto-refreshed from ${refresh.reason})${repo}`;
   }
   return freshness.stale ? `WARNING: index stale (${freshness.reason})${repo}` : `Freshness: ${freshness.reason}${repo}`;
+}
+
+/**
+ * Stale indexed context may still be useful for read-only orientation, but it
+ * must never authorize or persist lifecycle state. Callers that can save a
+ * plan, outcome, or completion decision use this guard before those writes.
+ */
+export function freshnessAuthorityBlockReason(freshness: FreshnessInfo): string | undefined {
+  if (freshness.missing) {
+    return "Codexa index is missing; index the active checkout before creating authoritative task state";
+  }
+  // A dirty overlay is the normal input to change planning and post-edit
+  // review. It is safe to persist against when the checkout identity matches
+  // and the exact overlay remains unchanged through the persistence boundary.
+  // Other stale reasons mean the indexed evidence itself may be obsolete.
+  if (freshnessBlocksAuthority(freshness)) {
+    return `Codexa index is stale (${freshness.reason}); refresh the active checkout index before creating authoritative task state`;
+  }
+  return undefined;
+}
+
+export class FreshnessAuthorityChangedError extends Error {
+  readonly code = "CODEXA_FRESHNESS_AUTHORITY_CHANGED";
+
+  constructor(
+    readonly freshness: FreshnessInfo,
+    readonly reason: string
+  ) {
+    super(reason);
+    this.name = "FreshnessAuthorityChangedError";
+  }
+}
+
+/**
+ * Re-check the live checkout at the authoritative persistence boundary.
+ * This is deliberately a filesystem/Git compare-and-set guard only: callers
+ * retain the context they already computed and do not repeat query analysis.
+ */
+export async function assertFreshnessAuthorityCurrent(
+  repoRoot: string,
+  index: CodexaIndex,
+  expectedFreshness?: FreshnessInfo
+): Promise<FreshnessInfo> {
+  const freshness = await getFreshness(repoRoot, index, { recover: false });
+  const identityIssue = findIndexIdentityIssue(repoRoot, index, freshness);
+  const reason = identityIssue
+    ? new IndexIdentityError(identityIssue).message
+    : freshnessAuthorityBlockReason(freshness);
+  if (reason) {
+    throw new FreshnessAuthorityChangedError(freshness, reason);
+  }
+  if (expectedFreshness && workspaceStateDigest(freshness) !== workspaceStateDigest(expectedFreshness)) {
+    throw new FreshnessAuthorityChangedError(
+      freshness,
+      "Codexa checkout changed after context collection; retry against the current worktree before creating authoritative task state"
+    );
+  }
+  return freshness;
 }
 
 export function ambiguityResult(

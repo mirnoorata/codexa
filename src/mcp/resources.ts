@@ -3,11 +3,28 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { statusQuery } from "../queries.js";
 import { loadSkillHints, renderSkillHintsResource } from "../skill-hints.js";
+import {
+  readMcpResultArtifact,
+  requireMcpResultArtifactId,
+  requireMcpResultArtifactRepoLocator,
+  type McpResultArtifactRouter
+} from "./result-artifacts.js";
+
+export interface McpDetailedResultReadEvent {
+  repoRoot?: string;
+  uri: string;
+  outcome: "ok" | "error";
+  text?: string;
+  response?: { contents: Array<{ uri: string; mimeType: string; text: string }> };
+  elapsedMs: number;
+}
 
 export async function registerArtifactResources(
   server: McpServer,
   resolveRepoRoot: () => Promise<string>,
-  resolveReadyRepoRoot: () => Promise<string> = resolveRepoRoot
+  resolveReadyRepoRoot: () => Promise<string> = resolveRepoRoot,
+  resultRouter?: McpResultArtifactRouter,
+  onDetailedResultRead?: (event: McpDetailedResultReadEvent) => void
 ): Promise<void> {
   const artifacts = [
     ["codebase-readme", "codexa://repo/codebase/README.md", ".codex/codebase/README.md", "text/markdown", "Codexa artifact overview"],
@@ -133,6 +150,69 @@ export async function registerArtifactResources(
       };
     }
   );
+
+  server.registerResource(
+    "mcp-detailed-result",
+    new ResourceTemplate("codexa://repo/mcp-results/{repo}/{id}", { list: undefined }),
+    {
+      title: "Codexa detailed MCP result",
+      description: "Read an exact, content-addressed detailed result referenced by a concise MCP receipt.",
+      mimeType: "application/json"
+    },
+    async (uri, variables) => {
+      const id = singleResourceVariable(variables.id);
+      const repo = singleResourceVariable(variables.repo);
+      requireMcpResultArtifactId(id);
+      requireMcpResultArtifactRepoLocator(repo);
+      const routedRoot = resultRouter?.resolve(repo);
+      if (!routedRoot) throw new Error("Codexa detailed-result route is not available in this MCP server session");
+      return readDetailedResultResource(uri.toString(), routedRoot, id, onDetailedResultRead);
+    }
+  );
+
+}
+
+async function readDetailedResultResource(
+  uri: string,
+  repoRoot: string,
+  id: string,
+  onRead?: (event: McpDetailedResultReadEvent) => void
+): Promise<{ contents: Array<{ uri: string; mimeType: string; text: string }> }> {
+  if (!onRead) {
+    const text = await readMcpResultArtifact(repoRoot, id);
+    return { contents: [{ uri, mimeType: "application/json", text }] };
+  }
+  const startedAt = performance.now();
+  try {
+    const text = await readMcpResultArtifact(repoRoot, id);
+    const response = { contents: [{ uri, mimeType: "application/json", text }] };
+    emitDetailedResultRead(onRead, {
+      repoRoot,
+      uri,
+      outcome: "ok",
+      text,
+      response,
+      elapsedMs: Math.max(0, Math.round((performance.now() - startedAt) * 1000) / 1000)
+    });
+    return response;
+  } catch (error) {
+    emitDetailedResultRead(onRead, {
+      repoRoot,
+      uri,
+      outcome: "error",
+      elapsedMs: startedAt > 0 ? Math.max(0, Math.round((performance.now() - startedAt) * 1000) / 1000) : 0
+    });
+    throw error;
+  }
+}
+
+function emitDetailedResultRead(callback: ((event: McpDetailedResultReadEvent) => void) | undefined, event: McpDetailedResultReadEvent): void {
+  if (!callback) return;
+  try {
+    callback(event);
+  } catch (error) {
+    console.error(`Codexa MCP resource telemetry event dropped: ${error instanceof Error ? error.message : String(error)}`);
+  }
 }
 
 async function readArtifact(repoRoot: string, relativePath: string): Promise<string> {
@@ -177,4 +257,12 @@ function artifactNameVariable(value: string | string[]): string {
     throw new Error(`Invalid Codexa artifact name: ${name}`);
   }
   return name;
+}
+
+function singleResourceVariable(value: string | string[]): string {
+  const resolved = Array.isArray(value) ? value.join("/") : value;
+  if (!resolved || resolved.includes("/") || resolved.includes("\\") || resolved === "." || resolved === "..") {
+    throw new Error(`Invalid Codexa resource variable: ${resolved}`);
+  }
+  return resolved;
 }

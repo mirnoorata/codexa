@@ -212,7 +212,9 @@ function validateSkillFrontmatter(file, text) {
 
 function validateCodexaSkillContract(file, text) {
   const requiredSnippets = [
-    "session_context -> search(if target unclear) -> task_brief -> change_plan(saveSnapshot) -> post_edit_review -> test_plan",
+    "change_plan(saveSnapshot) -> edit/run planned verification -> post_edit_review",
+    "test_plan` only when verification guidance is unresolved",
+    "`capabilities` to discover or invoke any advanced operation",
     "Keep host adapters thin",
     "no source-mutating MCP tool path",
     "codexa search . --query"

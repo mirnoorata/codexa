@@ -1,6 +1,9 @@
 import type { McpServer, ToolCallback } from "@modelcontextprotocol/sdk/server/mcp.js";
-import type { AnySchema, ShapeOutput, ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-compat.js";
+import { normalizeObjectSchema, type AnySchema, type ShapeOutput, type ZodRawShapeCompat } from "@modelcontextprotocol/sdk/server/zod-compat.js";
+import { toJsonSchemaCompat } from "@modelcontextprotocol/sdk/server/zod-json-schema-compat.js";
 import type { CallToolResult, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
+import { AsyncLocalStorage } from "node:async_hooks";
+import { createHash } from "node:crypto";
 import { z } from "zod";
 import {
   callersQuery,
@@ -35,7 +38,7 @@ import {
 import type { QueryOptions, QueryResult, SessionMemoryInput } from "../types.js";
 import type { QuerySession } from "../query/session.js";
 import { RAW_SEARCH_EXPLICIT_PATTERN_LIMIT } from "../query/raw-search.js";
-import { MCP_TOOL_NAMES, mcpToolRegistryEntry, type McpToolName, type McpToolRegistryEntry } from "./tool-registry.js";
+import { ADVANCED_MCP_TOOL_NAMES, MCP_TOOL_NAMES, MCP_TOOL_REGISTRY, mcpToolRegistryEntry, type McpToolName, type McpToolRegistryEntry } from "./tool-registry.js";
 
 export type McpOptionalQueryInput = Record<string, unknown> & {
   semantic?: boolean;
@@ -49,14 +52,20 @@ export type McpOptionalQueryInput = Record<string, unknown> & {
   lspMaxFiles?: number;
 };
 
-type McpToolContext = string | { toolName: string; input?: Record<string, unknown>; autoRecord?: boolean };
+type McpToolContext = string | {
+  toolName: string;
+  input?: Record<string, unknown>;
+  autoRecord?: boolean;
+  transportToolName?: string;
+  transportInput?: Record<string, unknown>;
+};
 type ChangeType = "style" | "api" | "behavior" | "rename" | "delete" | "unknown";
 
 const responseFormatSchema = {
   responseFormat: z
-    .enum(["concise", "detailed"])
+    .enum(["auto", "concise", "detailed"])
     .optional()
-    .describe("concise compacts the packet to the summary tier under a small byte budget; detailed (default) returns the full packet")
+    .describe("auto (default) safely compacts; concise links the detailed result; detailed returns it inline")
 } satisfies z.ZodRawShape;
 
 interface McpToolDefinition<InputSchema extends ZodRawShapeCompat> {
@@ -92,7 +101,7 @@ interface RegisterMcpToolsOptions {
   };
   toolQueryOptions: (input?: McpOptionalQueryInput) => QueryOptions;
   runTool: (producer: (session: QuerySession) => Promise<QueryResult>, toolContext: McpToolContext) => Promise<CallToolResult>;
-  runFreshnessTool: () => Promise<CallToolResult>;
+  runFreshnessTool: (toolContext: Exclude<McpToolContext, string>) => Promise<CallToolResult>;
 }
 
 type RegisterToolConfig<OutputArgs extends ZodRawShapeCompat | AnySchema, InputArgs extends undefined | ZodRawShapeCompat | AnySchema = undefined> = {
@@ -145,30 +154,104 @@ function assertMcpToolRegistrationCoverage(registeredToolNames: string[]): void 
 export const MCP_REGISTERED_TOOL_NAMES = MCP_TOOL_NAMES;
 
 export function registerMcpTools(options: RegisterMcpToolsOptions): void {
-  const { server, queryOptions, outputSchema, toolQueryOptions, runTool, runFreshnessTool } = options;
+  const { server, queryOptions, outputSchema, toolQueryOptions, runFreshnessTool } = options;
   const { pureRead, sourceContext, cacheWrite, memoryWrite } = options.annotations;
-  const toolDefinitions = new Map<McpToolName, () => void>();
+  type DispatchContext = {
+    responseFormat?: "auto" | "concise" | "detailed";
+    operationInput?: Record<string, unknown>;
+    transportToolName?: string;
+    transportInput?: Record<string, unknown>;
+  };
+  const dispatchContext = new AsyncLocalStorage<DispatchContext>();
+  const withDispatchContext = <T>(next: DispatchContext, invoke: () => T): T => dispatchContext.run({ ...(dispatchContext.getStore() ?? {}), ...next }, invoke);
+  const runTool: RegisterMcpToolsOptions["runTool"] = (producer, context) => {
+    const activeDispatch = dispatchContext.getStore();
+    if (!activeDispatch) return options.runTool(producer, context);
+    const routedContext =
+      typeof context === "string"
+        ? {
+            toolName: context,
+            input: activeDispatch.responseFormat
+              ? { ...(activeDispatch.operationInput ?? {}), responseFormat: activeDispatch.responseFormat }
+              : activeDispatch.operationInput,
+            autoRecord: false,
+            transportToolName: activeDispatch.transportToolName,
+            transportInput: activeDispatch.transportInput
+          }
+        : {
+            ...context,
+            input: activeDispatch.responseFormat ? { ...(context.input ?? {}), responseFormat: activeDispatch.responseFormat } : context.input,
+            transportToolName: activeDispatch.transportToolName,
+            transportInput: activeDispatch.transportInput
+          };
+    return options.runTool(producer, routedContext);
+  };
+  type ExecutableToolDefinition = {
+    register: () => void;
+    invoke: (input: Record<string, unknown>) => Promise<CallToolResult>;
+    inputSchema: ZodRawShapeCompat | AnySchema | undefined;
+  };
+  const toolDefinitions = new Map<McpToolName, ExecutableToolDefinition>();
+  const withToolInvocationContext = <T>(toolName: McpToolName, input: unknown, invoke: () => T): T => {
+    const active = dispatchContext.getStore();
+    const operationInput = isPlainArgumentObject(input) ? (input as Record<string, unknown>) : undefined;
+    const responseFormat = isResponseFormatInput(input) ? input.responseFormat : active?.responseFormat;
+    return withDispatchContext(
+      {
+        responseFormat,
+        operationInput,
+        transportToolName: active?.transportToolName ?? toolName,
+        transportInput: active?.transportInput ?? operationInput
+      },
+      invoke
+    );
+  };
   const defineTool = <OutputArgs extends ZodRawShapeCompat | AnySchema, InputArgs extends undefined | ZodRawShapeCompat | AnySchema = undefined>(
     name: McpToolName,
     config: RegisterToolConfig<OutputArgs, InputArgs>,
     handler: ToolCallback<InputArgs>
   ): void => {
     const metadata = requireMcpToolMetadata(name);
-    toolDefinitions.set(metadata.name, () => {
-      server.registerTool(
-        metadata.name,
-        {
-          ...config,
-          title: metadata.title,
-          description: metadata.description
-        },
-        handler
-      );
+    const effectiveInputSchema = metadata.name === "freshness" ? config.inputSchema : withResponseFormatSchema(config.inputSchema);
+    const invokeHandler = async (input: unknown, extra?: unknown) => {
+      const invoke = () => (handler as unknown as (value: unknown, callbackExtra?: unknown) => Promise<CallToolResult>)(input, extra);
+      return withToolInvocationContext(metadata.name, input, invoke);
+    };
+    toolDefinitions.set(metadata.name, {
+      inputSchema: effectiveInputSchema,
+      register: () => {
+        server.registerTool(
+          metadata.name,
+          {
+            ...config,
+            inputSchema: effectiveInputSchema as InputArgs,
+            title: metadata.title,
+            description: metadata.description
+          },
+          invokeHandler as unknown as ToolCallback<InputArgs>
+        );
+      },
+      invoke: async (input) => {
+        const parsed = parseMcpToolInput(effectiveInputSchema, input);
+        return invokeHandler(parsed);
+      }
     });
   };
   const defineMcpTool = <InputSchema extends ZodRawShapeCompat>(tool: McpToolDefinition<InputSchema>): void => {
     const metadata = requireMcpToolMetadata(tool.name);
-    toolDefinitions.set(metadata.name, () => registerMcpTool({ server, outputSchema }, tool));
+    const inputSchema = withResponseFormatSchema(tool.inputSchema) as InputSchema;
+    const execute = async (parsed: ShapeOutput<InputSchema>) => {
+      return withToolInvocationContext(metadata.name, parsed, () => tool.handler(parsed));
+    };
+    const invoke = async (input: Record<string, unknown>) => {
+      const parsed = z.object(inputSchema as z.ZodRawShape).parse(input) as ShapeOutput<InputSchema>;
+      return execute(parsed);
+    };
+    toolDefinitions.set(metadata.name, {
+      inputSchema,
+      register: () => registerMcpTool({ server, outputSchema }, { ...tool, inputSchema, handler: execute }),
+      invoke
+    });
   };
   const {
     changeType: changeTypeSchema,
@@ -218,7 +301,15 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
       outputSchema,
       annotations: pureRead
     },
-    async () => runFreshnessTool()
+    async (input) => {
+      const activeDispatch = dispatchContext.getStore();
+      return runFreshnessTool({
+        toolName: "freshness",
+        input,
+        transportToolName: activeDispatch?.transportToolName ?? "freshness",
+        transportInput: activeDispatch?.transportInput ?? input
+      });
+    }
   );
 
   defineTool(
@@ -228,7 +319,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
       outputSchema,
       annotations: sourceContext
     },
-    async ({ limit, tokenBudget }) => runTool((session) => repoMapQuery(session, limit ?? 20, queryOptions, tokenBudget ?? 1500), "repo_map")
+    async (input) => runTool((session) => repoMapQuery(session, input.limit ?? 20, queryOptions, input.tokenBudget ?? 1500), { toolName: "repo_map", input })
   );
 
   defineTool(
@@ -276,7 +367,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
       outputSchema,
       annotations: sourceContext
     },
-    async (input) => runTool((session) => placeholderReportQuery(session, input, queryOptions), "placeholder_report")
+    async (input) => runTool((session) => placeholderReportQuery(session, input, queryOptions), { toolName: "placeholder_report", input })
   );
 
   defineTool(
@@ -300,7 +391,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
             includeEvidence: input.includeEvidence,
             language: input.language
           }),
-        "symbol_context"
+        { toolName: "symbol_context", input }
       )
   );
 
@@ -484,13 +575,13 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
       name: "callers",
       inputSchema: graphTargetSchema,
       annotations: sourceContext,
-      handler: async (input) => runTool((session) => callersQuery(session, input, queryOptions), "callers")
+      handler: async (input) => runTool((session) => callersQuery(session, input, queryOptions), { toolName: "callers", input })
     },
     {
       name: "callees",
       inputSchema: graphTargetSchema,
       annotations: sourceContext,
-      handler: async (input) => runTool((session) => calleesQuery(session, input, queryOptions), "callees")
+      handler: async (input) => runTool((session) => calleesQuery(session, input, queryOptions), { toolName: "callees", input })
     }
   ] satisfies Array<McpToolDefinition<typeof graphTargetSchema>>;
   for (const tool of graphTools) {
@@ -509,7 +600,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
       name: "dependency_path",
       inputSchema: dependencyPathSchema,
       annotations: sourceContext,
-      handler: async (input) => runTool((session) => dependencyPathQuery(session, input, queryOptions), "dependency_path")
+      handler: async (input) => runTool((session) => dependencyPathQuery(session, input, queryOptions), { toolName: "dependency_path", input })
     }
   );
 
@@ -525,7 +616,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
       name: "workflow_path",
       inputSchema: workflowPathSchema,
       annotations: sourceContext,
-      handler: async (input) => runTool((session) => workflowPathQuery(session, input, toolQueryOptions(input)), "workflow_path")
+      handler: async (input) => runTool((session) => workflowPathQuery(session, input, toolQueryOptions(input)), { toolName: "workflow_path", input })
     }
   );
 
@@ -622,10 +713,101 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
         { toolName: "proof_card", input }
       )
   );
+
+  // Keep this shallow: the selected operation's exact schema is the one and
+  // only recursive validator. An independent generic cap would reject inputs
+  // that are legal for large session-memory or verification operations.
+  const capabilityArgumentsSchema = z.unknown().refine(isPlainArgumentObject, "capability arguments must be a plain object");
+
+  defineTool(
+    "capabilities",
+    {
+      inputSchema: {
+        action: z.enum(["list", "describe", "invoke"]).optional(),
+        operation: z.enum(ADVANCED_MCP_TOOL_NAMES as unknown as [string, ...string[]]).optional(),
+        arguments: capabilityArgumentsSchema.optional(),
+        ...responseFormatSchema
+      },
+      outputSchema,
+      annotations: cacheWrite
+    },
+    async (input) => {
+      const action = input.action ?? (input.operation ? (input.arguments === undefined ? "describe" : "invoke") : "list");
+      if (action === "invoke") {
+        if (!input.operation) throw new Error("capabilities action=invoke requires operation");
+        const definition = toolDefinitions.get(input.operation as McpToolName);
+        if (!definition || !ADVANCED_MCP_TOOL_NAMES.includes(input.operation as (typeof ADVANCED_MCP_TOOL_NAMES)[number])) {
+          throw new Error(`Unknown advanced Codexa capability: ${input.operation}`);
+        }
+        const operationArguments = input.arguments as Record<string, unknown> | undefined;
+        const argumentFormat = isResponseFormatInput(operationArguments) ? operationArguments.responseFormat : undefined;
+        if (input.responseFormat && argumentFormat && input.responseFormat !== argumentFormat) {
+          throw new Error(`Conflicting responseFormat values for capability ${input.operation}; provide it once or use matching values`);
+        }
+        const invoke = () => definition.invoke(operationArguments ?? {});
+        return withDispatchContext(
+          {
+            responseFormat: input.responseFormat ?? argumentFormat,
+            transportToolName: "capabilities",
+            transportInput: input as Record<string, unknown>
+          },
+          invoke
+        );
+      }
+      if (action === "describe" && !input.operation) throw new Error("capabilities action=describe requires operation");
+      if (action === "list" && input.operation) throw new Error("capabilities action=list does not accept operation");
+      const operations = MCP_TOOL_REGISTRY.filter((entry) => entry.tier === "advanced").map(({ name, title, phase, cost, readOnly, writeEffects, useWhen, avoidWhen }) => {
+        const schema = canonicalCapabilitySchema(toolDefinitions.get(name as McpToolName)?.inputSchema);
+        return {
+          name,
+          title,
+          phase,
+          cost,
+          readOnly,
+          writeEffects,
+          useWhen,
+          avoidWhen,
+          requiredInputs: schema.required ?? [],
+          inputNames: Object.keys(schema.properties),
+          schemaHash: capabilitySchemaHash(schema)
+        };
+      });
+      const capabilityHash = createHash("sha256").update(JSON.stringify(operations)).digest("hex");
+      const described = input.operation
+        ? (() => {
+            const definition = toolDefinitions.get(input.operation as McpToolName);
+            if (!definition) throw new Error(`Unknown advanced Codexa capability: ${input.operation}`);
+            const schema = canonicalCapabilitySchema(definition.inputSchema);
+            return {
+              operation: input.operation,
+              schema,
+              schemaHash: capabilitySchemaHash(schema)
+            };
+          })()
+        : undefined;
+      return runTool(
+        async (session) => ({
+          freshness: session.freshness,
+          refresh: session.refresh,
+          text: described
+            ? [`Codexa capability: ${described.operation}`, `Schema hash: ${described.schemaHash}`, `Required: ${described.schema.required?.join(", ") || "none"}`, `Inputs: ${Object.keys(described.schema.properties).join(", ") || "none"}`].join("\n")
+            : [`Codexa advanced capabilities (${operations.length})`, `Capability hash: ${capabilityHash}`, ...operations.map((entry) => `- ${entry.name} [${entry.cost}/${entry.phase}]; required ${entry.requiredInputs.join(",") || "none"}: ${entry.useWhen}`)].join("\n"),
+          data: {
+            mode: "capabilities",
+            actionability: "orientation",
+            capabilityHash,
+            operationCount: operations.length,
+            ...(described ? { described } : { operations })
+          }
+        }),
+        { toolName: "capabilities", input }
+      );
+    }
+  );
   assertMcpToolRegistrationCoverage([...toolDefinitions.keys()]);
   for (const toolName of MCP_TOOL_NAMES) {
-    const register = toolDefinitions.get(toolName);
-    if (!register) {
+    const definition = toolDefinitions.get(toolName);
+    if (!definition) {
       throw new Error(`MCP tool ${toolName} is missing an executable definition`);
     }
     // The coverage assertion above still proves every catalog tool has an
@@ -633,8 +815,70 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
     if (options.enabledTools && !options.enabledTools.has(toolName)) {
       continue;
     }
-    register();
+    definition.register();
   }
+}
+
+function withResponseFormatSchema(schema: ZodRawShapeCompat | AnySchema | undefined): ZodRawShapeCompat | AnySchema {
+  if (schema && typeof schema === "object" && "parse" in schema && typeof (schema as { parse?: unknown }).parse === "function") {
+    return schema;
+  }
+  return { ...((schema ?? {}) as ZodRawShapeCompat), ...responseFormatSchema };
+}
+
+function parseMcpToolInput(schema: ZodRawShapeCompat | AnySchema | undefined, input: Record<string, unknown>): unknown {
+  if (schema && typeof schema === "object" && "parse" in schema && typeof (schema as { parse?: unknown }).parse === "function") {
+    return (schema as unknown as z.ZodTypeAny).parse(input);
+  }
+  return z.object((schema ?? {}) as z.ZodRawShape).parse(input);
+}
+
+type CanonicalCapabilitySchema = Record<string, unknown> & {
+  type: "object";
+  required?: string[];
+  properties: Record<string, Record<string, unknown>>;
+};
+
+function canonicalCapabilitySchema(schema: ZodRawShapeCompat | AnySchema | undefined): CanonicalCapabilitySchema {
+  const normalized = normalizeObjectSchema(schema);
+  const raw = normalized
+    ? toJsonSchemaCompat(normalized, { strictUnions: true, pipeStrategy: "input" })
+    : { type: "object", properties: {}, $schema: "http://json-schema.org/draft-07/schema#" };
+  const canonical = JSON.parse(canonicalJson(raw)) as Record<string, unknown>;
+  const properties = canonical.properties && typeof canonical.properties === "object" && !Array.isArray(canonical.properties)
+    ? (canonical.properties as Record<string, Record<string, unknown>>)
+    : {};
+  if (canonical.type !== "object") throw new Error("Capability input schema must be an object schema");
+  return Object.assign(canonical, { type: "object" as const, properties }) as CanonicalCapabilitySchema;
+}
+
+function capabilitySchemaHash(schema: CanonicalCapabilitySchema): string {
+  return createHash("sha256").update(canonicalJson(schema)).digest("hex");
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right));
+    return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`).join(",")}}`;
+  }
+  const serialized = JSON.stringify(value);
+  if (serialized === undefined) throw new Error("Capability schema contains a non-JSON value");
+  return serialized;
+}
+
+function isResponseFormatInput(value: unknown): value is { responseFormat: "auto" | "concise" | "detailed" } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const responseFormat = (value as Record<string, unknown>).responseFormat;
+  return responseFormat === "auto" || responseFormat === "concise" || responseFormat === "detailed";
+}
+
+function isPlainArgumentObject(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 function asSessionContextResult(result: QueryResult): QueryResult {

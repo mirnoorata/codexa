@@ -38,18 +38,28 @@ import {
 } from "./compaction-helpers.js";
 export { compactNextTools } from "./compaction-helpers.js";
 import type { ChangePlanData, CodexaQueryData, ContextPacketData, FocusBriefData, FreshnessInfo, PostEditReviewData, ProofCardData, QueryResult, TestPlanData } from "../types.js";
+import { attachMcpDecisionKernel, compactTerminalDecisionKernel, mcpDecisionKernel } from "./decision-kernel.js";
 
 const DEFAULT_MCP_STRUCTURED_DATA_TARGET_BYTES = 96_000;
 const MIN_MCP_STRUCTURED_DATA_TARGET_BYTES = 4_000;
 const MAX_MCP_STRUCTURED_DATA_TARGET_BYTES = 512_000;
+export const MCP_DETAILED_PROJECTION_TARGET_BYTES = MAX_MCP_STRUCTURED_DATA_TARGET_BYTES;
 
 export function mcpStructuredDataTargetBytes(): number {
+  return configuredMcpStructuredDataTargetBytes() ?? DEFAULT_MCP_STRUCTURED_DATA_TARGET_BYTES;
+}
+
+export function mcpDetailedProjectionTargetBytes(): number {
+  return configuredMcpStructuredDataTargetBytes() ?? MCP_DETAILED_PROJECTION_TARGET_BYTES;
+}
+
+function configuredMcpStructuredDataTargetBytes(): number | undefined {
   const raw = process.env.CODEXA_MCP_STRUCTURED_BUDGET_BYTES;
   if (!raw) {
-    return DEFAULT_MCP_STRUCTURED_DATA_TARGET_BYTES;
+    return undefined;
   }
   if (!/^\d+$/u.test(raw.trim())) {
-    return DEFAULT_MCP_STRUCTURED_DATA_TARGET_BYTES;
+    return undefined;
   }
   const parsed = Number.parseInt(raw.trim(), 10);
   return Math.min(MAX_MCP_STRUCTURED_DATA_TARGET_BYTES, Math.max(MIN_MCP_STRUCTURED_DATA_TARGET_BYTES, parsed));
@@ -65,31 +75,10 @@ const CONCISE_RESPONSE_TARGET_BYTES = 12_000;
 
 export interface McpCompactionOptions {
   format?: "concise" | "detailed";
+  targetBytes?: number;
 }
 
-const CONCISE_TEXT_MAX_LINES = 30;
-const CONCISE_TEXT_MAX_CHARS = 2_400;
-
-// The text content block mirrors structuredContent for hosts that render
-// text; responseFormat "concise" must shrink it too, not only the structured
-// payload. Codexa packets front-load the banner, verdict, and key sections,
-// so a head slice keeps the actionable part.
-export function conciseText(text: string): string {
-  const lines = text.split(/\r?\n/);
-  // Short texts pass through byte-identical — no footer, no CRLF rewrite.
-  if (lines.length <= CONCISE_TEXT_MAX_LINES && text.length <= CONCISE_TEXT_MAX_CHARS) {
-    return text;
-  }
-  let kept = lines.slice(0, CONCISE_TEXT_MAX_LINES).join("\n");
-  if (kept.length > CONCISE_TEXT_MAX_CHARS) {
-    const clipped = kept.slice(0, CONCISE_TEXT_MAX_CHARS);
-    const lastNewline = clipped.lastIndexOf("\n");
-    kept = lastNewline > 0 ? clipped.slice(0, lastNewline) : clipped;
-  }
-  const omittedLines = Math.max(0, lines.length - kept.split(/\r?\n/).length);
-  const omittedNote = omittedLines > 0 ? `${omittedLines} more line(s) omitted; ` : "";
-  return `${kept}\n[concise] ${omittedNote}call with responseFormat "detailed" for the full packet.`;
-}
+export { conciseText } from "./decision-kernel.js";
 
 export function compactMcpResult(result: QueryResult, options?: McpCompactionOptions): QueryResult {
   if (!result.data || typeof result.data !== "object" || Array.isArray(result.data)) {
@@ -101,10 +90,13 @@ export function compactMcpResult(result: QueryResult, options?: McpCompactionOpt
   const effectiveMode = mode ?? "unknown";
   const typedData = asCodexaQueryData(originalData, mode);
   const compaction = (typedData ? compactMcpDataByMode(typedData) : undefined) ?? compactGenericMcpData(originalData, effectiveMode);
+  const decisionKernel = mcpDecisionKernel(originalData, effectiveMode, result.freshness);
   const clamped = clampLargeStrings(compaction.data);
-  const dataWithoutMetrics = withMergedTruncation(clamped.value as Record<string, unknown>, compaction.truncation);
+  const dataWithoutMetrics = attachMcpDecisionKernel(withMergedTruncation(clamped.value as Record<string, unknown>, compaction.truncation), decisionKernel);
   const compactedBytes = structuredByteLength(dataWithoutMetrics);
-  const baseTargetBytes = mcpStructuredDataTargetBytes();
+  const baseTargetBytes = options?.targetBytes === undefined
+    ? mcpStructuredDataTargetBytes()
+    : Math.min(MAX_MCP_STRUCTURED_DATA_TARGET_BYTES, Math.max(MIN_MCP_STRUCTURED_DATA_TARGET_BYTES, Math.floor(options.targetBytes)));
   const targetBytes = options?.format === "concise" ? Math.min(baseTargetBytes, CONCISE_RESPONSE_TARGET_BYTES) : baseTargetBytes;
   const structuredData = {
     compacted: compaction.compacted || compactedBytes < originalBytes,
@@ -117,11 +109,63 @@ export function compactMcpResult(result: QueryResult, options?: McpCompactionOpt
   let data = attachMcpMetrics(dataWithoutMetrics, structuredData);
   const returnedBytes = structuredByteLength(data);
   if (returnedBytes > targetBytes) {
-    data = enforceMcpStructuredBudget(dataWithoutMetrics, structuredData, returnedBytes, effectiveMode, targetBytes);
+    data = enforceMcpStructuredBudget(dataWithoutMetrics, structuredData, returnedBytes, effectiveMode, targetBytes, decisionKernel);
   }
   return {
     ...result,
     data
+  };
+}
+
+/**
+ * Build the one detailed projection shared by inline and resource delivery.
+ * Per-invocation command timings describe host scheduling, not query evidence;
+ * retaining command outcomes and every other runtime field keeps exact-packet
+ * identity sensitive to real behavioral changes.
+ */
+export function canonicalMcpDetailedProjection(result: QueryResult): QueryResult {
+  const canonicalInput = isRecord(result.data)
+    ? {
+        ...result,
+        data: {
+          ...result.data,
+          session: canonicalRuntimeTiming(result.data.session),
+          runtime: canonicalRuntimeTiming(result.data.runtime)
+        }
+      }
+    : result;
+  const projected = compactMcpResult(canonicalInput, {
+    format: "detailed",
+    targetBytes: mcpDetailedProjectionTargetBytes()
+  });
+  if (!isRecord(projected.data)) {
+    return projected;
+  }
+  return {
+    ...projected,
+    data: reconcileCanonicalProjectionBytes(projected.data)
+  };
+}
+
+function reconcileCanonicalProjectionBytes(data: Record<string, unknown>): Record<string, unknown> {
+  if (!isRecord(data.mcp)) return data;
+  const { returnedBytes: _returnedBytes, ...metrics } = data.mcp;
+  const { mcp: _mcp, ...payload } = data;
+  return attachMcpMetrics(payload, metrics);
+}
+
+function canonicalRuntimeTiming(value: unknown): unknown {
+  if (!isRecord(value)) {
+    return value;
+  }
+  const { commandBudgetUsedMs: _commandBudgetUsedMs, commandBudgetRemainingMs: _commandBudgetRemainingMs, ...runtime } = value;
+  return {
+    ...runtime,
+    provenance: Array.isArray(runtime.provenance)
+      ? runtime.provenance.map((entry) =>
+          typeof entry === "string" ? entry.replace(/^(command:.*:(?:ok|not-ok)):\d+ms$/u, "$1") : entry
+        )
+      : runtime.provenance
   };
 }
 
@@ -161,7 +205,11 @@ function compactMcpDataByMode(data: CodexaQueryData): McpCompactionResult | unde
 
 function compactGenericMcpData(data: Record<string, unknown>, mode: string): McpCompactionResult {
   const truncation: McpTruncation = {};
-  const compacted = compactGenericValue(data, { arrayLimit: 40, objectKeyLimit: 80, maxDepth: 8 }, truncation);
+  // The capability descriptor is already schema-bounded, but legitimate
+  // operation contracts (session_memory entries -> scope -> refs) are deeper
+  // than ordinary query evidence. Preserve those names/required fields so an
+  // agent can actually construct the dispatched call it just discovered.
+  const compacted = compactGenericValue(data, { arrayLimit: 40, objectKeyLimit: 80, maxDepth: mode === "capabilities" ? 14 : 8 }, truncation);
   const record = isRecord(compacted) ? compacted : { value: compacted };
   const dataWithMode = typeof record.mode === "string" ? record : { mode, ...record };
   return { data: dataWithMode, truncation, compacted: true };
@@ -172,7 +220,8 @@ function enforceMcpStructuredBudget(
   structuredData: Record<string, unknown>,
   preEnforcementBytes: number,
   mode: string,
-  targetBytes: number
+  targetBytes: number,
+  decisionKernel: Record<string, unknown>
 ): Record<string, unknown> {
   const hardTruncation = mergeTruncation(truncationFromValue(dataWithoutMetrics.truncation), {
     "__mcp.hardBudget": { total: preEnforcementBytes, returned: targetBytes }
@@ -180,7 +229,10 @@ function enforceMcpStructuredBudget(
   const hardCompacted = compactGenericValue(dataWithoutMetrics, { arrayLimit: 12, objectKeyLimit: 40, maxDepth: 6 }, hardTruncation);
   const hardClamped = clampLargeStrings(hardCompacted, 240);
   const hardRecord = isRecord(hardClamped.value) ? hardClamped.value : { value: hardClamped.value };
-  const hardData = withMergedTruncation(reattachGuidanceFields(typeof hardRecord.mode === "string" ? hardRecord : { mode, ...hardRecord }, dataWithoutMetrics, hardTruncation), hardTruncation);
+  const hardData = attachMcpDecisionKernel(
+    withMergedTruncation(reattachGuidanceFields(typeof hardRecord.mode === "string" ? hardRecord : { mode, ...hardRecord }, dataWithoutMetrics, hardTruncation), hardTruncation),
+    decisionKernel
+  );
   const hardResult = attachMcpMetrics(hardData, {
     ...structuredData,
     compacted: true,
@@ -198,7 +250,7 @@ function enforceMcpStructuredBudget(
   });
   const summaryClamped = clampLargeStrings(buildMcpBudgetSummaryData(dataWithoutMetrics, mode, summaryTruncation), 160);
   const summaryRecord = isRecord(summaryClamped.value) ? summaryClamped.value : { value: summaryClamped.value };
-  const summaryResult = attachMcpMetrics(withMergedTruncation(summaryRecord, summaryTruncation), {
+  const summaryResult = attachMcpMetrics(attachMcpDecisionKernel(withMergedTruncation(summaryRecord, summaryTruncation), decisionKernel), {
     ...structuredData,
     compacted: true,
     hardBudgetEnforced: true,
@@ -233,7 +285,7 @@ function enforceMcpStructuredBudget(
     160
   );
   const fallbackRecord = isRecord(fallbackClamped.value) ? fallbackClamped.value : { value: fallbackClamped.value };
-  const fallbackResult = attachMcpMetrics(fallbackRecord, {
+  const fallbackResult = attachMcpMetrics(attachMcpDecisionKernel(fallbackRecord, decisionKernel), {
     ...structuredData,
     compacted: true,
     hardBudgetEnforced: true,
@@ -275,31 +327,42 @@ function enforceMcpStructuredBudget(
     stringTruncations:
       metricNumber(structuredData, "stringTruncations") + hardClamped.stringTruncations + summaryClamped.stringTruncations + fallbackClamped.stringTruncations + minimalClamped.stringTruncations
   };
-  const minimalResult = attachMcpMetrics(minimalRecord, minimalMetrics);
+  const minimalResult = attachMcpMetrics(attachMcpDecisionKernel(minimalRecord, decisionKernel), minimalMetrics);
   if (structuredByteLength(minimalResult) <= targetBytes) {
     return minimalResult;
   }
-  // Unbounded inputs (provenance objects, wide nextTools) can survive string
-  // clamping; the verdict and tool names alone must always fit.
-  const nextToolNames = Array.isArray(dataWithoutMetrics.nextTools)
-    ? dataWithoutMetrics.nextTools.slice(0, 5).flatMap((tool) => {
-        if (typeof tool === "string") {
-          return [tool.slice(0, 80)];
-        }
-        return isRecord(tool) && typeof tool.tool === "string" ? [tool.tool.slice(0, 80)] : [];
-      })
-    : undefined;
-  return attachMcpMetrics(
+  // Last-resort is still a fail-closed decision receipt, never a permissive
+  // verdict-only packet. The full detailed packet is retrievable through the
+  // delivery reference attached by the MCP runtime.
+  const terminalKernel = compactTerminalDecisionKernel(decisionKernel);
+  const authority = isRecord(terminalKernel.authority) ? terminalKernel.authority : {};
+  const failClosedKernel = {
+    ...terminalKernel,
+    authority: {
+      ...authority,
+      originalActionability: authority.actionability,
+      actionability: "blocked"
+    },
+    detailsRequired: true
+  };
+  const terminalResult = attachMcpMetrics(
     {
       mode,
-      verdict: typeof dataWithoutMetrics.verdict === "string" ? dataWithoutMetrics.verdict.slice(0, 160) : undefined,
-      packetVerdict: typeof dataWithoutMetrics.packetVerdict === "string" ? dataWithoutMetrics.packetVerdict.slice(0, 160) : undefined,
-      nextTools: nextToolNames,
+      actionability: "blocked",
+      verdict: authority.verdict,
+      packetVerdict: authority.packetVerdict,
+      completionAuthority: authority.completionAuthority,
+      inspectMode: authority.inspectMode,
+      decisionKernel: failClosedKernel,
       systemMessage: stringValue(dataWithoutMetrics.systemMessage)?.slice(0, 160),
       truncation: { "__mcp.verdictOnlyBudget": { total: structuredByteLength(minimalResult), returned: targetBytes } }
     },
     minimalMetrics
   );
+  if (structuredByteLength(terminalResult) > targetBytes) {
+    throw new Error(`Codexa mandatory decision kernel exceeds the ${targetBytes}-byte structured result budget; detailed delivery is required`);
+  }
+  return terminalResult;
 }
 
 function buildMcpBudgetSummaryData(data: Record<string, unknown>, mode: string, truncation: McpTruncation): Record<string, unknown> {
@@ -771,6 +834,7 @@ function compactSnapshotBlock(value: unknown): unknown {
   return {
     taskId: value.taskId,
     path: value.path,
+    status: value.status,
     reason: value.reason
   };
 }
