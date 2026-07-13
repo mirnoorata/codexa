@@ -77,7 +77,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 7 0 R >>
 endobj
 7 0 obj
-<< /Length 3210 >>
+<< /Length 3207 >>
 stream
 BT
 /F1 10 Tf
@@ -134,7 +134,7 @@ BT
 (- npm run check: passed) Tj T*
 (- npm run benchmark:ci: passed) Tj T*
 (- npm run smoke:package: passed) Tj T*
-(- Codexa post-edit-review: passed; local artifact retained outside the repository) Tj T*
+(- npm run eval:ci on clean commit: passed 21 scenarios; score 1; rawRgBetter=0) Tj T*
 ET
 endstream
 endobj
@@ -142,12 +142,14 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 9 0 R >>
 endobj
 9 0 obj
-<< /Length 509 >>
+<< /Length 681 >>
 stream
 BT
 /F1 10 Tf
 14 TL
 50 760 Td
+(- npm run security:check on clean commit: passed; 0 audit vulnerabilities) Tj T*
+(- Codexa post-edit-review: passed; local artifact retained outside the repository) Tj T*
 (- Codexa test-plan: passed; local artifact retained outside the repository) Tj T*
 (- git diff --cached --check: passed) Tj T*
 (- staged safety scan: passed) Tj T*
@@ -170,10 +172,10 @@ xref
 0000000323 00000 n 
 0000003667 00000 n 
 0000003793 00000 n 
-0000007054 00000 n 
-0000007180 00000 n 
+0000007051 00000 n 
+0000007177 00000 n 
 trailer
 << /Size 10 /Root 1 0 R >>
 startxref
-7739
+7908
 %%EOF

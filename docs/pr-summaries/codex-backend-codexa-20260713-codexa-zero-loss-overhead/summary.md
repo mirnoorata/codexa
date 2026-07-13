@@ -101,6 +101,8 @@
 - npm run check: passed
 - npm run benchmark:ci: passed
 - npm run smoke:package: passed
+- npm run eval:ci on clean commit: passed 21 scenarios; score 1; rawRgBetter=0
+- npm run security:check on clean commit: passed; 0 audit vulnerabilities
 - Codexa post-edit-review: passed; local artifact retained outside the repository
 - Codexa test-plan: passed; local artifact retained outside the repository
 - git diff --cached --check: passed

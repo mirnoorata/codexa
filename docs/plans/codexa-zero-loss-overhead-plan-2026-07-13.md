@@ -520,11 +520,11 @@ Repository verification before publication: `npm run check` passed 63 files,
 594 tests, and 113 integration-hook smokes; the one real-release compatibility
 test was explicitly skipped in the routine gate and passed separately under
 `CODEXA_RUN_V012_TRANSPORT_COMPAT=1` (2/2 focused tests passed).
-`npm run benchmark:ci` passed all hot-path thresholds. The first dirty-tree
-`eval:ci` invocation was not a
-valid clean-checkout gate because the evaluation script added its 32 fixtures
-on top of this feature's uncommitted files; it must be rerun after commit, as
-must the clean-tree security gate.
+`npm run benchmark:ci` passed all hot-path thresholds. On the exact clean PR
+candidate, `npm run eval:ci` passed 21 scenarios with score 1 and
+`rawRgBetter=0`; `npm run security:check` also passed the complete check,
+zero-vulnerability audit, clean public snapshot, package/plugin hygiene, and
+25-check installed-package smoke.
 
 ## Rollout acceptance gate
 
