@@ -4,10 +4,12 @@
 - Worktree: isolated session worktree
 - Branch: `codex/backend/codexa-20260713-codexa-zero-loss-overhead`
 - Base: `main`
-- Primary commit: `91c88cd`
+- Primary implementation commit: `91c88cd`
+- Verified candidate commit: `ea30f6b`
+- Latest hardening commit: `fix(mcp): bound concurrent artifact persistence`
 - Subject: `feat(mcp): reduce agent overhead without capability loss`
 
-## Changed Files
+## Primary Implementation Commit Snapshot
 
 91c88cd feat(mcp): reduce agent overhead without capability loss
  README.md                                          |  147 +-
@@ -98,16 +100,42 @@
 ## Verification
 
 - git diff --check: passed
-- npm run check: passed
-- npm run benchmark:ci: passed
-- npm run smoke:package: passed
-- npm run eval:ci on clean commit: passed 21 scenarios; score 1; rawRgBetter=0
-- npm run security:check on clean commit: passed; 0 audit vulnerabilities
-- Codexa post-edit-review: passed; local artifact retained outside the repository
+- npm run check on `ea30f6b`: 63 files; 598 passed; 1 explicit opt-in skip; 113 hook smokes
+- npm run benchmark:ci on `ea30f6b`: all hot-path thresholds passed
+- npm run eval:ci on `ea30f6b`: 21 scenarios; score 1; rawRgBetter=0; seed `ci-local-ea30f6b74101da7d7c42585d248949db56ed2909`
+- npm run security:check on `ea30f6b`: complete check, zero-vulnerability audit, clean public snapshot, package/plugin hygiene, and 25-check installed-package smoke passed
+- opt-in pinned v0.12.0 compatibility test on `ea30f6b`: 2/2 passed using locally built tagged source with pinned commit, lockfile, CLI, and dist-tree identities
+- fresh pinned v0.12.0 transport comparison on `ea30f6b`: 21 to 10 direct schemas; all 21 logical operations advertised; tools/list 59,376 to 29,554 decoded bytes (-50.2%); advertisement plus discovery 59,376 to 42,481 (-28.5%); first task result 55,419 to 16,387 (-70.4%); repeated median 55,419 to 6,372 (-88.5%); four unchanged receipts; 58,595-byte decoded detailed-resource response remained readable
+- Codexa post-edit-review: authority complete; all seven invariants satisfied; no drift or unaccounted tests
 - Codexa test-plan: passed; local artifact retained outside the repository
 - git diff --cached --check: passed
 - staged safety scan: passed
 
+The transport comparison measures JSON-serialized decoded MCP application
+payloads, not wire bytes, tokens, cost, task success, or agent quality. A
+held-out agent comparison is still required to measure net usefulness and
+non-inferiority against no Codexa.
+
+## PR Hardening
+
+PR CI exposed a same-process retention-lock deadline race. The follow-up uses
+a bounded per-checkout FIFO so the 500 ms filesystem budget measures foreign
+process contention, while a separate two-second no-progress budget bounds a
+stalled local holder. Tests cover a 64-call burst, a 650 ms productive holder,
+failed-batch recovery, and FIFO substitution without blocking.
+
+Telemetry destinations now require a runner-enforced unique absent path per
+server session, use exclusive nonblocking creation, and preserve prior
+evidence. Bounded regular-file reads and nonblocking opens prevent special-file
+substitution from hanging or causing unbounded reads. Independent adversarial
+review found no release blocker, capability removal, or domain-specific
+production behavior.
+
 ## Notes
 
-Implements decision-safe compact delivery, full logical capability through core exposure, bounded lifecycle and artifacts, generic loop controls, and schema-v2 agent evaluation. Includes a pinned v0.12.0 transport reproducer with explicit claim boundaries.
+Implements decision-safe compact delivery, all 21 logical operations reachable
+through a 10-schema core surface, bounded lifecycle and artifact persistence,
+generic loop controls, and schema-v2 agent evaluation. The transport result
+does not establish zero capability loss or improved agent outcomes; those
+claims require held-out agent evaluation. Includes a pinned v0.12.0 transport
+reproducer with explicit claim boundaries.

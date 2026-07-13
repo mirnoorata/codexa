@@ -484,30 +484,30 @@ with this branch's explicit core/automatic server:
   (the separate direct-versus-dispatched suite establishes execution parity);
 - decoded `tools/list` application payload: 59,376 to 29,554 UTF-8 bytes, a
   50.2% reduction;
-- decoded freshness setup payload: 3,078 bytes per arm;
-- decoded capability-discovery payload: zero for full exposure and 12,668
+- decoded freshness setup payload: 3,300 bytes per arm;
+- decoded capability-discovery payload: zero for full exposure and 12,927
   bytes for the explicit core capability-manifest probe;
 - combined decoded advertisement plus capability-discovery payload: 59,376 to
-  42,222 bytes, a 28.9% reduction;
-- first decoded task-result application payload: 67,072 to 9,084 bytes, an
-  86.5% reduction;
-- median repeated decoded task-result application payload: 67,072 to 6,106
-  bytes, a 90.9% reduction;
+  42,481 bytes, a 28.5% reduction;
+- first decoded task-result application payload: 55,419 to 16,387 bytes, a
+  70.4% reduction;
+- median repeated decoded task-result application payload: 55,419 to 6,372
+  bytes, an 88.5% reduction;
 - all four later candidate calls returned unchanged receipts;
-- the candidate's 65,448-byte canonical detailed packet remained readable
-  through its immutable resource URI (70,778 bytes for the decoded resource
+- the candidate's 53,884-byte canonical detailed packet remained readable
+  through its immutable resource URI (58,595 bytes for the decoded resource
   response envelope).
 
 These are JSON-serialized decoded MCP application-payload sizes, not JSON-RPC
-or stdio wire bytes. Two immediate portable-command reruns reproduced every
-candidate count and both schema counts exactly. One baseline first-result
+or stdio wire bytes. Two fresh runs on clean candidate `ea30f6b` reproduced
+every candidate count and both schema counts exactly; one baseline first-result
 observation differed by one byte because the legacy packet contains runtime
-metadata; the one-decimal reductions and repeated median were unchanged. The
-checked-in command fails closed on target cleanliness, exact indexed root/HEAD,
-parser errors, MCP error results, pinned server identity, per-call receipt
-ordering, and strict advertisement-plus-discovery reduction (with no brittle
-percentage threshold). Task-result reductions remain observations because tiny
-tasks can be dominated by fixed decision-safety metadata. It emits complete executable
+metadata. Exact payload sizes remain candidate- and run-bound. The checked-in
+command fails closed on target cleanliness, exact indexed root/HEAD, parser
+errors, MCP error results, pinned server identity, per-call receipt ordering,
+and strict advertisement-plus-discovery reduction (with no brittle percentage
+threshold). Task-result reductions remain observations because tiny tasks can
+be dominated by fixed decision-safety metadata. It emits complete executable
 identity, target HEAD, setup/discovery/task/resource payload bytes, advertised
 name parity, and a machine-readable claim boundary.
 
@@ -523,9 +523,10 @@ passed separately under `CODEXA_RUN_V012_TRANSPORT_COMPAT=1` (2/2 focused tests
 passed).
 `npm run benchmark:ci` passed all hot-path thresholds. On the exact clean PR
 candidate, `npm run eval:ci` passed 21 scenarios with score 1 and
-`rawRgBetter=0`; `npm run security:check` also passed the complete check,
-zero-vulnerability audit, clean public snapshot, package/plugin hygiene, and
-25-check installed-package smoke.
+`rawRgBetter=0` using seed `ci-local-ea30f6b74101da7d7c42585d248949db56ed2909`;
+`npm run security:check` also passed the complete check, zero-vulnerability
+audit, clean public snapshot, package/plugin hygiene, and 25-check
+installed-package smoke on `ea30f6b`.
 
 ### PR hardening evidence
 
@@ -550,6 +551,12 @@ and FIFO substitution tests prove graceful bounded failure. The final focused
 production-path suites passed 24/24, and the final adversarial re-review reported
 no release-blocking findings and no domain-, fixture-, screenplay-, or
 model-specific production behavior.
+
+The first pinned-transport attempt after committing `ea30f6b` refused to pass
+because the worktree index still identified the pre-commit HEAD. Reindexing
+that same worktree made the exact root/HEAD identity fresh and the comparison
+passed. This is direct fail-closed evidence for the checkout-identity guard,
+not a transport-regression failure.
 
 ## Rollout acceptance gate
 

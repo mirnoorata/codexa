@@ -12,7 +12,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
 endobj
 5 0 obj
-<< /Length 3293 >>
+<< /Length 3325 >>
 stream
 BT
 /F1 10 Tf
@@ -24,10 +24,12 @@ BT
 (- Worktree: isolated session worktree) Tj T*
 (- Branch: codex/backend/codexa-20260713-codexa-zero-loss-overhead) Tj T*
 (- Base: main) Tj T*
-(- Primary commit: 91c88cd) Tj T*
+(- Primary implementation commit: 91c88cd) Tj T*
+(- Verified candidate commit: ea30f6b) Tj T*
+(- Latest hardening commit: fix\(mcp\): bound concurrent artifact persistence) Tj T*
 (- Subject: feat\(mcp\): reduce agent overhead without capability loss) Tj T*
 () Tj T*
-(Changed Files) Tj T*
+(Primary Implementation Commit Snapshot) Tj T*
 () Tj T*
 (91c88cd feat\(mcp\): reduce agent overhead without capability loss) Tj T*
 (README.md                                          |  147 +-) Tj T*
@@ -68,8 +70,6 @@ BT
 (src/query/post-edit.ts                             |   99 +-) Tj T*
 (src/query/post-edit/lifecycle.ts                   |    2 +) Tj T*
 (src/query/post-edit/next-actions.ts                |    1 -) Tj T*
-(src/query/runtime.ts                               |   61 +-) Tj T*
-(src/session-memory/runtime.ts                      |   85 +-) Tj T*
 ET
 endstream
 endobj
@@ -77,12 +77,14 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 7 0 R >>
 endobj
 7 0 obj
-<< /Length 3207 >>
+<< /Length 3319 >>
 stream
 BT
 /F1 10 Tf
 14 TL
 50 760 Td
+(src/query/runtime.ts                               |   61 +-) Tj T*
+(src/session-memory/runtime.ts                      |   85 +-) Tj T*
 (src/task-snapshots.ts                              |    4 +-) Tj T*
 (tests/agent-ab-report.test.ts                      |    3 +-) Tj T*
 (tests/agent-ab-v2-identity.test.ts                 |  167 +++) Tj T*
@@ -131,10 +133,8 @@ BT
 (Verification) Tj T*
 () Tj T*
 (- git diff --check: passed) Tj T*
-(- npm run check: passed) Tj T*
-(- npm run benchmark:ci: passed) Tj T*
-(- npm run smoke:package: passed) Tj T*
-(- npm run eval:ci on clean commit: passed 21 scenarios; score 1; rawRgBetter=0) Tj T*
+(- npm run check on ea30f6b: 63 files; 598 passed; 1 explicit opt-in skip; 113 hook smokes) Tj T*
+(- npm run benchmark:ci on ea30f6b: all hot-path thresholds passed) Tj T*
 ET
 endstream
 endobj
@@ -142,23 +142,57 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 9 0 R >>
 endobj
 9 0 obj
-<< /Length 681 >>
+<< /Length 2988 >>
 stream
 BT
 /F1 10 Tf
 14 TL
 50 760 Td
-(- npm run security:check on clean commit: passed; 0 audit vulnerabilities) Tj T*
-(- Codexa post-edit-review: passed; local artifact retained outside the repository) Tj T*
+(- npm run eval:ci on ea30f6b: 21 scenarios; score 1; rawRgBetter=0; seed ci-local-) Tj T*
+(ea30f6b74101da7d7c42585d248949db56ed2909) Tj T*
+(- npm run security:check on ea30f6b: complete check, zero-vulnerability audit, clean public) Tj T*
+(snapshot, package/plugin hygiene, and 25-check installed-package smoke passed) Tj T*
+(- opt-in pinned v0.12.0 compatibility test on ea30f6b: 2/2 passed using locally built tagged) Tj T*
+(source with pinned commit, lockfile, CLI, and dist-tree identities) Tj T*
+(- fresh pinned v0.12.0 transport comparison on ea30f6b: 21 to 10 direct schemas; all 21) Tj T*
+(logical operations advertised; tools/list 59,376 to 29,554 decoded bytes \(-50.2%\);) Tj T*
+(advertisement plus discovery 59,376 to 42,481 \(-28.5%\); first task result 55,419 to 16,387) Tj T*
+(\(-70.4%\); repeated median 55,419 to 6,372 \(-88.5%\); four unchanged receipts; 58,595-byte) Tj T*
+(decoded detailed-resource response remained readable) Tj T*
+(- Codexa post-edit-review: authority complete; all seven invariants satisfied; no drift or) Tj T*
+(unaccounted tests) Tj T*
 (- Codexa test-plan: passed; local artifact retained outside the repository) Tj T*
 (- git diff --cached --check: passed) Tj T*
 (- staged safety scan: passed) Tj T*
 () Tj T*
+(The transport comparison measures JSON-serialized decoded MCP application) Tj T*
+(payloads, not wire bytes, tokens, cost, task success, or agent quality. A) Tj T*
+(held-out agent comparison is still required to measure net usefulness and) Tj T*
+(non-inferiority against no Codexa.) Tj T*
+() Tj T*
+(PR Hardening) Tj T*
+() Tj T*
+(PR CI exposed a same-process retention-lock deadline race. The follow-up uses) Tj T*
+(a bounded per-checkout FIFO so the 500 ms filesystem budget measures foreign) Tj T*
+(process contention, while a separate two-second no-progress budget bounds a) Tj T*
+(stalled local holder. Tests cover a 64-call burst, a 650 ms productive holder,) Tj T*
+(failed-batch recovery, and FIFO substitution without blocking.) Tj T*
+() Tj T*
+(Telemetry destinations now require a runner-enforced unique absent path per) Tj T*
+(server session, use exclusive nonblocking creation, and preserve prior) Tj T*
+(evidence. Bounded regular-file reads and nonblocking opens prevent special-file) Tj T*
+(substitution from hanging or causing unbounded reads. Independent adversarial) Tj T*
+(review found no release blocker, capability removal, or domain-specific) Tj T*
+(production behavior.) Tj T*
+() Tj T*
 (Notes) Tj T*
 () Tj T*
-(Implements decision-safe compact delivery, full logical capability through core exposure,) Tj T*
-(bounded lifecycle and artifacts, generic loop controls, and schema-v2 agent evaluation.) Tj T*
-(Includes a pinned v0.12.0 transport reproducer with explicit claim boundaries.) Tj T*
+(Implements decision-safe compact delivery, all 21 logical operations reachable) Tj T*
+(through a 10-schema core surface, bounded lifecycle and artifact persistence,) Tj T*
+(generic loop controls, and schema-v2 agent evaluation. The transport result) Tj T*
+(does not establish zero capability loss or improved agent outcomes; those) Tj T*
+(claims require held-out agent evaluation. Includes a pinned v0.12.0 transport) Tj T*
+(reproducer with explicit claim boundaries.) Tj T*
 ET
 endstream
 endobj
@@ -170,12 +204,12 @@ xref
 0000000127 00000 n 
 0000000197 00000 n 
 0000000323 00000 n 
-0000003667 00000 n 
-0000003793 00000 n 
-0000007051 00000 n 
-0000007177 00000 n 
+0000003699 00000 n 
+0000003825 00000 n 
+0000007195 00000 n 
+0000007321 00000 n 
 trailer
 << /Size 10 /Root 1 0 R >>
 startxref
-7908
+10360
 %%EOF
