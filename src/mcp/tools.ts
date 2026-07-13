@@ -24,6 +24,14 @@ import {
   workflowPathQuery
 } from "../queries.js";
 import { proveQuery } from "../prove.js";
+import {
+  MAX_TASK_INVARIANTS,
+  MAX_TASK_INVARIANT_REVIEWS,
+  MAX_VERIFICATION_ARTIFACT_IDS,
+  taskInvariantReviewSchema,
+  taskInvariantStatementSchema,
+  verificationArtifactIdSchema
+} from "../lifecycle-contract.js";
 import type { QueryOptions, QueryResult, SessionMemoryInput } from "../types.js";
 import type { QuerySession } from "../query/session.js";
 import { RAW_SEARCH_EXPLICIT_PATTERN_LIMIT } from "../query/raw-search.js";
@@ -540,6 +548,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
         saveSnapshot: z.boolean().optional(),
         taskId: z.string().optional(),
         followCandidate: z.string().min(1).max(160).optional(),
+        invariants: z.array(taskInvariantStatementSchema).max(MAX_TASK_INVARIANTS).optional(),
         ...responseFormatSchema,
         ...semanticQuerySchema,
         ...lspQuerySchema
@@ -562,14 +571,16 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
         tokenBudget: z.number().int().min(600).max(10000).optional(),
         limit: z.number().int().positive().max(30).optional(),
         includeSnippets: z.boolean().optional(),
+        invariantReviews: z.array(taskInvariantReviewSchema).max(MAX_TASK_INVARIANT_REVIEWS).optional(),
+        artifactIds: z.array(verificationArtifactIdSchema).max(MAX_VERIFICATION_ARTIFACT_IDS).optional(),
         ...verificationEvidenceSchema,
         ...responseFormatSchema,
         ...semanticQuerySchema
       },
       outputSchema,
-      annotations: memoryWrite
+      annotations: cacheWrite
     },
-    async (input) => runTool((session) => postEditReviewQuery(session, { ...input, persistOutcome: false }, toolQueryOptions(input)), { toolName: "post_edit_review", input })
+    async (input) => runTool((session) => postEditReviewQuery(session, { ...input, persistOutcome: true }, toolQueryOptions(input)), { toolName: "post_edit_review", input })
   );
 
   defineTool(
@@ -582,6 +593,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
         diff: z.boolean().optional(),
         changeType: changeTypeSchema.optional(),
         tokenBudget: z.number().int().min(600).max(8000).optional(),
+        artifactIds: z.array(verificationArtifactIdSchema).max(MAX_VERIFICATION_ARTIFACT_IDS).optional(),
         ...verificationEvidenceSchema,
         ...responseFormatSchema,
         ...semanticQuerySchema
@@ -604,7 +616,8 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
             ranCommands: input.ranCommands,
             ranCommandReports: input.ranCommandReports,
             waivedChecks: input.waivedChecks,
-            waivers: input.waivers
+            waivers: input.waivers,
+            artifactIds: input.artifactIds
           }),
         { toolName: "proof_card", input }
       )

@@ -138,7 +138,7 @@ The same flow is available through MCP tools inside an agent host:
 
 ```text
 session_context -> search(if target unclear) -> task_brief ->
-change_plan(saveSnapshot) -> post_edit_review -> test_plan -> proof_card
+change_plan(saveSnapshot) -> test_plan -> edit -> post_edit_review -> proof_card
 ```
 
 ## 5. Print a proof card

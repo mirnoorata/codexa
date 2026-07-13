@@ -93,6 +93,17 @@ async function readGitStateAsync(repoRoot: string, options: GitStateOptions = {}
     }
   }
 
+  const finalGitRootResult = await runGitCapture(runner, resolvedRoot, ["rev-parse", "--show-toplevel"]);
+  if (!finalGitRootResult.ok) {
+    degradedReasons.push(commandFailureReason("git root identity recheck", finalGitRootResult));
+  } else if (path.resolve(finalGitRootResult.stdout.trim()) !== path.resolve(gitRoot)) {
+    degradedReasons.push(`git root changed during probe: ${path.resolve(gitRoot)} -> ${path.resolve(finalGitRootResult.stdout.trim())}`);
+  }
+  const finalHeadResult = await runGitCapture(runner, resolvedRoot, ["rev-parse", "HEAD"]);
+  if (headResult.ok !== finalHeadResult.ok || (headResult.ok && finalHeadResult.ok && headResult.stdout.trim() !== finalHeadResult.stdout.trim())) {
+    degradedReasons.push(`git HEAD changed during probe: ${headCommit ?? "none"} -> ${finalHeadResult.ok ? finalHeadResult.stdout.trim() : "none"}`);
+  }
+
   const relativePrefix = gitRoot ? normalizePath(path.relative(gitRoot, resolvedRoot)) : "";
   const files = splitNul(fileOutput)
     .map((file) => normalizePath(file))

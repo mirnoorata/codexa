@@ -49,6 +49,9 @@ export function postEditDecision(input: {
   testsNotRun: TestRecommendation[];
   hasTestVerificationAccounting: boolean;
   noVerificationProofForEditedFiles: boolean;
+  missingInvariantCount?: number;
+  violatedInvariantCount?: number;
+  loopReplanReasons?: string[];
   // True for hook-saved implicit baselines. An implicit baseline is not a
   // plan: a commit during the session is normal work, not drift, so
   // headChanged must not escalate to replan or a blocking inspect.
@@ -56,6 +59,9 @@ export function postEditDecision(input: {
 }): PostEditDecision {
   const missingWorkflowCheckCount = input.workflowChecks.filter((check) => check.status === "missing").length;
   const missingDependencyCheckCount = input.dependencyChecks.filter((check) => check.status === "missing").length;
+  const missingInvariantCount = input.missingInvariantCount ?? 0;
+  const violatedInvariantCount = input.violatedInvariantCount ?? 0;
+  const loopReplanReasons = input.loopReplanReasons ?? [];
   const blockingUnindexedEditedFiles = input.unindexedEditedFiles.filter((filePath) => !isAdvisoryUnindexedEditedFile(filePath));
   const advisoryUnindexedEditedFiles = input.unindexedEditedFiles.filter((filePath) => isAdvisoryUnindexedEditedFile(filePath));
   const riskEscalationsCoveredByVerification =
@@ -69,7 +75,7 @@ export function postEditDecision(input: {
   const riskEscalationsNeedInspection =
     input.hasActualEditedFiles && input.riskEscalations.length > 0 && !riskEscalationsCoveredByVerification;
   const hasDegradedSnapshotTests = input.degradedSnapshotTests.length > 0;
-  const driftReasons = [
+  const driftReasons = [...new Set([
     !input.snapshot ? `missing task snapshot${input.loadedSnapshot.missingReason ? `: ${input.loadedSnapshot.missingReason}` : ""}` : undefined,
     input.snapshotAmbiguity ? input.snapshotAmbiguity : undefined,
     input.loadedSnapshot.missingReason === "invalid-json" ? input.loadedSnapshot.error : undefined,
@@ -98,14 +104,17 @@ export function postEditDecision(input: {
       ? "recommended tests have not been accounted for"
       : undefined,
     input.hasActualEditedFiles && input.testsNotRun.length > 0 && input.hasTestVerificationAccounting ? `${input.testsNotRun.length} recommended test(s) remain unaccounted for` : undefined,
-    input.noVerificationProofForEditedFiles ? "edited files have no credible verification evidence" : undefined
-  ].filter((reason): reason is string => Boolean(reason));
+    input.noVerificationProofForEditedFiles ? "edited files have no credible verification evidence" : undefined,
+    missingInvariantCount > 0 ? `${missingInvariantCount} task invariant(s) lack an explicit review` : undefined,
+    violatedInvariantCount > 0 ? `${violatedInvariantCount} task invariant(s) were reported violated` : undefined,
+    ...loopReplanReasons
+  ].filter((reason): reason is string => Boolean(reason)))];
   const headChangedBlocking = input.headChanged && !input.implicitBaseline;
   // Quality-low likewise floors at inspect for implicit baselines: "replan"
   // is advice about a plan, and an implicit baseline carries none.
   const qualityLowReplan = input.quality?.level === "low" && !input.implicitBaseline;
   const verdict: PostEditDecision["verdict"] =
-    headChangedBlocking || input.unplannedEditedFiles.length >= 3 || qualityLowReplan
+    loopReplanReasons.length > 0 || violatedInvariantCount > 0 || headChangedBlocking || input.unplannedEditedFiles.length >= 3 || qualityLowReplan
       ? "replan"
       : !input.snapshot ||
           input.worktreeDegradationReasons.length > 0 ||
@@ -117,6 +126,7 @@ export function postEditDecision(input: {
             hasDegradedSnapshotTests ||
             input.waivedVerification.length > 0 ||
             input.noVerificationProofForEditedFiles ||
+            missingInvariantCount > 0 ||
             riskEscalationsNeedInspection ||
             input.quality?.level === "medium" ||
             input.quality?.level === "low"
@@ -141,7 +151,8 @@ export function postEditDecision(input: {
     quality: input.quality,
     riskEscalationsNeedInspection,
     waivedVerification: input.waivedVerification,
-    noVerificationProofForEditedFiles: input.noVerificationProofForEditedFiles
+    noVerificationProofForEditedFiles: input.noVerificationProofForEditedFiles,
+    missingInvariantCount
   });
   return {
     driftReasons,
@@ -181,6 +192,7 @@ function inspectClassification(
     riskEscalationsNeedInspection: boolean;
     waivedVerification: VerificationLedgerEntry[];
     noVerificationProofForEditedFiles: boolean;
+    missingInvariantCount: number;
   }
 ): { mode: PostEditInspectMode; reasons: string[] } {
   if (verdict !== "inspect") {
@@ -196,7 +208,8 @@ function inspectClassification(
     input.missingDependencyCheckCount > 0 ? "required dependency checks missing" : undefined,
     input.riskEscalationsNeedInspection ? "high-risk target lacks complete verification accounting" : undefined,
     input.waivedVerification.length > 0 ? "verification was waived" : undefined,
-    input.noVerificationProofForEditedFiles ? "edited files have no credible verification evidence" : undefined
+    input.noVerificationProofForEditedFiles ? "edited files have no credible verification evidence" : undefined,
+    input.missingInvariantCount > 0 ? "task invariants lack explicit review" : undefined
   ].filter((reason): reason is string => Boolean(reason));
   const qualityBlockingReason =
     input.quality?.level === "low" ? "context quality is low" : input.quality?.level === "medium" && blockingReasonsWithoutQuality.length > 0 ? "context quality is not high" : undefined;

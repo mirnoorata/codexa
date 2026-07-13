@@ -436,7 +436,7 @@ it("recovers from malformed cache, stale locks, backup bundles, relocated bundle
     await writeFile(indexPath, `${JSON.stringify(copied)}\n`, "utf8");
     const status = await statusQuery(repo);
     expect(status.freshness.stale).toBe(true);
-    expect(status.freshness.reason).toBe("repo-root-changed");
+    expect(status.freshness.reason).toBe("freshness-repo-root-mismatch");
 
     const monorepo = await mkdtemp(path.join(os.tmpdir(), "codexa-nested-control-"));
     execFileSync("git", ["init"], { cwd: monorepo, stdio: "ignore" });

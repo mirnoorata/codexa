@@ -1,6 +1,5 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { isTestPath } from "../language.js";
 import { buildPostEditComplexityReview, formatComplexityReview } from "./complexity.js";
 import { groupDiffImpact, formatDiffGroups, formatGaps, indexGaps } from "./diff.js";
 import { clampInt, fitLinesToTokenBudget, formatReasons } from "./formatting.js";
@@ -24,18 +23,16 @@ import {
 } from "./verification-display.js";
 import { evaluateRequiredChecks } from "./required-checks.js";
 import { isCodexaControlPath, formatChangedEntry } from "./worktree.js";
-import { postEditDecision } from "./post-edit/decision.js";
 import { postEditDirtyScope } from "./post-edit/dirty-scope.js";
 import { postEditNextActions, postEditStructuredNextTools } from "./post-edit/next-actions.js";
 import { compactSnapshotTests, reconcileSnapshotTests, snapshotRiskBaseline, snapshotSymbolBaseline } from "./post-edit/snapshot-contract.js";
-import { buildPostEditOutcome, savePostEditOutcome, type PostEditCheckResult, type PostEditOutcomeInput } from "../post-edit-outcomes.js";
+import { buildPostEditOutcome, type PostEditCheckResult, type PostEditOutcomeInput } from "../post-edit-outcomes.js";
 import { pointerForSessionMemory, readSessionMemory } from "../session-memory.js";
 import { loadTaskSnapshot, saveBlockedTaskSnapshot, saveTaskSnapshot, type TaskSnapshotLoadResult } from "../task-snapshots.js";
 import { CURRENT_VERIFICATION_PROVENANCE } from "../types.js";
 import type { SemanticRetrievalSummary } from "../semantic-retrieval.js";
 import type { AutoVerifyCommandReport } from "../autoverify.js";
 import type {
-  AutoVerifyCandidate,
   ChangedFileEntry,
   ChangePlanInput,
   ChangeType,
@@ -52,20 +49,19 @@ import type {
   TaskSnapshotRiskFile,
   TaskSnapshotSymbol,
   TestRecommendation,
-  TestRecommendationProvenance,
   VerificationCommandEnvelope,
-  VerificationCoverage,
   VerificationCommandReport,
-  VerificationLedgerEntry,
   WorkflowTraceFact
 } from "../types.js";
 import { limitText, stableId, uniqueSorted } from "../util.js";
-import { autoVerifySnapshotDigest, reviewTrustedRunnerReports, stripRunnerMetadata, type AutoVerifyRunnerReviewEntry } from "./post-edit/runner-review.js";
-
-interface PostEditReviewInternalInput {
-  trustedRunnerReports?: AutoVerifyCommandReport[];
-}
-
+import { reviewTrustedRunnerReports, stripRunnerMetadata, type AutoVerifyRunnerReviewEntry } from "./post-edit/runner-review.js";
+import { reviewTaskInvariants } from "../task-lifecycle.js";
+import { buildPostEditLifecycleDecision, formatPostEditLifecycle, persistPostEditLifecycleOutcome, postEditLifecycleData, type PostEditLifecycleInput } from "./post-edit/lifecycle.js";
+import { buildAutoVerifyCandidates, compactContextData, hasRelevantVerificationEvidence, stableSessionMemoryHash } from "./post-edit/support.js";
+import { applyArtifactRequiredChecks, failedVerificationArtifactIds, formatPostEditArtifacts } from "./post-edit/artifacts.js";
+import { evaluateVerificationArtifacts, loadVerificationArtifacts } from "../verification-artifacts.js";
+import { validateArtifactIds } from "../lifecycle-contract.js";
+interface PostEditReviewInternalInput { trustedRunnerReports?: AutoVerifyCommandReport[]; }
 export async function postEditReviewQuery(
   sessionInput: QuerySessionInput,
   input: PostEditReviewInput = {},
@@ -73,7 +69,6 @@ export async function postEditReviewQuery(
 ): Promise<QueryResult> {
   return postEditReviewQueryInternal(sessionInput, input, options, {});
 }
-
 export async function postEditReviewWithTrustedRunnerReports(
   sessionInput: QuerySessionInput,
   input: PostEditReviewInput = {},
@@ -133,6 +128,9 @@ async function postEditReviewQueryInternal(
   const headChanged = Boolean(snapshot && snapshot.dirtyBaseline.headCommit !== freshness.headCommit);
   const task = input.task ?? snapshot?.task ?? "Post-edit review";
   const effectiveTaskId = snapshot?.taskId ?? loadedSnapshot.latestTaskId ?? input.taskId;
+  const planRevision = snapshot?.planRevision ?? 1;
+  const invariants = snapshot?.invariants ?? [];
+  const invariantReview = reviewTaskInvariants(invariants, input.invariantReviews);
   const changeType = input.changeType ?? snapshot?.changeType ?? "unknown";
   // Priority order, then cap: actually-edited files must never be dropped
   // in favor of alphabetically-earlier explicit inputs (uniqueSorted+slice
@@ -250,7 +248,7 @@ async function postEditReviewQueryInternal(
     .filter((workflow) => reviewTargets.some((filePath) => workflow.relatedFiles.includes(filePath) || workflow.entryPath === filePath))
     .sort((a, b) => b.rank - a.rank || a.title.localeCompare(b.title))
     .slice(0, 6);
-  const workflowChecks = evaluateRequiredChecks(snapshot?.requiredWorkflowChecks ?? [], {
+  const rawWorkflowChecks = evaluateRequiredChecks(snapshot?.requiredWorkflowChecks ?? [], {
     editPaths,
     reviewTargets,
     selectedFiles,
@@ -261,7 +259,7 @@ async function postEditReviewQueryInternal(
     ranTests,
     verificationCoverage: preliminaryVerificationCoverage
   });
-  const dependencyChecks = evaluateRequiredChecks(snapshot?.requiredDependencyChecks ?? [], {
+  const rawDependencyChecks = evaluateRequiredChecks(snapshot?.requiredDependencyChecks ?? [], {
     editPaths,
     reviewTargets,
     selectedFiles,
@@ -272,6 +270,19 @@ async function postEditReviewQueryInternal(
     ranTests,
     verificationCoverage: preliminaryVerificationCoverage
   });
+  const artifactIds = validateArtifactIds(input.artifactIds) ?? [];
+  const verificationArtifacts = evaluateVerificationArtifacts(await loadVerificationArtifacts(repoRoot, artifactIds), {
+    taskId: effectiveTaskId,
+    freshness,
+    requiredChecks: [
+      ...(snapshot?.requiredWorkflowChecks ?? []).map((check) => ({ kind: check.kind, target: check.target })),
+      ...(snapshot?.requiredDependencyChecks ?? []).map((check) => ({ kind: check.kind, target: check.target }))
+    ]
+  });
+  const workflowChecks = applyArtifactRequiredChecks(rawWorkflowChecks, verificationArtifacts);
+  const dependencyChecks = applyArtifactRequiredChecks(rawDependencyChecks, verificationArtifacts);
+  const failedArtifactIds = failedVerificationArtifactIds(verificationArtifacts);
+  const selectedArtifactIds = verificationArtifacts.selected.map((artifact) => artifact.artifactId).sort();
   const verification = verificationLedgerForPostEdit({
     index,
     tests,
@@ -316,7 +327,7 @@ async function postEditReviewQueryInternal(
   });
   const noVerificationProofForEditedFiles =
     hasActualEditedFiles && !hasCredibleVerificationEvidence && tests.length === 0 && workflowChecks.length === 0 && dependencyChecks.length === 0;
-  const decision = postEditDecision({
+  const decisionInput = {
     snapshot,
     implicitBaseline: snapshot?.origin === "hook-implicit",
     loadedSnapshot,
@@ -337,36 +348,36 @@ async function postEditReviewQueryInternal(
     hasActualEditedFiles,
     testsNotRun,
     hasTestVerificationAccounting,
-    noVerificationProofForEditedFiles
-  });
-  const {
-    driftReasons,
-    verdict,
-    missingWorkflowCheckCount,
-    missingDependencyCheckCount,
-    riskEscalationsCoveredByVerification,
-    riskEscalationsNeedInspection
-  } = decision;
-  const { inspectMode, inspectReasons, completionAuthority } = decision;
-  const nextActions = postEditNextActions(verdict, {
-    snapshot,
-    unplannedEditedFiles,
-    testsNotRun,
-    riskEscalations,
-    reviewTargets,
-    workflows,
-    missingChecks: [...workflowChecks, ...dependencyChecks].filter((check) => check.status === "missing"),
     noVerificationProofForEditedFiles,
-    degradedSnapshotTests
-  });
-  const structuredNextTools = postEditStructuredNextTools(verdict, {
-    reviewScope,
-    changeType,
-    testsNotRun,
-    degradedSnapshotTests,
-    riskEscalationsNeedInspection,
-    riskEscalations
-  });
+    missingInvariantCount: invariantReview.missing.length,
+    violatedInvariantCount: invariantReview.violated.length,
+    loopReplanReasons: []
+  };
+  const lifecycleTaskId = effectiveTaskId ?? stableId("unbound-post-edit-task", task);
+  const lifecycleInput: PostEditLifecycleInput = {
+    repoRoot,
+    lifecycleTaskId,
+    planRevision,
+    decisionInput,
+    currentEntries,
+    modifiedSymbolCount: modifiedSymbols.length,
+    invariantReview,
+    verification: { ranTests, ranCommands, commandReports: dataRanCommandReports, reviewTargets, noVerificationProofForEditedFiles },
+    changedFiles: editPaths,
+    artifactIds: selectedArtifactIds,
+    externalCheckFailedTargets: failedArtifactIds,
+    expectedInvariants: invariants,
+    requireExistingState: snapshot?.planRevision !== undefined
+  };
+  const previewLifecycle = await buildPostEditLifecycleDecision(lifecycleInput);
+  const { decision: previewDecision, failureSignals: previewFailureSignals, diffFootprint: previewDiffFootprint, loopReview: previewLoopReview } = previewLifecycle;
+  const {
+    driftReasons: previewDriftReasons,
+    verdict: previewVerdict,
+    inspectMode: previewInspectMode,
+    inspectReasons: previewInspectReasons,
+    completionAuthority: previewCompletionAuthority
+  } = previewDecision;
   const complexityReview = buildPostEditComplexityReview({
     changedSinceSnapshot,
     unplannedEditedFiles,
@@ -389,11 +400,12 @@ async function postEditReviewQueryInternal(
     task,
     taskId: effectiveTaskId,
     snapshotPath: loadedSnapshot.path ? path.relative(repoRoot, loadedSnapshot.path).split(path.sep).join("/") : undefined,
-    verdict,
-    inspectMode,
-    inspectReasons,
-    completionAuthority,
+    verdict: previewVerdict,
+    inspectMode: previewInspectMode,
+    inspectReasons: previewInspectReasons,
+    completionAuthority: previewCompletionAuthority,
     freshness,
+    ...postEditLifecycleData(planRevision, invariants, invariantReview, previewFailureSignals, previewDiffFootprint, previewLoopReview),
     changedFiles: editPaths,
     plannedEditTargets: plannedScope,
     reviewTargets,
@@ -404,7 +416,7 @@ async function postEditReviewQueryInternal(
     affectedWorkflows: workflows.map((workflow) => workflow.title),
     workflowChecks,
     dependencyChecks,
-	    driftReasons,
+	    driftReasons: previewDriftReasons,
 	    tests,
 	    degradedSnapshotTests,
 	    testsNotRun,
@@ -417,6 +429,7 @@ async function postEditReviewQueryInternal(
     waivers,
     verificationCoverage,
     verificationLedger,
+    verificationArtifacts: verificationArtifacts.selected,
     verificationProvenance: CURRENT_VERIFICATION_PROVENANCE,
     sessionMemory: sessionMemoryPointer,
     riskDeltas: riskDeltas.map((delta) => ({
@@ -429,7 +442,38 @@ async function postEditReviewQueryInternal(
     confidence: quality?.counts
   };
   const persistOutcome = input.persistOutcome ?? true;
-  const savedOutcome = persistOutcome ? await savePostEditOutcome(outcomeInput) : undefined;
+  const savedOutcome = persistOutcome ? await persistPostEditLifecycleOutcome(lifecycleInput, outcomeInput) : undefined;
+  const lifecycle = savedOutcome?.lifecycle ?? previewLifecycle;
+  const { decision, failureSignals, diffFootprint, loopReview } = lifecycle;
+  const {
+    driftReasons,
+    verdict,
+    missingWorkflowCheckCount,
+    missingDependencyCheckCount,
+    riskEscalationsCoveredByVerification,
+    riskEscalationsNeedInspection
+  } = decision;
+  const { inspectMode, inspectReasons, completionAuthority } = decision;
+  const nextActions = postEditNextActions(verdict, {
+    snapshot,
+    unplannedEditedFiles,
+    testsNotRun,
+    riskEscalations,
+    reviewTargets,
+    workflows,
+    missingChecks: [...workflowChecks, ...dependencyChecks].filter((check) => check.status === "missing"),
+    noVerificationProofForEditedFiles,
+    degradedSnapshotTests
+  });
+  const structuredNextTools = postEditStructuredNextTools(verdict, {
+    taskId: effectiveTaskId,
+    reviewScope,
+    changeType,
+    testsNotRun,
+    degradedSnapshotTests,
+    riskEscalationsNeedInspection,
+    riskEscalations
+  });
   const outcome = savedOutcome?.outcome ?? buildPostEditOutcome(outcomeInput);
   const outcomePath = savedOutcome?.relativePath;
   const text = [
@@ -443,6 +487,8 @@ async function postEditReviewQueryInternal(
       : `Snapshot: unavailable${loadedSnapshot.missingReason ? ` (${loadedSnapshot.missingReason})` : ""}; using current dirty tree only`,
     `Verdict: ${verdict}`,
     `Inspect classification: ${inspectMode}; authority ${completionAuthority}`,
+    ...formatPostEditLifecycle(invariants, invariantReview, loopReview, planRevision),
+    ...formatPostEditArtifacts(verificationArtifacts.selected),
     semanticReviewContext ? formatPostEditSemanticReviewContext(semanticReviewContext) : undefined,
     `Outcome record: ${outcomePath ?? "not persisted"}`,
     droppedReviewTargets > 0
@@ -552,6 +598,7 @@ async function postEditReviewQueryInternal(
       inspectMode,
       inspectReasons,
       completionAuthority,
+      ...postEditLifecycleData(planRevision, invariants, invariantReview, failureSignals, diffFootprint, loopReview),
       snapshot: compactSnapshotForData(snapshot),
       snapshotLoad: {
         taskId: loadedSnapshot.latestTaskId,
@@ -608,6 +655,7 @@ async function postEditReviewQueryInternal(
       waivers,
       verificationCoverage: limitArray(dataVerificationCoverage, 40),
       verificationLedger: limitArray(dataVerificationLedger, 60),
+      verificationArtifacts: verificationArtifacts.selected,
       verificationProvenance: CURRENT_VERIFICATION_PROVENANCE,
       sessionMemory: sessionMemoryPointer,
       priorSessionMemory: priorSessionMemory
@@ -843,138 +891,4 @@ function compactSnapshotForData(snapshot: TaskSnapshot | undefined): unknown {
     requiredWorkflowCheckCount: snapshot.requiredWorkflowChecks.length,
     requiredDependencyCheckCount: snapshot.requiredDependencyChecks.length
   };
-}
-
-function buildAutoVerifyCandidates(input: { snapshot: TaskSnapshot | undefined; testsNotRun: TestRecommendation[]; reviewTargets: string[]; repoRoot: string }): AutoVerifyCandidate[] {
-  const snapshot = input.snapshot;
-  if (!snapshot) {
-    return [];
-  }
-  const snapshotDigest = autoVerifySnapshotDigest(snapshot);
-  return input.testsNotRun
-    .filter((test) => test.command && test.commandCwd && test.commandExecutable && test.commandArgs)
-    .map((test, index) => {
-      const command = test.command!;
-      const commandCwd = test.commandCwd!;
-      const commandExecutable = test.commandExecutable!;
-      const commandArgs = test.commandArgs!;
-      return {
-        schemaVersion: 1,
-        taskId: snapshot.taskId,
-        snapshotDigest,
-        commandId: stableId("autoverify-command", snapshot.taskId, command, commandCwd, JSON.stringify(commandArgs)),
-        command,
-        commandExecutable,
-        commandArgs,
-        commandCwd,
-        targetPaths: uniqueSorted([test.path, ...(test.provenance?.targetPaths ?? input.reviewTargets)]),
-        source: autoVerifyCandidateSource(test.provenance),
-        rank: test.rank - index / 100
-      } satisfies AutoVerifyCandidate;
-    });
-}
-
-function autoVerifyCandidateSource(provenance: TestRecommendationProvenance | undefined): AutoVerifyCandidate["source"] {
-  const sources = provenance?.sources ?? [];
-  if (sources.includes("explicit_target")) return "explicit";
-  if (sources.includes("authoritative_test_edge")) return "authoritative-test-edge";
-  if (sources.includes("derived_import") || sources.includes("derived_impact_expansion") || sources.includes("package_import") || sources.includes("outcome_history")) return "derived-impact";
-  if (sources.length > 0) return "heuristic";
-  return "legacy";
-}
-
-function stableSessionMemoryHash(value: string): string {
-  return stableId("session-memory-summary", value);
-}
-
-function compactContextData(data: unknown): unknown {
-  if (!data || typeof data !== "object") {
-    return undefined;
-  }
-  const record = data as Record<string, unknown>;
-  return {
-    mode: record.mode,
-    packetVerdict: record.packetVerdict,
-    diagnostics: Array.isArray(record.diagnostics) ? record.diagnostics.slice(0, 12) : undefined,
-    focusFiles: Array.isArray(record.focusFiles) ? record.focusFiles.slice(0, 20) : undefined,
-    tests: Array.isArray(record.tests) ? record.tests.slice(0, 20) : undefined,
-    quality: record.quality,
-    gaps: Array.isArray(record.gaps) ? record.gaps.slice(0, 20) : undefined,
-    warnings: Array.isArray(record.warnings) ? record.warnings.slice(0, 20) : undefined
-  };
-}
-
-function hasRelevantVerificationEvidence(input: {
-  verificationLedger: VerificationLedgerEntry[];
-  verificationCoverage: VerificationCoverage[];
-  ranTests: string[];
-  tests: TestRecommendation[];
-  workflowChecks: PostEditCheckResult[];
-  dependencyChecks: PostEditCheckResult[];
-  reviewTargets: string[];
-  editPaths: string[];
-}): boolean {
-  const checkedTargets = new Set([
-    ...input.tests.map((test) => normalizeReviewPath(test.path)),
-    ...input.workflowChecks.map((check) => normalizeReviewPath(check.target)),
-    ...input.dependencyChecks.map((check) => normalizeReviewPath(check.target))
-  ]);
-  if (
-    input.verificationLedger.some(
-      (entry) => (entry.status === "covered" || entry.status === "waived") && (checkedTargets.size === 0 || checkedTargets.has(normalizeReviewPath(entry.target)))
-    )
-  ) {
-    return true;
-  }
-
-  const recommendedTests = new Set(input.tests.map((test) => normalizeReviewPath(test.path)));
-  if (input.ranTests.some((test) => recommendedTests.has(normalizeReviewPath(test)))) {
-    return true;
-  }
-
-  const changedTargets = uniqueSorted([...input.editPaths, ...input.reviewTargets].map(normalizeReviewPath).filter(Boolean));
-  return input.verificationCoverage.some((coverage) => coverageIsRelevantProof(coverage, changedTargets, recommendedTests));
-}
-
-function coverageIsRelevantProof(coverage: VerificationCoverage, changedTargets: string[], recommendedTests: Set<string>): boolean {
-  if (coverage.kind === "unknown" || coverage.kind === "audit" || coverage.kind === "privacy" || coverage.kind === "lint") {
-    return false;
-  }
-  const target = coverage.targetPath ? normalizeReviewPath(coverage.targetPath) : undefined;
-  if (target) {
-    return changedTargets.includes(target) || recommendedTests.has(target) || changedTargets.some((changed) => pathIntersects(target, changed));
-  }
-  if (coverage.kind === "javascript-tests" || coverage.kind === "python-tests" || coverage.kind === "targeted-test") {
-    return recommendedTests.size === 0 && changedTargets.some((changed) => scopeCoversReviewPath(coverage.scope ?? ".", changed));
-  }
-  if (coverage.kind === "build" || coverage.kind === "typescript-syntax") {
-    return changedTargets.some((changed) => sourcePathFitsCoverageKind(changed, coverage.kind) && scopeCoversReviewPath(coverage.scope ?? ".", changed));
-  }
-  return false;
-}
-
-function sourcePathFitsCoverageKind(filePath: string, kind: VerificationCoverage["kind"]): boolean {
-  if (kind === "typescript-syntax") {
-    return /\.(?:[cm]?[jt]sx?)$/iu.test(filePath);
-  }
-  if (kind === "build") {
-    return !isTestPath(filePath);
-  }
-  return false;
-}
-
-function scopeCoversReviewPath(scope: string, filePath: string): boolean {
-  const normalizedScope = normalizeReviewPath(scope);
-  const normalizedPath = normalizeReviewPath(filePath);
-  return normalizedScope === "." || normalizedScope === "" || normalizedPath === normalizedScope || normalizedPath.startsWith(`${normalizedScope}/`);
-}
-
-function pathIntersects(left: string, right: string): boolean {
-  return left === right || left.startsWith(`${right}/`) || right.startsWith(`${left}/`);
-}
-
-function normalizeReviewPath(value: string): string {
-  const normalized = value.replace(/\\/gu, "/").replace(/^\.\/+/u, "");
-  const collapsed = path.posix.normalize(normalized);
-  return collapsed === "." ? "." : collapsed.replace(/^\/+/u, "");
 }

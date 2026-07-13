@@ -2,6 +2,8 @@ import { existsSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { ChangePlanInput, ChangeType, TaskSnapshot } from "./types.js";
+import { loadTaskLifecycleState, normalizeTaskInvariants, recordTaskPlanRevision, taskInvariantId, withTaskLifecycleLock } from "./task-lifecycle.js";
+import { MAX_TASK_INVARIANTS, taskInvariantStatementSchema } from "./lifecycle-contract.js";
 import { stableId } from "./util.js";
 
 const SNAPSHOT_DIR = ".codex/cache/codexa-tasks";
@@ -46,26 +48,36 @@ export interface BlockedTaskSnapshotMarker {
 export async function saveTaskSnapshot({ repoRoot, input, snapshot }: SaveTaskSnapshotInput): Promise<{ snapshot: TaskSnapshot; path: string }> {
   const repo = path.resolve(repoRoot);
   const createdAt = new Date().toISOString();
-  const taskId = normalizeTaskId(input.taskId) ?? defaultTaskId(repo, input, createdAt);
-  const saved = redactRepoPath(
-    {
-      schemaVersion: 1,
-      taskId,
-      repoRoot: ".",
-      createdAt,
-      input: { ...input, taskId, saveSnapshot: Boolean(input.saveSnapshot) },
-      ...snapshot
-    },
-    repo
-  ) as TaskSnapshot;
-  const dir = snapshotDir(repo);
-  await fs.mkdir(dir, { recursive: true });
-  const snapshotPath = path.join(dir, `${taskId}.json`);
-  await atomicJsonWrite(snapshotPath, saved);
-  await fs.rm(path.join(dir, `${taskId}.blocked.json`), { force: true });
-  await atomicJsonWrite(path.join(dir, LATEST_FILE), { schemaVersion: 1, taskId, path: path.basename(snapshotPath), createdAt });
-  await removeImplicitSiblingSnapshots(dir, taskId);
-  return { snapshot: saved, path: snapshotPath };
+  const taskId = allocateTaskSnapshotId(repo, input, createdAt);
+  return withTaskLifecycleLock(repo, taskId, async () => {
+    const dir = snapshotDir(repo);
+    await fs.mkdir(dir, { recursive: true });
+    const snapshotPath = path.join(dir, `${taskId}.json`);
+    const priorRead = await readJson<TaskSnapshot>(snapshotPath);
+    const priorSnapshot = priorRead.ok && isTaskSnapshot(priorRead.value) ? priorRead.value : undefined;
+    const lifecycle = await loadTaskLifecycleState(repo, taskId);
+    const planRevision = Math.max(priorSnapshot?.planRevision ?? (priorSnapshot ? 1 : 0), lifecycle?.planRevision ?? 0) + 1;
+    const invariants = normalizeTaskInvariants(lifecycle?.invariants ?? priorSnapshot?.invariants, input.invariants ?? snapshot.invariants?.map((entry) => entry.statement));
+    const saved = redactRepoPath(
+      {
+        schemaVersion: 1,
+        taskId,
+        repoRoot: ".",
+        createdAt,
+        input: { ...input, taskId, saveSnapshot: Boolean(input.saveSnapshot) },
+        ...snapshot,
+        planRevision,
+        invariants
+      },
+      repo
+    ) as TaskSnapshot;
+    await atomicJsonWrite(snapshotPath, saved);
+    await fs.rm(path.join(dir, `${taskId}.blocked.json`), { force: true });
+    await atomicJsonWrite(path.join(dir, LATEST_FILE), { schemaVersion: 1, taskId, path: path.basename(snapshotPath), createdAt });
+    await recordTaskPlanRevision(repo, taskId, planRevision, invariants);
+    await removeImplicitSiblingSnapshots(dir, taskId);
+    return { snapshot: saved, path: snapshotPath };
+  });
 }
 
 // Hook-saved implicit baselines are superseded by ANY newer snapshot. Leaving
@@ -95,13 +107,19 @@ async function removeImplicitSiblingSnapshots(dir: string, keepTaskId: string): 
   }
 }
 
-export async function saveBlockedTaskSnapshot({ repoRoot, input, reason, details }: SaveBlockedTaskSnapshotInput): Promise<{ taskId: string; path: string }> {
+export async function saveBlockedTaskSnapshot({ repoRoot, input, reason, details }: SaveBlockedTaskSnapshotInput): Promise<{ taskId: string; path: string; preservedSnapshot?: true }> {
   const repo = path.resolve(repoRoot);
   const createdAt = new Date().toISOString();
   const taskId = normalizeTaskId(input.taskId) ?? defaultTaskId(repo, input, createdAt);
-  const dir = snapshotDir(repo);
-  await fs.mkdir(dir, { recursive: true });
-  const markerPath = path.join(dir, `${taskId}.blocked.json`);
+  return withTaskLifecycleLock(repo, taskId, async () => {
+    const dir = snapshotDir(repo);
+    await fs.mkdir(dir, { recursive: true });
+    const snapshotPath = path.join(dir, `${taskId}.json`);
+    const prior = await readJson<TaskSnapshot>(snapshotPath);
+    if (prior.ok && isTaskSnapshot(prior.value)) {
+      return { taskId, path: snapshotPath, preservedSnapshot: true as const };
+    }
+    const markerPath = path.join(dir, `${taskId}.blocked.json`);
   const marker = redactRepoPath(
     {
       schemaVersion: 1,
@@ -115,9 +133,9 @@ export async function saveBlockedTaskSnapshot({ repoRoot, input, reason, details
     },
     repo
   ) as BlockedTaskSnapshotMarker;
-  await atomicJsonWrite(markerPath, marker);
-  await fs.rm(path.join(dir, `${taskId}.json`), { force: true });
-  await atomicJsonWrite(path.join(dir, LATEST_FILE), {
+    await atomicJsonWrite(markerPath, marker);
+    await fs.rm(snapshotPath, { force: true });
+    await atomicJsonWrite(path.join(dir, LATEST_FILE), {
     schemaVersion: 1,
     taskId,
     path: path.basename(markerPath),
@@ -125,7 +143,8 @@ export async function saveBlockedTaskSnapshot({ repoRoot, input, reason, details
     blocked: true,
     reason
   });
-  return { taskId, path: markerPath };
+    return { taskId, path: markerPath };
+  });
 }
 
 export async function loadTaskSnapshot(repoRoot: string, taskId?: string): Promise<TaskSnapshotLoadResult> {
@@ -301,7 +320,7 @@ function normalizeBlockedSnapshotInput(value: unknown): ChangePlanInput | undefi
     }
     input[key] = record[key];
   }
-  for (const key of ["files", "symbols"] as const) {
+  for (const key of ["files", "symbols", "invariants"] as const) {
     if (record[key] === undefined) {
       continue;
     }
@@ -444,6 +463,10 @@ function snapshotReadDirs(repoRoot: string): string[] {
   return [snapshotDir(repoRoot), path.join(repoRoot, LEGACY_SNAPSHOT_DIR)].filter((dir, index, dirs) => existsSync(dir) && dirs.indexOf(dir) === index);
 }
 
+export function allocateTaskSnapshotId(repoRoot: string, input: ChangePlanInput, createdAt = new Date().toISOString()): string {
+  return normalizeTaskId(input.taskId) ?? defaultTaskId(path.resolve(repoRoot), input, createdAt);
+}
+
 function defaultTaskId(repoRoot: string, input: ChangePlanInput, createdAt: string): string {
   const taskPart = slug(input.task ?? input.query ?? input.files?.join("-") ?? "task");
   const suffix = stableId("task-snapshot", repoRoot, input.task, input.query, input.files?.join("\n"), input.symbols?.join("\n"), createdAt);
@@ -510,6 +533,8 @@ function isTaskSnapshot(value: unknown): value is TaskSnapshot {
     typeof record.taskId === "string" &&
     typeof record.createdAt === "string" &&
     typeof record.changeType === "string" &&
+    (record.planRevision === undefined || (Number.isInteger(record.planRevision) && record.planRevision > 0)) &&
+    (record.invariants === undefined || isTaskInvariants(record.invariants)) &&
     Boolean(record.snapshotFreshness) &&
     Boolean(record.input) &&
     Array.isArray(record.plannedEditTargets) &&
@@ -519,10 +544,40 @@ function isTaskSnapshot(value: unknown): value is TaskSnapshot {
     (record.sessionMemory === undefined || isSessionMemoryPointer(record.sessionMemory)) &&
     Array.isArray(record.requiredWorkflowChecks) &&
     Array.isArray(record.requiredDependencyChecks) &&
+    (record.diffFootprint === undefined || isDiffFootprint(record.diffFootprint)) &&
     Array.isArray(record.recipes) &&
     Array.isArray(record.gaps) &&
     Array.isArray(record.warnings) &&
     isSnapshotDirtyBaseline(record.dirtyBaseline)
+  );
+}
+
+function isTaskInvariants(value: unknown): boolean {
+  if (!Array.isArray(value) || value.length > MAX_TASK_INVARIANTS) return false;
+  const ids = new Set<string>();
+  return value.every((entry) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return false;
+    const record = entry as { id?: unknown; statement?: unknown };
+    if (Object.keys(entry).some((key) => key !== "id" && key !== "statement")) return false;
+    const statement = taskInvariantStatementSchema.safeParse(record.statement);
+    if (!statement.success || typeof record.id !== "string" || ids.has(record.id)) return false;
+    ids.add(record.id);
+    return record.id === taskInvariantId(statement.data.replace(/\s+/gu, " "));
+  });
+}
+
+function isDiffFootprint(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const record = value as Partial<NonNullable<TaskSnapshot["diffFootprint"]>>;
+  return (
+    record.schemaVersion === 1 &&
+    (typeof record.trackedInsertions === "number" || record.trackedInsertions === null) &&
+    (typeof record.trackedDeletions === "number" || record.trackedDeletions === null) &&
+    typeof record.changedFileCount === "number" &&
+    typeof record.modifiedSymbolCount === "number" &&
+    typeof record.untrackedFileCount === "number" &&
+    typeof record.fingerprint === "string" &&
+    Array.isArray(record.degradedReasons)
   );
 }
 
@@ -531,7 +586,18 @@ function isSessionMemoryPointer(value: unknown): boolean {
     return false;
   }
   const record = value as Partial<NonNullable<TaskSnapshot["sessionMemory"]>>;
-  return typeof record.sessionId === "string" && typeof record.revision === "number" && Array.isArray(record.entryIds) && typeof record.summaryHash === "string";
+  return (
+    typeof record.sessionId === "string" &&
+    record.sessionId !== "." &&
+    record.sessionId !== ".." &&
+    typeof record.revision === "number" &&
+    Number.isInteger(record.revision) &&
+    record.revision >= 0 &&
+    Array.isArray(record.entryIds) &&
+    record.entryIds.every((entry) => typeof entry === "string") &&
+    typeof record.summaryHash === "string" &&
+    /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/u.test(record.summaryHash)
+  );
 }
 
 function isSnapshotDirtyBaseline(value: unknown): value is TaskSnapshot["dirtyBaseline"] {

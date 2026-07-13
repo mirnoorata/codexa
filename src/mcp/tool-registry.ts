@@ -63,7 +63,7 @@ export const MCP_TOOL_REGISTRY = [
     name: "change_plan",
     title: "Codexa change plan",
     description:
-      "Plan a code change and save a pre-edit snapshot: set saveSnapshot=true before editing so post_edit_review can detect drift against the plan. Returns planned edit targets, tests, freshness, and known gaps. Medium output.",
+      "Plan a code change and save a pre-edit snapshot: set saveSnapshot=true before editing so post_edit_review can detect drift against the plan. Accepts bounded task invariants and returns planned targets, tests, freshness, and known gaps. Medium output.",
     tier: "primary",
     phase: "plan",
     cost: "medium",
@@ -71,17 +71,17 @@ export const MCP_TOOL_REGISTRY = [
     readOnly: false,
     useWhen: "Before non-trivial edits; pass saveSnapshot=true to enable post-edit drift checks.",
     avoidWhen: "After edits are already made; use post_edit_review for dirty-tree accountability.",
-    nextToolUse: ["post_edit_review"]
+    nextToolUse: ["test_plan", "post_edit_review"]
   },
   {
     name: "post_edit_review",
     title: "Codexa post-edit review",
     description:
-      "Review code changes for drift: compares the dirty tree against the change_plan snapshot for planned-vs-actual drift, unplanned edits, symbol/risk deltas, affected callers/tests/workflows, and tests still unaccounted for. Pass the snapshot task id plus commands that actually ran. MCP calls do not persist outcome files. Large output, budget-compacted.",
+      "Review code changes for drift and repeated-loop state: compares the dirty tree against the change_plan snapshot, accounts for declared invariants and selected verification artifacts, and persists a sanitized task outcome used by the replan budget. Pass the snapshot task id plus evidence that actually ran. Large output, budget-compacted.",
     tier: "primary",
     phase: "review",
     cost: "large",
-    writeEffects: "session-memory-auto",
+    writeEffects: "task-outcome-cache+session-memory-auto",
     readOnly: false,
     useWhen: "Immediately after edits and before final response; pass the saved change_plan task id plus commands/tests that actually ran.",
     avoidWhen: "Before editing or without a meaningful diff to review.",
@@ -90,7 +90,7 @@ export const MCP_TOOL_REGISTRY = [
   {
     name: "test_plan",
     title: "Codexa test plan",
-    description: "Which tests to run: recommend targeted tests and verification commands for explicit target files or the current diff. Returns needs_target instead of inventing work when no scope exists. Recommendations only, not execution evidence. Compact output.",
+    description: "Which tests to run before or after editing: recommend targeted tests and verification commands for explicit target files or the current diff. Returns needs_target instead of inventing work when no scope exists. Recommendations only, not execution evidence. Compact output.",
     tier: "primary",
     phase: "verify",
     cost: "compact",
@@ -98,13 +98,13 @@ export const MCP_TOOL_REGISTRY = [
     readOnly: false,
     useWhen: "Select verification for explicit files, the current diff, or after post_edit_review has provided a review scope.",
     avoidWhen: "You need proof that tests ran; recommendations are not execution evidence.",
-    nextToolUse: ["proof_card"]
+    nextToolUse: ["post_edit_review", "proof_card"]
   },
   {
     name: "proof_card",
     title: "Codexa proof card",
     description:
-      "Final proof packet: freshness, saved plan snapshot, local policies, recommended verification, and reported command/test evidence classified by the shared verification ledger. Does not execute commands. Medium output.",
+      "Final proof packet: freshness, saved plan and invariants, lifecycle stop state, decision continuity, local policies, selected run artifacts, and reported command/test evidence classified by the shared verification ledger. Does not execute commands. Medium output.",
     tier: "primary",
     phase: "verify",
     cost: "medium",
@@ -325,8 +325,8 @@ export const PRIMARY_MCP_TOOL_NAMES = Object.freeze(MCP_TOOL_REGISTRY.filter((to
 export const CORE_PROFILE_TOOL_NAMES = Object.freeze([...PRIMARY_MCP_TOOL_NAMES, "impact" as McpToolName, "freshness" as McpToolName]);
 export const ADVANCED_MCP_TOOL_NAMES = Object.freeze(MCP_TOOL_REGISTRY.filter((tool) => tool.tier === "advanced").map((tool) => tool.name));
 export const SOURCE_CONTEXT_MCP_TOOL_NAMES = Object.freeze(MCP_TOOL_REGISTRY.filter((tool) => tool.writeEffects === "index-cache-if-auto-refresh").map((tool) => tool.name));
-export const MEMORY_RECORDING_MCP_TOOL_NAMES = Object.freeze(MCP_TOOL_REGISTRY.filter((tool) => tool.writeEffects === "session-memory-auto").map((tool) => tool.name));
-export const PRIMARY_CODEX_LOOP = "session_context -> search(if target unclear) -> task_brief -> change_plan(saveSnapshot) -> post_edit_review -> test_plan -> proof_card";
+export const MEMORY_RECORDING_MCP_TOOL_NAMES = Object.freeze(MCP_TOOL_REGISTRY.filter((tool) => tool.writeEffects.includes("session-memory-auto")).map((tool) => tool.name));
+export const PRIMARY_CODEX_LOOP = "session_context -> search(if target unclear) -> task_brief -> change_plan(saveSnapshot) -> test_plan -> edit -> post_edit_review -> proof_card";
 export const NO_SOURCE_MUTATION_CONTRACT = "Codexa MCP tools may write Codexa cache artifacts, but must not mutate source files.";
 
 export function mcpToolRegistryEntry(name: string): McpToolRegistryEntry | undefined {

@@ -39,6 +39,7 @@ import {
   SESSION_MEMORY_LOCK_DIR,
   type LatestSessionMemoryPointer,
   type SessionMemoryBuckets,
+  type SessionMemoryCompactionArchive,
   type SessionMemoryEvent,
   type SessionMemoryLoadResult,
   type SessionMemoryReadFilter,
@@ -66,6 +67,7 @@ import {
 import { bucketMemory, filterEntries, renderSessionMemoryMarkdown } from "./formatting.js";
 import {
   emptyStore,
+  isSessionMemoryEntry,
   isSessionMemoryEvent,
   isSessionMemoryStore,
   markStoreStaleness,
@@ -75,7 +77,6 @@ import {
   positiveInt,
   refKey,
   sanitizeStoreTrust,
-  sha1,
   sortEntries,
   upsertEntry
 } from "./store.js";
@@ -244,16 +245,72 @@ export async function compactSessionMemory(input: SessionMemoryReadFilter): Prom
 
 export async function pointerForSessionMemory(input: SessionMemoryReadFilter): Promise<SessionMemoryPointer | undefined> {
   const result = await summarizeSessionMemory({ ...input, limit: input.limit ?? 8 });
-  const ids = result.memory.entries.map((entry) => entry.id).slice(0, 20);
-  if (ids.length === 0) {
+  const pointerEntries = result.memory.entries.slice(0, 20);
+  const ids = pointerEntries.map((entry) => entry.id);
+  if (ids.length === 0 && !input.sessionId) {
     return undefined;
   }
   return {
     sessionId: result.sessionId,
     revision: result.revision,
     entryIds: ids,
-    summaryHash: sha1(result.memory.markdown ?? ids.join("\n"))
+    summaryHash: sessionMemoryPointerDigest(pointerEntries)
   };
+}
+
+export function sessionMemoryPointerDigest(entries: SessionMemoryEntryFact[]): string {
+  const canonicalEntries = [...entries]
+    .sort((left, right) => left.id.localeCompare(right.id))
+    .map(({ staleBecause: _staleBecause, status, ...entry }) => ({
+      ...entry,
+      // Read-time freshness projection may mark an otherwise unchanged entry
+      // stale. Normalize that transient state so pointer integrity measures
+      // memory content, not the current checkout's freshness banner.
+      status: status === "stale" ? "active" : status
+    }));
+  return createHash("sha256").update(canonicalJson(canonicalEntries)).digest("hex");
+}
+
+export async function readArchivedSessionMemoryEntries(input: {
+  repoRoot: string;
+  sessionId: string;
+  entryIds?: string[];
+  taskId?: string;
+  maxArchives?: number;
+  maxEntries?: number;
+}): Promise<SessionMemoryEntryFact[]> {
+  const sessionId = await resolveSessionId(path.resolve(input.repoRoot), input.sessionId);
+  const wanted = new Set((input.entryIds ?? []).slice(0, 20));
+  if (wanted.size === 0 && !input.taskId) {
+    return [];
+  }
+  const maxEntries = Math.max(1, Math.min(input.maxEntries ?? 80, 200));
+  const compactionDir = path.join(sessionDir(input.repoRoot, sessionId), COMPACTIONS_DIR);
+  const files = (await fs.readdir(compactionDir).catch(() => []))
+    .filter((entry) => /^\d+\.json$/u.test(entry))
+    .sort((left, right) => Number.parseInt(right, 10) - Number.parseInt(left, 10))
+    .slice(0, Math.max(1, Math.min(input.maxArchives ?? 8, 20)));
+  const found = new Map<string, SessionMemoryEntryFact>();
+  for (const file of files) {
+    const parsed = await readJson<Partial<SessionMemoryCompactionArchive>>(path.join(compactionDir, file));
+    if (!parsed.ok || parsed.value.schemaVersion !== 1 || parsed.value.sessionId !== sessionId || !Array.isArray(parsed.value.droppedEntries)) {
+      continue;
+    }
+    for (const entry of parsed.value.droppedEntries) {
+      if (
+        isSessionMemoryEntry(entry) &&
+        (wanted.has(entry.id) || (input.taskId !== undefined && entry.taskId === input.taskId)) &&
+        !found.has(entry.id) &&
+        found.size < maxEntries
+      ) {
+        found.set(entry.id, entry);
+      }
+    }
+    if ((wanted.size > 0 && [...wanted].every((entryId) => found.has(entryId)) && !input.taskId) || found.size >= maxEntries) {
+      break;
+    }
+  }
+  return [...found.values()].sort((left, right) => left.createdAt.localeCompare(right.createdAt) || left.id.localeCompare(right.id));
 }
 
 export async function recordViewedMemoryForTool(input: {
@@ -318,10 +375,12 @@ export async function recordViewedMemoryForTool(input: {
 
 async function compactSessionMemoryStore(repoRoot: string, store: SessionMemoryStore, freshness?: FreshnessInfo): Promise<SessionMemoryStore> {
   const now = new Date().toISOString();
-  const retained = sortEntries(store.entries)
+  const sourceEntries = sortEntries(store.entries);
+  const retained = sourceEntries
     .filter((entry) => entry.status !== "resolved" && entry.status !== "rejected")
     .map((entry) => ({ ...entry, evidence: entry.evidence.slice(0, MAX_EVIDENCE_PER_ENTRY), scope: { ...entry.scope, refs: entry.scope.refs.slice(0, MAX_REFS_PER_ENTRY) } }));
-  const dropped = store.entries.length - retained.length;
+  const droppedEntries = sourceEntries.filter((entry) => entry.status === "resolved" || entry.status === "rejected");
+  const sourceEventCount = await countEventLines(repoRoot, store.sessionId);
   const compacted: SessionMemoryStore = {
     ...store,
     updatedAt: now,
@@ -329,16 +388,32 @@ async function compactSessionMemoryStore(repoRoot: string, store: SessionMemoryS
     entries: markStoreStaleness({ ...store, entries: retained }, freshness).entries,
     compaction: {
       compactedAt: now,
-      sourceEventCount: await countEventLines(repoRoot, store.sessionId),
+      sourceEventCount,
       retainedEntryCount: retained.length,
-      droppedEntryCount: dropped
+      droppedEntryCount: droppedEntries.length
     }
   };
   const compactionDir = path.join(sessionDir(repoRoot, store.sessionId), COMPACTIONS_DIR);
   await fs.mkdir(compactionDir, { recursive: true });
-  await atomicJsonWrite(path.join(compactionDir, `${compacted.revision}.json`), compacted);
-  await writeStoreAndLatest(repoRoot, compacted, compacted.activeTaskId);
+  const archive: SessionMemoryCompactionArchive = {
+    schemaVersion: 1,
+    sessionId: store.sessionId,
+    fromRevision: store.revision,
+    toRevision: compacted.revision,
+    compactedAt: now,
+    sourceEventCount,
+    preCompactionDigest: createHash("sha256").update(JSON.stringify(store)).digest("hex"),
+    retainedEntryIds: retained.map((entry) => entry.id),
+    droppedEntries
+  };
+  // Publish the full dropped-entry evidence before the active store and event
+  // log forget it. If this write fails, compaction stops without data loss.
+  await atomicJsonWrite(path.join(compactionDir, `${compacted.revision}.json`), archive);
+  // Publish the compacted replay event before active memory forgets dropped
+  // entries. If event publication is interrupted, memory.json still retains
+  // the pre-compaction evidence and remains the authoritative read path.
   await rewriteEvents(repoRoot, compacted);
+  await writeStoreAndLatest(repoRoot, compacted, compacted.activeTaskId);
   return compacted;
 }
 
@@ -384,4 +459,17 @@ async function replaySessionMemoryEvents(repoRoot: string, sessionId: string, fr
     path: memoryStorePath(repoRoot, sessionId),
     warnings
   };
+}
+
+function canonicalJson(value: unknown): string {
+  if (Array.isArray(value)) {
+    return `[${value.map(canonicalJson).join(",")}]`;
+  }
+  if (value && typeof value === "object") {
+    const entries = Object.entries(value as Record<string, unknown>)
+      .filter(([, entry]) => entry !== undefined)
+      .sort(([left], [right]) => left.localeCompare(right));
+    return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`).join(",")}}`;
+  }
+  return JSON.stringify(value);
 }

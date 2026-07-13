@@ -8,6 +8,7 @@ import type { QueryOptions, QueryResult } from "../types.js";
 export interface McpRuntime {
   resolveActiveRepoRoot(): Promise<string>;
   resolveActiveRepoRootResolution(): Promise<McpRepoRootResolution>;
+  consumeActiveRepoRootChanged(): boolean;
   createQuerySession(activeRepoRoot: string): Promise<QuerySession>;
 }
 
@@ -21,6 +22,7 @@ export function createMcpRuntime({ configuredRepoRoot, queryOptions }: CreateMcp
   let cachedIndexStateRepoRoot: string | undefined;
   let indexStateInflight: { repoRoot: string; promise: Promise<QuerySessionIndexState> } | undefined;
   let activeResolution: McpRepoRootResolution | undefined;
+  let activeRepoRootChanged = false;
 
   const resolveActiveRepoRootResolution = async (): Promise<McpRepoRootResolution> => {
     // Recomputed per call, never frozen at server spawn: a workspace server
@@ -37,6 +39,9 @@ export function createMcpRuntime({ configuredRepoRoot, queryOptions }: CreateMcp
       preferConfiguredRoot
     });
     if (activeResolution?.repoRoot !== resolution.repoRoot) {
+      if (activeResolution) {
+        activeRepoRootChanged = true;
+      }
       cachedIndexState = undefined;
       cachedIndexStateRepoRoot = undefined;
       indexStateInflight = undefined;
@@ -86,9 +91,18 @@ export function createMcpRuntime({ configuredRepoRoot, queryOptions }: CreateMcp
   return {
     resolveActiveRepoRoot,
     resolveActiveRepoRootResolution,
+    consumeActiveRepoRootChanged(): boolean {
+      const changed = activeRepoRootChanged;
+      activeRepoRootChanged = false;
+      return changed;
+    },
     async createQuerySession(activeRepoRoot: string): Promise<QuerySession> {
       const state = await loadIndexState(activeRepoRoot);
-      return createQuerySessionFromIndexState(activeRepoRoot, state, queryOptions);
+      const activeWorkspaceSessionId = activeResolution?.repoRoot === activeRepoRoot ? activeResolution.workspaceSessionId : undefined;
+      return createQuerySessionFromIndexState(activeRepoRoot, state, {
+        ...queryOptions,
+        workspaceSessionId: activeWorkspaceSessionId ?? queryOptions.workspaceSessionId
+      });
     }
   };
 }

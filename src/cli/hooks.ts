@@ -18,13 +18,50 @@ import {
 import { postEditReviewQuery, postEditReviewWithTrustedRunnerReports } from "../query/post-edit.js";
 import { loadTaskSnapshot } from "../task-snapshots.js";
 import type { VerificationCommandReport } from "../types.js";
+import { pendingTaskLifecycleReplan, pendingTaskLifecycleReplans } from "../task-lifecycle.js";
 
 type HookActionResult = Omit<CodexaHookEventInput, "hook" | "durationMs"> | void;
 
 export async function runPreEditHook(repo: string): Promise<void> {
   const configuredRoot = path.resolve(repo);
+  let activeRepoRoot: string;
+  try {
+    ({ activeRepoRoot } = await resolveHookRepoRoots(repo));
+  } catch (error) {
+    await runAdvisoryHook(configuredRoot, "pre-edit", "change-plan snapshot check", async () => {
+      throw error;
+    });
+    return;
+  }
+  let lifecycleBlock: Awaited<ReturnType<typeof pendingPreEditLifecycleBlock>>;
+  try {
+    lifecycleBlock = await pendingPreEditLifecycleBlock(activeRepoRoot);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    console.log(`Codexa: edit blocked because task lifecycle state could not be validated (${reason}).`);
+    await safeRecordHookEvent(activeRepoRoot, {
+      hook: "pre-edit",
+      status: "failed",
+      durationMs: 0,
+      reason: "task-lifecycle-state-invalid",
+      error: reason
+    });
+    throw new Error("Codexa task lifecycle state is unavailable or invalid; refusing a managed edit", { cause: error });
+  }
+  if (lifecycleBlock) {
+    const reason = lifecycleBlock.reasons.join("; ") || "task loop requires a new saved plan";
+    console.log(`Codexa: edit blocked until change_plan saves a newer plan revision (${reason}).`);
+    await safeRecordHookEvent(lifecycleBlock.repoRoot, {
+      hook: "pre-edit",
+      status: "failed",
+      durationMs: 0,
+      reason: "task-loop-replan-required",
+      taskId: lifecycleBlock.taskId,
+      verdict: "replan"
+    });
+    throw new Error("Codexa task lifecycle requires replan before another managed edit");
+  }
   await runAdvisoryHook(configuredRoot, "pre-edit", "change-plan snapshot check", async () => {
-    const { activeRepoRoot } = await resolveHookRepoRoots(repo);
     const baseline = await saveImplicitBaselineSnapshot(activeRepoRoot);
     if (baseline.status === "existing-snapshot") {
       console.log(`Codexa: change-plan snapshot ready (${baseline.taskId}). After edits, post_edit_review will compare planned vs actual work.`);
@@ -41,6 +78,16 @@ export async function runPreEditHook(repo: string): Promise<void> {
     );
     return { status: "skipped", reason: baseline.reason ?? "missing-change-plan-snapshot", taskId: baseline.latestTaskId };
   });
+}
+
+async function pendingPreEditLifecycleBlock(activeRepoRoot: string): Promise<{ repoRoot: string; taskId: string; reasons: string[] } | undefined> {
+  const loaded = await loadTaskSnapshot(activeRepoRoot);
+  const review = await pendingTaskLifecycleReplan(activeRepoRoot, loaded.snapshot);
+  if (review && loaded.snapshot) {
+    return { repoRoot: activeRepoRoot, taskId: loaded.snapshot.taskId, reasons: review.reasons };
+  }
+  const pending = (await pendingTaskLifecycleReplans(activeRepoRoot))[0];
+  return pending ? { repoRoot: activeRepoRoot, taskId: pending.taskId, reasons: pending.stop.reasons } : undefined;
 }
 
 export async function runPostEditHook(repo: string): Promise<void> {
@@ -163,8 +210,10 @@ export async function recordAdvisoryHookEvent(repoRoot: string, event: CodexaHoo
 
 async function resolveHookRepoRoots(repo: string): Promise<{ configuredRoot: string; activeRepoRoot: string }> {
   const configuredRoot = path.resolve(repo);
+  const preferConfiguredRoot = await shouldPreferConfiguredRepoRoot(configuredRoot);
   const resolution = await resolveMcpRepoRoot(configuredRoot, {
-    preferConfiguredRoot: await shouldPreferConfiguredRepoRoot(configuredRoot)
+    preferConfiguredRoot,
+    requireValidDeclaredFocus: !preferConfiguredRoot
   });
   return { configuredRoot, activeRepoRoot: resolution.repoRoot };
 }

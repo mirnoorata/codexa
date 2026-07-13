@@ -1,6 +1,7 @@
 import path from "node:path";
 import { createCommandBudget, runCommand, type CommandBudget, type CommandResult, type RunCommandOptions } from "../command.js";
 import type { GitState } from "../git.js";
+import { assertIndexIdentity } from "../index-identity.js";
 import type { ChangedFileEntry, ChangedSymbol, CodexaIndex, FreshnessInfo, QueryOptions, RefreshInfo } from "../types.js";
 import { getChangedFileEntries, getChangedSymbols } from "./worktree.js";
 import { requireIndex } from "./runtime.js";
@@ -54,6 +55,7 @@ export async function createQuerySession(repoRoot: string, options: QueryOptions
 export function createQuerySessionFromIndexState(repoRoot: string, state: QuerySessionIndexState, options: QueryOptions = {}): QuerySession {
   const repo = path.resolve(repoRoot);
   const { index, freshness, refresh } = state;
+  assertIndexIdentity(repo, index, freshness);
   const gitState = gitStateFromFreshness(repo, freshness);
   const warnings: string[] = [];
   const provenance: string[] = [

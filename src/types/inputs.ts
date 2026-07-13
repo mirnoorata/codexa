@@ -1,6 +1,7 @@
 import type { Confidence, EvidenceTier, SessionMemoryEvidence, SessionMemoryKind, SessionMemoryProvenance, SessionMemoryRef, SessionMemoryScope, SessionMemoryStatus } from "./facts.js";
 import type { ChangeType } from "./change.js";
 import type { VerificationCommandReport, VerificationWaiver } from "./verification.js";
+import type { TaskInvariantReview } from "./snapshots.js";
 
 export interface ContextPackInput {
   task?: string;
@@ -18,6 +19,7 @@ export interface ChangePlanInput extends ContextPackInput {
   saveSnapshot?: boolean;
   taskId?: string;
   followCandidate?: string;
+  invariants?: string[];
 }
 
 export interface SessionMemoryInput {
@@ -62,6 +64,8 @@ export interface PostEditReviewInput {
   ranCommandReports?: VerificationCommandReport[];
   waivedChecks?: string[];
   waivers?: VerificationWaiver[];
+  invariantReviews?: TaskInvariantReview[];
+  artifactIds?: string[];
   persistOutcome?: boolean;
 }
 

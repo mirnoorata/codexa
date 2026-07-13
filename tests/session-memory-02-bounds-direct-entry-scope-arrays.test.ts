@@ -6,6 +6,7 @@ import { acquireCacheLock } from "../src/cache-lock.js";
 import {
   SESSION_MEMORY_LOCK_DIR,
   compactSessionMemory,
+  readArchivedSessionMemoryEntries,
   readSessionMemory,
   recordViewedMemoryForTool,
   recordSessionMemory,
@@ -83,11 +84,34 @@ it("compacts events deterministically and drops resolved entries only after writ
     const sessionDir = path.join(sessionMemoryCacheDir(repo), "sessions/sid-compact");
     const compactions = await readdir(path.join(sessionDir, "compactions"));
     expect(compactions.length).toBe(1);
+    const archive = JSON.parse(await readFile(path.join(sessionDir, "compactions", compactions[0]), "utf8")) as {
+      preCompactionDigest?: string;
+      retainedEntryIds?: string[];
+      droppedEntries?: Array<{ id?: string; summary?: string; status?: string }>;
+    };
+    expect(archive.preCompactionDigest).toMatch(/^[a-f0-9]{64}$/u);
+    expect(archive.retainedEntryIds).toHaveLength(1);
+    expect(archive.droppedEntries).toEqual(
+      expect.arrayContaining([expect.objectContaining({ summary: "Resolved question.", status: "resolved" })])
+    );
+    const archived = await readArchivedSessionMemoryEntries({
+      repoRoot: repo,
+      sessionId: "sid-compact",
+      entryIds: (archive.droppedEntries ?? []).map((entry) => entry.id).filter((entry): entry is string => Boolean(entry))
+    });
+    expect(archived.map((entry) => entry.summary)).toContain("Resolved question.");
     const events = (await readFile(path.join(sessionDir, "events.ndjson"), "utf8")).trim().split(/\r?\n/u);
     expect(events).toHaveLength(1);
     expect(events[0]).toContain("\"event\":\"compact\"");
     const files = await readdir(sessionDir);
     expect(files.filter((file) => file.endsWith(".tmp"))).toEqual([]);
+  });
+
+it("rejects dot-only session identifiers instead of resolving outside the session directory", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-session-memory-dot-id-"));
+    const freshness = freshnessFixture("snap-dot-id");
+    await expect(readSessionMemory({ repoRoot: repo, sessionId: ".", freshness })).rejects.toThrow(/safe non-dot identifier/u);
+    await expect(readSessionMemory({ repoRoot: repo, sessionId: "..", freshness })).rejects.toThrow(/safe non-dot identifier/u);
   });
 
 it("times out on a live cache lock instead of stealing it", async () => {

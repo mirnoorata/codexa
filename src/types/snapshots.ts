@@ -35,6 +35,70 @@ export interface TaskSnapshotRequiredCheck {
   paths: string[];
 }
 
+export interface TaskInvariant {
+  id: string;
+  statement: string;
+}
+
+export interface TaskInvariantReview {
+  invariantId: string;
+  status: "satisfied" | "violated";
+  evidence: string[];
+}
+
+export interface DiffFootprintV1 {
+  schemaVersion: 1;
+  trackedInsertions: number | null;
+  trackedDeletions: number | null;
+  changedFileCount: number;
+  modifiedSymbolCount: number;
+  untrackedFileCount: number;
+  fingerprint: string;
+  degradedReasons: string[];
+  contentHashes?: Record<string, string>;
+  contentHashDegradedReasons?: string[];
+}
+
+export type TaskLoopFailureClass =
+  | "plan-drift"
+  | "context-unreliable"
+  | "verification-missing"
+  | "verification-failed"
+  | "required-check-missing"
+  | "risk-escalation"
+  | "invariant-unreviewed"
+  | "invariant-violated"
+  | "external-check-failed";
+
+export interface TaskLoopFailureSignal {
+  class: TaskLoopFailureClass;
+  fingerprint: string;
+  targets: string[];
+}
+
+export interface TaskLoopReview {
+  policyVersion: "task-loop-v1";
+  attemptId: string;
+  attemptStatus: "resolved" | "unresolved";
+  totalDistinctAttempts: number;
+  attemptsSincePlan: number;
+  unresolvedAttemptsSincePlan: number;
+  recurringFailures: Array<{
+    class: TaskLoopFailureClass;
+    fingerprint: string;
+    count: number;
+  }>;
+  cumulativeDiffGrowth: {
+    firstTrackedLines: number | null;
+    currentTrackedLines: number | null;
+    peakTrackedLines: number | null;
+    newFilesSinceFirstAttempt: number;
+    peakModifiedSymbols: number;
+  };
+  status: "within-budget" | "replan-required";
+  reasons: string[];
+}
+
 export interface TaskSnapshot {
   schemaVersion: 1;
   taskId: string;
@@ -44,6 +108,8 @@ export interface TaskSnapshot {
   // plan scope; absent means an explicit change_plan snapshot.
   origin?: "hook-implicit";
   changeType: ChangeType;
+  planRevision?: number;
+  invariants?: TaskInvariant[];
   createdAt: string;
   snapshotFreshness: FreshnessInfo;
   input: ChangePlanInput;
@@ -56,6 +122,7 @@ export interface TaskSnapshot {
   requiredDependencyChecks: TaskSnapshotRequiredCheck[];
   symbolBaseline?: Record<string, TaskSnapshotSymbol[]>;
   riskBaseline?: Record<string, TaskSnapshotRiskFile>;
+  diffFootprint?: DiffFootprintV1;
   recipes: string[];
   dirtyBaseline: {
     changedEntries: ChangedFileEntry[];

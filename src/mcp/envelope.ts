@@ -269,7 +269,9 @@ function effectiveMcpToolReadOnly(toolName: string, options: McpToolPolicyOption
     return !options.autoRefresh && !sessionMemoryActionWrites(options.input);
   }
   if (memoryRecordingToolNames.has(toolName)) {
-    return options.sessionMemoryMode === "off" && !options.autoRefresh;
+    const catalog = MCP_TOOL_CATALOG.find((entry) => entry.name === toolName);
+    const hasNonMemoryWrite = catalog?.writeEffects.split("+").some((effect) => effect !== "none" && effect !== "session-memory-auto") ?? false;
+    return !hasNonMemoryWrite && options.sessionMemoryMode === "off" && !options.autoRefresh;
   }
   if (sourceContextToolNames.has(toolName)) {
     return !options.autoRefresh;
@@ -294,6 +296,11 @@ function effectiveMcpToolWriteEffects(toolName: string, catalogWriteEffects: str
       effects.add("explicit-memory-cache");
     }
   } else if (memoryRecordingToolNames.has(toolName)) {
+    for (const effect of catalogWriteEffects.split("+")) {
+      if (effect !== "none" && effect !== "session-memory-auto") {
+        effects.add(effect);
+      }
+    }
     if (options.sessionMemoryMode !== "off") {
       effects.add("session-memory-auto");
     }
@@ -380,7 +387,7 @@ function lifecyclePhaseForMode(mode: string): string {
 function preconditionsForMode(mode: string, snapshotStatus: string | undefined): string[] {
   if (mode === "change_plan") return ["task_brief or explicit target should identify edit-ready files", "use saveSnapshot=true before editing"];
   if (mode === "post_edit_review") return snapshotStatus === "loaded" || snapshotStatus === "saved" ? ["saved change_plan snapshot loaded"] : ["exact taskId is recommended when more than one snapshot exists"];
-  if (mode === "test_plan") return ["run after edits or when selecting verification for a focused diff"];
+  if (mode === "test_plan") return ["run before edits for a saved plan or after review when verification gaps remain"];
   if (mode === "proof_card") return ["reported commands/tests are classified as evidence but are not executed by Codexa"];
   return [];
 }
@@ -392,9 +399,9 @@ function nextToolsForMode(mode: string, data: Record<string, unknown>, snapshotS
   }
   if (mode === "focus_brief" || mode === "session_context") return ["task_brief", "search"];
   if (mode === "task_brief" || mode === "context_pack") return ["change_plan"];
-  if (mode === "change_plan") return snapshotStatus === "blocked" ? ["search", "task_brief"] : ["post_edit_review"];
+  if (mode === "change_plan") return snapshotStatus === "blocked" ? ["search", "task_brief"] : ["test_plan"];
   if (mode === "post_edit_review") return ["test_plan"];
-  if (mode === "test_plan") return stringArray(data.verificationCommands).length > 0 ? ["proof_card"] : ["search"];
+  if (mode === "test_plan") return stringArray(data.verificationCommands).length > 0 ? ["post_edit_review"] : ["search"];
   if (mode === "proof_card") {
     const verification = isRecord(data.verification) ? data.verification : undefined;
     const reported = isRecord(verification?.reported) ? verification.reported : undefined;

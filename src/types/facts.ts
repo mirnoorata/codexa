@@ -342,7 +342,7 @@ export type SessionMemoryProvenance = "codexa-derived" | "agent-asserted" | "use
 export type SessionMemoryStatus = "active" | "stale" | "superseded" | "rejected" | "resolved";
 
 export interface SessionMemoryRef {
-  kind: "file" | "symbol" | "workflow" | "endpoint" | "test" | "graph_edge" | "outcome" | "snapshot";
+  kind: "file" | "symbol" | "workflow" | "endpoint" | "test" | "graph_edge" | "outcome" | "snapshot" | "verification_artifact";
   id: string;
   path?: string;
   edgeKind?: GraphEdgeKind;

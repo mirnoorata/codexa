@@ -23,6 +23,7 @@ import {
   workflowPathQuery
 } from "../queries.js";
 import type { ChangeType, SessionMemoryInput } from "../types.js";
+import { parseInvariantReviewJsonOptions, validateArtifactIds, validateInvariantStatements } from "../lifecycle-contract.js";
 import {
   parseChangeType,
   parseCommandReportOptions,
@@ -47,9 +48,17 @@ function addWorkspaceRoutingOptions(command: Command): Command {
 export function registerQueryCommands(program: Command): void {
 addWorkspaceRoutingOptions(program
   .command("status")
-  .argument("<repo>", "repository root"))
+  .argument("<repo>", "repository root")
+  .option("--json", "emit structured JSON"))
   .description("Report Codexa index freshness and parser status.")
-  .action(async (repo: string, opts: CliQueryOptions) => printQuery(await statusQuery(await resolveQueryRepoRoot(repo, opts))));
+  .action(async (repo: string, opts: CliQueryOptions & { json?: boolean }) => {
+    const result = await statusQuery(await resolveQueryRepoRoot(repo, opts));
+    if (opts.json) {
+      console.log(JSON.stringify(result.data, null, 2));
+      return;
+    }
+    printQuery(result);
+  });
 
 addWorkspaceRoutingOptions(program
   .command("repo-map")
@@ -528,6 +537,7 @@ addWorkspaceRoutingOptions(program
   .option("--save-snapshot", "save a plan-time task snapshot for post-edit review", false)
   .option("--task-id <id>", "optional id for the saved task snapshot")
   .option("--follow-candidate <id>", "follow an edit-ready target candidate from a blocked orientation plan")
+  .option("--invariant <statement...>", "task invariant to preserve and explicitly review; repeat or pass multiple values")
   .option("--semantic", "force the semantic retrieval lane even when auto-detection would skip it")
   .option("--no-semantic", "disable automatic semantic retrieval for this query")
   .option("--semantic-provider <provider>", "semantic query provider: openai or local-command", parseSemanticProvider)
@@ -558,6 +568,7 @@ addWorkspaceRoutingOptions(program
         saveSnapshot: boolean;
         taskId?: string;
         followCandidate?: string;
+        invariant?: string[];
       } & CliQueryOptions
     ) =>
       printQuery(
@@ -574,7 +585,8 @@ addWorkspaceRoutingOptions(program
             limit: opts.limit,
             saveSnapshot: opts.saveSnapshot,
             taskId: opts.taskId,
-            followCandidate: opts.followCandidate
+            followCandidate: opts.followCandidate,
+            invariants: validateInvariantStatements(opts.invariant)
           },
           queryOptionsFromCli(opts)
         )
@@ -599,6 +611,8 @@ addWorkspaceRoutingOptions(program
   .option("--ran-command-report <json...>", "structured command report JSON with command, cwd, packageManager, workspace/packageRoot/packageName, scriptName, args, exitCode, durationMs, and output summaries")
   .option("--waive-check <target...>", "legacy test-target waiver shortcut; use --waiver for workflow/dependency checks")
   .option("--waiver <json...>", "structured verification waiver JSON: {\"kind\":\"test\",\"target\":\"tests/foo.test.ts\",\"reason\":\"manual check\"}")
+  .option("--invariant-review <json...>", "task invariant review JSON: {\"invariantId\":\"inv-...\",\"status\":\"satisfied\",\"evidence\":[\"reviewed diff\"]}")
+  .option("--artifact-id <id...>", "ingested verification artifact ID to bind to this review")
   .option("--semantic", "force the semantic retrieval lane even when auto-detection would skip it")
   .option("--no-semantic", "disable automatic semantic retrieval for this review")
   .option("--semantic-provider <provider>", "semantic query provider: openai or local-command", parseSemanticProvider)
@@ -628,6 +642,8 @@ addWorkspaceRoutingOptions(program
         ranCommandReport?: string[];
         waiveCheck?: string[];
         waiver?: string[];
+        invariantReview?: string[];
+        artifactId?: string[];
         autoRefresh: boolean;
       } & CliQueryOptions
     ) =>
@@ -647,7 +663,9 @@ addWorkspaceRoutingOptions(program
             ranCommands: opts.ranCommand,
             ranCommandReports: parseCommandReportOptions(opts.ranCommandReport),
             waivedChecks: opts.waiveCheck,
-            waivers: parseWaiverOptions(opts.waiver)
+            waivers: parseWaiverOptions(opts.waiver),
+            invariantReviews: parseInvariantReviewJsonOptions(opts.invariantReview),
+            artifactIds: validateArtifactIds(opts.artifactId)
           },
           queryOptionsFromCli(opts)
         )

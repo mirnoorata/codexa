@@ -52,6 +52,7 @@ export function postEditNextActions(
 export function postEditStructuredNextTools(
   verdict: PostEditVerdict,
   input: {
+    taskId?: string;
     reviewScope: string[];
     changeType: ChangeType;
     testsNotRun: TestRecommendation[];
@@ -61,12 +62,12 @@ export function postEditStructuredNextTools(
   }
 ): Array<ReturnType<typeof nextTool>> {
   return [
-    verdict === "run_tests" && input.testsNotRun[0] ? nextTool("test_plan", "recommended tests remain unaccounted for", { files: input.reviewScope.slice(0, 8), diff: true }) : undefined,
+    input.testsNotRun[0] ? nextTool("test_plan", "recommended tests remain unaccounted for", { files: input.reviewScope.slice(0, 8), diff: true }) : undefined,
     verdict === "replan" || input.degradedSnapshotTests.length > 0
       ? nextTool(
           "change_plan",
           input.degradedSnapshotTests.length > 0 ? "planned-test provenance degraded; rebuild the plan for the current edit scope" : "saved plan drifted from the current edit scope",
-          { files: input.reviewScope.slice(0, 8), saveSnapshot: true, changeType: input.changeType },
+          { taskId: input.taskId, files: input.reviewScope.slice(0, 8), saveSnapshot: true, changeType: input.changeType },
           true,
           [".codex/cache/codexa-task-snapshots"]
         )
