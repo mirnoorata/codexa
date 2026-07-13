@@ -1,0 +1,186 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R 6 0 R 8 0 R] /Count 3 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 3226 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(Change Summary) Tj T*
+() Tj T*
+(- Project: codexa) Tj T*
+(- Worktree: /srv/worktree/codexa/codex/20260712-codexa-agent-ab-eval) Tj T*
+(- Branch: codex/backend/codexa-20260712-codexa-agent-ab-eval) Tj T*
+(- Base: main) Tj T*
+(- Primary commit: ab7c3c2) Tj T*
+(- Subject: feat\(eval\): add external agent A/B harness) Tj T*
+() Tj T*
+(Changed Files) Tj T*
+() Tj T*
+(ab7c3c2 feat\(eval\): add external agent A/B harness) Tj T*
+(.gitattributes                                     |    1 +) Tj T*
+(README.md                                          |   42 +) Tj T*
+(benchmarks/agent-ab/README.md                      |   73 ++) Tj T*
+(benchmarks/agent-ab/config/codexa-instructions.md  |    6 +) Tj T*
+(benchmarks/agent-ab/config/codexa.mcp.json         |    8 +) Tj T*
+(benchmarks/agent-ab/experiment.json                |   45 +) Tj T*
+(.../environment/Dockerfile                         |   20 +) Tj T*
+(.../environment/codexa-mcp-entrypoint.sh           |   39 +) Tj T*
+(.../environment/project/.gitignore                 |    3 +) Tj T*
+(.../environment/project/README.md                  |   10 +) Tj T*
+(.../environment/project/src/init.py            |    1 +) Tj T*
+(.../environment/project/src/targets.py             |   11 +) Tj T*
+(.../environment/project/tests/testtargets.py      |   14 +) Tj T*
+(.../tasks/path-target-normalization/instruction.md |   13 +) Tj T*
+(.../solution/solution.patch                        |   38 +) Tj T*
+(.../path-target-normalization/solution/solve.sh    |    4 +) Tj T*
+(.../tasks/path-target-normalization/task.toml      |   32 +) Tj T*
+(.../path-target-normalization/tests/Dockerfile     |   16 +) Tj T*
+(.../tests/baseline/.gitignore                      |    3 +) Tj T*
+(.../tests/baseline/README.md                       |   10 +) Tj T*
+(.../tests/baseline/src/init.py                 |    1 +) Tj T*
+(.../tests/baseline/src/targets.py                  |   11 +) Tj T*
+(.../tests/baseline/tests/testtargets.py           |   14 +) Tj T*
+(.../tests/candidaterunner.py                      |   71 ++) Tj T*
+(.../tests/publictestrunner.py                    |   53 +) Tj T*
+(.../tasks/path-target-normalization/tests/test.sh  |    7 +) Tj T*
+(.../path-target-normalization/tests/verify.py      |  377 ++++++) Tj T*
+(docs/guides/agent-ab.md                            |  285 +++++) Tj T*
+(docs/guides/eval-gate.md                           |   11 +) Tj T*
+(.../plans/codexa-agent-ab-evaluation-2026-07-12.md |  200 ++++) Tj T*
+(reports/benchmarks/v0.10.0-agent-ab-pilot-v3.json  |  685 +++++++++++) Tj T*
+(scripts/agent-ab-analysis.mjs                      |  993 ++++++++++++++++) Tj T*
+(scripts/agent-ab.mjs                               | 1257 ++++++++++++++++++++) Tj T*
+(tests/agent-ab-analysis-validity.test.ts           |  567 +++++++++) Tj T*
+(tests/agent-ab-report.test.ts                      |  467 ++++++++) Tj T*
+(tests/agent-ab-runner.test.ts                      |  620 ++++++++++) Tj T*
+(tests/agent-ab.test.ts                             |  307 +++++) Tj T*
+(37 files changed, 6315 insertions\(+\)) Tj T*
+(create mode 100644 benchmarks/agent-ab/README.md) Tj T*
+(create mode 100644 benchmarks/agent-ab/config/codexa-instructions.md) Tj T*
+ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 3173 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(create mode 100644 benchmarks/agent-ab/config/codexa.mcp.json) Tj T*
+(create mode 100644 benchmarks/agent-ab/experiment.json) Tj T*
+(create mode 100644 benchmarks/agent-ab/tasks/path-target-) Tj T*
+(normalization/environment/Dockerfile) Tj T*
+(create mode 100644 benchmarks/agent-ab/tasks/path-target-normalization/environment/codexa-) Tj T*
+(mcp-entrypoint.sh) Tj T*
+(create mode 100644 benchmarks/agent-ab/tasks/path-target-) Tj T*
+(normalization/environment/project/.gitignore) Tj T*
+(create mode 100644 benchmarks/agent-ab/tasks/path-target-) Tj T*
+(normalization/environment/project/README.md) Tj T*
+(create mode 100644 benchmarks/agent-ab/tasks/path-target-) Tj T*
+(normalization/environment/project/src/init.py) Tj T*
+(create mode 100644 benchmarks/agent-ab/tasks/path-target-) Tj T*
+(normalization/environment/project/src/targets.py) Tj T*
+(create mode 100644 benchmarks/agent-ab/tasks/path-target-) Tj T*
+(normalization/environment/project/tests/testtargets.py) Tj T*
+(create mode 100644 benchmarks/agent-ab/tasks/path-target-normalization/instruction.md) Tj T*
+(create mode 100644 benchmarks/agent-ab/tasks/path-target-) Tj T*
+(normalization/solution/solution.patch) Tj T*
+(create mode 100644 benchmarks/agent-ab/tasks/path-target-normalization/solution/solve.sh) Tj T*
+(create mode 100644 benchmarks/agent-ab/tasks/path-target-normalization/task.toml) Tj T*
+(create mode 100644 benchmarks/agent-ab/tasks/path-target-normalization/tests/Dockerfile) Tj T*
+(create mode 100644 benchmarks/agent-ab/tasks/path-target-) Tj T*
+(normalization/tests/baseline/.gitignore) Tj T*
+(create mode 100644 benchmarks/agent-ab/tasks/path-target-) Tj T*
+(normalization/tests/baseline/README.md) Tj T*
+(create mode 100644 benchmarks/agent-ab/tasks/path-target-) Tj T*
+(normalization/tests/baseline/src/init.py) Tj T*
+(create mode 100644 benchmarks/agent-ab/tasks/path-target-) Tj T*
+(normalization/tests/baseline/src/targets.py) Tj T*
+(create mode 100644 benchmarks/agent-ab/tasks/path-target-) Tj T*
+(normalization/tests/baseline/tests/testtargets.py) Tj T*
+(create mode 100644 benchmarks/agent-ab/tasks/path-target-) Tj T*
+(normalization/tests/candidaterunner.py) Tj T*
+(create mode 100644 benchmarks/agent-ab/tasks/path-target-) Tj T*
+(normalization/tests/publictestrunner.py) Tj T*
+(create mode 100644 benchmarks/agent-ab/tasks/path-target-normalization/tests/test.sh) Tj T*
+(create mode 100644 benchmarks/agent-ab/tasks/path-target-normalization/tests/verify.py) Tj T*
+(create mode 100644 docs/guides/agent-ab.md) Tj T*
+(create mode 100644 docs/plans/codexa-agent-ab-evaluation-2026-07-12.md) Tj T*
+(create mode 100644 reports/benchmarks/v0.10.0-agent-ab-pilot-v3.json) Tj T*
+(create mode 100644 scripts/agent-ab-analysis.mjs) Tj T*
+(create mode 100644 scripts/agent-ab.mjs) Tj T*
+(create mode 100644 tests/agent-ab-analysis-validity.test.ts) Tj T*
+(create mode 100644 tests/agent-ab-report.test.ts) Tj T*
+(create mode 100644 tests/agent-ab-runner.test.ts) Tj T*
+(create mode 100644 tests/agent-ab.test.ts) Tj T*
+() Tj T*
+(Verification) Tj T*
+() Tj T*
+(- git diff --check: passed) Tj T*
+(- PYTHONDONTWRITEBYTECODE=1 npm run check: passed) Tj T*
+ET
+endstream
+endobj
+8 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 9 0 R >>
+endobj
+9 0 obj
+<< /Length 1061 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(- Codexa post-edit-review: /srv/.codex/artifacts/codexa/codex-backend-) Tj T*
+(codexa-20260712-codexa-agent-ab-eval/codexa-post-edit-review.txt) Tj T*
+(- Codexa test-plan: /srv/.codex/artifacts/codexa/codex-backend-codexa-20260712-codexa-agent-) Tj T*
+(ab-eval/codexa-test-plan.txt) Tj T*
+(- git diff --cached --check: passed) Tj T*
+(- staged safety scan: passed) Tj T*
+() Tj T*
+(Notes) Tj T*
+() Tj T*
+(Adds a source-only Harbor 0.18.0 control/treatment harness for measuring Codexa's effect on) Tj T*
+(coding-agent task completion with an external no-network verifier. Archives the non-) Tj T*
+(confirmatory GPT-5.6 Sol v3 pilot: both arms completed 2/2, while treatment used 3.88x) Tj T*
+(reported cost, 2.28x agent time, and 8.15x input tokens. The docs explicitly limit this to) Tj T*
+(one easy task and disclose that the registered control-character oracle covered ASCII C0) Tj T*
+(plus DEL, not Unicode C1. No Codexa production src, dependency, bin, manifest, lockfile, or) Tj T*
+(packed evaluator surface changes.) Tj T*
+ET
+endstream
+endobj
+xref
+0 10
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000127 00000 n 
+0000000197 00000 n 
+0000000323 00000 n 
+0000003600 00000 n 
+0000003726 00000 n 
+0000006950 00000 n 
+0000007076 00000 n 
+trailer
+<< /Size 10 /Root 1 0 R >>
+startxref
+8188
+%%EOF
