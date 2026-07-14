@@ -10,3 +10,5 @@ export { callersQuery, calleesQuery, dependencyPathQuery } from "./query/graph-t
 export { workflowPathQuery } from "./query/workflow.js";
 export { changePlanQuery } from "./query/change-plan.js";
 export { postEditReviewQuery } from "./query/post-edit.js";
+export { changeReviewQuery, renderChangeReviewGithubAnnotations, renderChangeReviewMarkdown, renderChangeReviewText } from "./query/change-review.js";
+export type { ChangeReviewData, ChangeReviewInput, ChangeReviewMode } from "./query/change-review.js";

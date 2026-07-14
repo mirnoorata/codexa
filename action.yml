@@ -1,0 +1,49 @@
+name: Codexa Change Review
+description: Produce a read-only Codexa change receipt for a committed base-to-head range.
+branding:
+  icon: search
+  color: gray-dark
+inputs:
+  base:
+    description: Base Git commit or ref.
+    required: true
+  head:
+    description: Head Git commit or ref; must match the checked-out commit.
+    required: false
+    default: HEAD
+  mode:
+    description: "Policy mode: observe, warn, or fail."
+    required: false
+    default: observe
+  change-type:
+    description: Change type used to shape impact and test guidance.
+    required: false
+    default: unknown
+  plan-snapshot:
+    description: Optional portable Codexa plan snapshot path inside the repository.
+    required: false
+    default: ""
+runs:
+  using: composite
+  steps:
+    - name: Set up Node.js
+      uses: actions/setup-node@v6
+      with:
+        node-version: "22"
+    - name: Generate change receipt
+      shell: bash
+      env:
+        CODEXA_ACTION_PATH: ${{ github.action_path }}
+        CODEXA_INPUT_BASE: ${{ inputs.base }}
+        CODEXA_INPUT_HEAD: ${{ inputs.head }}
+        CODEXA_INPUT_MODE: ${{ inputs.mode }}
+        CODEXA_INPUT_CHANGE_TYPE: ${{ inputs.change-type }}
+        CODEXA_INPUT_PLAN_SNAPSHOT: ${{ inputs.plan-snapshot }}
+      run: |
+        set -euo pipefail
+        version="$(node -p "require(process.env.CODEXA_ACTION_PATH + '/package.json').version")"
+        args=(review "$GITHUB_WORKSPACE" --base "$CODEXA_INPUT_BASE" --head "$CODEXA_INPUT_HEAD" --mode "$CODEXA_INPUT_MODE" --change-type "$CODEXA_INPUT_CHANGE_TYPE" --format github)
+        if [[ -n "$CODEXA_INPUT_PLAN_SNAPSHOT" ]]; then
+          args+=(--plan-snapshot "$CODEXA_INPUT_PLAN_SNAPSHOT")
+        fi
+        npx --yes --package "@mirnoorata/codexa@${version}" codexa "${args[@]}"

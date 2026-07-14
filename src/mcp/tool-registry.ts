@@ -234,6 +234,19 @@ export const MCP_TOOL_REGISTRY = [
     nextToolUse: ["post_edit_review", "test_plan"]
   },
   {
+    name: "change_review",
+    title: "Codexa committed change review",
+    description: "Review a clean committed base-to-head range with the same structured receipt used by the CLI and GitHub Action: identity, changed files, blast radius, plan conformance, test guidance, reported verification claims, verdict, and next actions. Medium output.",
+    tier: "advanced",
+    phase: "review",
+    cost: "medium",
+    writeEffects: "index-cache-if-auto-refresh",
+    readOnly: false,
+    useWhen: "Review a committed branch, pull request head, or agent-produced commit against a known base.",
+    avoidWhen: "Edits are still uncommitted; use post_edit_review for dirty-tree accountability.",
+    nextToolUse: []
+  },
+  {
     name: "symbol_context",
     title: "Codexa symbol context",
     description:

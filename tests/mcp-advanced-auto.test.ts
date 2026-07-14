@@ -18,6 +18,7 @@ const operations: Array<{ name: (typeof ADVANCED_MCP_TOOL_NAMES)[number]; argume
   { name: "focus_brief", arguments: { task: "inspect alphaSymbol", limit: 3 }, marker: "focusFileCount=" },
   { name: "impact", arguments: { symbol: "alphaSymbol", depth: 1 }, marker: "affectedFileCount=" },
   { name: "diff_impact", arguments: {}, marker: "changedFileCount=" },
+  { name: "change_review", arguments: { base: "HEAD", head: "HEAD" }, marker: "changedFileCount=" },
   { name: "symbol_context", arguments: { symbol: "alphaSymbol", depth: 1 }, marker: "callerCount=" },
   { name: "callers", arguments: { symbol: "alphaSymbol", limit: 3 }, marker: "edgeCount=" },
   { name: "callees", arguments: { symbol: "alphaSymbol", limit: 3 }, marker: "edgeCount=" },

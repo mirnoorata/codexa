@@ -4,9 +4,49 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { initializeProject, sessionStartSummary } from "../src/init.js";
+import { statusQuery } from "../src/queries.js";
 import { CODEXA_VERSION } from "../src/version.js";
 
 describe("Codexa project init", () => {
+  it("creates an idempotent read-only pull-request workflow with exact head checkout", async () => {
+    const repo = await createInitRepo();
+    const first = await initializeProject(repo, {
+      cliPath: "/opt/codexa/dist/cli.js",
+      ci: true
+    });
+
+    const workflowPath = path.join(repo, ".github/workflows/codexa-review.yml");
+    expect(first.ciWorkflowPath).toBe(workflowPath);
+    const workflow = await readFile(workflowPath, "utf8");
+    expect(workflow).toContain("permissions:\n  contents: read");
+    expect(workflow).toContain("persist-credentials: false");
+    expect(workflow).toContain("ref: ${{ github.event.pull_request.head.sha }}");
+    expect(workflow).toContain(`uses: mirnoorata/codexa@v${CODEXA_VERSION}`);
+    expect(workflow).toContain("mode: observe");
+    expect(workflow).not.toContain("pull-requests: write");
+    expect((await statusQuery(repo)).freshness.stale).toBe(false);
+
+    const second = await initializeProject(repo, { cliPath: "/opt/codexa/dist/cli.js", index: false, ci: true });
+    expect(second.ciWorkflowPath).toBe(workflowPath);
+    expect(await readFile(workflowPath, "utf8")).toBe(workflow);
+
+    await writeFile(workflowPath, `# team-owned prefix\n${workflow}`, "utf8");
+    await expect(initializeProject(repo, { cliPath: "/opt/codexa/dist/cli.js", index: false, ci: true })).rejects.toThrow(/not owned by Codexa/u);
+  });
+
+  it("refuses to overwrite an unowned CI workflow before writing Codexa config", async () => {
+    const repo = await createInitRepo();
+    const workflowDir = path.join(repo, ".github/workflows");
+    await mkdir(workflowDir, { recursive: true });
+    const workflowPath = path.join(workflowDir, "codexa-review.yml");
+    const original = "name: Team workflow\non: push\n";
+    await writeFile(workflowPath, original, "utf8");
+
+    await expect(initializeProject(repo, { cliPath: "/opt/codexa/dist/cli.js", index: false, ci: true })).rejects.toThrow(/not owned by Codexa/u);
+    expect(await readFile(workflowPath, "utf8")).toBe(original);
+    await expect(readFile(path.join(repo, ".codex/config.toml"), "utf8")).rejects.toThrow();
+  });
+
   it("writes repo-local Codex config, hook, and initial artifacts", async () => {
     const repo = await createInitRepo();
     const result = await initializeProject(repo, {

@@ -525,7 +525,7 @@ async function readJson<T>(filePath: string): Promise<{ ok: true; value: T } | {
   }
 }
 
-function isTaskSnapshot(value: unknown): value is TaskSnapshot {
+export function isTaskSnapshot(value: unknown): value is TaskSnapshot {
   if (!value || typeof value !== "object") {
     return false;
   }

@@ -34,6 +34,7 @@ try {
   const packageFiles = new Set((packageEntry.files ?? []).map((entry) => entry.path));
   requirePackedFile(packageFiles, "dist/cli.js");
   requirePackedFile(packageFiles, "dist/mcp.js");
+  requirePackedFile(packageFiles, "action.yml");
   requirePackedFile(packageFiles, "plugins/codexa/.codex-plugin/plugin.json");
   requirePackedFile(packageFiles, "plugins/codexa/.mcp.json");
   requirePackedFile(packageFiles, "plugins/codexa/scripts/codexa-mcp.js");
@@ -59,6 +60,13 @@ try {
   assertIncludes(help.stdout, "Usage: codexa", "installed help should use the codexa binary name");
 
   createFixtureRepo(targetRepo);
+  const reviewBase = run("git", ["rev-parse", "HEAD"], { cwd: targetRepo, label: "fixture review base" }).stdout.trim();
+  writeFileSync(path.join(targetRepo, "src", "index.ts"), "export function greeting() { return 'hello smoke committed' }\n", "utf8");
+  run("git", ["add", "src/index.ts"], { cwd: targetRepo, label: "fixture review git add" });
+  run("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "feat: committed review fixture"], {
+    cwd: targetRepo,
+    label: "fixture review git commit"
+  });
   const init = run(codexa, ["init", targetRepo, "--policy-pack"], {
     cwd: consumerRoot,
     label: "installed codexa init",
@@ -90,6 +98,23 @@ try {
     label: "installed codexa repo-map"
   });
   assertIncludes(repoMap.stdout, "Top modules:", "repo-map should render from installed package");
+
+  const review = run(codexa, ["review", targetRepo, "--base", reviewBase, "--head", "HEAD", "--format", "json", "--no-auto-refresh"], {
+    cwd: consumerRoot,
+    label: "installed codexa review"
+  });
+  assertIncludes(review.stdout, '"mode": "change_review"', "review should return the shared receipt schema");
+  assertIncludes(review.stdout, '"changedFileCount": 1', "review should inspect the committed base-to-head range");
+
+  const ciInit = run(codexa, ["init", targetRepo, "--ci"], {
+    cwd: consumerRoot,
+    label: "installed codexa init --ci"
+  });
+  assertIncludes(ciInit.stdout, "CI workflow:", "init --ci should report the managed workflow");
+  const ciWorkflowPath = path.join(targetRepo, ".github", "workflows", "codexa-review.yml");
+  if (!existsSync(ciWorkflowPath)) {
+    throw new Error(`init --ci did not create ${ciWorkflowPath}`);
+  }
 
   const brief = run(
     codexa,

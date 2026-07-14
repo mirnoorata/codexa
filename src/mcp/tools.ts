@@ -9,6 +9,7 @@ import {
   callersQuery,
   calleesQuery,
   changePlanQuery,
+  changeReviewQuery,
   contextPackQuery,
   dependencyPathQuery,
   diffImpactQuery,
@@ -419,6 +420,38 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
       annotations: sourceContext
     },
     async (input) => runTool((session) => diffImpactQuery(session, queryOptions), { toolName: "diff_impact", input, autoRecord: false })
+  );
+
+  defineTool(
+    "change_review",
+    {
+      inputSchema: {
+        base: z.string().min(1).max(256),
+        head: z.string().min(1).max(256).optional(),
+        mode: z.enum(["observe", "warn", "fail"]).optional(),
+        changeType: changeTypeSchema.optional(),
+        taskId: z.string().min(1).max(120).optional(),
+        ranTests: z.array(z.string().min(1).max(2_000)).max(30).optional(),
+        ranCommands: z.array(z.string().min(1).max(2_000)).max(30).optional(),
+        ranCommandReports: z.array(ranCommandReportSchema).max(30).optional(),
+        ...responseFormatSchema
+      },
+      outputSchema,
+      annotations: sourceContext
+    },
+    async (input) => runTool(
+      (session) => changeReviewQuery(session, {
+        base: input.base,
+        head: input.head,
+        mode: input.mode,
+        changeType: input.changeType,
+        taskId: input.taskId,
+        ranTests: input.ranTests,
+        ranCommands: input.ranCommands,
+        ranCommandReports: input.ranCommandReports
+      }, toolQueryOptions(input)),
+      { toolName: "change_review", input, autoRecord: false }
+    )
   );
 
   defineTool(

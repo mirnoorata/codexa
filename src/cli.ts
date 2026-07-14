@@ -88,6 +88,7 @@ program
   .option("--claude-md", "write a managed Codexa workflow block into the repo's CLAUDE.md (Claude Code)", false)
   .option("--claude", "write the codexa MCP server entry into the repo's .mcp.json for Claude Code", false)
   .option("--policy-pack", "also create the default local proof policy pack without overwriting existing policy files", false)
+  .option("--ci", "create the read-only Codexa pull-request review workflow", false)
   .description("Initialize Codexa for a project so future Codex sessions discover it automatically.")
   .action(
     async (
@@ -103,6 +104,7 @@ program
         claudeMd: boolean;
         claude: boolean;
         policyPack: boolean;
+        ci: boolean;
       }
     ) => {
       const result = await initializeProject(repo, {
@@ -115,7 +117,8 @@ program
         agentsMd: opts.agentsMd,
         claudeMd: opts.claudeMd,
         claude: opts.claude,
-        policyPack: opts.policyPack
+        policyPack: opts.policyPack,
+        ci: opts.ci
       });
       console.log(`Codexa initialized for ${result.repoRoot}`);
       console.log(`Config: ${result.configPath}`);
@@ -135,6 +138,9 @@ program
         console.log(`Policy pack: ${result.policyPack.directory}`);
         console.log(`Policy written: ${result.policyPack.written.join(", ") || "none"}`);
         console.log(`Policy skipped: ${result.policyPack.skipped.join(", ") || "none"}`);
+      }
+      if (result.ciWorkflowPath) {
+        console.log(`CI workflow: ${result.ciWorkflowPath}`);
       }
       if (result.launchNote) {
         console.log(result.launchNote);

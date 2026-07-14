@@ -114,6 +114,7 @@ export type QueryResultMode =
   | "session_context"
   | "change_plan"
   | "post_edit_review"
+  | "change_review"
   | "test_plan"
   | "repo_map"
   | "search"
@@ -270,6 +271,20 @@ export interface PostEditReviewData extends BaseQueryData {
   autoVerifyRunnerEvidence?: QueryObject[];
 }
 
+export interface ChangeReviewQueryData extends BaseQueryData {
+  mode: "change_review";
+  schemaVersion: 1;
+  policyMode?: "observe" | "warn" | "fail";
+  actionability?: "review" | "no_changes";
+  verdict?: QueryObject;
+  identity?: QueryObject;
+  change?: QueryObject;
+  impact?: QueryObject;
+  plan?: QueryObject;
+  verification?: QueryObject;
+  nextActions?: string[];
+}
+
 export interface TestPlanData extends BaseQueryData {
   mode: "test_plan";
   actionability?: string;
@@ -308,4 +323,4 @@ export interface ProofCardData extends BaseQueryData {
   gaps?: string[];
 }
 
-export type CodexaQueryData = ContextPacketData | FocusBriefData | ChangePlanData | PostEditReviewData | TestPlanData | ProofCardData;
+export type CodexaQueryData = ContextPacketData | FocusBriefData | ChangePlanData | PostEditReviewData | ChangeReviewQueryData | TestPlanData | ProofCardData;
