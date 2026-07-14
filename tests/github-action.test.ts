@@ -10,6 +10,8 @@ describe("Codexa GitHub Action", () => {
     expect(action).toContain("CODEXA_INPUT_BASE: ${{ inputs.base }}");
     expect(action).toContain("CODEXA_INPUT_HEAD: ${{ inputs.head }}");
     expect(action).toContain('args=(review "$GITHUB_WORKSPACE"');
+    expect(action).toContain('runtime_dir="$(mktemp -d "$RUNNER_TEMP/codexa-action.XXXXXX")"');
+    expect(action).toContain('cd "$runtime_dir"');
     expect(action).toContain('npx --yes --package "@mirnoorata/codexa@${version}" codexa "${args[@]}"');
     expect(action).toContain("--format github");
     expect(action).not.toMatch(/pull-requests:\s*write|issues:\s*write|gh\s+pr\s+comment|github-script/u);

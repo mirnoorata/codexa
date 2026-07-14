@@ -17,8 +17,10 @@ try {
   const targetRepo = path.join(tempRoot, "target-repo");
   const workspaceRoot = path.join(tempRoot, "workspace-root");
   const focusedRepo = path.join(workspaceRoot, "focused-repo");
+  const actionRuntime = path.join(tempRoot, "action-runtime");
   mkdirSync(packDir, { recursive: true });
   mkdirSync(consumerRoot, { recursive: true });
+  mkdirSync(actionRuntime, { recursive: true });
 
   const pack = run("npm", ["pack", "--dry-run=false", "--json", "--pack-destination", packDir], {
     cwd: repoRoot,
@@ -59,7 +61,7 @@ try {
   const help = run(codexa, ["--help"], { cwd: consumerRoot, label: "installed codexa --help" });
   assertIncludes(help.stdout, "Usage: codexa", "installed help should use the codexa binary name");
 
-  createFixtureRepo(targetRepo);
+  createFixtureRepo(targetRepo, { name: packageEntry.name, version: packageEntry.version });
   const reviewBase = run("git", ["rev-parse", "HEAD"], { cwd: targetRepo, label: "fixture review base" }).stdout.trim();
   writeFileSync(path.join(targetRepo, "src", "index.ts"), "export function greeting() { return 'hello smoke committed' }\n", "utf8");
   run("git", ["add", "src/index.ts"], { cwd: targetRepo, label: "fixture review git add" });
@@ -105,6 +107,13 @@ try {
   });
   assertIncludes(review.stdout, '"mode": "change_review"', "review should return the shared receipt schema");
   assertIncludes(review.stdout, '"changedFileCount": 1', "review should inspect the committed base-to-head range");
+
+  const actionBootstrap = run("npx", ["--yes", "--package", tarball, "codexa", "review", targetRepo, "--base", reviewBase, "--head", "HEAD", "--format", "json", "--no-auto-refresh"], {
+    cwd: actionRuntime,
+    label: "packed Action bootstrap from isolated runtime",
+    timeoutMs: 120_000
+  });
+  assertIncludes(actionBootstrap.stdout, '"mode": "change_review"', "isolated Action bootstrap should ignore a same-name consumer workspace");
 
   const ciInit = run(codexa, ["init", targetRepo, "--ci"], {
     cwd: consumerRoot,
@@ -223,11 +232,11 @@ function run(command, args, options) {
   return { stdout: result.stdout, stderr: result.stderr };
 }
 
-function createFixtureRepo(repo) {
+function createFixtureRepo(repo, identity = {}) {
   mkdirSync(path.join(repo, "src"), { recursive: true });
   mkdirSync(path.join(repo, "tests"), { recursive: true });
   run("git", ["init"], { cwd: repo, label: "fixture git init" });
-  writeFileSync(path.join(repo, "package.json"), `${JSON.stringify({ scripts: { test: "node --test" } }, null, 2)}\n`, "utf8");
+  writeFileSync(path.join(repo, "package.json"), `${JSON.stringify({ ...identity, scripts: { test: "node --test" } }, null, 2)}\n`, "utf8");
   writeFileSync(path.join(repo, "src", "index.ts"), "export function greeting() { return 'hello smoke' }\n", "utf8");
   writeFileSync(path.join(repo, "tests", "index.test.ts"), "import test from 'node:test'\nimport assert from 'node:assert/strict'\ntest('fixture', () => assert.equal(1, 1))\n", "utf8");
   run("git", ["add", "."], { cwd: repo, label: "fixture git add" });
