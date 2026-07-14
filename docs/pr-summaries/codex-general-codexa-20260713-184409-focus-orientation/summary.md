@@ -36,8 +36,9 @@ The delivery includes:
 
 - Source/config/tests: 21 files, 1,384 insertions, 55 deletions.
 - Review artifacts: this Markdown summary and its PDF rendering.
-- No source mutation, pull-request comments, or write permissions are exposed
-  by the Action or MCP operation.
+- The Action has read-only repository permissions and does not comment on pull
+  requests. The MCP operation never mutates source; its optional auto-refresh
+  may update Codexa-generated cache and index files.
 
 ## Adversarial Hardening
 
