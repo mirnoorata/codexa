@@ -2,7 +2,7 @@
   "name": "@mirnoorata/codexa",
   "version": "0.13.0",
   "mcpName": "io.github.mirnoorata/codexa",
-  "description": "Codex-native codebase intelligence context compiler and query-only MCP server.",
+  "description": "Local change evidence, impact review, and verification receipts for developers, CI, and coding agents.",
   "keywords": [
     "codex",
     "mcp",
@@ -10,7 +10,9 @@
     "symbol-search",
     "impact-analysis",
     "local-first",
-    "verification"
+    "verification",
+    "pull-request",
+    "github-actions"
   ],
   "license": "MIT",
   "repository": {
@@ -30,6 +32,7 @@
   },
   "files": [
     "dist",
+    "action.yml",
     "plugins/codexa",
     "integrations/claude-code",
     "integrations/.claude-plugin"

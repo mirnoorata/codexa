@@ -1,51 +1,23 @@
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { assertCiWorkflowWritable, writeCiWorkflow } from "./ci-workflow.js";
 import { renderCodexUseContract } from "./codex-contract.js";
 import { buildIndexLocked } from "./indexer.js";
 import { CORE_PROFILE_TOOL_NAMES, PRIMARY_CODEX_LOOP } from "./mcp-tool-catalog.js";
 import { resolveMcpRepoRoot } from "./mcp-repo-root.js";
 import { pinnableNodeExecPath } from "./node-version.js";
-import { assertPolicyPackWritable, initializePolicyPack, type PolicyPackInitResult } from "./policy-pack.js";
+import { assertPolicyPackWritable, initializePolicyPack } from "./policy-pack.js";
 import { statusQuery } from "./queries.js";
+import type { InitOptions, InitResult, InitToolProfile } from "./types/init.js";
 import { CODEXA_VERSION } from "./version.js";
+
+export type { InitOptions, InitResult, InitToolProfile } from "./types/init.js";
 
 const EDIT_HOOK_MATCHER = "Edit|MultiEdit|Write|NotebookEdit|apply_patch";
 const WORKSPACE_DIGEST_MAX_ROWS = 12;
 const WORKSPACE_DIGEST_MAX_FIELD = 180;
 const DIGEST_INACTIVE_STATUS_TOKENS = new Set(["done", "stale", "parked", "merged", "superseded", "removed", "shipped", "released", "closed", "abandoned"]);
-
-export type InitToolProfile = "core" | "full";
-
-export interface InitOptions {
-  autoRefresh?: boolean;
-  cliPath: string;
-  hooks?: boolean;
-  index?: boolean;
-  serverName?: string;
-  toolProfile?: InitToolProfile;
-  agentsMd?: boolean;
-  claudeMd?: boolean;
-  claude?: boolean;
-  policyPack?: boolean;
-}
-
-export interface InitResult {
-  repoRoot: string;
-  configPath: string;
-  hooksPath: string | null;
-  agentsMdPath: string | null;
-  claudeMdPath: string | null;
-  claudeMcpPath: string | null;
-  policyPack: PolicyPackInitResult | null;
-  serverName: string;
-  launchNote: string | null;
-  indexed: {
-    files: number;
-    symbols: number;
-    usageSites: number;
-  } | null;
-}
 
 export interface SessionStartOptions {
   autoRefresh?: boolean;
@@ -140,6 +112,9 @@ export async function initializeProject(repoInput: string | undefined, options: 
   if (options.policyPack) {
     await assertPolicyPackWritable(repoRoot);
   }
+  if (options.ci) {
+    await assertCiWorkflowWritable(repoRoot);
+  }
   await mkdir(codexDir, { recursive: true });
   const keepHooksFeature = writeHooks
     ? true
@@ -172,6 +147,7 @@ export async function initializeProject(repoInput: string | undefined, options: 
     await upsertClaudeMcpConfig(claudeMcpPath, { autoRefresh, launch, repoRoot, serverName, toolProfile });
   }
 
+  const ciWorkflowPath = options.ci ? await writeCiWorkflow(repoRoot, CODEXA_VERSION) : null;
   const indexed =
     options.index === false
       ? null
@@ -186,6 +162,7 @@ export async function initializeProject(repoInput: string | undefined, options: 
     claudeMdPath,
     claudeMcpPath,
     policyPack,
+    ciWorkflowPath,
     serverName,
     launchNote: launch.pinnedNpx
       ? `Codexa CLI resolved inside the evictable npx cache; generated configs pin "npx -y @mirnoorata/codexa@${CODEXA_VERSION}" instead of the cache path.`

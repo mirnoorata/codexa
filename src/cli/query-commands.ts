@@ -1,8 +1,10 @@
 import type { Command } from "commander";
+import { appendFile } from "node:fs/promises";
 import { RAW_SEARCH_EXPLICIT_PATTERN_LIMIT } from "../query/raw-search.js";
 import {
   callersQuery,
   calleesQuery,
+  changeReviewQuery,
   changePlanQuery,
   contextPackQuery,
   dependencyPathQuery,
@@ -22,6 +24,7 @@ import {
   testPlanQuery,
   workflowPathQuery
 } from "../queries.js";
+import { renderChangeReviewGithubAnnotations, renderChangeReviewMarkdown, type ChangeReviewData, type ChangeReviewMode } from "../query/change-review.js";
 import type { ChangeType, SessionMemoryInput } from "../types.js";
 import { parseInvariantReviewJsonOptions, validateArtifactIds, validateInvariantStatements } from "../lifecycle-contract.js";
 import {
@@ -43,6 +46,16 @@ function addWorkspaceRoutingOptions(command: Command): Command {
   return command
     .option("--workspace-focus-file <path>", "workspace focus file to consult when <repo> is a workspace launch root")
     .option("--workspace-session <id>", "active WORKING.md session row to prefer when <repo> is a workspace launch root");
+}
+
+function parseChangeReviewMode(value: string): ChangeReviewMode {
+  if (value === "observe" || value === "warn" || value === "fail") return value;
+  throw new Error("change review mode must be observe, warn, or fail");
+}
+
+function parseChangeReviewFormat(value: string): "text" | "json" | "github" {
+  if (value === "text" || value === "json" || value === "github") return value;
+  throw new Error("change review format must be text, json, or github");
 }
 
 export function registerQueryCommands(program: Command): void {
@@ -204,6 +217,61 @@ addWorkspaceRoutingOptions(program
   .action(async (repo: string, opts: { autoRefresh: boolean }) =>
     printQuery(await diffImpactQuery(await resolveQueryRepoRoot(repo, opts), { autoRefresh: opts.autoRefresh }))
   );
+
+addWorkspaceRoutingOptions(program
+  .command("review")
+  .argument("[repo]", "repository root; defaults to the current directory", process.cwd())
+  .requiredOption("--base <ref>", "base Git ref or commit for the review")
+  .option("--head <ref>", "head Git ref or commit; must match the indexed checkout", "HEAD")
+  .option("--mode <mode>", "policy mode: observe, warn, or fail", parseChangeReviewMode, "observe")
+  .option("--format <format>", "output format: text, json, or github", parseChangeReviewFormat, "text")
+  .option("--change-type <type>", "change type: style, api, behavior, rename, delete, unknown", parseChangeType, "unknown")
+  .option("--task-id <id>", "local Codexa change-plan snapshot to compare against")
+  .option("--plan-snapshot <path>", "portable Codexa change-plan snapshot inside the repository")
+  .option("--ran-test <command...>", "test command already run; repeat or pass multiple values")
+  .option("--ran-command <command...>", "verification command already run; repeat or pass multiple values")
+  .option("--ran-command-report <json...>", "structured command report JSON including command and optional exitCode")
+  .option("--auto-refresh", "refresh a stale or missing index before reviewing", true)
+  .option("--no-auto-refresh", "do not refresh a stale or missing index before reviewing"))
+  .description("Review a committed base-to-head change with one deterministic receipt for humans, agents, and CI.")
+  .action(async (repo: string, opts: {
+    base: string;
+    head: string;
+    mode: ChangeReviewMode;
+    format: "text" | "json" | "github";
+    changeType: ChangeType;
+    taskId?: string;
+    planSnapshot?: string;
+    ranTest?: string[];
+    ranCommand?: string[];
+    ranCommandReport?: string[];
+    autoRefresh: boolean;
+  } & CliQueryOptions) => {
+    const result = await changeReviewQuery(
+      await resolveQueryRepoRoot(repo, opts),
+      {
+        base: opts.base,
+        head: opts.head,
+        mode: opts.mode,
+        changeType: opts.changeType,
+        taskId: opts.taskId,
+        planSnapshot: opts.planSnapshot,
+        ranTests: opts.ranTest,
+        ranCommands: opts.ranCommand,
+        ranCommandReports: parseCommandReportOptions(opts.ranCommandReport)
+      },
+      { autoRefresh: opts.autoRefresh }
+    );
+    const data = result.data as ChangeReviewData;
+    if (opts.format === "json") console.log(JSON.stringify(data, null, 2));
+    else if (opts.format === "github") {
+      for (const annotation of renderChangeReviewGithubAnnotations(data)) console.log(annotation);
+      const summaryPath = process.env.GITHUB_STEP_SUMMARY;
+      if (summaryPath) await appendFile(summaryPath, `${renderChangeReviewMarkdown(data)}\n`, "utf8");
+      else console.log(renderChangeReviewMarkdown(data));
+    } else printQuery(result);
+    if (data.verdict.blocking) process.exitCode = 2;
+  });
 
 addWorkspaceRoutingOptions(program
   .command("test-plan")

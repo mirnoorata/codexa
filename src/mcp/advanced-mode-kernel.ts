@@ -9,6 +9,7 @@ const ADVANCED_MODES = new Set([
   "focus_brief",
   "impact",
   "diff_impact",
+  "change_review",
   "symbol_context",
   "callers",
   "callees",
@@ -144,6 +145,33 @@ export function advancedModeDecisionKernel(mode: string, data: Record<string, un
           unindexedFiles: identities(data.unindexedChanged, 2, fileIdentity)
         }
       });
+    }
+    case "change_review": {
+      const change = record(data.change);
+      const verdict = record(data.verdict);
+      const plan = record(data.plan);
+      const verification = record(data.verification);
+      const impact = record(data.impact);
+      const changedCount = number(change?.changedFileCount) ?? count(change?.changedFiles);
+      return projection(
+        verdict?.blocking === true ? "blocked" : bounded(verdict?.status, 40) ?? (changedCount > 0 ? "review" : "clean"),
+        {
+          counts: {
+            changedFileCount: changedCount,
+            affectedFileCount: number(impact?.affectedFileCount),
+            recommendedTestCount: count(verification?.recommendedTests),
+            coveredTestCount: count(verification?.coveredTests),
+            missingTestCount: count(verification?.missingTests),
+            unplannedFileCount: count(plan?.unplannedFiles)
+          },
+          detail: defined({ policyMode: bounded(data.policyMode, 40), planConformance: bounded(plan?.conformance, 40), blocking: verdict?.blocking }),
+          top: {
+            changedFiles: identities(change?.entries ?? change?.changedFiles, 3, fileIdentity),
+            affectedFiles: identities(impact?.affectedFiles, 3, fileIdentity),
+            tests: identities(verification?.recommendedTests, 2, fileIdentity)
+          }
+        }
+      );
     }
     case "symbol_context": {
       if (data.symbol === null) return projection("not_found", { counts: { candidateCount: count(data.candidates) }, top: { candidates: identities(data.candidates, 3, symbolIdentity) } });

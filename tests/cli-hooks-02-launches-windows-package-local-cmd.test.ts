@@ -361,7 +361,7 @@ it("reports doctor diagnostics for installed wiring and latest hook events", asy
     expect(doctorText.stdout).toContain("MCP readiness:");
     expect(doctorText.stdout).toContain("typed envelope: yes");
     expect(doctorText.stdout).toContain("primary tools: session_context, search, task_brief, change_plan, post_edit_review, test_plan, proof_card, capabilities");
-    expect(doctorText.stdout).toContain("registered tools: 22");
+    expect(doctorText.stdout).toContain("registered tools: 23");
     expect(doctorText.stdout).toContain("catalog/server parity: ok");
     expect(doctorText.stdout).toContain("source mutation tools: none");
     expect(doctorText.stdout).toContain("latest eval: pass score=1.000 suite=synthetic seed=unit-doctor");

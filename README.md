@@ -3,13 +3,15 @@
 [![Check](https://github.com/mirnoorata/codexa/actions/workflows/check.yml/badge.svg)](https://github.com/mirnoorata/codexa/actions/workflows/check.yml)
 [![npm](https://img.shields.io/npm/v/%40mirnoorata%2Fcodexa)](https://www.npmjs.com/package/@mirnoorata/codexa)
 
-Codexa is an edit-lifecycle governance layer for AI coding agents — plan
-conformance, drift review, and verification crediting — built on a local,
-deterministic codebase map.
+Codexa is a local change-evidence layer for human and agentic software
+workflows: committed-change receipts, plan conformance, blast-radius review,
+and verification crediting built on a deterministic codebase map.
 
-If Codex or Claude Code is the editor, Codexa is the proof layer: it shows what
-the agent read, what plan it saved, what changed, which checks would earn
-verification credit, and which gaps still need an honest handoff.
+In a pull request or terminal, Codexa reviews the committed base-to-head range
+and produces one receipt for developers, CI, and automation. If Codex or Claude
+Code is the editor, the same engine also shows what the agent read, what plan
+it saved, what changed, which checks would earn verification credit, and which
+gaps still need an honest handoff.
 
 In plain English: it reads a repository, builds a compact index of the files,
 symbols, imports, tests, risks, workflows, process traces, and graph clusters it
@@ -22,13 +24,23 @@ answer questions like:
 - Which tests are relevant?
 - Did my final dirty tree match the plan I saved before editing?
 - Did the verification commands the agent reported actually prove anything?
+- What does this committed branch change, and what should a reviewer verify?
 
 It is not an autonomous coding agent. It does not edit your source files through
 MCP. It is a context compiler, query server, and verification guide.
 
 ## Why Codexa
 
-Six capabilities are deliberately hard to find elsewhere:
+Seven capabilities are deliberately hard to find elsewhere:
+
+- **One committed-change receipt.** `codexa review` resolves an explicit Git
+  base and head without a shell, requires the head to match a clean indexed
+  checkout, and returns bounded identity, file changes, diff statistics,
+  graph impact, plan conformance, test recommendations, supplied execution
+  reported verification claims, verdict, and next actions. The CLI, GitHub Action, and advanced
+  MCP `change_review` operation use the same structured result. Observe mode
+  is the default and never blocks on heuristics; explicit fail mode blocks
+  only on local, range-bound plan drift or reported command failures.
 
 - **A drift loop.** `change_plan` snapshots per-file hashes plus symbol and
   risk baselines before editing; `post_edit_review` diffs the real dirty tree
@@ -126,6 +138,7 @@ Wire Codexa into another repository:
 ```bash
 codexa init /path/to/project --policy-pack            # Codex CLI: .codex/config.toml + hooks + local proof policies
 codexa init /path/to/project --claude --policy-pack   # also writes a repo-root .mcp.json for Claude Code
+codexa init /path/to/project --ci                     # also writes a read-only pull-request review workflow
 codexa session-start /path/to/project
 codexa prove /path/to/project --task "make this change safely"
 ```
@@ -177,6 +190,41 @@ region between the `<!-- >>> codexa managed -->` / `<!-- <<< codexa managed -->`
 markers is reserved: Codexa replaces it in place on every re-run (so the block
 stays current) and never edits anything outside it. Unbalanced or malformed
 markers abort the write instead of silently truncating the file.
+
+## Committed change receipts
+
+Use the receipt directly from a clean checkout. `head` must be the checked-out
+commit so Codexa cannot combine a different Git object with the current index:
+
+```bash
+codexa review . --base origin/main --head HEAD
+codexa review . --base origin/main --head HEAD --format json
+codexa review . --base origin/main --head HEAD --task-id my-saved-plan
+```
+
+The default `--mode observe` reports findings and exits successfully. `warn`
+uses warning annotations in GitHub output but remains non-blocking. `fail`
+returns exit code 2 only for range-bound local plan drift or a supplied
+structured command report with a nonzero exit; missing heuristic
+recommendations never become a blocking gate. Command and test claims are
+classified by the existing verification ledger and remain explicitly
+`reported`, not witnessed execution.
+
+`codexa init . --ci` creates `.github/workflows/codexa-review.yml`. The managed
+workflow has only `contents: read`, disables persisted checkout credentials,
+checks out the exact pull-request head, and writes the receipt to the workflow
+summary and annotations. It does not comment on pull requests. Codexa refuses
+to overwrite a workflow it does not own. Re-running `init --ci` updates only
+the Codexa-managed workflow.
+
+For portable plan comparison in CI, commit a redacted Codexa change-plan
+snapshot inside the repository and pass `--plan-snapshot <path>` (or the
+Action's `plan-snapshot` input). The loader accepts only a bounded, valid,
+non-symlink snapshot that resolves inside the repository. Local agent flows
+normally use `--task-id` or MCP `change_review.taskId` instead. A repository
+file is PR-controlled input, so portable plan conformance is advisory and never
+becomes a blocking verdict; local cache plans must also bind to the reviewed
+merge base before they can block explicit fail mode.
 
 The installed command is `codexa`, and the server can also run ad hoc:
 
@@ -409,7 +457,7 @@ writes are allowed; source-file mutation is not exposed through MCP tools.
 
 | Command | Use it for |
 | --- | --- |
-| `codexa init <repo>` | Write repo-local Codex MCP config/hooks and index the repo (`--claude` for a repo-root Claude Code `.mcp.json`, `--tools full` to expose every tool, `--agents-md` for an AGENTS.md workflow block). |
+| `codexa init <repo>` | Write repo-local Codex MCP config/hooks and index the repo (`--claude` for Claude Code, `--ci` for a read-only PR workflow, `--tools full` for every tool, `--agents-md` for an AGENTS.md workflow block). |
 | `codexa session-start <repo>` | Print cheap startup status and the automatic-use loop. |
 | `codexa index <repo>` | Build `.codex/codebase/` artifacts once. |
 | `codexa watch <repo>` | Keep artifacts fresh during active edit sessions. |
@@ -422,6 +470,7 @@ writes are allowed; source-file mutation is not exposed through MCP tools.
 | `codexa explain <repo> --symbol name` | Explain a symbol neighborhood. |
 | `codexa impact <repo> --file path` | Estimate blast radius for a file or symbol. |
 | `codexa diff-impact <repo>` | Summarize current dirty worktree impact. |
+| `codexa review <repo> --base <ref> --head HEAD` | Produce the shared committed-change receipt for terminal, JSON, or GitHub output. |
 | `codexa test-plan <repo> --diff` | Recommend targeted tests for current changes. Use `--file path` when there is no dirty diff but you already know the target. |
 | `codexa brief <repo> --task "..."` | Get the default read-first packet before editing. |
 | `codexa context-pack <repo> --task "..."` | Get a larger task-shaped context packet. |
@@ -598,6 +647,7 @@ placeholder_report
 symbol_context
 impact
 diff_impact
+change_review
 test_plan
 task_brief
 context_pack
