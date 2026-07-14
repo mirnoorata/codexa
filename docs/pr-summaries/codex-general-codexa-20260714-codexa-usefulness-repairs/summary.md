@@ -1,7 +1,7 @@
 # Change Summary
 
 - Project: `codexa`
-- Worktree: `/srv/worktree/codexa/codex/20260714-codexa-usefulness-repairs`
+- Worktree: isolated feature checkout
 - Branch: `codex/general/codexa-20260714-codexa-usefulness-repairs`
 - Base: `main`
 - Primary commit: `2817e73`
@@ -31,11 +31,11 @@
 - npm run smoke:package: passed
 - npm run eval:ci: passed
 - npm run benchmark:ci: passed
-- npm run benchmark:transport:exposure -- --repo /srv/codexa: passed
-- npm run benchmark:transport -- --repo /srv/codexa: passed
+- npm run benchmark:transport:exposure -- --repo <clean-candidate-checkout>: passed
+- npm run benchmark:transport -- --repo <clean-candidate-checkout>: passed
 - node scripts/agent-ab.mjs validate --config benchmarks/agent-ab/experiment.json: passed
-- Codexa post-edit-review: /srv/.codex/artifacts/codexa/codex-general-codexa-20260714-codexa-usefulness-repairs/codexa-post-edit-review.txt
-- Codexa test-plan: /srv/.codex/artifacts/codexa/codex-general-codexa-20260714-codexa-usefulness-repairs/codexa-test-plan.txt
+- Codexa post-edit-review: passed (local completion artifact)
+- Codexa test-plan: passed (local completion artifact)
 - git diff --cached --check: passed
 - staged safety scan: passed
 
