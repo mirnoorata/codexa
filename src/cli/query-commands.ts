@@ -25,6 +25,7 @@ import {
   workflowPathQuery
 } from "../queries.js";
 import { renderChangeReviewGithubAnnotations, renderChangeReviewMarkdown, type ChangeReviewData, type ChangeReviewMode } from "../query/change-review.js";
+import type { PostEditReviewData } from "../types/query-data.js";
 import type { ChangeType, SessionMemoryInput } from "../types.js";
 import { parseInvariantReviewJsonOptions, validateArtifactIds, validateInvariantStatements } from "../lifecycle-contract.js";
 import {
@@ -56,6 +57,11 @@ function parseChangeReviewMode(value: string): ChangeReviewMode {
 function parseChangeReviewFormat(value: string): "text" | "json" | "github" {
   if (value === "text" || value === "json" || value === "github") return value;
   throw new Error("change review format must be text, json, or github");
+}
+
+function parsePostEditReviewFormat(value: string): "text" | "json" {
+  if (value === "text" || value === "json") return value;
+  throw new Error("post-edit-review format must be text or json");
 }
 
 export function registerQueryCommands(program: Command): void {
@@ -691,7 +697,9 @@ addWorkspaceRoutingOptions(program
   .option("--semantic-timeout-ms <n>", "semantic query timeout in milliseconds", parseIntOption)
   .option("--semantic-batch-size <n>", "semantic query batch size", parseIntOption)
   .option("--auto-refresh", "refresh a stale or missing index before querying", true)
-  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying"))
+  .option("--no-auto-refresh", "do not refresh a stale or missing index before querying")
+  .option("--format <format>", "output format: text or json", parsePostEditReviewFormat, "text")
+  .option("--exit-code", "exit 2 when the verdict blocks completion (replan, run_tests, or blocking inspect)", false))
   .description("Compare the current dirty tree against a saved Codexa change-plan snapshot.")
   .action(
     async (
@@ -713,30 +721,37 @@ addWorkspaceRoutingOptions(program
         invariantReview?: string[];
         artifactId?: string[];
         autoRefresh: boolean;
+        format: "text" | "json";
+        exitCode: boolean;
       } & CliQueryOptions
-    ) =>
-      printQuery(
-        await postEditReviewQuery(
-          await resolveQueryRepoRoot(repo, opts),
-          {
-            task: opts.task,
-            taskId: opts.taskId,
-            files: opts.file,
-            symbols: opts.symbol,
-            changeType: opts.changeType,
-            tokenBudget: opts.budget,
-            limit: opts.limit,
-            includeSnippets: opts.snippets,
-            ranTests: opts.ranTest,
-            ranCommands: opts.ranCommand,
-            ranCommandReports: parseCommandReportOptions(opts.ranCommandReport),
-            waivedChecks: opts.waiveCheck,
-            waivers: parseWaiverOptions(opts.waiver),
-            invariantReviews: parseInvariantReviewJsonOptions(opts.invariantReview),
-            artifactIds: validateArtifactIds(opts.artifactId)
-          },
-          queryOptionsFromCli(opts)
-        )
-      )
+    ) => {
+      const result = await postEditReviewQuery(
+        await resolveQueryRepoRoot(repo, opts),
+        {
+          task: opts.task,
+          taskId: opts.taskId,
+          files: opts.file,
+          symbols: opts.symbol,
+          changeType: opts.changeType,
+          tokenBudget: opts.budget,
+          limit: opts.limit,
+          includeSnippets: opts.snippets,
+          ranTests: opts.ranTest,
+          ranCommands: opts.ranCommand,
+          ranCommandReports: parseCommandReportOptions(opts.ranCommandReport),
+          waivedChecks: opts.waiveCheck,
+          waivers: parseWaiverOptions(opts.waiver),
+          invariantReviews: parseInvariantReviewJsonOptions(opts.invariantReview),
+          artifactIds: validateArtifactIds(opts.artifactId)
+        },
+        queryOptionsFromCli(opts)
+      );
+      if (opts.format === "json") console.log(JSON.stringify(result.data, null, 2));
+      else printQuery(result);
+      // Missing authority fails closed: only an explicit non-blocking
+      // authority may exit 0 when the caller opted into gate semantics.
+      const authority = (result.data as PostEditReviewData).completionAuthority;
+      if (opts.exitCode && authority !== "complete" && authority !== "advisory_inspect") process.exitCode = 2;
+    }
   );
 }
