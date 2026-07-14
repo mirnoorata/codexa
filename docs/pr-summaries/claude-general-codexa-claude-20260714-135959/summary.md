@@ -1,7 +1,7 @@
 # Change Summary
 
 - Project: `codexa`
-- Worktree: `/srv/worktree/codexa/claude/claude-20260714-135959`
+- Worktree: `claude/claude-20260714-135959` (session checkout)
 - Branch: `claude/general/codexa-claude-20260714-135959`
 - Base: `main`
 - Primary commit: `5166b9d`
@@ -20,9 +20,9 @@
 - git diff --check: passed
 - npm run typecheck: passed
 - npm test: passed
-- Codexa post-edit-review: /srv/.codex/artifacts/codexa/claude-general-codexa-claude-20260714-135959/codexa-post-edit-review.txt
+- Codexa post-edit-review: local artifact: codexa-post-edit-review.txt
 - Codexa verdict: inspect (advisory)
-- Codexa test-plan: /srv/.codex/artifacts/codexa/claude-general-codexa-claude-20260714-135959/codexa-test-plan.txt
+- Codexa test-plan: local artifact: codexa-test-plan.txt
 - git diff --cached --check: passed
 - staged safety scan: passed
 

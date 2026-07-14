@@ -12,7 +12,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
 endobj
 5 0 obj
-<< /Length 2008 >>
+<< /Length 1874 >>
 stream
 BT
 /F1 10 Tf
@@ -21,7 +21,7 @@ BT
 (Change Summary) Tj T*
 () Tj T*
 (- Project: codexa) Tj T*
-(- Worktree: /srv/worktree/codexa/claude/claude-20260714-135959) Tj T*
+(- Worktree: claude/claude-20260714-135959 \(session checkout\)) Tj T*
 (- Branch: claude/general/codexa-claude-20260714-135959) Tj T*
 (- Base: main) Tj T*
 (- Primary commit: 5166b9d) Tj T*
@@ -40,11 +40,9 @@ BT
 (- git diff --check: passed) Tj T*
 (- npm run typecheck: passed) Tj T*
 (- npm test: passed) Tj T*
-(- Codexa post-edit-review: /srv/.codex/artifacts/codexa/claude-general-codexa-) Tj T*
-(claude-20260714-135959/codexa-post-edit-review.txt) Tj T*
+(- Codexa post-edit-review: local artifact: codexa-post-edit-review.txt) Tj T*
 (- Codexa verdict: inspect \(advisory\)) Tj T*
-(- Codexa test-plan: /srv/.codex/artifacts/codexa/claude-general-codexa-) Tj T*
-(claude-20260714-135959/codexa-test-plan.txt) Tj T*
+(- Codexa test-plan: local artifact: codexa-test-plan.txt) Tj T*
 (- git diff --cached --check: passed) Tj T*
 (- staged safety scan: passed) Tj T*
 () Tj T*
@@ -71,5 +69,5 @@ xref
 trailer
 << /Size 6 /Root 1 0 R >>
 startxref
-2370
+2236
 %%EOF
