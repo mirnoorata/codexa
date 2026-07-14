@@ -46,4 +46,7 @@ runs:
         if [[ -n "$CODEXA_INPUT_PLAN_SNAPSHOT" ]]; then
           args+=(--plan-snapshot "$CODEXA_INPUT_PLAN_SNAPSHOT")
         fi
+        runtime_dir="$(mktemp -d "$RUNNER_TEMP/codexa-action.XXXXXX")"
+        trap 'rm -rf "$runtime_dir"' EXIT
+        cd "$runtime_dir"
         npx --yes --package "@mirnoorata/codexa@${version}" codexa "${args[@]}"
