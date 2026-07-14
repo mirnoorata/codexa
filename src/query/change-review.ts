@@ -406,10 +406,12 @@ async function loadPortableSnapshot(repoRoot: string, snapshotInput: string): Pr
   if (!isSubpath(candidate, repoRoot)) throw new Error("portable plan snapshot must be inside the repository");
   const inputStat = await lstat(candidate, { bigint: true });
   if (!inputStat.isFile() || inputStat.isSymbolicLink()) throw new Error("portable plan snapshot must be a regular non-symlink file");
+  assertStableFileIdentity(inputStat, "input portable plan snapshot");
   const resolved = await realpath(candidate);
   if (!isSubpath(resolved, await realpath(repoRoot))) throw new Error("portable plan snapshot resolves outside the repository");
   const validatedStat = await lstat(resolved, { bigint: true });
   assertStableFileIdentity(validatedStat, "validated portable plan snapshot");
+  if (validatedStat.dev !== inputStat.dev || validatedStat.ino !== inputStat.ino) throw new Error("portable plan snapshot changed during containment validation");
   let handle;
   try {
     handle = await open(candidate, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
