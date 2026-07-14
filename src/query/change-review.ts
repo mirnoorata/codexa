@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { open, realpath } from "node:fs/promises";
+import { lstat, open, realpath } from "node:fs/promises";
 import path from "node:path";
 import type { CommandResult } from "../command.js";
 import { impactEntriesForFile, evidenceTierForImpact } from "./impact.js";
@@ -404,8 +404,12 @@ async function loadPortableSnapshot(repoRoot: string, snapshotInput: string): Pr
   if (!snapshotInput || snapshotInput.length > MAX_REPO_PATH_LENGTH || /[\u0000-\u001f\u007f]/u.test(snapshotInput)) throw new Error("portable plan snapshot path is invalid or too long");
   const candidate = path.resolve(repoRoot, snapshotInput);
   if (!isSubpath(candidate, repoRoot)) throw new Error("portable plan snapshot must be inside the repository");
+  const inputStat = await lstat(candidate, { bigint: true });
+  if (!inputStat.isFile() || inputStat.isSymbolicLink()) throw new Error("portable plan snapshot must be a regular non-symlink file");
   const resolved = await realpath(candidate);
   if (!isSubpath(resolved, await realpath(repoRoot))) throw new Error("portable plan snapshot resolves outside the repository");
+  const validatedStat = await lstat(resolved, { bigint: true });
+  assertStableFileIdentity(validatedStat, "validated portable plan snapshot");
   let handle;
   try {
     handle = await open(candidate, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
@@ -414,9 +418,15 @@ async function loadPortableSnapshot(repoRoot: string, snapshotInput: string): Pr
     throw error;
   }
   try {
-    const stat = await handle.stat();
+    const stat = await handle.stat({ bigint: true });
     if (!stat.isFile()) throw new Error("portable plan snapshot must be a regular non-symlink file");
-    if (stat.size > MAX_PORTABLE_SNAPSHOT_BYTES) throw new Error(`portable plan snapshot exceeds ${MAX_PORTABLE_SNAPSHOT_BYTES} bytes`);
+    assertStableFileIdentity(stat, "opened portable plan snapshot");
+    if (stat.dev !== validatedStat.dev || stat.ino !== validatedStat.ino) throw new Error("portable plan snapshot changed while it was being validated");
+    const openedPathStat = await lstat(candidate, { bigint: true });
+    if (!openedPathStat.isFile() || openedPathStat.isSymbolicLink() || openedPathStat.dev !== stat.dev || openedPathStat.ino !== stat.ino) {
+      throw new Error("portable plan snapshot path changed while it was being opened");
+    }
+    if (stat.size > BigInt(MAX_PORTABLE_SNAPSHOT_BYTES)) throw new Error(`portable plan snapshot exceeds ${MAX_PORTABLE_SNAPSHOT_BYTES} bytes`);
     const buffer = Buffer.allocUnsafe(MAX_PORTABLE_SNAPSHOT_BYTES + 1);
     let bytesRead = 0;
     while (bytesRead < buffer.length) {
@@ -431,6 +441,10 @@ async function loadPortableSnapshot(repoRoot: string, snapshotInput: string): Pr
   } finally {
     await handle.close();
   }
+}
+
+function assertStableFileIdentity(stat: { dev: bigint; ino: bigint }, label: string): void {
+  if (stat.dev < 0n || stat.ino <= 0n) throw new Error(`${label} does not expose a stable file identity`);
 }
 
 function validateRef(value: string, label: string): string {
