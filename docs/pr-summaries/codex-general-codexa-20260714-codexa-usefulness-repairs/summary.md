@@ -31,8 +31,8 @@
 - npm run smoke:package: passed
 - npm run eval:ci: passed
 - npm run benchmark:ci: passed
-- npm run benchmark:transport:exposure -- --repo <clean-candidate-checkout>: passed
-- npm run benchmark:transport -- --repo <clean-candidate-checkout>: passed
+- `npm run benchmark:transport:exposure -- --repo <clean-candidate-checkout>`: passed
+- `npm run benchmark:transport -- --repo <clean-candidate-checkout>`: passed
 - node scripts/agent-ab.mjs validate --config benchmarks/agent-ab/experiment.json: passed
 - Codexa post-edit-review: passed (local completion artifact)
 - Codexa test-plan: passed (local completion artifact)
