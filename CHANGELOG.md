@@ -1,5 +1,21 @@
 # Changelog
 
+## [0.14.0](https://github.com/mirnoorata/codexa/compare/v0.13.0...v0.14.0) (2026-07-14)
+
+
+### Features
+
+* **review:** add shared committed change receipts ([f058c44](https://github.com/mirnoorata/codexa/commit/f058c447d480d6183137150700412273e3b8238b))
+
+
+### Bug Fixes
+
+* **action:** isolate packaged review bootstrap ([084c1fb](https://github.com/mirnoorata/codexa/commit/084c1fb5b711a8c5512cd858c8ba77c10cf7a174))
+* **mcp:** expose portable change review plans ([eb8dbe2](https://github.com/mirnoorata/codexa/commit/eb8dbe27dfe2f3f5f6e94d09b1d68995978837bf))
+* **review:** bind portable plans to validated files ([26b4b17](https://github.com/mirnoorata/codexa/commit/26b4b1745116876a5878b2342c754fb3fc56f071))
+* **review:** require deterministic clean change evidence ([f7d3aa4](https://github.com/mirnoorata/codexa/commit/f7d3aa48015ef11f8be410142ccbba50a5d5e05e))
+* **review:** verify snapshot identity before opening ([262c5e5](https://github.com/mirnoorata/codexa/commit/262c5e581669addcaf72c8d1fb376858a2d8c058))
+
 ## [0.13.0](https://github.com/mirnoorata/codexa/compare/v0.12.0...v0.13.0) (2026-07-13)
 
 
