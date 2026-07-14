@@ -1,0 +1,73 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 1874 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(Change Summary) Tj T*
+() Tj T*
+(- Project: codexa) Tj T*
+(- Worktree: claude/claude-20260714-135959 \(session checkout\)) Tj T*
+(- Branch: claude/general/codexa-claude-20260714-135959) Tj T*
+(- Base: main) Tj T*
+(- Primary commit: 5166b9d) Tj T*
+(- Subject: feat\(cli\): add post-edit-review --format json and opt-in --exit-code) Tj T*
+() Tj T*
+(Changed Files) Tj T*
+() Tj T*
+(5166b9d feat\(cli\): add post-edit-review --format json and opt-in --exit-code) Tj T*
+(src/cli/query-commands.ts               | 65 ++++++++++++++----------) Tj T*
+(tests/post-edit-review-cli-gate.test.ts | 88 +++++++++++++++++++++++++++++++++) Tj T*
+(2 files changed, 128 insertions\(+\), 25 deletions\(-\)) Tj T*
+(create mode 100644 tests/post-edit-review-cli-gate.test.ts) Tj T*
+() Tj T*
+(Verification) Tj T*
+() Tj T*
+(- git diff --check: passed) Tj T*
+(- npm run typecheck: passed) Tj T*
+(- npm test: passed) Tj T*
+(- Codexa post-edit-review: local artifact: codexa-post-edit-review.txt) Tj T*
+(- Codexa verdict: inspect \(advisory\)) Tj T*
+(- Codexa test-plan: local artifact: codexa-test-plan.txt) Tj T*
+(- git diff --cached --check: passed) Tj T*
+(- staged safety scan: passed) Tj T*
+() Tj T*
+(Notes) Tj T*
+() Tj T*
+(Downstream completion gates \(commit hooks, CI wrappers\) currently have to parse the human-) Tj T*
+(oriented post-edit-review text to act on the verdict, and the command always exits 0. This) Tj T*
+(mirrors the existing review --format/exit-code pattern: --format json emits the structured) Tj T*
+(review data, and opt-in --exit-code exits 2 unless completionAuthority is complete or) Tj T*
+(advisoryinspect \(missing authority fails closed; testsrequired counts as blocking,) Tj T*
+(consistent with mcpAuthorityBlockReason\). Both flags are opt-in ? existing consumers \(hooks,) Tj T*
+(wrappers, MCP\) see byte-identical behavior.) Tj T*
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000185 00000 n 
+0000000311 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+2236
+%%EOF
