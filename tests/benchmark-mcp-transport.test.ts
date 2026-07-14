@@ -26,26 +26,37 @@ describe("reproducible MCP transport comparison", () => {
       { cwd: process.cwd(), encoding: "utf8", timeout: 60_000, maxBuffer: 4 * 1024 * 1024 }
     );
     const report = JSON.parse(stdout) as {
+      schemaVersion: number;
       passed: boolean;
       measurement: { unit: string };
       baseline: { directToolCount: number; advertisedLogicalOperationNames: string[] };
       candidate: { directToolCount: number; advertisedLogicalOperationNames: string[]; receiptFlags: boolean[]; detailedResourceReadable: boolean };
       comparison: {
         advertisedLogicalOperationNameParity: boolean;
+        baselineLogicalOperationsRetained: boolean;
+        missingCandidateLogicalOperationNames: string[];
+        addedCandidateLogicalOperationNames: string[];
         baselineAdvertisementAndDiscoveryDecodedPayloadBytes: number;
         candidateAdvertisementAndDiscoveryDecodedPayloadBytes: number;
         toolsListDecodedPayloadReductionPercent: number;
       };
-      checks: { advertisementAndDiscoveryPayloadReduction: boolean; baselineServerMatchesExecutable: boolean; candidateServerMatchesExecutable: boolean };
+      checks: { advertisedLogicalOperationCompatibility: boolean; advertisementAndDiscoveryPayloadReduction: boolean; baselineServerMatchesExecutable: boolean; candidateServerMatchesExecutable: boolean };
       claimBoundary: string;
     };
+    expect(report.schemaVersion).toBe(3);
     expect(report.passed).toBe(true);
     expect(report.candidate.directToolCount).toBeLessThan(report.baseline.directToolCount);
     expect(report.candidate.advertisedLogicalOperationNames).toEqual(report.baseline.advertisedLogicalOperationNames);
-    expect(report.comparison).toMatchObject({ advertisedLogicalOperationNameParity: true });
+    expect(report.comparison).toMatchObject({
+      advertisedLogicalOperationNameParity: true,
+      baselineLogicalOperationsRetained: true,
+      missingCandidateLogicalOperationNames: [],
+      addedCandidateLogicalOperationNames: []
+    });
     expect(report.comparison.toolsListDecodedPayloadReductionPercent).toBeGreaterThan(0);
     expect(report.comparison.candidateAdvertisementAndDiscoveryDecodedPayloadBytes).toBeLessThan(report.comparison.baselineAdvertisementAndDiscoveryDecodedPayloadBytes);
     expect(report.checks).toMatchObject({
+      advertisedLogicalOperationCompatibility: true,
       advertisementAndDiscoveryPayloadReduction: true,
       baselineServerMatchesExecutable: true,
       candidateServerMatchesExecutable: true
@@ -55,7 +66,7 @@ describe("reproducible MCP transport comparison", () => {
     expect(report.claimBoundary).toContain("does not measure agent quality");
   }, 90_000);
 
-  it.skipIf(process.env.CODEXA_RUN_V012_TRANSPORT_COMPAT !== "1")("materializes and identifies the pinned v0.12.0 baseline entirely from local history", async () => {
+  it.skipIf(process.env.CODEXA_RUN_V012_TRANSPORT_COMPAT !== "1")("materializes the pinned v0.12.0 baseline across root lockfile metadata changes", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-transport-release-benchmark-"));
     const repo = await createIndexedMcpRepo(workspace, "repo", "alpha", "alphaSymbol");
     await writeFile(path.join(repo, ".git", "info", "exclude"), ".codex/\n", "utf8");
@@ -70,15 +81,18 @@ describe("reproducible MCP transport comparison", () => {
       "--calls", "2"
     ], { cwd: process.cwd(), encoding: "utf8", timeout: 90_000, maxBuffer: 4 * 1024 * 1024 });
     const report = JSON.parse(stdout) as {
+      schemaVersion: number;
       passed: boolean;
       comparisonMode: string;
-      input: { baseline: { release: { sourceCommit: string; artifactKind: string }; executable: { version: string; sourceCommit: string; cliSha256: string; distTreeSha256: string } } };
+      input: { baseline: { release: { sourceCommit: string; artifactKind: string; dependencyMaterialization: string }; executable: { version: string; sourceCommit: string; cliSha256: string; distTreeSha256: string } } };
       baseline: { serverIdentity: { name: string; version: string } };
-      checks: { pinnedBaselineServerIdentity: boolean };
+      comparison: { advertisedLogicalOperationNameParity: boolean; baselineLogicalOperationsRetained: boolean; missingCandidateLogicalOperationNames: string[]; addedCandidateLogicalOperationNames: string[] };
+      checks: { advertisedLogicalOperationCompatibility: boolean; pinnedBaselineServerIdentity: boolean };
     };
-    expect(report).toMatchObject({ passed: true, comparisonMode: "pinned-release-versus-candidate" });
+    expect(report).toMatchObject({ schemaVersion: 3, passed: true, comparisonMode: "pinned-release-versus-candidate" });
     expect(report.input.baseline.release).toMatchObject({
       sourceCommit: "68061b022cfc9f4dcc1aaf3d7776710196cc69b0",
+      dependencyMaterialization: "npm-ci-pinned-lock-ignore-scripts",
       artifactKind: "locally-built-tagged-source"
     });
     expect(report.input.baseline.executable).toMatchObject({
@@ -88,6 +102,13 @@ describe("reproducible MCP transport comparison", () => {
     });
     expect(report.input.baseline.executable.distTreeSha256).toMatch(/^[a-f0-9]{64}$/u);
     expect(report.baseline.serverIdentity).toEqual({ name: "codexa", version: "0.12.0" });
+    expect(report.comparison).toMatchObject({
+      advertisedLogicalOperationNameParity: false,
+      baselineLogicalOperationsRetained: true,
+      missingCandidateLogicalOperationNames: []
+    });
+    expect(report.comparison.addedCandidateLogicalOperationNames).toContain("change_review");
+    expect(report.checks.advertisedLogicalOperationCompatibility).toBe(true);
     expect(report.checks.pinnedBaselineServerIdentity).toBe(true);
   }, 120_000);
 });

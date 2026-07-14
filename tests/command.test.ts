@@ -174,6 +174,21 @@ describe("runCommand", () => {
     expect(help.stdout).toContain("--waiver <json...>");
   });
 
+  it("distinguishes test references from commands in committed-change review help", async () => {
+    const help = await runCommand(process.execPath, [path.resolve("dist/cli.js"), "review", "--help"], {
+      timeoutMs: 2_000,
+      maxBufferBytes: 32 * 1024
+    });
+
+    expect(help.ok).toBe(true);
+    const normalizedHelp = help.stdout.replace(/\s+/gu, " ");
+    expect(help.stdout).toContain("--ran-test <test...>");
+    expect(normalizedHelp).toContain("test file or direct test reference already run");
+    expect(help.stdout).toContain("--ran-command <command...>");
+    expect(normalizedHelp).toContain("verification command already run");
+    expect(help.stdout).not.toContain("--ran-test <command...>");
+  });
+
   it("passes SCIP report arguments through the static-analysis CLI", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-cli-scip-"));
     await mkdir(path.join(repo, "src"), { recursive: true });

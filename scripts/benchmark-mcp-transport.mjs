@@ -10,7 +10,6 @@ import {
   readdirSync,
   realpathSync,
   rmSync,
-  symlinkSync,
   writeFileSync
 } from "node:fs";
 import os from "node:os";
@@ -55,6 +54,9 @@ try {
   const baseline = await measureArm("baseline", baselineCli, baselineTools, repoHead);
   const candidate = await measureArm("candidate", candidateCli, candidateTools, repoHead);
   const advertisedLogicalOperationNameParity = equalArrays(baseline.advertisedLogicalOperationNames, candidate.advertisedLogicalOperationNames);
+  const missingCandidateLogicalOperationNames = baseline.advertisedLogicalOperationNames.filter((name) => !candidate.advertisedLogicalOperationNames.includes(name));
+  const addedCandidateLogicalOperationNames = candidate.advertisedLogicalOperationNames.filter((name) => !baseline.advertisedLogicalOperationNames.includes(name));
+  const baselineLogicalOperationsRetained = missingCandidateLogicalOperationNames.length === 0;
   const baselineAdvertisementAndDiscoveryBytes = baseline.toolsListDecodedPayloadBytes + baseline.capabilityDiscoveryDecodedPayloadBytes;
   const candidateAdvertisementAndDiscoveryBytes = candidate.toolsListDecodedPayloadBytes + candidate.capabilityDiscoveryDecodedPayloadBytes;
   const checks = {
@@ -63,14 +65,14 @@ try {
     baselineServerMatchesExecutable: baseline.serverIdentity.name === "codexa" && baseline.serverIdentity.version === baselineIdentity.version,
     candidateServerMatchesExecutable: candidate.serverIdentity.name === "codexa" && candidate.serverIdentity.version === candidateIdentity.version,
     pinnedBaselineServerIdentity: !materializedBaseline || (baseline.serverIdentity.name === "codexa" && baseline.serverIdentity.version === materializedBaseline.release.version),
-    advertisedLogicalOperationNameParity,
+    advertisedLogicalOperationCompatibility: materializedBaseline ? baselineLogicalOperationsRetained : advertisedLogicalOperationNameParity,
     directSchemaReduction: candidate.directToolCount < baseline.directToolCount,
     advertisementAndDiscoveryPayloadReduction: candidateAdvertisementAndDiscoveryBytes < baselineAdvertisementAndDiscoveryBytes,
     candidateDetailedResourceReadable: candidate.detailedResourceReadable === true,
     candidateReceiptOrdering: candidate.receiptFlags[0] === false && candidate.receiptFlags.slice(1).every(Boolean)
   };
   const report = {
-    schemaVersion: 2,
+    schemaVersion: 3,
     kind: "codexa-mcp-decoded-application-payload-comparison",
     comparisonMode: materializedBaseline
       ? "pinned-release-versus-candidate"
@@ -96,6 +98,9 @@ try {
     candidate,
     comparison: {
       advertisedLogicalOperationNameParity,
+      baselineLogicalOperationsRetained,
+      missingCandidateLogicalOperationNames,
+      addedCandidateLogicalOperationNames,
       baselineAdvertisementAndDiscoveryDecodedPayloadBytes: baselineAdvertisementAndDiscoveryBytes,
       candidateAdvertisementAndDiscoveryDecodedPayloadBytes: candidateAdvertisementAndDiscoveryBytes,
       advertisementAndDiscoveryDecodedPayloadReductionPercent: reductionPercent(baselineAdvertisementAndDiscoveryBytes, candidateAdvertisementAndDiscoveryBytes),
@@ -105,7 +110,7 @@ try {
     },
     checks,
     passed: Object.values(checks).every(Boolean),
-    claimBoundary: "Reproducible decoded MCP application-payload mechanics on one clean indexed checkout; advertisement plus optional capability discovery must be strictly smaller with no claimed effect-size threshold, task-result reductions remain observations because tiny tasks can be dominated by fixed decision-safety metadata, advertised operation-name parity is not execution parity, and this does not measure agent quality, task success, model capability, tokens, cost, wire bytes, or no-Codexa net value."
+    claimBoundary: "Reproducible decoded MCP application-payload mechanics on one clean indexed checkout; advertisement plus optional capability discovery must be strictly smaller with no claimed effect-size threshold, same-build exposure requires advertised operation-name parity while a pinned older release requires every baseline operation to remain advertised and permits candidate additions, task-result reductions remain observations because tiny tasks can be dominated by fixed decision-safety metadata, advertised compatibility is not execution parity, and this does not measure agent quality, task success, model capability, tokens, cost, wire bytes, or no-Codexa net value."
   };
 
   if (options.output) {
@@ -293,16 +298,10 @@ function materializePinnedRelease(sourceRepo, releaseName) {
   const release = PINNED_RELEASES[releaseName];
   const sourceGitRoot = gitRoot(sourceRepo);
   if (!sourceGitRoot) throw new Error("--release-baseline requires a Git source checkout");
-  const localLock = path.join(sourceGitRoot, "package-lock.json");
-  if (!existsSync(localLock) || sha256File(localLock) !== release.packageLockSha256) {
-    throw new Error(`Cannot reuse local node_modules for ${releaseName}: current package-lock.json must match pinned SHA-256 ${release.packageLockSha256}`);
-  }
-  const nodeModules = path.join(sourceGitRoot, "node_modules");
-  if (!existsSync(nodeModules)) throw new Error(`Cannot build ${releaseName} offline: install dependencies in ${sourceGitRoot} first`);
   try {
     execFileSync("git", ["cat-file", "-e", `${release.commit}^{commit}`], { cwd: sourceGitRoot, stdio: "ignore" });
   } catch {
-    throw new Error(`Pinned ${releaseName} commit ${release.commit} is absent locally; fetch repository history explicitly before running this offline benchmark`);
+    throw new Error(`Pinned ${releaseName} commit ${release.commit} is absent locally; fetch repository history explicitly before running this benchmark`);
   }
 
   const tempRoot = mkdtempSync(path.join(os.tmpdir(), `codexa-${releaseName.replace(/[^a-z0-9.-]/giu, "-")}-`));
@@ -313,7 +312,7 @@ function materializePinnedRelease(sourceRepo, releaseName) {
     const pinnedLock = path.join(checkout, "package-lock.json");
     if (sha256File(pinnedLock) !== release.packageLockSha256) throw new Error(`${releaseName} package-lock.json does not match its pinned digest`);
     writeFileSync(path.join(checkout, ".git", "info", "exclude"), "node_modules\n", "utf8");
-    symlinkSync(nodeModules, path.join(checkout, "node_modules"), process.platform === "win32" ? "junction" : "dir");
+    installPinnedDependencies(checkout, releaseName);
     execFileSync(process.platform === "win32" ? "npm.cmd" : "npm", ["run", "build", "--silent"], { cwd: checkout, stdio: "ignore" });
     const cli = path.join(checkout, "dist", "cli.js");
     const identity = executableIdentity(cli);
@@ -331,6 +330,7 @@ function materializePinnedRelease(sourceRepo, releaseName) {
         version: release.version,
         sourceCommit: release.commit,
         packageLockSha256: release.packageLockSha256,
+        dependencyMaterialization: "npm-ci-pinned-lock-ignore-scripts",
         artifactKind: "locally-built-tagged-source",
         npmTarballIdentity: false
       },
@@ -339,6 +339,22 @@ function materializePinnedRelease(sourceRepo, releaseName) {
   } catch (error) {
     rmSync(tempRoot, { recursive: true, force: true });
     throw error;
+  }
+}
+
+function installPinnedDependencies(checkout, releaseName) {
+  try {
+    execFileSync(
+      process.platform === "win32" ? "npm.cmd" : "npm",
+      ["ci", "--ignore-scripts", "--no-audit", "--no-fund", "--prefer-offline"],
+      { cwd: checkout, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }
+    );
+  } catch (error) {
+    const stderr = error && typeof error === "object" && "stderr" in error
+      ? String(error.stderr ?? "").trim()
+      : "";
+    const detail = stderr || (error instanceof Error ? error.message : String(error));
+    throw new Error(`Unable to install ${releaseName} dependencies from its pinned lockfile with lifecycle scripts disabled: ${detail.slice(-1_000)}`);
   }
 }
 
