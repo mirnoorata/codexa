@@ -1,0 +1,85 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 2561 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(Change Summary) Tj T*
+() Tj T*
+(- Project: codexa) Tj T*
+(- Worktree: /srv/worktree/codexa/codex/20260714-codexa-usefulness-repairs) Tj T*
+(- Branch: codex/general/codexa-20260714-codexa-usefulness-repairs) Tj T*
+(- Base: main) Tj T*
+(- Primary commit: 2817e73) Tj T*
+(- Subject: fix\(workflows\): harden usefulness validation) Tj T*
+() Tj T*
+(Changed Files) Tj T*
+() Tj T*
+(2817e73 fix\(workflows\): harden usefulness validation) Tj T*
+(.github/workflows/check.yml                        |   6 +-) Tj T*
+(.gitignore                                         |   1 +) Tj T*
+(docs/plans/codexa-agent-utility-plan-2026-07-14.md | 340 +++++++++++++++++++++) Tj T*
+(.../codexa-zero-loss-overhead-plan-2026-07-13.md   |  16 +-) Tj T*
+(.../benchmarks/v0.14.0-usefulness-baseline.json    | 147 +++++++++) Tj T*
+(scripts/benchmark-mcp-transport.mjs                |  40 ++-) Tj T*
+(src/cli/query-commands.ts                          |   2 +-) Tj T*
+(tests/benchmark-mcp-transport.test.ts              |  33 +-) Tj T*
+(tests/command.test.ts                              |  15 +) Tj T*
+(9 files changed, 574 insertions\(+\), 26 deletions\(-\)) Tj T*
+(create mode 100644 docs/plans/codexa-agent-utility-plan-2026-07-14.md) Tj T*
+(create mode 100644 reports/benchmarks/v0.14.0-usefulness-baseline.json) Tj T*
+() Tj T*
+(Verification) Tj T*
+() Tj T*
+(- git diff --check: passed) Tj T*
+(- CODEXARUNV012TRANSPORTCOMPAT=1 npm run test -- tests/benchmark-mcp-transport.test.ts) Tj T*
+(tests/command.test.ts: passed) Tj T*
+(- npm run check: passed) Tj T*
+(- npm run smoke:package: passed) Tj T*
+(- npm run eval:ci: passed) Tj T*
+(- npm run benchmark:ci: passed) Tj T*
+(- npm run benchmark:transport:exposure -- --repo /srv/codexa: passed) Tj T*
+(- npm run benchmark:transport -- --repo /srv/codexa: passed) Tj T*
+(- node scripts/agent-ab.mjs validate --config benchmarks/agent-ab/experiment.json: passed) Tj T*
+(- Codexa post-edit-review: /srv/.codex/artifacts/codexa/codex-general-) Tj T*
+(codexa-20260714-codexa-usefulness-repairs/codexa-post-edit-review.txt) Tj T*
+(- Codexa test-plan: /srv/.codex/artifacts/codexa/codex-general-codexa-20260714-codexa-) Tj T*
+(usefulness-repairs/codexa-test-plan.txt) Tj T*
+(- git diff --cached --check: passed) Tj T*
+(- staged safety scan: passed) Tj T*
+() Tj T*
+(Notes) Tj T*
+() Tj T*
+(Repairs pinned transport benchmark reproducibility and CLI verification help, adds CI) Tj T*
+(coverage, and commits an evidence-gated plan for measuring agent utility without overstating) Tj T*
+(the current evidence.) Tj T*
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000185 00000 n 
+0000000311 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+2923
+%%EOF
