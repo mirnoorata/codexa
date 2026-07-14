@@ -1,0 +1,147 @@
+{
+  "schemaVersion": 1,
+  "kind": "codexa-usefulness-baseline",
+  "recordedAt": "2026-07-14",
+  "candidate": {
+    "packageVersion": "0.14.0",
+    "sourceCommit": "5f57bd5aadca432b70538fd0cf74f369b097dd46"
+  },
+  "claimBoundary": "This report records local component, package, retrieval, transport, and one-task agent-pilot evidence. Only the committed agent A/B pilot measures agent completion, and that pilot is non-confirmatory. Local artifact hashes identify the exact raw observations but do not make timings portable across machines.",
+  "repositoryGate": {
+    "command": "npm run check",
+    "testFiles": 65,
+    "testsPassed": 614,
+    "testsSkipped": 1,
+    "commandWrapperSmokesPassed": 26,
+    "hookSmokesPassed": 87,
+    "passed": true
+  },
+  "packageSmoke": {
+    "command": "npm run smoke:package",
+    "checksPassed": 31,
+    "passed": true
+  },
+  "retrievalEval": {
+    "commandTemplate": "CODEXA_EVAL_SEED=<seed> bash scripts/eval-ci.sh",
+    "runs": [
+      {
+        "inputSeed": "honest-usefulness-a",
+        "reportSeed": "ci-honest-usefulness-a",
+        "rawArtifactSha256": "b3a14063a6123f269240c516337369eba228bb3b6ed96f41eb2018d204c65102",
+        "scenariosPassed": 21,
+        "scenariosRun": 21,
+        "falsePositiveFiles": 2,
+        "broadRetrievalFailures": [
+          "synthetic-session-context-seedless"
+        ],
+        "rawBaselineWins": []
+      },
+      {
+        "inputSeed": "honest-usefulness-b",
+        "reportSeed": "ci-honest-usefulness-b",
+        "rawArtifactSha256": "8c38bdb5bdf4f20d58dd3eb0ca7522665d8a9368b650b9a5b67be8373b8fc9db",
+        "scenariosPassed": 21,
+        "scenariosRun": 21,
+        "falsePositiveFiles": 2,
+        "broadRetrievalFailures": [
+          "synthetic-session-context-seedless"
+        ],
+        "rawBaselineWins": []
+      },
+      {
+        "inputSeed": "honest-usefulness-c",
+        "reportSeed": "ci-honest-usefulness-c",
+        "rawArtifactSha256": "ed0d005ff9b69bce1996cf557dffae6aa6098fe24b9ce042e2e4554a2915a984",
+        "scenariosPassed": 21,
+        "scenariosRun": 21,
+        "falsePositiveFiles": 2,
+        "broadRetrievalFailures": [
+          "synthetic-session-context-seedless"
+        ],
+        "rawBaselineWins": []
+      }
+    ],
+    "aggregate": {
+      "scenarioRunsPassed": 63,
+      "scenarioRuns": 63,
+      "comparableScenarioRuns": 51,
+      "codexaBetterOnAtLeastOneScoredMetric": 38,
+      "allScoredMetricsTied": 13,
+      "rawBaselineBetterOnAtLeastOneScoredMetric": 0,
+      "meanCodexaToRawFileCountRatio": 0.7927133173843698
+    },
+    "interpretation": "This is component evidence, not agent-task evidence. The repeated broad-retrieval failure and false-positive files remain product work even though the formal raw-baseline loss count is zero."
+  },
+  "hotPath": {
+    "command": "npm run benchmark:ci",
+    "rawArtifactSha256": "51e67d5f76092691a09bf0ffb1c6ac15028ddb2487fe2031fc3f6ff717e64f5a",
+    "createdAt": "2026-07-14T04:50:04.546Z",
+    "p95Milliseconds": {
+      "cli.index": 4276,
+      "cli.status": 469,
+      "cli.repo_map": 447,
+      "cli.brief_explicit_file": 490,
+      "cli.brief_task_only": 1618,
+      "cli.hook_post_edit_cached": 293,
+      "mcp.startup": 278,
+      "mcp.freshness": 190,
+      "mcp.repo_map": 33,
+      "mcp.task_brief_explicit_file": 53
+    },
+    "passed": true
+  },
+  "sameBuildTransport": {
+    "command": "npm run benchmark:transport:exposure",
+    "rawArtifactSha256": "5450c3095e5f595ab7081ca68fe435744e149b094c3635bcc670b9eac1d52c7a",
+    "baselineDirectTools": 23,
+    "candidateDirectTools": 10,
+    "toolsListDecodedPayloadReductionPercent": 56.4,
+    "advertisementAndDiscoveryDecodedPayloadReductionPercent": 47.2,
+    "firstTaskResultDecodedPayloadReductionPercent": 0,
+    "repeatedTaskResultDecodedPayloadReductionPercent": 0,
+    "passed": true
+  },
+  "realTaskProbe": {
+    "task": "Make the pinned release transport benchmark runnable after dependency lock changes",
+    "codexaCommand": "node dist/cli.js brief . --task <task> --no-snippets --budget 1600 --limit 8",
+    "codexaResult": {
+      "actionability": "needs_target",
+      "confidencePercent": 46,
+      "readFirstCount": 8,
+      "expectedTargetMatches": 0,
+      "expectedTargets": [
+        "package.json",
+        "scripts/benchmark-mcp-transport.mjs",
+        "tests/benchmark-mcp-transport.test.ts"
+      ]
+    },
+    "rawCommand": "rg -n 'benchmark:transport|benchmark-mcp-transport|release-baseline' package.json scripts tests",
+    "rawResult": {
+      "observedElapsedMilliseconds": 4,
+      "matchedExpectedTargets": 3
+    },
+    "interpretation": "The exact raw search was immediately actionable while task-only Codexa retrieval was not. Explicit-file Codexa context remained useful after the target was known."
+  },
+  "agentPilot": {
+    "report": "reports/benchmarks/v0.10.0-agent-ab-pilot-v7.json",
+    "reportSha256": "80e1d15bcbcbee26467757f67bed3e60779ecdd5b9c4edf9df1709be14a35eb8",
+    "candidateVersion": "0.10.0",
+    "confirmatory": false,
+    "tasks": 1,
+    "repetitionsPerArm": 2,
+    "verifiedCompletion": {
+      "control": "2/2",
+      "treatment": "2/2",
+      "absoluteRiskDifference": 0
+    },
+    "treatmentToControlRatios": {
+      "inputTokens": 5.94,
+      "cacheTokens": 6.4,
+      "outputTokens": 2.08,
+      "cost": 3.54,
+      "agentElapsed": 1.88,
+      "controllerElapsed": 1.6
+    },
+    "interpretation": "The pilot demonstrates no completion benefit on one easy task and substantial overhead. It cannot establish a general product effect."
+  }
+}

@@ -91,6 +91,7 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v7
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Use Node.js
@@ -105,11 +106,14 @@ jobs:
       - name: Run hot-path benchmark
         run: npm run benchmark:ci
 
+      - name: Run pinned transport benchmark
+        run: npm run benchmark:transport -- --output .codex/cache/codexa-benchmarks/transport.json
+
       - name: Upload benchmark data
         if: always()
         uses: actions/upload-artifact@v7
         with:
           name: codexa-hot-path-benchmark
-          path: .codex/cache/codexa-benchmarks/latest.json
+          path: .codex/cache/codexa-benchmarks/*.json
           if-no-files-found: ignore
           retention-days: 7

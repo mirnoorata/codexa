@@ -228,7 +228,7 @@ addWorkspaceRoutingOptions(program
   .option("--change-type <type>", "change type: style, api, behavior, rename, delete, unknown", parseChangeType, "unknown")
   .option("--task-id <id>", "local Codexa change-plan snapshot to compare against")
   .option("--plan-snapshot <path>", "portable Codexa change-plan snapshot inside the repository")
-  .option("--ran-test <command...>", "test command already run; repeat or pass multiple values")
+  .option("--ran-test <test...>", "test file or direct test reference already run; repeat or pass multiple values")
   .option("--ran-command <command...>", "verification command already run; repeat or pass multiple values")
   .option("--ran-command-report <json...>", "structured command report JSON including command and optional exitCode")
   .option("--auto-refresh", "refresh a stale or missing index before reviewing", true)

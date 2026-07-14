@@ -465,11 +465,13 @@ node scripts/benchmark-mcp-transport.mjs \
 
 The release-baseline mode materializes commit
 `68061b022cfc9f4dcc1aaf3d7776710196cc69b0` for the pinned v0.12.0 baseline
-from the local Git object database, reuses dependencies only when the current
-and pinned package-lock SHA-256 is
-`908d5a0148630493a65e08f562aab0c47f200c4177c2f1f5e972eb130a3dd1e5`,
-and performs no network access. It identifies this as locally built tagged
-source, not as npm-tarball identity. It asserts the commit, CLI version, MCP
+from the local Git object database and verifies the pinned lockfile's exact
+SHA-256. It always runs `npm ci` in the disposable pinned checkout with
+lifecycle scripts disabled and cache-preferred resolution; this may access the
+npm registry when the cache is incomplete. It never reuses the current
+checkout's unverified installed dependency tree. The report records the
+dependency materialization path. It identifies the result as locally built
+tagged source, not as npm-tarball identity, and asserts the commit, CLI version, MCP
 initialize identity, CLI digest, and full `dist`-tree digest before measuring.
 The real pinned compatibility test is explicitly opt-in with
 `CODEXA_RUN_V012_TRANSPORT_COMPAT=1`; routine tests keep only the offline
@@ -481,7 +483,9 @@ with this branch's explicit core/automatic server:
 
 - direct tool schemas: 21 to 10;
 - advertised logical operation names: 21 versus 21, with exact name-set parity
-  (the separate direct-versus-dispatched suite establishes execution parity);
+  for that historical candidate (the separate direct-versus-dispatched suite
+  establishes execution parity); current cross-release checks require every
+  baseline operation to remain advertised while permitting candidate additions;
 - decoded `tools/list` application payload: 59,376 to 29,554 UTF-8 bytes, a
   50.2% reduction;
 - decoded freshness setup payload: 3,300 bytes per arm;
