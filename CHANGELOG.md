@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.15.0](https://github.com/mirnoorata/codexa/compare/v0.14.1...v0.15.0) (2026-07-14)
+
+
+### Features
+
+* **cli:** add post-edit-review --format json and opt-in --exit-code ([#108](https://github.com/mirnoorata/codexa/issues/108)) ([74e65c4](https://github.com/mirnoorata/codexa/commit/74e65c4356347817bcf61c416af65c8060a69520))
+
 ## [0.14.1](https://github.com/mirnoorata/codexa/compare/v0.14.0...v0.14.1) (2026-07-14)
 
 
