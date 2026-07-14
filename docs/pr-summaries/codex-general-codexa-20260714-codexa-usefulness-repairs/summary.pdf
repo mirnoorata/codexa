@@ -1,85 +1,80 @@
 %PDF-1.4
+%“Œ‹ž ReportLab Generated PDF document (opensource)
 1 0 obj
-<< /Type /Catalog /Pages 2 0 R >>
+<<
+/F1 2 0 R /F2 3 0 R /F3 4 0 R
+>>
 endobj
 2 0 obj
-<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+<<
+/BaseFont /Helvetica /Encoding /WinAnsiEncoding /Name /F1 /Subtype /Type1 /Type /Font
+>>
 endobj
 3 0 obj
-<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+<<
+/BaseFont /Helvetica-Bold /Encoding /WinAnsiEncoding /Name /F2 /Subtype /Type1 /Type /Font
+>>
 endobj
 4 0 obj
-<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+<<
+/BaseFont /Courier /Encoding /WinAnsiEncoding /Name /F3 /Subtype /Type1 /Type /Font
+>>
 endobj
 5 0 obj
-<< /Length 2561 >>
+<<
+/Contents 9 0 R /MediaBox [ 0 0 612 792 ] /Parent 8 0 R /Resources <<
+/Font 1 0 R /ProcSet [ /PDF /Text /ImageB /ImageC /ImageI ]
+>> /Rotate 0 /Trans <<
+
+>> 
+  /Type /Page
+>>
+endobj
+6 0 obj
+<<
+/PageMode /UseNone /Pages 8 0 R /Type /Catalog
+>>
+endobj
+7 0 obj
+<<
+/Author (Codexa delivery workflow) /CreationDate (D:20260714014555-04'00') /Creator (\(unspecified\)) /Keywords () /ModDate (D:20260714014555-04'00') /Producer (ReportLab PDF Library - \(opensource\)) 
+  /Subject (PR #106 usefulness validation hardening) /Title (Codexa Change Summary) /Trapped /False
+>>
+endobj
+8 0 obj
+<<
+/Count 1 /Kids [ 5 0 R ] /Type /Pages
+>>
+endobj
+9 0 obj
+<<
+/Filter [ /ASCII85Decode /FlateDecode ] /Length 1885
+>>
 stream
-BT
-/F1 10 Tf
-14 TL
-50 760 Td
-(Change Summary) Tj T*
-() Tj T*
-(- Project: codexa) Tj T*
-(- Worktree: /srv/worktree/codexa/codex/20260714-codexa-usefulness-repairs) Tj T*
-(- Branch: codex/general/codexa-20260714-codexa-usefulness-repairs) Tj T*
-(- Base: main) Tj T*
-(- Primary commit: 2817e73) Tj T*
-(- Subject: fix\(workflows\): harden usefulness validation) Tj T*
-() Tj T*
-(Changed Files) Tj T*
-() Tj T*
-(2817e73 fix\(workflows\): harden usefulness validation) Tj T*
-(.github/workflows/check.yml                        |   6 +-) Tj T*
-(.gitignore                                         |   1 +) Tj T*
-(docs/plans/codexa-agent-utility-plan-2026-07-14.md | 340 +++++++++++++++++++++) Tj T*
-(.../codexa-zero-loss-overhead-plan-2026-07-13.md   |  16 +-) Tj T*
-(.../benchmarks/v0.14.0-usefulness-baseline.json    | 147 +++++++++) Tj T*
-(scripts/benchmark-mcp-transport.mjs                |  40 ++-) Tj T*
-(src/cli/query-commands.ts                          |   2 +-) Tj T*
-(tests/benchmark-mcp-transport.test.ts              |  33 +-) Tj T*
-(tests/command.test.ts                              |  15 +) Tj T*
-(9 files changed, 574 insertions\(+\), 26 deletions\(-\)) Tj T*
-(create mode 100644 docs/plans/codexa-agent-utility-plan-2026-07-14.md) Tj T*
-(create mode 100644 reports/benchmarks/v0.14.0-usefulness-baseline.json) Tj T*
-() Tj T*
-(Verification) Tj T*
-() Tj T*
-(- git diff --check: passed) Tj T*
-(- CODEXARUNV012TRANSPORTCOMPAT=1 npm run test -- tests/benchmark-mcp-transport.test.ts) Tj T*
-(tests/command.test.ts: passed) Tj T*
-(- npm run check: passed) Tj T*
-(- npm run smoke:package: passed) Tj T*
-(- npm run eval:ci: passed) Tj T*
-(- npm run benchmark:ci: passed) Tj T*
-(- npm run benchmark:transport:exposure -- --repo /srv/codexa: passed) Tj T*
-(- npm run benchmark:transport -- --repo /srv/codexa: passed) Tj T*
-(- node scripts/agent-ab.mjs validate --config benchmarks/agent-ab/experiment.json: passed) Tj T*
-(- Codexa post-edit-review: /srv/.codex/artifacts/codexa/codex-general-) Tj T*
-(codexa-20260714-codexa-usefulness-repairs/codexa-post-edit-review.txt) Tj T*
-(- Codexa test-plan: /srv/.codex/artifacts/codexa/codex-general-codexa-20260714-codexa-) Tj T*
-(usefulness-repairs/codexa-test-plan.txt) Tj T*
-(- git diff --cached --check: passed) Tj T*
-(- staged safety scan: passed) Tj T*
-() Tj T*
-(Notes) Tj T*
-() Tj T*
-(Repairs pinned transport benchmark reproducibility and CLI verification help, adds CI) Tj T*
-(coverage, and commits an evidence-gated plan for measuring agent utility without overstating) Tj T*
-(the current evidence.) Tj T*
-ET
-endstream
+Gb!;fgMYb*&:Ml+bbNWT1eEh@(taU%gF`hTgMGm:mR)LiO_@sU0!6TaaeBll6X=.K[;.jCJgpdPaeHj:B?2kbU)?f*B@UX^!k]I=rrWAC@5n<8Lk+G3GX"=cG!J1K;X";R4Dme2O1o#GK<mcPLlcS&OF]!>FF\_VK+t-I&g?P@"O7OHSfPJ^Y!'XlVJBYQNc5jIiD\l#5bsLkpRi@mB38YOh)C?Q9VHZn8*V^WE"Z\k"aZK36#hA[_eU+'0jQCp-`'4(WRj=[)W29FWU4&KX_fVf)8m8K8<.d/e?grfE@DG]6W9uU`&7sm8CMqc!sdtWo+>qVn1gOI.U7gIL(P>1>C?G&@dA$7b,?%eff$)cZW>l!;-@Zi6R"OZl9!MgJ8fT#PYQrT`34#ikRG/p2^R5rD7PY:(7Z09[0k(XKGEUN`U;&(V3La.@Eh#^EDmWF%A9n_H2k=`m+98-LH_UULLS-#^U7ZWNFkbZ['g<!%H9]mLViQaEF/dd]->>58OI3AX>3cY8V=k5S+VfNR)F?Z51%B#)T:<pL.L/pgV$D-fIS5B0hl/JU"j.\EpYH\ZCR=b0^#dCHGPR"]8N8KTq`mJeJEuCQiojR10Ac8k!9VM5oJk?EetDOejt>/jO0d_9KFS'2O,]BG]YJ3qE_P27#TWj`@<&.e-]1Y+6#]Q7r#SLAC`;r+7DeY>O_QS#\'8/6@?oF.j0;CZ?Z!]mM`Df&BMT)#V%kO"Pr*J+=S#;HW,p8Pn,TuO9W"MJOgWr/udi,YF.Q"FP@^G,YEmZ!dZV^bK9+NrrB\R:/lI*maD<Qj-*!a-D^'mjT"L9j)LApQf#(4d3`,H?)ZAYN%<%<h4H#[VV=XnM,%)TZSG;8o%l.2Wo.>`f>>HYN=`iV-lfAcgVeuR(SUA#Aq^fEdd`qZE\#6dNokC_9N2QdiP_lZ@GB"LRs%0L%/qc2f`jpg)r7-]ff72r;K7EL4Gbj_Y'$<Rpqh`eVZCkM+`BCmib>A.<*3io[7\Z\oJA3nP$VpW?7gnkY,AoO6DoaG+!u"-gIr@VQ:[6k/CL=N8GVBs/j-lf_H/5c'@3,Z2.kV"!jjJiTkcOL`i2TRRG8Y,KYtEq>s@C[R!^elIWUN/L4D84W\Bj-^??SC*$,3++B"&2^9T@$2o-;:2`*$9<)>&80m[8S:)tKcpDCZ%$sRg@bZ9gVeM&Up]h<V)aG*FQRQ<oGFX?c_?%#^A4Gq$n8dP(*g:'8Sn*WcM]S67H1Yl+IaD:^_<$,WH%8f5+JRqh-`W2leegfCV!4K/*g5gKl*o`A:^VBgCmH*$YT.drW`\3*[Da0kdIQ8?RSp^A*o^2-,#2(he@[;QWE[1jtMeO\o^lEeOfsVt[Hp'YtZCWk#UpDG^H[WCbc#;*>)MC$tqE)P0p7?<8f8$Kj5r&`+*<C5rF2HQ2ITZ9TULm9a`:6@I%luXGGLKgCE*Q@1bImf!ldu,Ym^",s=LN?PkZ2Z/%na@pF\`E?!n^QFFn-JV<TST!:=`+)0[E5Y(mYfP[UgPY'W,1c?<%<jNeBDGQ#8=CLhADR[T5>!+8&Y`Y,'KD;-`+VRE+U$fg-kU*`RY9eL1\rrFdS'C::"@Xgb1]ZK17`j9`Z9nugc0pL6VJ3AG<Z2ORZIMnL[`&&XJT2E/ifdCjX?\R5[skDPp53H3ige5)E^fn7bi8<rotHblk:`T>g*Q;`!g"mtKcgpg)"l2'9j0\>"F(B`0Gc.6^Op<Mrg!n0-POMF<;I#&*kog+^1ZS9+nhOOY4:iQ!i,KuKHF-rn:H43(RBfPnoU"MCjNuV5\lYU9okEr$a&U(7W0a=9VbaO2^?F5+P;AER\'5(gR!YI9XCZ%*'-i'hHdkCR/1bHk,JoFa)VHqq0H,;*Pr!thJ<OM~>endstream
 endobj
 xref
-0 6
+0 10
 0000000000 65535 f 
-0000000009 00000 n 
-0000000058 00000 n 
-0000000115 00000 n 
-0000000185 00000 n 
-0000000311 00000 n 
+0000000061 00000 n 
+0000000112 00000 n 
+0000000219 00000 n 
+0000000331 00000 n 
+0000000436 00000 n 
+0000000629 00000 n 
+0000000697 00000 n 
+0000001020 00000 n 
+0000001079 00000 n 
 trailer
-<< /Size 6 /Root 1 0 R >>
+<<
+/ID 
+[<2da063aca0a4ee6e6c13c51655ffbb5d><2da063aca0a4ee6e6c13c51655ffbb5d>]
+% ReportLab generated PDF document -- digest (opensource)
+
+/Info 7 0 R
+/Root 6 0 R
+/Size 10
+>>
 startxref
-2923
+3055
 %%EOF
