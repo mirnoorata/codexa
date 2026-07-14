@@ -12,7 +12,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
 endobj
 5 0 obj
-<< /Length 2618 >>
+<< /Length 2535 >>
 stream
 BT
 /F1 10 Tf
@@ -21,55 +21,55 @@ BT
 (Change Summary) Tj T*
 () Tj T*
 (- Project: codexa) Tj T*
-(- Repository: codexa) Tj T*
 (- Branch: codex/general/codexa-20260713-184409-focus-orientation) Tj T*
-(- Base: main) Tj T*
-(- Primary commit: de1054a) Tj T*
+(- Base: main at 3d8ac153bafbc6dea5ef792980f0b961f4bc76dd) Tj T*
+(- Pull request: 104) Tj T*
 (- Subject: feat\(review\): add shared committed change receipts) Tj T*
 () Tj T*
-(Changed Files) Tj T*
+(Outcome) Tj T*
 () Tj T*
-(de1054a feat\(review\): add shared committed change receipts) Tj T*
-(README.md                                          |  66 ++-) Tj T*
-(action.yml                                         |  49 ++) Tj T*
-(package.json                                       |   7 +-) Tj T*
-(scripts/package-install-smoke.mjs                  |  25 +) Tj T*
-(src/ci-workflow.ts                                 | 101 ++++) Tj T*
-(src/cli.ts                                         |   8 +-) Tj T*
-(src/cli/query-commands.ts                          |  68 +++) Tj T*
-(src/init.ts                                        |  43 +-) Tj T*
-(src/mcp/advanced-mode-kernel.ts                    |  28 ++) Tj T*
-(src/mcp/tool-registry.ts                           |  13 +) Tj T*
-(src/mcp/tools.ts                                   |  33 ++) Tj T*
-(src/queries.ts                                     |   2 +) Tj T*
-(src/query/change-review.ts                         | 533 +++++++++++++++++++++) Tj T*
-(src/task-snapshots.ts                              |   2 +-) Tj T*
-(src/types/init.ts                                  |  35 ++) Tj T*
-(src/types/query-data.ts                            |  17 +-) Tj T*
-(tests/change-review.test.ts                        | 223 +++++++++) Tj T*
-(...s-02-launches-windows-package-local-cmd.test.ts |   2 +-) Tj T*
-(tests/github-action.test.ts                        |  21 +) Tj T*
-(tests/init.test.ts                                 |  40 ++) Tj T*
-(tests/mcp-advanced-auto.test.ts                    |   1 +) Tj T*
-(21 files changed, 1270 insertions\(+\), 47 deletions\(-\)) Tj T*
-(create mode 100644 action.yml) Tj T*
-(create mode 100644 src/ci-workflow.ts) Tj T*
-(create mode 100644 src/query/change-review.ts) Tj T*
-(create mode 100644 src/types/init.ts) Tj T*
-(create mode 100644 tests/change-review.test.ts) Tj T*
-(create mode 100644 tests/github-action.test.ts) Tj T*
+(Codexa now produces one deterministic committed-change receipt for conventional) Tj T*
+(terminal and CI workflows and for agentic MCP workflows. The shared engine) Tj T*
+(reports the resolved Git range, changed files and statistics, bounded graph) Tj T*
+(impact, optional plan conformance, verification evidence, verdict, gaps, and) Tj T*
+(next actions.) Tj T*
 () Tj T*
-(Verification) Tj T*
+(The delivery includes:) Tj T*
 () Tj T*
-(- git diff --check: passed) Tj T*
-(- npm run check: passed) Tj T*
-(- npm run smoke:package: passed) Tj T*
-(- npm run package:hygiene: passed) Tj T*
-(- npm run audit: passed) Tj T*
-(- Codexa post-edit-review: passed) Tj T*
-(- Codexa test-plan: passed) Tj T*
-(- git diff --cached --check: passed) Tj T*
-(- staged safety scan: passed) Tj T*
+(- codexa review text, JSON, and GitHub output;) Tj T*
+(- advanced MCP changereview plus core capabilities.invoke parity;) Tj T*
+(- a read-only composite GitHub Action;) Tj T*
+(- codexa init --ci generation of an owned, read-only pull-request workflow;) Tj T*
+(- packed-package and production-path regression coverage.) Tj T*
+() Tj T*
+(Commits) Tj T*
+() Tj T*
+(- de1054a feat\(review\): add shared committed change receipts) Tj T*
+(- 82ff261 docs\(workflow\): add PR summary for codexa) Tj T*
+(- cc661a0 fix\(review\): require deterministic clean change evidence) Tj T*
+(- fb34fa2 fix\(mcp\): expose portable change review plans) Tj T*
+(- ff3ee26 fix\(action\): isolate packaged review bootstrap) Tj T*
+(- fc200c3 fix\(review\): bind portable plans to validated files) Tj T*
+(- e2fa398 fix\(review\): verify snapshot identity before opening) Tj T*
+() Tj T*
+(Scope) Tj T*
+() Tj T*
+(- Source/config/tests: 21 files, 1,384 insertions, 55 deletions.) Tj T*
+(- Review artifacts: this Markdown summary and its PDF rendering.) Tj T*
+(- No source mutation, pull-request comments, or write permissions are exposed) Tj T*
+(by the Action or MCP operation.) Tj T*
+() Tj T*
+(Adversarial Hardening) Tj T*
+() Tj T*
+(Independent reviewers exercised Git correctness, interface parity, and) Tj T*
+(Action/CI delivery against the actual origin/main...HEAD diff. Actionable) Tj T*
+(findings were fixed with dedicated Conventional Commits:) Tj T*
+() Tj T*
+(- rejected stale indexes built from dirty overlays;) Tj T*
+(- fixed rename/copy determinism against hostile diff.renameLimit config;) Tj T*
+(- bound portable snapshot containment, identity, size, and reads to the same) Tj T*
+(validated file;) Tj T*
+(- exposed bounded portable-plan input through both MCP access paths;) Tj T*
 ET
 endstream
 endobj
@@ -77,19 +77,35 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 7 0 R >>
 endobj
 7 0 obj
-<< /Length 387 >>
+<< /Length 1234 >>
 stream
 BT
 /F1 10 Tf
 14 TL
 50 760 Td
+(- isolated npx Action bootstrap from same-name consumer workspaces;) Tj T*
+(- refreshed stale committed review artifacts after the fixes.) Tj T*
 () Tj T*
-(Notes) Tj T*
+(Verification) Tj T*
 () Tj T*
-(Adds one deterministic committed-change receipt shared by the CLI, MCP, and a read-only) Tj T*
-(GitHub Action, with optional CI scaffolding through codexa init --ci. Includes bounded Git) Tj T*
-(handling, trust-aware plan and verification evidence, package smoke coverage, and) Tj T*
-(adversarial regression tests.) Tj T*
+(- npm run check: passed.) Tj T*
+(- TypeScript and source/release/privacy hygiene: passed.) Tj T*
+(- Claude Code shell integrations: 113 passed.) Tj T*
+(- Vitest: 65 files passed; 614 passed, 1 skipped.) Tj T*
+(- npm run smoke:package: 31 packed-install checks passed, including the) Tj T*
+(isolated Action bootstrap against a same-name/same-version workspace.) Tj T*
+(- npm run package:hygiene: passed.) Tj T*
+(- npm run audit: 0 vulnerabilities.) Tj T*
+(- npm run public:snapshot-check: passed on the committed branch.) Tj T*
+(- Targeted stale-index, hostile rename-limit, portable snapshot, MCP parity,) Tj T*
+(and Action delivery regressions: passed.) Tj T*
+() Tj T*
+(Publication Boundary) Tj T*
+() Tj T*
+(The branch provides the Action implementation, but the public Action cannot be) Tj T*
+(called live until the matching release tag and npm package are published. The) Tj T*
+(post-merge release workflow and a real tag-to-npm Action smoke remain required) Tj T*
+(before claiming the new Action is live.) Tj T*
 ET
 endstream
 endobj
@@ -101,10 +117,10 @@ xref
 0000000121 00000 n 
 0000000191 00000 n 
 0000000317 00000 n 
-0000002986 00000 n 
-0000003112 00000 n 
+0000002903 00000 n 
+0000003029 00000 n 
 trailer
 << /Size 8 /Root 1 0 R >>
 startxref
-3549
+4314
 %%EOF

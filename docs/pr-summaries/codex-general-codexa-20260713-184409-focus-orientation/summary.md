@@ -1,56 +1,75 @@
 # Change Summary
 
 - Project: `codexa`
-- Repository: `codexa`
 - Branch: `codex/general/codexa-20260713-184409-focus-orientation`
-- Base: `main`
-- Primary commit: `de1054a`
+- Base: `main` at `3d8ac153bafbc6dea5ef792980f0b961f4bc76dd`
+- Pull request: `#104`
 - Subject: `feat(review): add shared committed change receipts`
 
-## Changed Files
+## Outcome
 
-de1054a feat(review): add shared committed change receipts
- README.md                                          |  66 ++-
- action.yml                                         |  49 ++
- package.json                                       |   7 +-
- scripts/package-install-smoke.mjs                  |  25 +
- src/ci-workflow.ts                                 | 101 ++++
- src/cli.ts                                         |   8 +-
- src/cli/query-commands.ts                          |  68 +++
- src/init.ts                                        |  43 +-
- src/mcp/advanced-mode-kernel.ts                    |  28 ++
- src/mcp/tool-registry.ts                           |  13 +
- src/mcp/tools.ts                                   |  33 ++
- src/queries.ts                                     |   2 +
- src/query/change-review.ts                         | 533 +++++++++++++++++++++
- src/task-snapshots.ts                              |   2 +-
- src/types/init.ts                                  |  35 ++
- src/types/query-data.ts                            |  17 +-
- tests/change-review.test.ts                        | 223 +++++++++
- ...s-02-launches-windows-package-local-cmd.test.ts |   2 +-
- tests/github-action.test.ts                        |  21 +
- tests/init.test.ts                                 |  40 ++
- tests/mcp-advanced-auto.test.ts                    |   1 +
- 21 files changed, 1270 insertions(+), 47 deletions(-)
- create mode 100644 action.yml
- create mode 100644 src/ci-workflow.ts
- create mode 100644 src/query/change-review.ts
- create mode 100644 src/types/init.ts
- create mode 100644 tests/change-review.test.ts
- create mode 100644 tests/github-action.test.ts
+Codexa now produces one deterministic committed-change receipt for conventional
+terminal and CI workflows and for agentic MCP workflows. The shared engine
+reports the resolved Git range, changed files and statistics, bounded graph
+impact, optional plan conformance, verification evidence, verdict, gaps, and
+next actions.
+
+The delivery includes:
+
+- `codexa review` text, JSON, and GitHub output;
+- advanced MCP `change_review` plus core `capabilities.invoke` parity;
+- a read-only composite GitHub Action;
+- `codexa init --ci` generation of an owned, read-only pull-request workflow;
+- packed-package and production-path regression coverage.
+
+## Commits
+
+- `de1054a` feat(review): add shared committed change receipts
+- `82ff261` docs(workflow): add PR summary for codexa
+- `cc661a0` fix(review): require deterministic clean change evidence
+- `fb34fa2` fix(mcp): expose portable change review plans
+- `ff3ee26` fix(action): isolate packaged review bootstrap
+- `fc200c3` fix(review): bind portable plans to validated files
+- `e2fa398` fix(review): verify snapshot identity before opening
+
+## Scope
+
+- Source/config/tests: 21 files, 1,384 insertions, 55 deletions.
+- Review artifacts: this Markdown summary and its PDF rendering.
+- No source mutation, pull-request comments, or write permissions are exposed
+  by the Action or MCP operation.
+
+## Adversarial Hardening
+
+Independent reviewers exercised Git correctness, interface parity, and
+Action/CI delivery against the actual `origin/main...HEAD` diff. Actionable
+findings were fixed with dedicated Conventional Commits:
+
+- rejected stale indexes built from dirty overlays;
+- fixed rename/copy determinism against hostile `diff.renameLimit` config;
+- bound portable snapshot containment, identity, size, and reads to the same
+  validated file;
+- exposed bounded portable-plan input through both MCP access paths;
+- isolated `npx` Action bootstrap from same-name consumer workspaces;
+- refreshed stale committed review artifacts after the fixes.
 
 ## Verification
 
-- git diff --check: passed
-- npm run check: passed
-- npm run smoke:package: passed
-- npm run package:hygiene: passed
-- npm run audit: passed
-- Codexa post-edit-review: passed
-- Codexa test-plan: passed
-- git diff --cached --check: passed
-- staged safety scan: passed
+- `npm run check`: passed.
+- TypeScript and source/release/privacy hygiene: passed.
+- Claude Code shell integrations: 113 passed.
+- Vitest: 65 files passed; 614 passed, 1 skipped.
+- `npm run smoke:package`: 31 packed-install checks passed, including the
+  isolated Action bootstrap against a same-name/same-version workspace.
+- `npm run package:hygiene`: passed.
+- `npm run audit`: 0 vulnerabilities.
+- `npm run public:snapshot-check`: passed on the committed branch.
+- Targeted stale-index, hostile rename-limit, portable snapshot, MCP parity,
+  and Action delivery regressions: passed.
 
-## Notes
+## Publication Boundary
 
-Adds one deterministic committed-change receipt shared by the CLI, MCP, and a read-only GitHub Action, with optional CI scaffolding through codexa init --ci. Includes bounded Git handling, trust-aware plan and verification evidence, package smoke coverage, and adversarial regression tests.
+The branch provides the Action implementation, but the public Action cannot be
+called live until the matching release tag and npm package are published. The
+post-merge release workflow and a real tag-to-npm Action smoke remain required
+before claiming the new Action is live.
