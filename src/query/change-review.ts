@@ -1,4 +1,5 @@
-import { lstat, readFile, realpath } from "node:fs/promises";
+import { constants } from "node:fs";
+import { open, realpath } from "node:fs/promises";
 import path from "node:path";
 import type { CommandResult } from "../command.js";
 import { impactEntriesForFile, evidenceTierForImpact } from "./impact.js";
@@ -103,8 +104,13 @@ export async function changeReviewQuery(input: QuerySessionInput, reviewInput: C
   const headRef = validateRef(reviewInput.head ?? "HEAD", "head");
   const policyMode = validateMode(reviewInput.mode);
   const changeType = validateChangeType(reviewInput.changeType);
-  if (session.freshness.dirtyFiles.length > 0) {
-    throw new Error("change review requires a clean indexed checkout; commit or stash changes and reindex before reviewing a committed range");
+  if (
+    session.freshness.dirtyFiles.length > 0 ||
+    session.freshness.stale ||
+    session.freshness.indexedDirtyFiles.length > 0 ||
+    (session.freshness.degradedGitState?.length ?? 0) > 0
+  ) {
+    throw new Error("change review requires a fresh index built from a clean checkout; commit or stash changes and reindex before reviewing a committed range");
   }
 
   const baseCommit = await resolveCommit(session, baseRef);
@@ -266,7 +272,7 @@ async function resolveMergeBase(session: QuerySession, baseCommit: string, headC
 }
 
 async function committedEntries(session: QuerySession, baseCommit: string, headCommit: string): Promise<ChangedFileEntry[]> {
-  const result = await session.runCommand("git", ["-C", session.repoRoot, "diff", "--name-status", "-z", "--find-renames", "--find-copies", "--no-ext-diff", baseCommit, headCommit, "--"], gitOptions());
+  const result = await session.runCommand("git", ["-C", session.repoRoot, "diff", "--name-status", "-z", "--find-renames", "--find-copies", `-l${MAX_CHANGED_FILES}`, "--no-ext-diff", baseCommit, headCommit, "--"], gitOptions());
   assertGitResult(result, "read committed changed files");
   const tokens = result.stdout.split("\0");
   if (tokens.at(-1) === "") tokens.pop();
@@ -293,7 +299,7 @@ async function committedEntries(session: QuerySession, baseCommit: string, headC
 }
 
 async function committedStats(session: QuerySession, baseCommit: string, headCommit: string, entries: ChangedFileEntry[]): Promise<{ insertions: number; deletions: number; binaryFileCount: number }> {
-  const result = await session.runCommand("git", ["-C", session.repoRoot, "diff", "--numstat", "-z", "--find-renames", "--find-copies", "--no-ext-diff", baseCommit, headCommit, "--"], gitOptions());
+  const result = await session.runCommand("git", ["-C", session.repoRoot, "diff", "--numstat", "-z", "--find-renames", "--find-copies", `-l${MAX_CHANGED_FILES}`, "--no-ext-diff", baseCommit, headCommit, "--"], gitOptions());
   assertGitResult(result, "read committed diff statistics");
   let insertions = 0;
   let deletions = 0;
@@ -398,14 +404,33 @@ async function loadPortableSnapshot(repoRoot: string, snapshotInput: string): Pr
   if (!snapshotInput || snapshotInput.length > MAX_REPO_PATH_LENGTH || /[\u0000-\u001f\u007f]/u.test(snapshotInput)) throw new Error("portable plan snapshot path is invalid or too long");
   const candidate = path.resolve(repoRoot, snapshotInput);
   if (!isSubpath(candidate, repoRoot)) throw new Error("portable plan snapshot must be inside the repository");
-  const stat = await lstat(candidate);
-  if (!stat.isFile() || stat.isSymbolicLink()) throw new Error("portable plan snapshot must be a regular non-symlink file");
-  if (stat.size > MAX_PORTABLE_SNAPSHOT_BYTES) throw new Error(`portable plan snapshot exceeds ${MAX_PORTABLE_SNAPSHOT_BYTES} bytes`);
   const resolved = await realpath(candidate);
   if (!isSubpath(resolved, await realpath(repoRoot))) throw new Error("portable plan snapshot resolves outside the repository");
-  const parsed = JSON.parse(await readFile(resolved, "utf8")) as unknown;
-  if (!isTaskSnapshot(parsed)) throw new Error("portable plan snapshot schema is invalid");
-  return parsed;
+  let handle;
+  try {
+    handle = await open(candidate, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ELOOP") throw new Error("portable plan snapshot must be a regular non-symlink file");
+    throw error;
+  }
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile()) throw new Error("portable plan snapshot must be a regular non-symlink file");
+    if (stat.size > MAX_PORTABLE_SNAPSHOT_BYTES) throw new Error(`portable plan snapshot exceeds ${MAX_PORTABLE_SNAPSHOT_BYTES} bytes`);
+    const buffer = Buffer.allocUnsafe(MAX_PORTABLE_SNAPSHOT_BYTES + 1);
+    let bytesRead = 0;
+    while (bytesRead < buffer.length) {
+      const result = await handle.read(buffer, bytesRead, buffer.length - bytesRead, null);
+      if (result.bytesRead === 0) break;
+      bytesRead += result.bytesRead;
+    }
+    if (bytesRead > MAX_PORTABLE_SNAPSHOT_BYTES) throw new Error(`portable plan snapshot exceeds ${MAX_PORTABLE_SNAPSHOT_BYTES} bytes`);
+    const parsed = JSON.parse(buffer.subarray(0, bytesRead).toString("utf8")) as unknown;
+    if (!isTaskSnapshot(parsed)) throw new Error("portable plan snapshot schema is invalid");
+    return parsed;
+  } finally {
+    await handle.close();
+  }
 }
 
 function validateRef(value: string, label: string): string {
