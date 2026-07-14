@@ -1,11 +1,12 @@
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { describe, expect, it } from "vitest";
 import { mcpAutoEscalationReason, mcpDecisionKernel, renderMcpConciseText } from "../src/mcp/decision-kernel.js";
 import { ADVANCED_MCP_TOOL_NAMES } from "../src/mcp/tool-registry.js";
+import { changePlanQuery } from "../src/queries.js";
 import { createIndexedMcpRepo } from "./mcp-fixtures.js";
 
 type ToolResult = Awaited<ReturnType<Client["callTool"]>>;
@@ -60,18 +61,29 @@ describe("advanced MCP auto/concise projections", () => {
     expect([...operations.map((entry) => entry.name), "freshness"].sort()).toEqual([...ADVANCED_MCP_TOOL_NAMES].sort());
     const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-advanced-auto-"));
     const repo = await createIndexedMcpRepo(workspace, "repo", "alpha", "alphaSymbol");
+    const planResult = await changePlanQuery(
+      repo,
+      { task: "Portable MCP review", taskId: "portable-mcp-review", files: ["src/alpha.ts"], diff: false, saveSnapshot: true },
+      { autoRefresh: false }
+    );
+    const planSnapshot = (planResult.data as { snapshot?: unknown }).snapshot;
+    if (!planSnapshot) throw new Error("change plan did not return a portable snapshot fixture");
+    await writeFile(path.join(repo, ".codex/portable-mcp-review.json"), `${JSON.stringify(planSnapshot, null, 2)}\n`, "utf8");
     const direct = await connect(repo, "full");
     const core = await connect(repo, "core");
     try {
       for (const operation of operations) {
-        const directAuto = await direct.client.callTool({ name: operation.name, arguments: operation.arguments });
-        const coreAuto = await invokeCore(core.client, operation.name, operation.arguments);
+        const operationArguments = operation.name === "change_review"
+          ? { ...operation.arguments, planSnapshot: ".codex/portable-mcp-review.json" }
+          : operation.arguments;
+        const directAuto = await direct.client.callTool({ name: operation.name, arguments: operationArguments });
+        const coreAuto = await invokeCore(core.client, operation.name, operationArguments);
         expect(normalize(coreAuto.structuredContent), `${operation.name} auto structured parity`).toEqual(normalize(directAuto.structuredContent));
         expect(normalize(textContent(coreAuto)), `${operation.name} auto text parity`).toBe(normalize(textContent(directAuto)));
         assertAutoUseful(directAuto, operation.marker);
 
-        const directConcise = await direct.client.callTool({ name: operation.name, arguments: { ...operation.arguments, responseFormat: "concise" } });
-        const coreConcise = await invokeCore(core.client, operation.name, operation.arguments, "concise");
+        const directConcise = await direct.client.callTool({ name: operation.name, arguments: { ...operationArguments, responseFormat: "concise" } });
+        const coreConcise = await invokeCore(core.client, operation.name, operationArguments, "concise");
         expect(normalize(coreConcise.structuredContent), `${operation.name} concise structured parity`).toEqual(normalize(directConcise.structuredContent));
         expect(normalize(textContent(coreConcise)), `${operation.name} concise text parity`).toBe(normalize(textContent(directConcise)));
         assertConciseUseful(directConcise, operation.marker);

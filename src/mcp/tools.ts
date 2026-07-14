@@ -431,6 +431,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
         mode: z.enum(["observe", "warn", "fail"]).optional(),
         changeType: changeTypeSchema.optional(),
         taskId: z.string().min(1).max(120).optional(),
+        planSnapshot: z.string().min(1).max(500).optional(),
         ranTests: z.array(z.string().min(1).max(2_000)).max(30).optional(),
         ranCommands: z.array(z.string().min(1).max(2_000)).max(30).optional(),
         ranCommandReports: z.array(ranCommandReportSchema).max(30).optional(),
@@ -446,6 +447,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
         mode: input.mode,
         changeType: input.changeType,
         taskId: input.taskId,
+        planSnapshot: input.planSnapshot,
         ranTests: input.ranTests,
         ranCommands: input.ranCommands,
         ranCommandReports: input.ranCommandReports
