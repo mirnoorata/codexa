@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -59,13 +59,25 @@ describe("committed change review", () => {
     const base = git(repo, "rev-parse", "HEAD");
     await buildIndex({ repoRoot: repo });
     await writeFile(path.join(repo, "src/main.ts"), "export function greeting() { return 'dirty' }\n", "utf8");
-    await expect(changeReviewQuery(repo, { base }, { autoRefresh: true })).rejects.toThrow(/clean indexed checkout/u);
+    await expect(changeReviewQuery(repo, { base }, { autoRefresh: true })).rejects.toThrow(/fresh index built from a clean checkout/u);
 
     git(repo, "checkout", "--", "src/main.ts");
     git(repo, "commit", "--allow-empty", "-m", "test: advance head");
     await buildIndex({ repoRoot: repo });
     await expect(changeReviewQuery(repo, { base: "--help" }, { autoRefresh: false })).rejects.toThrow(/unable to resolve Git ref --help/u);
     await expect(changeReviewQuery(repo, { base, head: base }, { autoRefresh: false })).rejects.toThrow(/does not match indexed checkout/u);
+  });
+
+  it("rejects an index built from a reverted dirty overlay until it is refreshed", async () => {
+    const repo = await createReviewRepo();
+    const head = git(repo, "rev-parse", "HEAD");
+    await writeFile(path.join(repo, "src/main.ts"), "export function greeting() { return 'dirty overlay' }\n", "utf8");
+    await buildIndex({ repoRoot: repo });
+    git(repo, "checkout", "--", "src/main.ts");
+
+    await expect(changeReviewQuery(repo, { base: head }, { autoRefresh: false })).rejects.toThrow(/fresh index built from a clean checkout/u);
+    const refreshed = (await changeReviewQuery(repo, { base: head }, { autoRefresh: true })).data as ChangeReviewData;
+    expect(refreshed.actionability).toBe("no_changes");
   });
 
   it("returns a non-blocking no-change receipt for an identical base and head", async () => {
@@ -120,6 +132,11 @@ describe("committed change review", () => {
     expect(portable.verdict.status).toBe("attention");
     expect(portable.verdict.reasons).toContainEqual(expect.stringContaining("advisory portable plan drift"));
 
+    await symlink("../plans/review.json", path.join(repo, ".codex/portable-link.json"));
+    await expect(changeReviewQuery(repo, { base, planSnapshot: ".codex/portable-link.json" }, { autoRefresh: false })).rejects.toThrow(/non-symlink/u);
+    await writeFile(path.join(repo, ".codex/oversized-plan.json"), "x".repeat(1024 * 1024 + 1), "utf8");
+    await expect(changeReviewQuery(repo, { base, planSnapshot: ".codex/oversized-plan.json" }, { autoRefresh: false })).rejects.toThrow(/exceeds 1048576 bytes/u);
+
     git(repo, "commit", "--allow-empty", "-m", "test: move review base");
     const laterBase = git(repo, "rev-parse", "HEAD");
     await writeFile(path.join(repo, "src/main.ts"), "export function greeting() { return 'later' }\n", "utf8");
@@ -164,6 +181,26 @@ describe("committed change review", () => {
     expect(data.change.unindexedChanged).toEqual([]);
     expect(data.plan).toMatchObject({ conformance: "matched", boundToRange: true });
     expect(data.verdict.blocking).toBe(false);
+  });
+
+  it("keeps rename classification deterministic when repository config sets a hostile low limit", async () => {
+    const repo = await createReviewRepo();
+    const original = Array.from({ length: 12 }, (_, index) => `export const value${index} = ${index}\n`).join("");
+    await writeFile(path.join(repo, "src/first.ts"), original, "utf8");
+    await writeFile(path.join(repo, "src/second.ts"), original.replaceAll("value", "other"), "utf8");
+    commitAll(repo, "test: add rename fixtures");
+    const base = git(repo, "rev-parse", "HEAD");
+    git(repo, "config", "diff.renameLimit", "1");
+    git(repo, "mv", "src/first.ts", "src/first-renamed.ts");
+    git(repo, "mv", "src/second.ts", "src/second-renamed.ts");
+    await writeFile(path.join(repo, "src/first-renamed.ts"), `${original}export const added = true\n`, "utf8");
+    await writeFile(path.join(repo, "src/second-renamed.ts"), `${original.replaceAll("value", "other")}export const added = true\n`, "utf8");
+    commitAll(repo, "refactor: rename multiple modified files");
+    await buildIndex({ repoRoot: repo });
+
+    const data = (await changeReviewQuery(repo, { base }, { autoRefresh: false })).data as ChangeReviewData;
+    expect(data.change.entries.filter((entry) => entry.kind === "renamed")).toHaveLength(2);
+    expect(data.change.changedFileCount).toBe(2);
   });
 
   it("returns a zero-change receipt when a range only changes ignored Codexa control files", async () => {
