@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.14.1](https://github.com/mirnoorata/codexa/compare/v0.14.0...v0.14.1) (2026-07-14)
+
+
+### Bug Fixes
+
+* **workflows:** harden usefulness validation ([#106](https://github.com/mirnoorata/codexa/issues/106)) ([9c9aaf5](https://github.com/mirnoorata/codexa/commit/9c9aaf5c2b688a02ab84f4ba19a732b130fcaa2c))
+
 ## [0.14.0](https://github.com/mirnoorata/codexa/compare/v0.13.0...v0.14.0) (2026-07-14)
 
 
