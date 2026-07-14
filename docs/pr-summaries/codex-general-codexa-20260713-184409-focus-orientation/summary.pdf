@@ -12,7 +12,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
 endobj
 5 0 obj
-<< /Length 2535 >>
+<< /Length 2562 >>
 stream
 BT
 /F1 10 Tf
@@ -56,8 +56,9 @@ BT
 () Tj T*
 (- Source/config/tests: 21 files, 1,384 insertions, 55 deletions.) Tj T*
 (- Review artifacts: this Markdown summary and its PDF rendering.) Tj T*
-(- No source mutation, pull-request comments, or write permissions are exposed) Tj T*
-(by the Action or MCP operation.) Tj T*
+(- The Action has read-only repository permissions and does not comment on pull) Tj T*
+(requests. The MCP operation never mutates source; its optional auto-refresh) Tj T*
+(may update Codexa-generated cache and index files.) Tj T*
 () Tj T*
 (Adversarial Hardening) Tj T*
 () Tj T*
@@ -69,7 +70,6 @@ BT
 (- fixed rename/copy determinism against hostile diff.renameLimit config;) Tj T*
 (- bound portable snapshot containment, identity, size, and reads to the same) Tj T*
 (validated file;) Tj T*
-(- exposed bounded portable-plan input through both MCP access paths;) Tj T*
 ET
 endstream
 endobj
@@ -77,12 +77,13 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 7 0 R >>
 endobj
 7 0 obj
-<< /Length 1234 >>
+<< /Length 1311 >>
 stream
 BT
 /F1 10 Tf
 14 TL
 50 760 Td
+(- exposed bounded portable-plan input through both MCP access paths;) Tj T*
 (- isolated npx Action bootstrap from same-name consumer workspaces;) Tj T*
 (- refreshed stale committed review artifacts after the fixes.) Tj T*
 () Tj T*
@@ -117,10 +118,10 @@ xref
 0000000121 00000 n 
 0000000191 00000 n 
 0000000317 00000 n 
-0000002903 00000 n 
-0000003029 00000 n 
+0000002930 00000 n 
+0000003056 00000 n 
 trailer
 << /Size 8 /Root 1 0 R >>
 startxref
-4314
+4418
 %%EOF
