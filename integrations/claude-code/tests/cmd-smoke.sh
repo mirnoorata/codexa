@@ -315,6 +315,22 @@ else
   fail "review passes --ran-test through" "rc=$LAST_RC stdout='$LAST_STDOUT'"
 fi
 
+review_marker="$TMP/review-injection-marker"
+invariant_json="{\"invariantId\":\"inv-safe\",\"status\":\"satisfied\",\"evidence\":[\"literal \$(touch $review_marker)\"]}"
+artifact_id="va_$(printf 'a%.0s' {1..64})"
+review_args="$(printf -- "--invariant-review '%s' --artifact-id '%s'" "$invariant_json" "$artifact_id")"
+run_cmd "review.sh" "$review_args" "$REPO"
+if [[ $LAST_RC -eq 0 ]] \
+   && printf '%s' "$LAST_STDOUT" | grep -Fxq "ARG: --invariant-review" \
+   && printf '%s' "$LAST_STDOUT" | grep -Fxq "ARG: $invariant_json" \
+   && printf '%s' "$LAST_STDOUT" | grep -Fxq "ARG: --artifact-id" \
+   && printf '%s' "$LAST_STDOUT" | grep -Fxq "ARG: $artifact_id" \
+   && [[ ! -e "$review_marker" ]]; then
+  pass "review safely forwards invariant evidence and artifact IDs as literal arguments"
+else
+  fail "review safely forwards invariant evidence and artifact IDs as literal arguments" "rc=$LAST_RC stdout='$LAST_STDOUT' marker=$([[ -e "$review_marker" ]] && printf present || printf absent)"
+fi
+
 run_cmd "review.sh" "--evil-flag foo" "$REPO"
 if [[ $LAST_RC -ne 0 ]] && printf '%s' "$LAST_STDERR" | grep -q "refusing unknown flag"; then
   pass "review rejects unknown flags"

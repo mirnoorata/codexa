@@ -15,10 +15,15 @@ if (!repoRoot) {
 }
 
 const launch = resolveCodexaLaunch(repoRoot, autoRefresh);
+// This plugin ships no completion hook. Strip the internal ownership marker
+// even when the parent Codex process inherited it from another integration;
+// otherwise change_plan would suppress the evidence-bearing final review.
+const childEnv = { ...process.env };
+delete childEnv.CODEXA_MANAGED_POST_EDIT;
 const child = spawn(launch.command, launch.args, {
   cwd: repoRoot,
   stdio: ["inherit", "inherit", "inherit"],
-  env: process.env
+  env: childEnv
 });
 
 child.on("exit", (code, signal) => {
