@@ -410,6 +410,40 @@ describe("task lifecycle governance", () => {
     }
   });
 
+  it("recovers a newer same-task snapshot when a crash leaves its deleted blocked marker published", async () => {
+    const repo = await createHookFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+    const taskId = "blocked-upgrade-crash";
+    await saveBlockedTaskSnapshot({
+      repoRoot: repo,
+      input: { task: "Resolve the target", taskId, saveSnapshot: true },
+      reason: "orientation-only"
+    });
+    const dir = path.join(repo, ".codex/cache/codexa-tasks");
+    const latestPath = path.join(dir, "latest.json");
+    const staleBlockedPointer = await readFile(latestPath, "utf8");
+
+    const accepted = await changePlanQuery(
+      repo,
+      { task: "Apply the resolved edit", taskId, files: ["src/main.ts"], saveSnapshot: true },
+      { autoRefresh: false }
+    );
+    const acceptedSnapshot = (accepted.data as { snapshot: TaskSnapshot }).snapshot;
+    await expect(readFile(path.join(dir, `${taskId}.blocked.json`), "utf8")).rejects.toThrow();
+
+    // Reachable crash state: the accepted snapshot replaced the blocked marker,
+    // but the process stopped before publishing its newer latest.json pointer.
+    await writeFile(latestPath, staleBlockedPointer, "utf8");
+    await expect(loadTaskSnapshot(repo)).resolves.toMatchObject({
+      recoveredLatest: true,
+      latestTaskId: taskId,
+      snapshot: {
+        taskId,
+        publicationSequence: acceptedSnapshot.publicationSequence
+      }
+    });
+  });
+
   it("preserves a valid same-task snapshot when a later orientation-only plan is blocked", async () => {
     const repo = await createHookFixtureRepo();
     await buildIndex({ repoRoot: repo });

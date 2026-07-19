@@ -206,13 +206,16 @@ export async function loadTaskSnapshot(repoRoot: string, taskId?: string): Promi
     }
     if (latest.value.blocked === true) {
       const blockedTaskId = typeof latest.value.taskId === "string" ? normalizeTaskId(latest.value.taskId) : undefined;
-      const latestDir = latest.dir;
-      const blocked = await readBlockedSnapshotMarker(blockedTaskId ? [latestDir, ...dirs.filter((candidateDir) => candidateDir !== latestDir)] : dirs, blockedTaskId, { strictInvalid: true });
-      return blocked ?? {
+      const blocked = await readExactBlockedLatestPointer(latest.dir, latest.value);
+      if (blocked) {
+        return blocked;
+      }
+      const recovered = await recoverLatestSnapshot(dirs, snapshotDir(repo));
+      return recovered ?? {
         latestTaskId: blockedTaskId,
-        missingReason: "blocked-plan",
-        error: blockedSnapshotReason(latest.value.reason),
-        path: typeof latest.value.path === "string" ? path.join(latest.dir, latest.value.path) : undefined
+        missingReason: "invalid-json",
+        error: "latest blocked snapshot pointer does not match its exact blocked artifact",
+        path: path.join(latest.dir, LATEST_FILE)
       };
     }
     if (typeof latest.value.taskId !== "string" || !normalizeTaskId(latest.value.taskId)) {
@@ -493,6 +496,28 @@ async function readBlockedSnapshotMarker(
     return blockedSnapshotLoadResult(parsed.value, markerPath);
   }
   return undefined;
+}
+
+async function readExactBlockedLatestPointer(dir: string, pointer: LatestSnapshotPointer): Promise<TaskSnapshotLoadResult | undefined> {
+  const taskId = typeof pointer.taskId === "string" ? normalizeTaskId(pointer.taskId) : undefined;
+  if (!taskId || pointer.taskId !== taskId || pointer.blocked !== true) return undefined;
+  const artifactName = typeof pointer.path === "string" ? pointer.path : undefined;
+  const expectedName = `${taskId}.blocked.json`;
+  if (
+    !artifactName
+    || artifactName !== expectedName
+    || artifactName !== path.posix.basename(artifactName)
+    || artifactName !== path.win32.basename(artifactName)
+  ) {
+    return undefined;
+  }
+  const pointerSequence = validPublicationSequence(pointer.publicationSequence);
+  if (pointer.publicationSequence !== undefined && pointerSequence === undefined) return undefined;
+  const markerPath = path.join(dir, artifactName);
+  const parsed = await readJson<BlockedTaskSnapshotMarker>(markerPath);
+  if (!parsed.ok || !isBlockedSnapshotMarker(parsed.value, taskId) || parsed.value.taskId !== taskId) return undefined;
+  if (validPublicationSequence(parsed.value.publicationSequence) !== pointerSequence) return undefined;
+  return blockedSnapshotLoadResult(parsed.value, markerPath);
 }
 
 function isBlockedSnapshotMarker(value: unknown, taskId?: string): value is BlockedTaskSnapshotMarker {
