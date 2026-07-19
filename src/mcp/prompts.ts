@@ -56,10 +56,11 @@ export function registerWorkflowPrompts(server: McpServer, enabledTools?: Readon
       title: "Codexa dirty diff review",
       description: "Review the current dirty tree with grouped impact and targeted verification.",
       argsSchema: {
-        task: z.string().optional().describe("What the dirty diff is supposed to accomplish.")
+        task: z.string().optional().describe("What the dirty diff is supposed to accomplish."),
+        taskId: z.string().optional().describe("Saved change-plan task id when more than one snapshot may exist.")
       }
     },
-    async ({ task }) => ({
+    async ({ task, taskId }) => ({
       messages: [
         {
           role: "user",
@@ -68,7 +69,12 @@ export function registerWorkflowPrompts(server: McpServer, enabledTools?: Readon
             text: [
               "Use Codexa to review the current dirty diff.",
               task ? `Expected intent: ${task}` : undefined,
-              call("post_edit_review", "once for the current dirty diff and saved task id when one exists"),
+              call(
+                "post_edit_review",
+                taskId ? "once for the current dirty diff and this saved task id" : "only when there is no saved snapshot or the latest snapshot is unambiguous",
+                taskId ? { taskId } : {}
+              ),
+              taskId ? undefined : "If multiple saved snapshots exist, render this prompt again with `taskId` instead of guessing.",
               "Inspect the returned source targets directly.",
               call("diff_impact", "only if this explicit review leaves a concrete impact gap"),
               call("test_plan", "only if this explicit review leaves a concrete verification gap", { diff: true }),
