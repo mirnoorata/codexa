@@ -928,6 +928,49 @@ describe("query routing boundaries", () => {
       targetRoles: { readDependencies: ["src/api.ts", "src/util.ts"] }
     });
 
+    for (const task of [
+      "Make src/api.ts match src/util.ts",
+      "Update src/api.ts to mirror src/util.ts"
+    ]) {
+      const focus = await focusBriefQuery(repo, { task, diff: false }, { autoRefresh: false });
+      expect((focus.data as { targetRoles: { editableTargets: string[]; readDependencies: string[] } }).targetRoles, task).toMatchObject({
+        editableTargets: ["src/api.ts"],
+        readDependencies: ["src/util.ts"]
+      });
+      const pack = await contextPackQuery(repo, { task, diff: false, includeSnippets: false }, { autoRefresh: false });
+      expect((pack.data as { boundedPlanTargets: string[]; targetRoles: { editableTargets: string[]; readDependencies: string[] } }), task).toMatchObject({
+        boundedPlanTargets: ["src/api.ts"],
+        targetRoles: { editableTargets: ["src/api.ts"], readDependencies: ["src/util.ts"] }
+      });
+      const plan = await changePlanQuery(repo, { task, files: ["src/api.ts", "src/util.ts"], diff: false, saveSnapshot: false }, { autoRefresh: false });
+      expect((plan.data as { plannedEditTargets: string[]; targetRoles: { editableTargets: string[]; readDependencies: string[] } }), task).toMatchObject({
+        plannedEditTargets: ["src/api.ts"],
+        targetRoles: { editableTargets: ["src/api.ts"], readDependencies: ["src/util.ts"] }
+      });
+    }
+
+    for (const task of [
+      "Edit src/api.ts but not src/util.ts",
+      "Edit src/api.ts except for src/util.ts",
+      "Edit src/api.ts excluding src/util.ts"
+    ]) {
+      const focus = await focusBriefQuery(repo, { task, diff: false }, { autoRefresh: false });
+      expect((focus.data as { targetRoles: { editableTargets: string[]; excludedTargets: string[] } }).targetRoles, task).toMatchObject({
+        editableTargets: ["src/api.ts"],
+        excludedTargets: ["src/util.ts"]
+      });
+      const pack = await contextPackQuery(repo, { task, diff: false, includeSnippets: false }, { autoRefresh: false });
+      expect((pack.data as { boundedPlanTargets: string[]; targetRoles: { editableTargets: string[]; excludedTargets: string[] } }), task).toMatchObject({
+        boundedPlanTargets: ["src/api.ts"],
+        targetRoles: { editableTargets: ["src/api.ts"], excludedTargets: ["src/util.ts"] }
+      });
+      const plan = await changePlanQuery(repo, { task, files: ["src/api.ts", "src/util.ts"], diff: false, saveSnapshot: false }, { autoRefresh: false });
+      expect((plan.data as { plannedEditTargets: string[]; targetRoles: { editableTargets: string[]; excludedTargets: string[] } }), task).toMatchObject({
+        plannedEditTargets: ["src/api.ts"],
+        targetRoles: { editableTargets: ["src/api.ts"], excludedTargets: ["src/util.ts"] }
+      });
+    }
+
     const excludedSourceTask = "Create src/new.ts using helper, but do not modify src/util.ts";
     const excludedPlan = await changePlanQuery(repo, { task: excludedSourceTask, files: ["src/new.ts", "src/util.ts"], diff: false, saveSnapshot: false }, { autoRefresh: false });
     expect((excludedPlan.data as { plannedEditTargets: string[]; targetRoles: { readDependencies: string[]; excludedTargets: string[] } })).toMatchObject({

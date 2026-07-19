@@ -229,6 +229,7 @@ function targetMentionRole(task: string, label: string, index: number): "editabl
   const after = task.slice(index + label.length, index + label.length + 48);
   if (
     /\b(?:(?:do\s+not|don't|never)\s+(?:change|edit|modify|rewrite|touch|update)|without\s+(?:changing|editing|modifying|rewriting|touching|updating))\s+(?:the\s+)?$/iu.test(before)
+    || /\b(?:but\s+not|except(?:\s+for)?|excluding)\s+(?:the\s+)?$/iu.test(before)
     || (/\bleave\s+(?:the\s+)?$/iu.test(before) && /^\s+(?:alone|unchanged)\b/iu.test(after))
   ) {
     return "excluded";
@@ -240,13 +241,13 @@ function targetMentionRole(task: string, label: string, index: number): "editabl
 }
 
 function hasTargetReferenceCueBefore(before: string): boolean {
-  return /\b(?:use|using|call(?:s|ing)?|invok(?:e|es|ing)|import(?:s|ing)?|model(?:ed|led)\s+after|same\s+behaviou?r\s+as|similar\s+to|analogous\s+to|based\s+on|compar(?:e|ed|ing)\s+(?:against|to|with)|pattern\s+(?:from|in)|according\s+to|referenc(?:e|ed|ing)(?:\s+implementation)?|like)\s+(?:the\s+)?$/iu.test(before)
+  return /\b(?:use|using|call(?:s|ing)?|invok(?:e|es|ing)|import(?:s|ing)?|model(?:ed|led)\s+after|same\s+behaviou?r\s+as|similar\s+to|analogous\s+to|based\s+on|compar(?:e|ed|ing)\s+(?:against|to|with)|match(?:es|ing)?|mirror(?:s|ing)?|pattern\s+(?:from|in)|according\s+to|referenc(?:e|ed|ing)(?:\s+implementation)?|like)\s+(?:the\s+)?$/iu.test(before)
     || /\b(?:use|using)\b[^.!?;\n]{1,80}\b(?:from|via)\s+(?:the\s+)?$/iu.test(before)
     || /\bcompar(?:e|ed|ing)\b(?:(?:(?![.!?;]\s)[^\n]){0,100}\b(?:against|to|with|and))?\s+(?:the\s+)?$/iu.test(before);
 }
 
 function taskReferenceCueMentions(task: string): Array<{ label: string; labelStart: number; labelEnd: number }> {
-  const pattern = /\b(?:use|using|call(?:s|ing)?|invok(?:e|es|ing)|import(?:s|ing)?|model(?:ed|led)\s+after|same\s+behaviou?r\s+as|similar\s+to|analogous\s+to|based\s+on|compar(?:e|ed|ing)\s+(?:against|to|with)|pattern\s+(?:from|in)|according\s+to|referenc(?:e|ed|ing)(?:\s+implementation)?|like)\s+(?:the\s+)?[`'"]?((?:\.\/)?(?:[A-Za-z0-9_@.$-]+\/)*[A-Za-z_$][A-Za-z0-9_@.$:-]*)/giu;
+  const pattern = /\b(?:use|using|call(?:s|ing)?|invok(?:e|es|ing)|import(?:s|ing)?|model(?:ed|led)\s+after|same\s+behaviou?r\s+as|similar\s+to|analogous\s+to|based\s+on|compar(?:e|ed|ing)\s+(?:against|to|with)|match(?:es|ing)?|mirror(?:s|ing)?|pattern\s+(?:from|in)|according\s+to|referenc(?:e|ed|ing)(?:\s+implementation)?|like)\s+(?:the\s+)?[`'"]?((?:\.\/)?(?:[A-Za-z0-9_@.$-]+\/)*[A-Za-z_$][A-Za-z0-9_@.$:-]*)/giu;
   return [...task.matchAll(pattern)].flatMap((match) => {
     const label = match[1]?.replace(/[.,;:!?]+$/u, "");
     if (!label) return [];
