@@ -96,6 +96,9 @@ async function postEditReviewQueryInternal(
   const tokenBudget = clampInt(input.tokenBudget ?? 2800, 600, 10000);
   const limit = clampInt(input.limit ?? 10, 3, 30);
   const loadedSnapshot = await loadTaskSnapshot(repoRoot, input.taskId);
+  if (loadedSnapshot.missingReason === "invalid-json" && /^task lifecycle\b/iu.test(loadedSnapshot.error ?? "")) {
+    throw new Error(loadedSnapshot.error);
+  }
   const snapshot = loadedSnapshot.snapshot;
   const freshnessBlockReason = freshnessAuthorityBlockReason(freshness);
   if (freshnessBlockReason) {

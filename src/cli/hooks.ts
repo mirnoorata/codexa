@@ -79,6 +79,9 @@ export async function runPreEditHook(repo: string): Promise<void> {
 
 async function pendingPreEditLifecycleBlock(activeRepoRoot: string): Promise<{ repoRoot: string; taskId: string; reasons: string[] } | undefined> {
   const loaded = await loadTaskSnapshot(activeRepoRoot);
+  if (loaded.missingReason === "invalid-json" && /^task lifecycle\b/iu.test(loaded.error ?? "")) {
+    throw new Error(loaded.error);
+  }
   const review = await pendingTaskLifecycleReplan(activeRepoRoot, loaded.snapshot);
   if (review && loaded.snapshot) {
     return { repoRoot: activeRepoRoot, taskId: loaded.snapshot.taskId, reasons: review.reasons };
