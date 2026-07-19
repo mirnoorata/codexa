@@ -238,6 +238,13 @@ describe("Codexa project init", () => {
     };
     delete stopEnv.CODEXA_MANAGED_POST_EDIT;
     const stopPayload = `${JSON.stringify({ session_id: "state-bound-review", cwd: repo })}\n`;
+    const reviewState = () =>
+      spawnSync(process.execPath, [cli, "hook-review-state", repo], {
+        cwd: repo,
+        env: stopEnv,
+        encoding: "utf8",
+        timeout: 10_000
+      });
     const runStop = () =>
       spawnSync("bash", [path.join(pluginRoot, "scripts/stop.sh")], {
         cwd: repo,
@@ -247,6 +254,11 @@ describe("Codexa project init", () => {
         timeout: 40_000
       });
 
+    const currentState = reviewState();
+    expect(currentState.error).toBeUndefined();
+    expect(currentState.status).toBe(0);
+    expect(currentState.stdout).toBe("current\n");
+
     const duplicateStop = runStop();
     expect(duplicateStop.error).toBeUndefined();
     expect(duplicateStop.status).toBe(0);
@@ -255,7 +267,13 @@ describe("Codexa project init", () => {
     expect(await readFile(pointerPath, "utf8")).toBe(pointerBeforeStop);
     expect((await readdir(outcomeDir)).filter((entry) => entry.endsWith(".json")).sort()).toEqual(outcomesBeforeStop);
 
-    await writeFile(path.join(repo, "src/main.ts"), "export function main() { return 3 }\n", "utf8");
+    await chmod(path.join(repo, "src/main.ts"), 0o755);
+    expect(execFileSync("git", ["diff", "--summary"], { cwd: repo, encoding: "utf8" })).toContain("mode change 100644 => 100755 src/main.ts");
+    const changedModeState = reviewState();
+    expect(changedModeState.error).toBeUndefined();
+    expect(changedModeState.status).toBe(0);
+    expect(changedModeState.stdout).toBe("review\n");
+
     const laterEditStop = runStop();
     expect(laterEditStop.error).toBeUndefined();
     expect(laterEditStop.status).toBe(0);
