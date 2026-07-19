@@ -57,6 +57,8 @@ function hasLaterEditDirective(task: string): boolean {
   if (!match) return false;
   if (/^\s*and\b/u.test(match[0]) && /\bhow\s+to\b/u.test(task.slice(0, match.index))) return false;
   const directive = task.slice(match.index).replace(/^(?:[.,;:]|\n|\band\b|\bthen\b|\bbefore\b)\s*(?:please\s+)?/u, "");
+  const readOnlyHead = readOnlyLead.test(task) || readOnlyRequestHead.test(task) || readOnlyArtifactHead.test(task) || readOnlyIdiomHead.test(task);
+  if (readOnlyHead && /^\s*and\b/u.test(match[0]) && /^[a-z]+ing\b/u.test(directive)) return false;
   if (readOnlyArtifactHead.test(directive) || readOnlyIdiomHead.test(directive)) return hasLaterEditDirective(directive);
   const suffix = task.slice(match.index + match[0].length);
   return !/^\s+(?:alternatives?|approaches?|history|ideas?|options?|patterns?|plans?|status|strategies|strategy)\b/u.test(suffix);
