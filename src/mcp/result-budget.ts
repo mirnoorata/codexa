@@ -59,103 +59,119 @@ function budgetReceipt(result: McpToolResultShape, originalBytes: number, maxByt
   };
   const resultUri = detailedResultUri(sourceDelivery.resultUri);
   const terminalDetailRequired = compactedKernel.detailsRequired === true;
-  const sourceNextTools = Array.isArray(sourceData.nextTools) ? sourceData.nextTools : sourceKernel.nextTools;
-  const executableInputsOmitted = Array.isArray(sourceNextTools) && sourceNextTools.some((entry) => {
-    if (!isRecord(entry) || !isRecord(entry.requiredInputs)) return false;
-    return Object.keys(entry.requiredInputs).length > 0;
-  });
-  const effectiveDetailRequired = terminalDetailRequired || executableInputsOmitted;
-  // Freshness is itself an orientation summary: stale/reason/count authority
-  // remains complete after its unbounded path/hash lists are removed. It has
-  // no narrower MCP form, so direct users to source control for exact paths.
-  const compactSummarySufficient = mode === "freshness";
-  const detailUnavailable = !resultUri && !compactSummarySufficient;
-  const systemMessage = compactSummarySufficient && !resultUri
-    ? "Freshness detail was compacted; stale state, reason, and dirty count remain authoritative. Use git status --short for exact paths; no further Codexa call is required."
-    : detailUnavailable
-      ? "Result detail was omitted to enforce the MCP transport budget; do not act on missing evidence. Retry with a narrower request."
-      : executableInputsOmitted
-        ? "Executable next-tool arguments were omitted to enforce the MCP transport budget; read the linked detailed result before acting."
-      : terminalDetailRequired
-        ? optionalBounded(compactedKernel.systemMessage, 240) ?? "Required detailed evidence is omitted from this bounded receipt; read the linked detailed result before acting."
-        : optionalBounded(sourceData.systemMessage ?? envelope.systemMessage, 240);
-  // The terminal kernel is the authority after transport compaction. Exact
-  // lifecycle modes intentionally fail closed until their linked detail is
-  // read, so the envelope must not retain the pre-compaction edit authority.
-  const actionability = detailUnavailable || executableInputsOmitted ? "blocked" : validActionability(sourceAuthority.actionability);
-  const authority = detailUnavailable || executableInputsOmitted
-    ? defined({ ...sourceAuthority, actionability, originalActionability })
-    : sourceAuthority;
-  const kernel = detailUnavailable || executableInputsOmitted
-    ? defined({ ...compactedKernel, authority, nextTools: [], systemMessage, detailsRequired: true })
-    : compactSummarySufficient
-      ? defined({ ...compactedKernel, authority, nextTools: [], systemMessage, detailsRequired: undefined })
-      : compactedKernel;
-  const delivery = defined({
-    ...sourceDelivery,
-    resultUri,
-    effectiveFormat: "concise",
-    detailAvailable: resultUri ? true : false,
-    detailRequired: effectiveDetailRequired || detailUnavailable || sourceDelivery.detailRequired === true,
-    requiredDetailReason: sourceDelivery.requiredDetailReason ?? (effectiveDetailRequired || detailUnavailable ? "tool-result-budget" : undefined),
-    escalationReason: sourceDelivery.escalationReason ?? "tool-result-budget"
-  });
-  const truncation = { "__mcp.toolResultBudget": { total: originalBytes, returned: maxBytes } };
-  const data = defined({
-    mode,
-    actionability,
-    verdict: optionalBounded(authority.verdict ?? sourceData.verdict, 80),
-    packetVerdict: optionalBounded(authority.packetVerdict ?? sourceData.packetVerdict, 80),
-    completionAuthority: optionalBounded(authority.completionAuthority ?? sourceData.completionAuthority, 80),
-    inspectMode: optionalBounded(authority.inspectMode ?? sourceData.inspectMode, 80),
-    delivery,
-    decisionKernel: kernel,
-    systemMessage,
-    truncation,
-    mcp: { compacted: true, targetBytes: maxBytes, hardBudgetEnforced: true, budgetCompaction: "tool-result" }
-  });
-  const nextTools = detailUnavailable || executableInputsOmitted ? [] : toolNames(kernel.nextTools, 1, 80);
-  const relatedResources = resultUri
-    ? [{ uri: resultUri, name: "Codexa detailed MCP result", mimeType: "application/json", description: "Content-addressed detailed packet" }]
-    : [];
-  const structuredContent = {
-    schemaVersion: 1,
-    mode,
-    actionability,
-    data,
-    freshness: minimalFreshness(envelope.freshness),
-    refresh: compactRefresh(envelope.refresh),
-    lifecycle: compactLifecycle(
-      envelope.lifecycle,
+  const sourceNextTools = authoritativeNextTools(envelope, sourceData, sourceKernel);
+  const sourceNextTool = sourceNextTools[0];
+  const completeNextTool = completeNextToolContract(sourceNextTool);
+  const sourceNextToolIncomplete = isRecord(sourceNextTool) && !completeNextTool;
+  const sourceNextToolTruncated = hasFirstNextToolContractTruncation(sourceNextTool, envelope.truncation, sourceData.truncation, sourceKernel.truncation);
+
+  const buildReceipt = (nextToolContractOmitted: boolean, projectedNextTools: unknown[]): McpToolResultShape => {
+    const effectiveDetailRequired = terminalDetailRequired || nextToolContractOmitted;
+    // Freshness is itself an orientation summary: stale/reason/count authority
+    // remains complete after its unbounded path/hash lists are removed. It has
+    // no narrower MCP form, so direct users to source control for exact paths.
+    const compactSummarySufficient = mode === "freshness";
+    const detailUnavailable = !resultUri && !compactSummarySufficient;
+    const systemMessage = compactSummarySufficient && !resultUri
+      ? "Freshness detail was compacted; stale state, reason, and dirty count remain authoritative. Use git status --short for exact paths; no further Codexa call is required."
+      : detailUnavailable
+        ? "Result detail was omitted to enforce the MCP transport budget; do not act on missing evidence. Retry with a narrower request."
+        : nextToolContractOmitted
+          ? "Executable next-tool arguments were omitted to enforce the MCP transport budget; read the linked detailed result before acting."
+        : terminalDetailRequired
+          ? optionalBounded(compactedKernel.systemMessage, 240) ?? "Required detailed evidence is omitted from this bounded receipt; read the linked detailed result before acting."
+          : optionalBounded(sourceData.systemMessage ?? envelope.systemMessage, 240);
+    // The terminal kernel is the authority after transport compaction. Exact
+    // lifecycle modes intentionally fail closed until their linked detail is
+    // read, so the envelope must not retain the pre-compaction edit authority.
+    const authorityBlocked = detailUnavailable || nextToolContractOmitted;
+    const actionability = authorityBlocked ? "blocked" : validActionability(sourceAuthority.actionability);
+    const authority = authorityBlocked
+      ? defined({ ...sourceAuthority, actionability, originalActionability })
+      : sourceAuthority;
+    const projectedNextToolNames = toolNames(projectedNextTools, 1, 80);
+    const kernel = authorityBlocked
+      ? defined({ ...compactedKernel, authority, nextTools: [], systemMessage, detailsRequired: true })
+      : compactSummarySufficient
+        ? defined({ ...compactedKernel, authority, nextTools: [], systemMessage, detailsRequired: undefined })
+        : projectedNextToolNames.length > 0
+          ? defined({ ...compactedKernel, nextTools: projectedNextToolNames })
+          : compactedKernel;
+    const delivery = defined({
+      ...sourceDelivery,
+      resultUri,
+      effectiveFormat: "concise",
+      detailAvailable: resultUri ? true : false,
+      detailRequired: effectiveDetailRequired || detailUnavailable || sourceDelivery.detailRequired === true,
+      requiredDetailReason: sourceDelivery.requiredDetailReason ?? (effectiveDetailRequired || detailUnavailable ? "tool-result-budget" : undefined),
+      escalationReason: sourceDelivery.escalationReason ?? "tool-result-budget"
+    });
+    const truncation = { "__mcp.toolResultBudget": { total: originalBytes, returned: maxBytes } };
+    const data = defined({
+      mode,
+      actionability,
+      verdict: optionalBounded(authority.verdict ?? sourceData.verdict, 80),
+      packetVerdict: optionalBounded(authority.packetVerdict ?? sourceData.packetVerdict, 80),
+      completionAuthority: optionalBounded(authority.completionAuthority ?? sourceData.completionAuthority, 80),
+      inspectMode: optionalBounded(authority.inspectMode ?? sourceData.inspectMode, 80),
+      delivery,
+      decisionKernel: kernel,
+      systemMessage,
+      truncation,
+      mcp: { compacted: true, targetBytes: maxBytes, hardBudgetEnforced: true, budgetCompaction: "tool-result" }
+    });
+    const nextTools = authorityBlocked || terminalDetailRequired ? [] : projectedNextTools;
+    const lifecycleNextTools = toolNames(nextTools, 1, 80);
+    const relatedResources = resultUri
+      ? [{ uri: resultUri, name: "Codexa detailed MCP result", mimeType: "application/json", description: "Content-addressed detailed packet" }]
+      : [];
+    const structuredContent = {
+      schemaVersion: 1,
+      mode,
+      actionability,
+      data,
+      freshness: minimalFreshness(envelope.freshness),
+      refresh: compactRefresh(envelope.refresh),
+      lifecycle: compactLifecycle(
+        envelope.lifecycle,
+        lifecycleNextTools,
+        effectiveDetailRequired
+          ? resultUri
+            ? "Read the linked detailed result before acting"
+            : "MCP transport budget omitted required detail"
+          : detailUnavailable
+            ? "MCP transport budget omitted required detail"
+            : undefined
+      ),
+      worktree: compactWorktree(envelope.worktree),
+      verificationProvenance: CURRENT_VERIFICATION_PROVENANCE,
+      truncation,
       nextTools,
-      effectiveDetailRequired
-        ? resultUri
-          ? "Read the linked detailed result before acting"
-          : "MCP transport budget omitted required detail"
-        : detailUnavailable
-          ? "MCP transport budget omitted required detail"
-          : undefined
-    ),
-    worktree: compactWorktree(envelope.worktree),
-    verificationProvenance: CURRENT_VERIFICATION_PROVENANCE,
-    truncation,
-    nextTools,
-    systemMessage,
-    relatedResources
+      systemMessage,
+      relatedResources
+    };
+    const text = [
+      `Codexa ${mode} result compacted to the MCP transport budget.`,
+      `Actionability: ${actionability}`,
+      stringValue(authority.verdict) ? `Verdict: ${bounded(stringValue(authority.verdict)!, 100)}` : undefined,
+      stringValue(authority.completionAuthority) ? `Completion authority: ${bounded(stringValue(authority.completionAuthority)!, 100)}` : undefined,
+      stringValue(delivery?.escalationReason) ? `Delivery: ${bounded(stringValue(delivery?.escalationReason)!, 160)}` : undefined,
+      resultUri ? `Detailed result: ${resultUri}` : undefined,
+      systemMessage
+    ].filter((line): line is string => Boolean(line)).join("\n");
+    return {
+      content: [{ type: "text", text }, ...relatedResources.map((resource) => ({ type: "resource_link", ...resource }))],
+      structuredContent
+    };
   };
-  const text = [
-    `Codexa ${mode} result compacted to the MCP transport budget.`,
-    `Actionability: ${actionability}`,
-    stringValue(authority.verdict) ? `Verdict: ${bounded(stringValue(authority.verdict)!, 100)}` : undefined,
-    stringValue(authority.completionAuthority) ? `Completion authority: ${bounded(stringValue(authority.completionAuthority)!, 100)}` : undefined,
-    stringValue(delivery?.escalationReason) ? `Delivery: ${bounded(stringValue(delivery?.escalationReason)!, 160)}` : undefined,
-    resultUri ? `Detailed result: ${resultUri}` : undefined,
-    systemMessage
-  ].filter((line): line is string => Boolean(line)).join("\n");
-  return {
-    content: [{ type: "text", text }, ...relatedResources.map((resource) => ({ type: "resource_link", ...resource }))],
-    structuredContent
-  };
+
+  if (completeNextTool && !sourceNextToolTruncated) {
+    const contractReceipt = withActualReturnedBytes(buildReceipt(false, [completeNextTool]));
+    if (byteLength(contractReceipt) <= maxBytes) return contractReceipt;
+    return buildReceipt(true, []);
+  }
+  if (sourceNextToolTruncated || sourceNextToolIncomplete) return buildReceipt(true, []);
+  return buildReceipt(false, toolNames(compactedKernel.nextTools, 1, 80));
 }
 
 /** Fixed-shape fail-closed receipt for any future field-growth regression. */
@@ -286,6 +302,37 @@ function compactDelivery(value: unknown): Record<string, unknown> | undefined {
     requiredDetailReason: optionalBounded(value.requiredDetailReason, 160),
     unchangedReceipt: value.unchangedReceipt === true || undefined,
     escalationReason: optionalBounded(value.escalationReason, 160)
+  });
+}
+
+function authoritativeNextTools(envelope: Record<string, unknown>, data: Record<string, unknown>, kernel: Record<string, unknown>): unknown[] {
+  if (Array.isArray(envelope.nextTools)) return envelope.nextTools;
+  if (Array.isArray(data.nextTools)) return data.nextTools;
+  return Array.isArray(kernel.nextTools) ? kernel.nextTools : [];
+}
+
+function completeNextToolContract(value: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(value)
+    || !stringValue(value.tool)
+    || !isRecord(value.requiredInputs)
+    || typeof value.readOnly !== "boolean"
+    || !Array.isArray(value.writes)
+    || !value.writes.every((entry) => typeof entry === "string")) {
+    return undefined;
+  }
+  return value;
+}
+
+function hasFirstNextToolContractTruncation(...values: unknown[]): boolean {
+  return values.some((value) => hasTruncationPath(value, "", 0));
+}
+
+function hasTruncationPath(value: unknown, pathName: string, depth: number): boolean {
+  if (depth > 8 || !isRecord(value)) return false;
+  return Object.entries(value).some(([key, entry]) => {
+    const entryPath = pathName ? `${pathName}.${key}` : key;
+    if (/(?:^|\.)nextTools\.(?:0|entry)\.(?:requiredInputs|writes)(?:\.|$)/u.test(entryPath)) return true;
+    return isRecord(entry) && hasTruncationPath(entry, entryPath, depth + 1);
   });
 }
 

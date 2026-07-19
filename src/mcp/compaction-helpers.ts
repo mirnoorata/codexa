@@ -113,14 +113,35 @@ export function compactNextTool(value: unknown, truncation?: McpTruncation, path
   }
   const record = value as Record<string, unknown>;
   const localTruncation: McpTruncation = {};
+  const truncationReceipt = truncation ?? localTruncation;
+  const requiredInputs = compactGenericValue(record.requiredInputs, { arrayLimit: 80, objectKeyLimit: 16, maxDepth: 3 }, truncationReceipt, `${pathName}.requiredInputs`);
+  if (!sameStructuredValue(record.requiredInputs, requiredInputs)) {
+    truncationReceipt[`${pathName}.requiredInputs.__compacted`] = {
+      total: structuredByteLength(record.requiredInputs),
+      returned: structuredByteLength(requiredInputs)
+    };
+  }
+  const writes = Array.isArray(record.writes) ? record.writes.slice(0, 8) : record.writes;
+  if (Array.isArray(record.writes) && record.writes.length > 8) {
+    truncationReceipt[`${pathName}.writes`] = { total: record.writes.length, returned: 8 };
+  }
   return {
     schemaVersion: record.schemaVersion,
     tool: record.tool,
     reason: typeof record.reason === "string" ? record.reason.slice(0, 240) : record.reason,
-    requiredInputs: compactGenericValue(record.requiredInputs, { arrayLimit: 80, objectKeyLimit: 16, maxDepth: 3 }, truncation ?? localTruncation, `${pathName}.requiredInputs`),
+    requiredInputs,
     readOnly: record.readOnly,
-    writes: limitArray(record.writes, 8)
+    writes,
+    ...(truncation === undefined && Object.keys(localTruncation).length > 0 ? { truncation: localTruncation } : {})
   };
+}
+
+function sameStructuredValue(left: unknown, right: unknown): boolean {
+  try {
+    return JSON.stringify(left) === JSON.stringify(right);
+  } catch {
+    return false;
+  }
 }
 
 export function compactCommandEnvelope(value: unknown): unknown {

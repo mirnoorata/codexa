@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { createMcpOutputSchema, toToolResult } from "../src/mcp/envelope.js";
 import { MCP_TOOL_RESULT_DETAILED_MAX_BYTES, MCP_TOOL_RESULT_MAX_BYTES } from "../src/mcp/result-budget.js";
-import { compactMcpResult } from "../src/mcp/compaction.js";
+import { compactMcpResult, compactNextTools } from "../src/mcp/compaction.js";
 import { withMcpDelivery } from "../src/mcp/decision-kernel.js";
 
 const POLICY = { autoRefresh: true, sessionMemoryMode: "auto" };
@@ -127,7 +127,7 @@ describe("MCP serialized ToolResult budget", () => {
     expect(() => z.object(createMcpOutputSchema("full")).parse(result.structuredContent)).not.toThrow();
   });
 
-  it("keeps oversized change-plan authority blocked until linked detail is read", () => {
+  it("keeps an oversized change plan actionable when its terminal scope is self-contained", () => {
     const uri = `codexa://repo/mcp-results/rr_${"c".repeat(32)}/mr_${"d".repeat(64)}`;
     const result = toToolResult(
       {
@@ -156,26 +156,27 @@ describe("MCP serialized ToolResult budget", () => {
       actionability: string;
       data: {
         actionability: string;
-        delivery: { resultUri: string; detailRequired: boolean; requiredDetailReason: string };
-        decisionKernel: { authority: { actionability: string; originalActionability: string }; detailsRequired: boolean };
+        delivery: { resultUri: string; detailRequired: boolean; requiredDetailReason?: string };
+        decisionKernel: { authority: { actionability: string; originalActionability?: string }; detailsRequired?: boolean };
       };
       lifecycle: { blockingReasons: string[] };
-      systemMessage: string;
+      systemMessage?: string;
     };
-    expect(envelope.actionability).toBe("blocked");
+    expect(envelope.actionability).toBe("edit_ready");
     expect(envelope.data.actionability).toBe(envelope.actionability);
     expect(envelope.data.decisionKernel).toMatchObject({
-      authority: { actionability: "blocked", originalActionability: "edit_ready" },
-      detailsRequired: true
+      authority: { actionability: "edit_ready" }
     });
+    expect(envelope.data.decisionKernel.detailsRequired ?? false).toBe(false);
     expect(envelope.data.delivery.resultUri).toBe(uri);
-    expect(envelope.data.delivery).toMatchObject({ detailRequired: true, requiredDetailReason: "tool-result-budget" });
-    expect(envelope.lifecycle.blockingReasons).toContain("Read the linked detailed result before acting");
-    expect(envelope.systemMessage).toContain("read the linked detailed result before acting");
+    expect(envelope.data.delivery).toMatchObject({ detailRequired: false });
+    expect(envelope.data.delivery.requiredDetailReason).toBeUndefined();
+    expect(envelope.lifecycle.blockingReasons).not.toContain("Read the linked detailed result before acting");
+    expect(envelope.systemMessage ?? "").not.toContain("read the linked detailed result before acting");
     expect(result.content).toContainEqual(expect.objectContaining({ type: "resource_link", uri }));
   });
 
-  it("revokes next-tool authority when transport compaction cannot prove required inputs complete", () => {
+  it("preserves a complete next-tool contract when the bounded receipt can carry every input", () => {
     const uri = `codexa://repo/mcp-results/rr_${"e".repeat(32)}/mr_${"f".repeat(64)}`;
     const files = Array.from({ length: 80 }, (_, index) => `src/${index}-${"nested-path-".repeat(20)}target.ts`);
     const result = toToolResult(
@@ -191,6 +192,7 @@ describe("MCP serialized ToolResult budget", () => {
             readOnly: false,
             writes: [".codex/cache/codexa-tasks"]
           }],
+          hugeEvidence: "e".repeat(MCP_TOOL_RESULT_MAX_BYTES * 4),
           delivery: {
             schemaVersion: 1,
             requestedFormat: "auto",
@@ -207,23 +209,166 @@ describe("MCP serialized ToolResult budget", () => {
     expect(bytes(result)).toBeLessThanOrEqual(MCP_TOOL_RESULT_MAX_BYTES);
     const envelope = result.structuredContent as {
       actionability: string;
-      nextTools: unknown[];
+      nextTools: Array<{
+        tool: string;
+        requiredInputs: { task: string; files: string[]; saveSnapshot: boolean };
+        readOnly: boolean;
+        writes: string[];
+      }>;
       data: {
         delivery: { detailRequired: boolean; resultUri: string };
-        decisionKernel: { authority: { actionability: string; originalActionability: string }; nextTools: unknown[]; detailsRequired: boolean };
+        decisionKernel: { authority: { actionability: string }; nextTools: unknown[]; detailsRequired?: boolean };
       };
-      systemMessage: string;
+      systemMessage?: string;
     };
+    expect(envelope.actionability).toBe("edit_ready");
+    expect(envelope.nextTools).toHaveLength(1);
+    expect(envelope.nextTools[0]).toMatchObject({
+      tool: "change_plan",
+      requiredInputs: { task: "Refactor the bounded targets", files, saveSnapshot: true },
+      readOnly: false,
+      writes: [".codex/cache/codexa-tasks"]
+    });
+    expect(envelope.data.decisionKernel).toMatchObject({
+      authority: { actionability: "edit_ready" },
+      nextTools: ["change_plan"]
+    });
+    expect(envelope.data.decisionKernel.detailsRequired ?? false).toBe(false);
+    expect(envelope.data.delivery).toMatchObject({ detailRequired: false, resultUri: uri });
+    expect(envelope.systemMessage ?? "").not.toContain("next-tool arguments were omitted");
+    expect(JSON.stringify(result).match(/Refactor the bounded targets/gu)).toHaveLength(1);
+    expect(result.content).toContainEqual(expect.objectContaining({ type: "resource_link", uri }));
+  });
+
+  it("preserves a writeful next-tool contract with explicitly empty required inputs", () => {
+    const uri = `codexa://repo/mcp-results/rr_${"1".repeat(32)}/mr_${"2".repeat(64)}`;
+    const contract = {
+      schemaVersion: 1,
+      tool: "post_edit_review",
+      reason: "review the current outcomes",
+      requiredInputs: {},
+      readOnly: false,
+      writes: [".codex/cache/codexa-outcomes"]
+    };
+    const result = toToolResult(
+      {
+        text: "bounded context\n".repeat(20_000),
+        data: {
+          mode: "context_pack",
+          actionability: "edit_ready",
+          nextTools: [contract],
+          hugeEvidence: "e".repeat(MCP_TOOL_RESULT_MAX_BYTES * 4),
+          delivery: { schemaVersion: 1, requestedFormat: "auto", effectiveFormat: "concise", resultUri: uri }
+        },
+        freshness: freshness()
+      },
+      "context_pack",
+      POLICY
+    );
+
+    const envelope = result.structuredContent as {
+      actionability: string;
+      nextTools: unknown[];
+      data: { nextTools?: unknown; decisionKernel: { nextTools: unknown[]; detailsRequired?: boolean }; delivery: { detailRequired: boolean } };
+    };
+    expect(bytes(result)).toBeLessThanOrEqual(MCP_TOOL_RESULT_MAX_BYTES);
+    expect(envelope.actionability).toBe("edit_ready");
+    expect(envelope.nextTools).toEqual([contract]);
+    expect(envelope.data.nextTools).toBeUndefined();
+    expect(envelope.data.decisionKernel.nextTools).toEqual(["post_edit_review"]);
+    expect(envelope.data.decisionKernel.detailsRequired ?? false).toBe(false);
+    expect(envelope.data.delivery.detailRequired).toBe(false);
+    expect(JSON.stringify(result).match(/review the current outcomes/gu)).toHaveLength(1);
+  });
+
+  it.each([
+    {
+      name: "requiredInputs",
+      contract: {
+        schemaVersion: 1,
+        tool: "change_plan",
+        reason: "use every bounded file",
+        requiredInputs: { files: Array.from({ length: 81 }, (_, index) => `src/${index}.ts`) },
+        readOnly: false,
+        writes: []
+      }
+    },
+    {
+      name: "writes",
+      contract: {
+        schemaVersion: 1,
+        tool: "change_plan",
+        reason: "declare every write effect",
+        requiredInputs: {},
+        readOnly: false,
+        writes: Array.from({ length: 9 }, (_, index) => `.codex/cache/outcome-${index}`)
+      }
+    }
+  ])("fails closed when $name is truncated before transport budgeting", ({ contract }) => {
+    const uri = `codexa://repo/mcp-results/rr_${"3".repeat(32)}/mr_${"4".repeat(64)}`;
+    const truncation: Record<string, { total: number; returned: number }> = {};
+    const compactedNextTools = compactNextTools([contract], truncation) as unknown[];
+    expect(Object.keys(truncation).some((key) => key.includes(`nextTools.0.${contract.writes.length > 8 ? "writes" : "requiredInputs"}`))).toBe(true);
+    const result = toToolResult(
+      {
+        text: "bounded context\n".repeat(20_000),
+        data: {
+          mode: "context_pack",
+          actionability: "edit_ready",
+          nextTools: compactedNextTools,
+          truncation,
+          hugeEvidence: "e".repeat(MCP_TOOL_RESULT_MAX_BYTES * 4),
+          delivery: { schemaVersion: 1, requestedFormat: "auto", effectiveFormat: "concise", resultUri: uri }
+        },
+        freshness: freshness()
+      },
+      "context_pack",
+      POLICY
+    );
+
+    const envelope = result.structuredContent as {
+      actionability: string;
+      nextTools: unknown[];
+      systemMessage: string;
+      data: { decisionKernel: { detailsRequired: boolean; nextTools: unknown[] }; delivery: { detailRequired: boolean } };
+    };
+    expect(bytes(result)).toBeLessThanOrEqual(MCP_TOOL_RESULT_MAX_BYTES);
     expect(envelope.actionability).toBe("blocked");
     expect(envelope.nextTools).toEqual([]);
-    expect(envelope.data.decisionKernel).toMatchObject({
-      authority: { actionability: "blocked", originalActionability: "edit_ready" },
-      nextTools: [],
-      detailsRequired: true
-    });
-    expect(envelope.data.delivery).toMatchObject({ detailRequired: true, resultUri: uri });
+    expect(envelope.data.decisionKernel).toMatchObject({ detailsRequired: true, nextTools: [] });
+    expect(envelope.data.delivery.detailRequired).toBe(true);
     expect(envelope.systemMessage).toContain("next-tool arguments were omitted");
-    expect(result.content).toContainEqual(expect.objectContaining({ type: "resource_link", uri }));
+  });
+
+  it("fails closed when a complete next-tool contract itself cannot fit the transport budget", () => {
+    const uri = `codexa://repo/mcp-results/rr_${"5".repeat(32)}/mr_${"6".repeat(64)}`;
+    const result = toToolResult(
+      {
+        text: "bounded context\n".repeat(20_000),
+        data: {
+          mode: "context_pack",
+          actionability: "edit_ready",
+          nextTools: [{
+            schemaVersion: 1,
+            tool: "change_plan",
+            reason: "use the exact untruncated payload",
+            requiredInputs: { task: "t".repeat(MCP_TOOL_RESULT_MAX_BYTES) },
+            readOnly: false,
+            writes: []
+          }],
+          delivery: { schemaVersion: 1, requestedFormat: "auto", effectiveFormat: "concise", resultUri: uri }
+        },
+        freshness: freshness()
+      },
+      "context_pack",
+      POLICY
+    );
+
+    const envelope = result.structuredContent as { actionability: string; nextTools: unknown[]; systemMessage: string };
+    expect(bytes(result)).toBeLessThanOrEqual(MCP_TOOL_RESULT_MAX_BYTES);
+    expect(envelope.actionability).toBe("blocked");
+    expect(envelope.nextTools).toEqual([]);
+    expect(envelope.systemMessage).toContain("next-tool arguments were omitted");
   });
 
   it("keeps an auto request within the ordinary cap when detailed artifact persistence failed", () => {

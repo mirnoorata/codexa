@@ -3,7 +3,7 @@ import { isRecord, nonEmptyArray, stringValue } from "./compaction-helpers.js";
 
 /** Lifecycle authority needs every blocker inline when its compact kernel overflows. */
 export function modeRequiresExactKernelDetail(mode: string): boolean {
-  return mode === "change_plan" || mode === "post_edit_review" || mode === "proof_card";
+  return mode === "post_edit_review" || mode === "proof_card";
 }
 
 /** One authority classifier feeds both detailed and compact delivery. */

@@ -47,34 +47,36 @@ describe("MCP envelope next-tool ownership", () => {
       "task_brief",
       POLICY
     );
-    const envelope = result.structuredContent as { data: { nextTools: unknown[] }; lifecycle: { nextTools: string[] }; nextTools: unknown[] };
+    const envelope = result.structuredContent as { data: { nextTools?: unknown[] }; lifecycle: { nextTools: string[] }; nextTools: unknown[] };
 
-    expect(envelope.data.nextTools).toHaveLength(1);
+    expect(envelope.data.nextTools).toBeUndefined();
     expect(envelope.lifecycle.nextTools).toEqual(["search"]);
-    expect(envelope.nextTools).toEqual([expect.objectContaining({ tool: "search" })]);
+    expect(envelope.nextTools).toEqual([nextTool]);
+    expect(JSON.stringify(result).match(/one exact target is unresolved/gu)).toHaveLength(1);
   });
 
   it("does not dispatch a downstream operation from a fail-closed delivery receipt", () => {
     const resultUri = `codexa://repo/mcp-results/rr_${"e".repeat(32)}/mr_${"f".repeat(64)}`;
     const nextTool = {
       schemaVersion: 1,
-      tool: "post_edit_review",
-      reason: "review the completed edit",
+      tool: "change_plan",
+      reason: "replan the unresolved review",
       requiredInputs: { taskId: "core-fail-closed" },
-      readOnly: true,
+      readOnly: false,
       writes: []
     };
     const packet = {
       text: "large change plan",
       data: {
-        mode: "change_plan",
-        actionability: "edit_ready",
+        mode: "post_edit_review",
+        actionability: "review",
+        completionAuthority: "replan_required",
         filler: "x".repeat(7_000),
         nextTools: [nextTool],
         decisionKernel: {
           schemaVersion: 1,
-          mode: "change_plan",
-          authority: { actionability: "edit_ready" },
+          mode: "post_edit_review",
+          authority: { actionability: "review", completionAuthority: "replan_required" },
           nextTools: [nextTool]
         },
         mcp: { targetBytes: 4_000 }
@@ -89,7 +91,7 @@ describe("MCP envelope next-tool ownership", () => {
       resultUri,
       detailAvailable: true
     });
-    const result = toToolResult(delivered, "change_plan", {
+    const result = toToolResult(delivered, "post_edit_review", {
       ...POLICY,
       enabledTools: new Set(CORE_PROFILE_TOOL_NAMES)
     });
@@ -112,6 +114,6 @@ describe("MCP envelope next-tool ownership", () => {
     expect(envelope.data.decisionKernel.systemMessage).toContain("read the linked detailed result");
     expect(text).toContain(resultUri);
     expect(text).not.toContain("Next: capabilities");
-    expect(text).not.toContain("Next: post_edit_review");
+    expect(text).not.toContain("Next: change_plan");
   });
 });
