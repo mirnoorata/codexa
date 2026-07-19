@@ -58,8 +58,9 @@ Because the Codex `PostToolUse` matcher covers edit tools, this hook runs before
 shell verification that follows the final edit. It is an edit-time guardrail,
 not a completion/Stop gate: a saved plan still offers one final
 `post_edit_review` after verification so the actual command evidence can be
-recorded. A true completion hook, such as the Claude plugin's Stop hook, may own
-that final review and suppress the duplicate route.
+recorded. A true completion hook may suppress that route only when it can carry
+trusted command reports and invariant reviews; the current Claude plugin Stop
+hook remains advisory and does not claim that ownership.
 Those local outcomes can later produce bounded, visible ranking/test boosts, but
 they do not override freshness, explicit targets, or authoritative graph
 evidence.

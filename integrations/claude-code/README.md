@@ -67,19 +67,21 @@ path. Use the smallest sequence that resolves the task:
 ```text
 exact/local/source-sufficient -> source tools, zero Codexa calls
 ambiguous/raw-sufficient -> search, then stop
-exact non-trivial -> change_plan(saveSnapshot), then let Stop review
-ambiguous non-trivial -> search -> change_plan(saveSnapshot), then let Stop review
+exact non-trivial -> change_plan(saveSnapshot) -> post_edit_review(actual evidence)
+ambiguous non-trivial -> search -> change_plan(saveSnapshot) -> post_edit_review(actual evidence)
 ```
 
-Keep normal bounded work at two Codexa calls or fewer. The Stop hook is the
-deterministic post-edit gate, so do not duplicate it with a manual
-`post_edit_review`. Call `test_plan` only when verification guidance remains
-unresolved and `proof_card` only for policy or formal handoff.
+Keep normal bounded work at two Codexa calls or fewer; the ambiguous,
+materially risky sequence is the narrow three-call safety exception. The Stop
+hook remains an advisory drift gate, but it cannot recover trusted command
+reports or invariant reviews from the transcript, so it does not suppress one
+final evidence-bearing `post_edit_review`. Call `test_plan` only when
+verification guidance remains unresolved and `proof_card` only for policy or
+formal handoff.
 
-The general narrow three-call exception—ambiguous target, materially risky
-edit, and no completion/Stop gate—does not apply while this plugin's Stop hook
-owns review. The separate Codex plugin bundle ships no completion hook; Codex
-edit-only hooks from `codexa init` do not claim final review ownership.
+The separate Codex plugin bundle also ships no completion hook. Codex edit-only
+hooks from `codexa init` and this Claude Stop hook do not claim final review
+ownership without a trusted evidence ledger.
 
 In core mode, `capabilities` discovers or invokes every non-core operation
 through the same operation-specific schema and handler; full mode also exposes

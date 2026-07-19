@@ -133,9 +133,10 @@ returned by the change plan.
 
 The hooks written by `codexa init` review the dirty tree after edit tools, before
 later shell verification. They do not replace one final review with the actual
-verification evidence. The Claude plugin's managed Stop hook does own final
-review. In a host without a true completion/Stop gate, review once against the
-saved plan after verification:
+verification evidence. The Claude plugin's Stop hook is also advisory until it
+has a trusted command/invariant ledger. In either host, review once against the
+saved plan after verification unless another true completion gate can carry
+that evidence:
 
 ```bash
 codexa post-edit-review /path/to/project \

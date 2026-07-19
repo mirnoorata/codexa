@@ -93,7 +93,7 @@ describe("Codexa project init", () => {
     expect(summary).not.toContain("primary loop change_plan(saveSnapshot) -> edit/run planned verification -> post_edit_review");
   });
 
-  it("keeps a final review route after the edit hook so shell verification can be recorded", async () => {
+  it("keeps planned verification and invariant review reachable after an edit-only hook", async () => {
     const repo = await createInitRepo();
     await mkdir(path.join(repo, "tests"), { recursive: true });
     await writeFile(
@@ -103,7 +103,7 @@ describe("Codexa project init", () => {
     );
     await writeFile(
       path.join(repo, "tests/main.test.js"),
-      "import assert from 'node:assert/strict';\nimport test from 'node:test';\ntest('fixture smoke', () => assert.equal(1, 1));\n",
+      "import assert from 'node:assert/strict';\nimport test from 'node:test';\nimport { main } from '../src/main.ts';\ntest('fixture smoke', () => { assert.equal(main.length, 0); assert.equal(typeof main(), 'number'); });\n",
       "utf8"
     );
     execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
@@ -124,6 +124,7 @@ describe("Codexa project init", () => {
           taskId: "edit-hook-final-review",
           files: ["src/main.ts"],
           changeType: "behavior",
+          invariants: ["The main export remains a zero-argument function."],
           saveSnapshot: true
         },
         { autoRefresh: false }
@@ -131,11 +132,14 @@ describe("Codexa project init", () => {
       const planData = plan.data as {
         reviewOwner?: string;
         nextTools?: Array<{ tool?: string; requiredInputs?: { taskId?: string } }>;
+        snapshot?: { invariants?: Array<{ id: string; statement: string }> };
       };
       expect(planData.reviewOwner).toBe("agent-final-review");
       expect(planData.nextTools).toEqual([
         expect.objectContaining({ tool: "post_edit_review", requiredInputs: { taskId: "edit-hook-final-review" } })
       ]);
+      const invariant = planData.snapshot?.invariants?.[0];
+      expect(invariant?.statement).toBe("The main export remains a zero-argument function.");
 
       await writeFile(path.join(repo, "src/main.ts"), "export function main() { return 2 }\n", "utf8");
       await runPostEditHook(repo);
@@ -143,14 +147,23 @@ describe("Codexa project init", () => {
 
       const finalReview = await postEditReviewQuery(
         repo,
-        { taskId: "edit-hook-final-review", ranCommands: ["npm test"], persistOutcome: true },
+        {
+          taskId: "edit-hook-final-review",
+          ranCommands: ["npm test"],
+          invariantReviews: [{ invariantId: invariant!.id, status: "satisfied", evidence: ["Reviewed the final export signature."] }],
+          persistOutcome: true
+        },
         { autoRefresh: false }
       );
       const finalData = finalReview.data as {
-        outcome?: { ranCommands?: string[] };
+        verdict?: string;
+        completionAuthority?: string;
+        outcome?: { ranCommands?: string[]; invariantReviews?: Array<{ invariantId: string; status: string }> };
         verificationLedger?: Array<{ status?: string; evidence?: string[] }>;
       };
+      expect(finalData).toMatchObject({ verdict: "continue", completionAuthority: "complete" });
       expect(finalData.outcome?.ranCommands).toEqual(["npm test"]);
+      expect(finalData.outcome?.invariantReviews).toContainEqual(expect.objectContaining({ invariantId: invariant?.id, status: "satisfied" }));
       expect(finalData.verificationLedger?.some((entry) => entry.status === "covered" && entry.evidence?.some((item) => item.includes("npm test")))).toBe(true);
     } finally {
       log.mockRestore();

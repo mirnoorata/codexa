@@ -303,8 +303,9 @@ provider such as OpenAI — see [Optional Lanes](#optional-lanes).)
 The Codex plugin bundle under `plugins/codexa/` ships an MCP wrapper and skill,
 not a post-edit hook. `codexa init` adds edit-scoped Codex hooks, but those run
 before later shell verification and do not claim final completion ownership.
-The Claude plugin ships a true Stop hook and marks that completion gate in its
-MCP launcher.
+The Claude plugin's Stop hook remains a useful advisory drift gate, but it does
+not claim evidence-bearing completion ownership: the agent retains one final
+`post_edit_review` route for actual command reports and invariant reviews.
 
 Result-size discipline is built in: every tool description states its typical
 output size, and structured results are budget-compacted with truncation
@@ -388,10 +389,11 @@ materially risky edit in a host with no completion/Stop gate:
    verification plan is explicitly requested.
 
 5. Let a true completion/Stop gate review after verification when one is
-   installed. The Claude plugin owns final review through its Stop hook, so do
-   not duplicate it with a manual tool call. Codex's `codexa init` hooks are
-   edit-scoped and run before later shell verification; they retain one final
-   review route. Without a completion/Stop gate, an exact materially risky task may use
+   installed and able to carry the actual verification evidence. Codex's
+   `codexa init` hooks are edit-scoped and run before later shell verification;
+   the Claude plugin's Stop hook also lacks a trusted command/invariant ledger.
+   Both retain one final evidence-bearing review route. Without a qualifying
+   completion/Stop gate, an exact materially risky task may use
    `change_plan -> post_edit_review`. If the target was also ambiguous, the
    safety-preserving sequence is the narrow three-call exception
    `search -> change_plan -> post_edit_review`. `post_edit_review` /
