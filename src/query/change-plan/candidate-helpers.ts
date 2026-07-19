@@ -83,3 +83,15 @@ export function formatTargetCandidates(candidates: ChangePlanTargetCandidate[]):
     return `- #${candidate.rank} ${candidate.candidateId} ${candidate.kind} ${target}: ${candidate.validationStatus}; score ${candidate.score.toFixed(1)}; risk ${candidate.candidateRisk.score.toFixed(1)}; followCandidate ${candidate.candidateId}; next change_plan target ${nextArg}; ${candidate.evidence.slice(0, 3).join("; ")}`;
   });
 }
+
+export function followedReplaySnapshotTargets(resultData: Record<string, unknown>, candidateTargets: string[]): string[] | undefined {
+  const readiness = resultData.editReadiness && typeof resultData.editReadiness === "object" ? resultData.editReadiness as Record<string, unknown> : undefined;
+  const snapshot = resultData.snapshot && typeof resultData.snapshot === "object" ? resultData.snapshot as Record<string, unknown> : undefined;
+  const context = resultData.context && typeof resultData.context === "object" ? resultData.context as Record<string, unknown> : undefined;
+  const snapshotTargets = Array.isArray(snapshot?.plannedEditTargets) ? snapshot.plannedEditTargets.filter((entry): entry is string => typeof entry === "string") : [];
+  const packetTargets = Array.isArray(context?.boundedPlanTargets) ? context.boundedPlanTargets.filter((entry): entry is string => typeof entry === "string") : [];
+  const requiredTargets = uniqueSorted([...candidateTargets, ...packetTargets]);
+  return readiness?.editable === true && snapshot && requiredTargets.length > 0 && requiredTargets.every((filePath) => snapshotTargets.includes(filePath))
+    ? uniqueSorted(snapshotTargets)
+    : undefined;
+}

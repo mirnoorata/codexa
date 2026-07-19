@@ -421,6 +421,19 @@ describe("query routing boundaries", () => {
       });
     }
 
+    const disambiguatedTask = "Rename sharedHelper to src/new.ts";
+    const disambiguatedPack = await contextPackQuery(repo, { task: disambiguatedTask, files: ["src/ambiguous-a.ts"], changeType: "rename", diff: false, includeSnippets: false }, { autoRefresh: false });
+    expect((disambiguatedPack.data as { actionability: string; boundedPlanTargets?: string[]; targetCandidates?: string[] })).toMatchObject({
+      actionability: "edit_ready",
+      boundedPlanTargets: ["src/new.ts", "src/ambiguous-a.ts"],
+      targetCandidates: []
+    });
+    const disambiguatedPlan = await changePlanQuery(repo, { task: disambiguatedTask, files: ["src/ambiguous-a.ts"], changeType: "rename", diff: false, saveSnapshot: false }, { autoRefresh: false });
+    expect((disambiguatedPlan.data as { editReadiness: { editable: boolean }; plannedEditTargets?: string[] })).toMatchObject({
+      editReadiness: { editable: true },
+      plannedEditTargets: ["src/ambiguous-a.ts", "src/new.ts"]
+    });
+
     for (const [mismatchedTask, files] of [
       [task, ["src/api.ts"]],
       ["Fix src/util.ts", ["src/api.ts"]],
@@ -466,6 +479,18 @@ describe("query routing boundaries", () => {
         editReadiness: { editable: true },
         plannedEditTargets: [target]
       });
+    }
+  });
+
+  it("blocks quoted and unquoted external destinations on every planning surface", async () => {
+    const repo = await createFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+    for (const task of ["Move src/util.ts to /tmp/lib", "Move src/util.ts to `/tmp/lib`.", "Move src/util.ts to (../outside.ts)."]) {
+      expect((await focusBriefQuery(repo, { task, diff: false }, { autoRefresh: false }).then((result) => result.data) as { actionability: string }).actionability, task).toBe("needs_target");
+      expect((await searchQuery(repo, { query: task }, { autoRefresh: false }).then((result) => result.data) as { actionability: string }).actionability, task).toBe("needs_target");
+      expect((await contextPackQuery(repo, { task, files: ["src/util.ts"], diff: false, includeSnippets: false }, { autoRefresh: false }).then((result) => result.data) as { actionability: string }).actionability, task).toBe("needs_target");
+      const plan = await changePlanQuery(repo, { task, files: ["src/util.ts"], diff: false, saveSnapshot: false }, { autoRefresh: false });
+      expect((plan.data as { editReadiness: { editable: boolean } }).editReadiness.editable, task).toBe(false);
     }
   });
 
