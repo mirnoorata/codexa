@@ -241,6 +241,10 @@ export function plannedNewFocusPathTargets(task: string, repositoryFiles: string
   const planned: string[] = [];
   let previous: FocusPathMention | undefined;
   for (const mention of focusPathMentions(normalizedTask)) {
+    if (mention.candidate.split("/").includes("..")) {
+      previous = mention;
+      continue;
+    }
     const unknown = unknownIndexes.has(mention.index);
     const before = normalizedTask.slice(Math.max(0, mention.index - 240), mention.index);
     const verbMatches = [...before.matchAll(/\b(add(?:ing)?|build(?:ing)?|chang(?:e|ing)|configur(?:e|ing)|convert(?:ing)?|cop(?:y|ying)|creat(?:e|ing)|delet(?:e|ing)|disabl(?:e|ing)|document(?:ing)?|enabl(?:e|ing)|extract(?:ing)?|fix(?:ing)?|generat(?:e|ing)|harden(?:ing)?|implement(?:ing)?|integrat(?:e|ing)|migrat(?:e|ing)|modify|modifying|mov(?:e|ing)|optimiz(?:e|ing)|patch(?:ing)?|prevent(?:ing)?|protect(?:ing)?|refactor(?:ing)?|relocat(?:e|ing)|remov(?:e|ing)|renam(?:e|ing)|repair(?:ing)?|replac(?:e|ing)|restor(?:e|ing)|revis(?:e|ing)|sav(?:e|ing)|scaffold(?:ing)?|secur(?:e|ing)|simplif(?:y|ying)|split(?:ting)?|support(?:ing)?|transform(?:ing)?|updat(?:e|ing)|upgrad(?:e|ing)|write|writing)\b/giu)];
@@ -379,7 +383,9 @@ function focusPathMentions(task: string): FocusPathMention[] {
 }
 
 function normalizeMentionCandidate(value: string): string {
-  const normalized = path.posix.normalize(value.replace(/\.$/u, ""));
+  const portable = value.replace(/\.$/u, "").replaceAll("\\", "/");
+  if (portable.split("/").includes("..")) return portable.replace(/^\.\//u, "");
+  const normalized = path.posix.normalize(portable);
   return normalized.replace(/^\.\//u, "");
 }
 

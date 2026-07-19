@@ -49,6 +49,7 @@ export function resolveFileTarget(index: CodexaIndex, filePath: string, repoRoot
 export function normalizeInputPath(filePath: string, repoRoot: string): string | undefined {
   const portablePath = filePath.trim();
   if (/^(?:~(?:[\\/]|$)|\$[A-Za-z_][A-Za-z0-9_]*(?:[\\/]|$)|file:\/\/|[A-Za-z]:[\\/]|\\\\|\/\/)/u.test(portablePath)) return undefined;
+  if (portablePath.replaceAll("\\", "/").split("/").includes("..")) return undefined;
   const absoluteRoot = path.resolve(repoRoot);
   const absoluteTarget = path.resolve(absoluteRoot, portablePath);
   const relative = path.relative(absoluteRoot, absoluteTarget);
