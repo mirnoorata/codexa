@@ -191,7 +191,7 @@ export async function loadTaskSnapshot(repoRoot: string, taskId?: string): Promi
       const candidate = await readJson<LatestSnapshotPointer>(path.join(candidateDir, LATEST_FILE));
       if (candidate.ok) {
         if (priorLatestReadFailed) {
-          const recovered = await recoverLatestSnapshot(dirs, snapshotDir(repo));
+          const recovered = await recoverLatestSnapshot(repo, dirs, snapshotDir(repo));
           if (recovered) {
             return recovered;
           }
@@ -203,16 +203,16 @@ export async function loadTaskSnapshot(repoRoot: string, taskId?: string): Promi
       latest ??= { ...candidate, dir: candidateDir };
     }
     if (!latest || !latest.ok) {
-      const recovered = await recoverLatestSnapshot(dirs, snapshotDir(repo));
+      const recovered = await recoverLatestSnapshot(repo, dirs, snapshotDir(repo));
       return recovered ?? { missingReason: latest?.missing ? "missing-latest" : "invalid-json", error: latest?.error };
     }
     if (latest.value.blocked === true) {
       const blockedTaskId = typeof latest.value.taskId === "string" ? normalizeTaskId(latest.value.taskId) : undefined;
-      const blocked = await readExactBlockedLatestPointer(latest.dir, latest.value);
+      const blocked = await readExactBlockedLatestPointer(repo, latest.dir, latest.value);
       if (blocked) {
         return blocked;
       }
-      const recovered = await recoverLatestSnapshot(dirs, snapshotDir(repo));
+      const recovered = await recoverLatestSnapshot(repo, dirs, snapshotDir(repo));
       return recovered ?? {
         latestTaskId: blockedTaskId,
         missingReason: "invalid-json",
@@ -221,13 +221,27 @@ export async function loadTaskSnapshot(repoRoot: string, taskId?: string): Promi
       };
     }
     if (typeof latest.value.taskId !== "string" || !normalizeTaskId(latest.value.taskId)) {
-      const recovered = await recoverLatestSnapshot(dirs, snapshotDir(repo));
+      const recovered = await recoverLatestSnapshot(repo, dirs, snapshotDir(repo));
       return recovered ?? { missingReason: "missing-latest", error: "latest snapshot pointer does not contain a valid taskId" };
+    }
+    if (!await validatedLatestPointerAuthority(repo, latest.dir, latest.value)) {
+      const recovered = await recoverLatestSnapshot(repo, dirs, snapshotDir(repo));
+      const latestTaskId = normalizeTaskId(latest.value.taskId);
+      const latestArtifact = latestTaskId ? await readJson<TaskSnapshot>(path.join(latest.dir, `${latestTaskId}.json`)) : undefined;
+      const lifecycleError = latestArtifact?.ok && isTaskSnapshot(latestArtifact.value) && latestArtifact.value.taskId === latestTaskId
+        ? await governedSnapshotLifecycleError(repo, latestArtifact.value)
+        : undefined;
+      return recovered ?? {
+        latestTaskId,
+        missingReason: "invalid-json",
+        error: lifecycleError ?? "latest snapshot pointer does not match an artifact with committed lifecycle authority",
+        path: path.join(latest.dir, LATEST_FILE)
+      };
     }
     resolvedTaskId = normalizeTaskId(latest.value.taskId);
     dir = latest.dir;
   } else {
-    const currentBlocked = await readBlockedSnapshotMarker([snapshotDir(repo)].filter((candidateDir) => existsSync(candidateDir)), resolvedTaskId, { strictInvalid: true });
+    const currentBlocked = await readBlockedSnapshotMarker(repo, [snapshotDir(repo)].filter((candidateDir) => existsSync(candidateDir)), resolvedTaskId, { strictInvalid: true });
     if (currentBlocked) {
       return currentBlocked;
     }
@@ -240,12 +254,12 @@ export async function loadTaskSnapshot(repoRoot: string, taskId?: string): Promi
   const snapshotPath = path.join(dir, `${resolvedTaskId}.json`);
   const parsed = await readJson<TaskSnapshot>(snapshotPath);
   if (!parsed.ok) {
-    const blocked = await readBlockedSnapshotMarker(dirs, resolvedTaskId);
+    const blocked = await readBlockedSnapshotMarker(repo, dirs, resolvedTaskId);
     if (blocked) {
       return blocked;
     }
     if (!requestedTaskId) {
-      const recovered = await recoverLatestSnapshot(dirs, snapshotDir(repo));
+      const recovered = await recoverLatestSnapshot(repo, dirs, snapshotDir(repo));
       if (recovered) {
         return recovered;
       }
@@ -259,6 +273,10 @@ export async function loadTaskSnapshot(repoRoot: string, taskId?: string): Promi
   }
   if (!isTaskSnapshot(parsed.value)) {
     return { latestTaskId: resolvedTaskId, missingReason: "invalid-json", error: "snapshot schema is invalid", path: snapshotPath };
+  }
+  const lifecycleError = await governedSnapshotLifecycleError(repo, parsed.value);
+  if (lifecycleError) {
+    return { latestTaskId: resolvedTaskId, missingReason: "invalid-json", error: lifecycleError, path: snapshotPath };
   }
   return { snapshot: parsed.value, latestTaskId: resolvedTaskId, path: snapshotPath };
 }
@@ -303,8 +321,8 @@ async function publishLatestSnapshot(repoRoot: string, dir: string, candidate: R
   return withTaskLifecycleLock(repoRoot, "\0codexa-latest-snapshot-publication", async () => {
     const latestPath = path.join(dir, LATEST_FILE);
     const current = await readJson<LatestSnapshotPointer>(latestPath);
-    const candidateAuthority = await validatedLatestPointerAuthority(dir, candidate);
-    const currentAuthority = current.ok ? await validatedLatestPointerAuthority(dir, current.value) : undefined;
+    const candidateAuthority = await validatedLatestPointerAuthority(repoRoot, dir, candidate);
+    const currentAuthority = current.ok ? await validatedLatestPointerAuthority(repoRoot, dir, current.value) : undefined;
     if (currentAuthority) {
       if (!candidateAuthority || compareSnapshotAuthority(candidateAuthority, currentAuthority) <= 0) return false;
       await atomicJsonWrite(latestPath, candidate);
@@ -316,14 +334,14 @@ async function publishLatestSnapshot(repoRoot: string, dir: string, candidate: R
     // the mismatch as empty authority lets an older delayed writer regress latest.
     // Rebuild authority from exact validated artifacts while holding the publication
     // lock, and repair latest.json to the strongest artifact already on disk.
-    const recovered = await highestRecoverableSnapshotAuthority(dir);
+    const recovered = await highestRecoverableSnapshotAuthority(repoRoot, dir);
     if (!recovered) return false;
     await atomicJsonWrite(latestPath, recovered.pointer);
     return Boolean(candidateAuthority && compareSnapshotAuthority(candidateAuthority, recovered.authority) === 0);
   });
 }
 
-async function validatedLatestPointerAuthority(dir: string, pointer: LatestSnapshotPointer): Promise<SnapshotAuthority | undefined> {
+async function validatedLatestPointerAuthority(repoRoot: string, dir: string, pointer: LatestSnapshotPointer): Promise<SnapshotAuthority | undefined> {
   const taskId = typeof pointer.taskId === "string" ? normalizeTaskId(pointer.taskId) : undefined;
   if (!taskId || pointer.taskId !== taskId) return undefined;
 
@@ -360,6 +378,7 @@ async function validatedLatestPointerAuthority(dir: string, pointer: LatestSnaps
   const snapshot = await readJson<TaskSnapshot>(artifactPath);
   if (!snapshot.ok || !isTaskSnapshot(snapshot.value) || snapshot.value.taskId !== taskId) return undefined;
   if (validPublicationSequence(snapshot.value.publicationSequence) !== pointerSequence) return undefined;
+  if (await governedSnapshotLifecycleError(repoRoot, snapshot.value)) return undefined;
   return pointerAuthority({
     taskId,
     path: artifactName,
@@ -368,7 +387,7 @@ async function validatedLatestPointerAuthority(dir: string, pointer: LatestSnaps
   }, snapshot.value.origin === "hook-implicit");
 }
 
-async function highestRecoverableSnapshotAuthority(dir: string): Promise<RecoverableSnapshotAuthority | undefined> {
+async function highestRecoverableSnapshotAuthority(repoRoot: string, dir: string): Promise<RecoverableSnapshotAuthority | undefined> {
   let entries: string[];
   try {
     entries = await fs.readdir(dir);
@@ -378,14 +397,14 @@ async function highestRecoverableSnapshotAuthority(dir: string): Promise<Recover
   let highest: RecoverableSnapshotAuthority | undefined;
   for (const entry of entries) {
     if (!entry.endsWith(".json") || entry === LATEST_FILE) continue;
-    const recovered = await recoverableSnapshotAuthority(dir, entry);
+    const recovered = await recoverableSnapshotAuthority(repoRoot, dir, entry);
     if (!recovered) continue;
     if (!highest || compareSnapshotAuthority(recovered.authority, highest.authority) > 0) highest = recovered;
   }
   return highest;
 }
 
-async function recoverableSnapshotAuthority(dir: string, artifactName: string): Promise<RecoverableSnapshotAuthority | undefined> {
+async function recoverableSnapshotAuthority(repoRoot: string, dir: string, artifactName: string): Promise<RecoverableSnapshotAuthority | undefined> {
   const artifactPath = path.join(dir, artifactName);
   let pointer: Record<string, unknown>;
   if (artifactName.endsWith(".blocked.json")) {
@@ -413,7 +432,7 @@ async function recoverableSnapshotAuthority(dir: string, artifactName: string): 
       origin: snapshot.value.origin
     };
   }
-  const authority = await validatedLatestPointerAuthority(dir, pointer);
+  const authority = await validatedLatestPointerAuthority(repoRoot, dir, pointer);
   return authority ? { authority, pointer } : undefined;
 }
 
@@ -441,6 +460,27 @@ function compareSnapshotAuthority(left: SnapshotAuthority, right: SnapshotAuthor
     return (left.createdAtMs ?? 0) - (right.createdAtMs ?? 0);
   }
   return left.taskId.localeCompare(right.taskId) || left.path.localeCompare(right.path) || left.kind.localeCompare(right.kind);
+}
+
+async function governedSnapshotLifecycleError(repoRoot: string, snapshot: TaskSnapshot): Promise<string | undefined> {
+  if (snapshot.planRevision === undefined) return undefined;
+  let lifecycle: Awaited<ReturnType<typeof loadTaskLifecycleState>>;
+  try {
+    lifecycle = await loadTaskLifecycleState(repoRoot, snapshot.taskId);
+  } catch (error) {
+    return `task lifecycle state is unavailable for governed snapshot ${snapshot.taskId}: ${error instanceof Error ? error.message : String(error)}`;
+  }
+  if (!lifecycle) return `task lifecycle state is missing for governed snapshot ${snapshot.taskId} revision ${snapshot.planRevision}`;
+  if (lifecycle.planRevision !== snapshot.planRevision) {
+    return `task lifecycle revision ${lifecycle.planRevision} does not match governed snapshot ${snapshot.taskId} revision ${snapshot.planRevision}`;
+  }
+  const snapshotInvariants = snapshot.invariants ?? [];
+  const sameInvariants = lifecycle.invariants.length === snapshotInvariants.length
+    && lifecycle.invariants.every((invariant, index) => {
+      const expected = snapshotInvariants[index];
+      return expected?.id === invariant.id && expected.statement === invariant.statement;
+    });
+  return sameInvariants ? undefined : `task lifecycle invariants do not match governed snapshot ${snapshot.taskId}`;
 }
 
 function validPublicationSequence(value: unknown): number | undefined {
@@ -473,6 +513,7 @@ async function maximumPublicationSequence(dir: string): Promise<number> {
 }
 
 async function readBlockedSnapshotMarker(
+  repoRoot: string,
   dirs: string[],
   taskId: string | undefined,
   options: { strictInvalid?: boolean } = {}
@@ -495,14 +536,14 @@ async function readBlockedSnapshotMarker(
       }
       continue;
     }
-    const newerSnapshot = await newerSameTaskSnapshot(dir, parsed.value);
+    const newerSnapshot = await newerSameTaskSnapshot(repoRoot, dir, parsed.value);
     if (newerSnapshot) return newerSnapshot;
     return blockedSnapshotLoadResult(parsed.value, markerPath);
   }
   return undefined;
 }
 
-async function readExactBlockedLatestPointer(dir: string, pointer: LatestSnapshotPointer): Promise<TaskSnapshotLoadResult | undefined> {
+async function readExactBlockedLatestPointer(repoRoot: string, dir: string, pointer: LatestSnapshotPointer): Promise<TaskSnapshotLoadResult | undefined> {
   const taskId = typeof pointer.taskId === "string" ? normalizeTaskId(pointer.taskId) : undefined;
   if (!taskId || pointer.taskId !== taskId || pointer.blocked !== true) return undefined;
   const artifactName = typeof pointer.path === "string" ? pointer.path : undefined;
@@ -521,17 +562,18 @@ async function readExactBlockedLatestPointer(dir: string, pointer: LatestSnapsho
   const parsed = await readJson<BlockedTaskSnapshotMarker>(markerPath);
   if (!parsed.ok || !isBlockedSnapshotMarker(parsed.value, taskId) || parsed.value.taskId !== taskId) return undefined;
   if (validPublicationSequence(parsed.value.publicationSequence) !== pointerSequence) return undefined;
-  const newerSnapshot = await newerSameTaskSnapshot(dir, parsed.value);
+  const newerSnapshot = await newerSameTaskSnapshot(repoRoot, dir, parsed.value);
   if (newerSnapshot) return newerSnapshot;
   return blockedSnapshotLoadResult(parsed.value, markerPath);
 }
 
-async function newerSameTaskSnapshot(dir: string, marker: BlockedTaskSnapshotMarker): Promise<TaskSnapshotLoadResult | undefined> {
+async function newerSameTaskSnapshot(repoRoot: string, dir: string, marker: BlockedTaskSnapshotMarker): Promise<TaskSnapshotLoadResult | undefined> {
   const taskId = normalizeTaskId(marker.taskId);
   if (!taskId || marker.taskId !== taskId) return undefined;
   const snapshotPath = path.join(dir, `${taskId}.json`);
   const parsed = await readJson<TaskSnapshot>(snapshotPath);
   if (!parsed.ok || !isTaskSnapshot(parsed.value) || parsed.value.taskId !== taskId) return undefined;
+  if (await governedSnapshotLifecycleError(repoRoot, parsed.value)) return undefined;
   const blockedAuthority = pointerAuthority({
     taskId,
     path: `${taskId}.blocked.json`,
@@ -646,8 +688,11 @@ function blockedSnapshotReason(reason: unknown): string {
   return typeof reason === "string" && reason.trim() ? reason : "latest change plan was orientation-only; no editable task snapshot was saved";
 }
 
-async function recoverLatestSnapshot(dirs: string[], currentDir?: string): Promise<TaskSnapshotLoadResult | undefined> {
+async function recoverLatestSnapshot(repoRoot: string, dirs: string[], currentDir?: string): Promise<TaskSnapshotLoadResult | undefined> {
   const candidates: RecoveredSnapshotCandidate[] = [];
+  let invalidGovernedSnapshot:
+    | { authority: SnapshotAuthority; latestTaskId: string; path: string; error: string }
+    | undefined;
   let invalidCurrentBlocked:
     | {
         latestTaskId?: string;
@@ -691,6 +736,20 @@ async function recoverLatestSnapshot(dirs: string[], currentDir?: string): Promi
       if (!parsed.ok || !isTaskSnapshot(parsed.value)) {
         continue;
       }
+      const lifecycleError = await governedSnapshotLifecycleError(repoRoot, parsed.value);
+      if (lifecycleError) {
+        const candidate: RecoveredSnapshotCandidate = {
+          kind: "snapshot",
+          snapshot: parsed.value,
+          path: snapshotPath,
+          createdAtMs: Date.parse(parsed.value.createdAt) || 0
+        };
+        const authority = recoveredCandidateAuthority(candidate);
+        if (!invalidGovernedSnapshot || compareSnapshotAuthority(authority, invalidGovernedSnapshot.authority) > 0) {
+          invalidGovernedSnapshot = { authority, latestTaskId: parsed.value.taskId, path: snapshotPath, error: lifecycleError };
+        }
+        continue;
+      }
       candidates.push({
         kind: "snapshot",
         snapshot: parsed.value,
@@ -708,6 +767,14 @@ async function recoverLatestSnapshot(dirs: string[], currentDir?: string): Promi
     };
   }
   const latest = candidates.sort((left, right) => compareSnapshotAuthority(recoveredCandidateAuthority(right), recoveredCandidateAuthority(left)))[0];
+  if (invalidGovernedSnapshot && (!latest || compareSnapshotAuthority(invalidGovernedSnapshot.authority, recoveredCandidateAuthority(latest)) >= 0)) {
+    return {
+      latestTaskId: invalidGovernedSnapshot.latestTaskId,
+      missingReason: "invalid-json",
+      error: invalidGovernedSnapshot.error,
+      path: invalidGovernedSnapshot.path
+    };
+  }
   if (!latest) {
     return undefined;
   }

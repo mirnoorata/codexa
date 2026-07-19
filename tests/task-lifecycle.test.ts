@@ -14,6 +14,7 @@ import {
   normalizeTaskInvariants,
   pendingTaskLifecycleReplan,
   prepareTaskLoopAttempt,
+  recordTaskPlanRevision,
   reviewTaskInvariants,
   saveTaskLifecycleState,
   withTaskLifecycleLock
@@ -322,14 +323,16 @@ describe("task lifecycle governance", () => {
       });
       const interruptedSequence = (current.snapshot.publicationSequence ?? 0) + 1;
       const currentPath = path.join(repo, ".codex/cache/codexa-tasks/current-authority.json");
-      // Model a crash after the same-task artifact rename but before latest.json:
-      // the artifact and sequence reservation advanced, while the pointer did not.
+      // Model a crash after the same-task artifact and matching lifecycle state
+      // are durable but before latest.json is advanced.
+      const interruptedRevision = (current.snapshot.planRevision ?? 1) + 1;
       await writeFile(currentPath, `${JSON.stringify({
         ...current.snapshot,
-        planRevision: (current.snapshot.planRevision ?? 1) + 1,
+        planRevision: interruptedRevision,
         publicationSequence: interruptedSequence
       }, null, 2)}\n`, "utf8");
       await writeFile(path.join(repo, ".codex/cache/codexa-tasks/.latest-publication-sequence"), `${interruptedSequence}\n`, "utf8");
+      await recordTaskPlanRevision(repo, "current-authority", interruptedRevision, current.snapshot.invariants ?? []);
 
       releaseDelayed();
       const stale = await delayed;
@@ -454,12 +457,25 @@ describe("task lifecycle governance", () => {
     expect(JSON.parse(await readFile(path.join(dir, `${taskId}.blocked.json`), "utf8"))).toMatchObject({ taskId, kind: "change-plan-snapshot-blocked" });
     for (const loaded of [await loadTaskSnapshot(repo), await loadTaskSnapshot(repo, taskId)]) {
       expect(loaded).toMatchObject({
+        latestTaskId: taskId,
+        missingReason: "blocked-plan",
+        blockedSnapshot: { taskId }
+      });
+      expect(loaded.snapshot).toBeUndefined();
+    }
+    await expect(pendingTaskLifecycleReplan(repo, acceptedSnapshot)).rejects.toThrow("state is missing for governed snapshot");
+
+    await recordTaskPlanRevision(repo, taskId, acceptedSnapshot.planRevision ?? 1, acceptedSnapshot.invariants ?? []);
+    for (const loaded of [await loadTaskSnapshot(repo), await loadTaskSnapshot(repo, taskId)]) {
+      expect(loaded).toMatchObject({
         recoveredLatest: true,
         latestTaskId: taskId,
         snapshot: { taskId, publicationSequence: acceptedSnapshot.publicationSequence }
       });
       expect(loaded.missingReason).toBeUndefined();
+      await expect(pendingTaskLifecycleReplan(repo, loaded.snapshot)).resolves.toBeUndefined();
     }
+    await expect(runPreEditHook(repo)).resolves.toBeUndefined();
   });
 
   it("preserves a valid same-task snapshot when a later orientation-only plan is blocked", async () => {
