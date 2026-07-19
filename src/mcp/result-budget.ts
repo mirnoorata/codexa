@@ -120,7 +120,11 @@ function budgetReceipt(result: McpToolResultShape, originalBytes: number, maxByt
       requiredDetailReason: sourceDelivery.requiredDetailReason ?? (effectiveDetailRequired || detailUnavailable ? "tool-result-budget" : undefined),
       escalationReason: sourceDelivery.escalationReason ?? "tool-result-budget"
     });
-    const truncation = { "__mcp.toolResultBudget": { total: originalBytes, returned: maxBytes } };
+    const truncation = {
+      "__mcp.toolResultBudget": { total: originalBytes, returned: maxBytes },
+      ...(nextToolContractOmitted ? { "nextTools.0.requiredInputs.__transport": { total: byteLength(isRecord(sourceNextTool) ? sourceNextTool.requiredInputs ?? {} : {}), returned: 0 } } : {}),
+      ...(nextCallContractOmitted ? { "nextCall.arguments.__transport": { total: byteLength(sourceNextCall?.arguments ?? {}), returned: 0 } } : {})
+    };
     const data = defined({
       mode,
       actionability,
