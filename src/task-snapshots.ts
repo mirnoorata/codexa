@@ -1,7 +1,7 @@
-import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { atomicJsonWrite, atomicTextWrite, readJson, redactRepoPath, taskSnapshotRollbackPath } from "./task-snapshot-storage.js";
 import type { ChangePlanInput, ChangeType, TaskSnapshot } from "./types.js";
 import { loadTaskLifecycleState, normalizeTaskInvariants, recordTaskPlanRevision, taskInvariantId, withTaskLifecycleLock } from "./task-lifecycle.js";
 import { MAX_TASK_INVARIANTS, taskInvariantStatementSchema } from "./lifecycle-contract.js";
@@ -11,7 +11,6 @@ const SNAPSHOT_DIR = ".codex/cache/codexa-tasks";
 const LEGACY_SNAPSHOT_DIR = ".codex/cache/codexa-task-snapshots";
 const LATEST_FILE = "latest.json";
 const PUBLICATION_SEQUENCE_FILE = ".latest-publication-sequence";
-const PREVIOUS_SNAPSHOT_DIR = ".previous";
 const CHANGE_TYPES = new Set<ChangeType>(["style", "api", "behavior", "rename", "delete", "unknown"]);
 
 export interface SaveTaskSnapshotInput {
@@ -59,7 +58,7 @@ export async function saveTaskSnapshot({ repoRoot, input, snapshot, beforePersis
     const dir = snapshotDir(repo);
     await fs.mkdir(dir, { recursive: true });
     const snapshotPath = path.join(dir, `${taskId}.json`);
-    const previousSnapshotPath = previousTaskSnapshotPath(dir, taskId);
+    const previousSnapshotPath = taskSnapshotRollbackPath(dir, taskId);
     const priorRead = await readJson<TaskSnapshot>(snapshotPath);
     const priorSnapshot = priorRead.ok && isTaskSnapshot(priorRead.value) ? priorRead.value : undefined;
     const lifecycle = await loadTaskLifecycleState(repo, taskId);
@@ -500,7 +499,7 @@ async function recoverPreviousTaskSnapshot(
   taskId: string,
   latestPointer?: LatestSnapshotPointer
 ): Promise<TaskSnapshotLoadResult | undefined> {
-  const previousPath = previousTaskSnapshotPath(dir, taskId);
+  const previousPath = taskSnapshotRollbackPath(dir, taskId);
   const currentPath = path.join(dir, `${taskId}.json`);
   const [previous, current] = await Promise.all([
     readJson<TaskSnapshot>(previousPath),
@@ -869,10 +868,6 @@ function snapshotDir(repoRoot: string): string {
   return path.join(repoRoot, SNAPSHOT_DIR);
 }
 
-function previousTaskSnapshotPath(dir: string, taskId: string): string {
-  return path.join(dir, PREVIOUS_SNAPSHOT_DIR, `${taskId}.json`);
-}
-
 function snapshotReadDirs(repoRoot: string): string[] {
   return [snapshotDir(repoRoot), path.join(repoRoot, LEGACY_SNAPSHOT_DIR)].filter((dir, index, dirs) => existsSync(dir) && dirs.indexOf(dir) === index);
 }
@@ -902,53 +897,6 @@ function slug(value: string): string {
     .replace(/[^a-z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 36);
-}
-
-async function atomicJsonWrite(filePath: string, value: unknown): Promise<void> {
-  const tmp = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
-  try {
-    await fs.writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
-    await fs.rename(tmp, filePath);
-  } finally {
-    await fs.rm(tmp, { force: true }).catch(() => undefined);
-  }
-}
-
-async function atomicTextWrite(filePath: string, value: string): Promise<void> {
-  const tmp = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
-  try {
-    await fs.writeFile(tmp, value, { encoding: "utf8", flag: "wx" });
-    await fs.rename(tmp, filePath);
-  } finally {
-    await fs.rm(tmp, { force: true }).catch(() => undefined);
-  }
-}
-
-function redactRepoPath(value: unknown, repoRoot: string): unknown {
-  if (typeof value === "string") {
-    return value.replaceAll(repoRoot, "<repo>");
-  }
-  if (Array.isArray(value)) {
-    return value.map((entry) => redactRepoPath(entry, repoRoot));
-  }
-  if (value && typeof value === "object") {
-    return Object.fromEntries(Object.entries(value).map(([key, entry]) => [key, redactRepoPath(entry, repoRoot)]));
-  }
-  return value;
-}
-
-async function readJson<T>(filePath: string): Promise<{ ok: true; value: T } | { ok: false; missing: boolean; error: string }> {
-  try {
-    const text = await fs.readFile(filePath, "utf8");
-    return { ok: true, value: JSON.parse(text) as T };
-  } catch (error) {
-    const code = error && typeof error === "object" && "code" in error ? String((error as { code?: unknown }).code) : "";
-    return {
-      ok: false,
-      missing: code === "ENOENT",
-      error: error instanceof Error ? error.message : String(error)
-    };
-  }
 }
 
 export function isTaskSnapshot(value: unknown): value is TaskSnapshot {
