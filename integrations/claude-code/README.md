@@ -178,8 +178,10 @@ Environment variables the hooks honor:
 ## Safety properties
 
 - Every hook has a hard Claude hook timeout (SessionStart 6s, PreToolUse 10s,
-  Stop 35s). The shell scripts also wrap Codexa CLI calls with shorter
-  subprocess budgets (`timeout(1)` or the python3 fallback).
+  Stop 35s). Stop uses one 33-second internal deadline across fingerprinting
+  and review, reserves finalization headroom, and leaves no debounce marker when
+  too little review budget remains. Other CLI calls use shorter subprocess
+  budgets (`timeout(1)` or the python3 fallback).
 - Every hook exits 0 on any error — Claude sessions are never blocked by a
   Codexa outage. The Stop hook's drift block is a JSON decision on a clean
   exit, gated to replan/blocking-inspect verdicts parsed against a strict
