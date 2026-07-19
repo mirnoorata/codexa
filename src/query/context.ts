@@ -605,7 +605,7 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
   const repositoryFiles = index.files.map((file) => file.path);
   const changedPlanFiles = changed.filter((filePath) => !isCodexaControlPath(filePath));
   const changedPlanFileSet = new Set(changedPlanFiles);
-  const targetRepositoryFiles = [...new Set([...repositoryFiles, ...changedPlanFiles])];
+  const targetRepositoryFiles = dirtyScopeRequested ? [...new Set([...repositoryFiles, ...changedPlanFiles])] : repositoryFiles;
   const exactTaskPaths = exactMatches.map((entry) => entry.file.path);
   const taskTargetAuthority = await inspectPlannedTargetAuthority(plannedNewFocusPathTargets(targetTask, targetRepositoryFiles), repoRoot, targetRepositoryFiles, unknownFocusPathTargets(targetTask, targetRepositoryFiles));
   const detectedPlannedNewTargets = taskTargetAuthority.newTargets;
@@ -620,6 +620,7 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
   const rawTargetCandidates = [...new Set(targetCandidateGroups.flat())];
   const narrowedDirtyCandidates = narrowAmbiguousTargetGroupsToScope(targetCandidateGroups, changedPlanFileSet);
   const taskPlanTargets = [...new Set([...directTaskPlanTargets, ...(dirtyScopeRequested ? narrowedDirtyCandidates.resolved : [])])];
+  const confirmedMissingPlanTargets = new Set(taskTargetAuthority.inspections.flatMap((entry) => entry.status === "missing" && entry.path ? [entry.path] : []));
   const taskTargetMatches: FocusSelectionEntry[] = taskPlanTargets.flatMap((filePath) => {
     const file = index.files.find((candidate) => candidate.path === filePath);
     return file ? [{ file, score: file.rank + 90, reasons: ["named task target"], matchedTerms: [filePath], tier: "authoritative" as EvidenceTier }] : [];
@@ -633,7 +634,7 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
   const dirtyQualifierNoMatch = dirtyQualifierMentioned && ((taskPlanTargets.length > 0 && qualifiedDirtyTargets.length === 0) || narrowedDirtyCandidates.unmatched);
   const dirtyScopeEmpty = dirtyScopeRequested && !dirtyQualifierMentioned && changedPlanFiles.length === 0;
   const pureNamedNewTarget = !dirtyScopeRequested && intentOnly.intentConfidence.mode === "edit" && taskPlanTargets.length > 0
-    && taskPlanTargets.every((filePath) => !repositoryFiles.includes(filePath)) && !ambiguousExplicitTarget && !unresolvedNaturalTarget
+    && taskPlanTargets.every((filePath) => confirmedMissingPlanTargets.has(filePath) && !repositoryFiles.includes(filePath)) && !ambiguousExplicitTarget && !unresolvedNaturalTarget
     && !classifyChangePlanNeed({ mode: "edit", task, explicitTargetCount: taskPlanTargets.length, targetFiles: taskPlanTargets, repositoryFiles });
   const retrieval = dirtyScopeRequested || pureNamedNewTarget ? intentOnly : await retrieveForTask(index, task, limit, semanticOptionsFromQueryOptions(repoRoot, options));
   if (pureNamedNewTarget) return terminalFocusBriefResult({ freshness, refresh, task, intent: intentOnly.intentConfidence, targetPaths: taskPlanTargets, reason: "named new target has no indexed source dependency" });
