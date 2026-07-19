@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { createMcpOutputSchema, toToolResult } from "../src/mcp/envelope.js";
 import { MCP_TOOL_RESULT_DETAILED_MAX_BYTES, MCP_TOOL_RESULT_MAX_BYTES } from "../src/mcp/result-budget.js";
-import { compactMcpResult, compactNextTools } from "../src/mcp/compaction.js";
+import { canonicalMcpDetailedProjection, compactMcpResult, compactNextTools } from "../src/mcp/compaction.js";
 import { withMcpDelivery } from "../src/mcp/decision-kernel.js";
 import { CORE_PROFILE_TOOL_NAMES } from "../src/mcp/tool-registry.js";
 
@@ -86,6 +86,31 @@ describe("MCP serialized ToolResult budget", () => {
     expect(result.content[0]).toMatchObject({ type: "text", text });
     expect((result.structuredContent as { freshness: Record<string, unknown> }).freshness).toEqual(detailedFreshness);
     expect((result.structuredContent as { truncation?: unknown }).truncation).toBeUndefined();
+  });
+
+  it.each(["concise", "detailed"] as const)("keeps executable strings over 1,000 characters lossless in %s projections", (format) => {
+    const task = `Preserve this exact scope: ${"bounded-scope-".repeat(120)}`;
+    const project = (data: Record<string, unknown>) => {
+      const packet = { text: "bounded guidance", data, freshness: freshness() };
+      return format === "concise" ? compactMcpResult(packet, { format }) : canonicalMcpDetailedProjection(packet);
+    };
+    const nextCall = project({
+      mode: "focus_brief",
+      task,
+      actionability: "edit_ready",
+      nextCall: { tool: "change_plan", reason: "plan the exact scope", arguments: { task, files: ["src/target.ts"], saveSnapshot: true } }
+    }).data as { nextCall: { arguments: { task: string } }; truncation?: Record<string, unknown> };
+    const nextTools = project({
+      mode: "context_pack",
+      task,
+      actionability: "edit_ready",
+      nextTools: [{ schemaVersion: 1, tool: "change_plan", reason: "plan the exact scope", requiredInputs: { task, files: ["src/target.ts"], saveSnapshot: true }, readOnly: false, writes: [] }]
+    }).data as { nextTools: Array<{ requiredInputs: { task: string } }>; truncation?: Record<string, unknown> };
+
+    expect(nextCall.nextCall.arguments.task).toBe(task);
+    expect(nextTools.nextTools[0]?.requiredInputs.task).toBe(task);
+    expect(Object.keys(nextCall.truncation ?? {})).not.toContain(expect.stringContaining("nextCall.arguments"));
+    expect(Object.keys(nextTools.truncation ?? {})).not.toContain(expect.stringContaining("nextTools.0.requiredInputs"));
   });
 
   it("preserves blocking authority and the detailed resource URI after transport compaction", () => {
@@ -357,6 +382,7 @@ describe("MCP serialized ToolResult budget", () => {
       lifecycle: { nextTools: string[] };
       nextTools: unknown[];
       systemMessage: string;
+      truncation: Record<string, { total: number; returned: number }>;
     };
 
     expect(bytes(result)).toBeLessThanOrEqual(MCP_TOOL_RESULT_MAX_BYTES);
@@ -367,6 +393,7 @@ describe("MCP serialized ToolResult budget", () => {
     expect(envelope.data.decisionKernel.detailsRequired).toBe(true);
     expect(envelope.lifecycle.nextTools).toEqual([]);
     expect(envelope.systemMessage).toContain("next-call arguments were omitted");
+    expect(envelope.truncation["nextCall.arguments.__transport"]).toMatchObject({ total: expect.any(Number), returned: 0 });
     expect(result.content).toContainEqual(expect.objectContaining({ type: "resource_link", uri }));
   });
 
@@ -491,11 +518,12 @@ describe("MCP serialized ToolResult budget", () => {
       POLICY
     );
 
-    const envelope = result.structuredContent as { actionability: string; nextTools: unknown[]; systemMessage: string };
+    const envelope = result.structuredContent as { actionability: string; nextTools: unknown[]; systemMessage: string; truncation: Record<string, { total: number; returned: number }> };
     expect(bytes(result)).toBeLessThanOrEqual(MCP_TOOL_RESULT_MAX_BYTES);
     expect(envelope.actionability).toBe("blocked");
     expect(envelope.nextTools).toEqual([]);
     expect(envelope.systemMessage).toContain("next-tool arguments were omitted");
+    expect(envelope.truncation["nextTools.0.requiredInputs.__transport"]).toMatchObject({ total: expect.any(Number), returned: 0 });
   });
 
   it("keeps an auto request within the ordinary cap when detailed artifact persistence failed", () => {

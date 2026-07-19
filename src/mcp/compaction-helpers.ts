@@ -592,6 +592,21 @@ export function clampLargeStrings(value: unknown, maxLength = 1000): { value: un
   return { value: visit(value, 12), stringTruncations };
 }
 
+/** Executable follow-up arguments are authority, not descriptive payload. */
+export function clampLargeStringsPreservingMcpGuidance(value: unknown, maxLength = 1000): { value: unknown; stringTruncations: number } {
+  if (!isRecord(value)) return clampLargeStrings(value, maxLength);
+  const { nextCall, nextTools, ...descriptive } = value;
+  const clamped = clampLargeStrings(descriptive, maxLength);
+  return {
+    ...clamped,
+    value: {
+      ...(isRecord(clamped.value) ? clamped.value : {}),
+      ...(Object.hasOwn(value, "nextCall") ? { nextCall } : {}),
+      ...(Object.hasOwn(value, "nextTools") ? { nextTools } : {})
+    }
+  };
+}
+
 export function structuredByteLength(value: unknown): number {
   try {
     const serialized = JSON.stringify(value);

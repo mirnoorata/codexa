@@ -2,7 +2,7 @@ import { CURRENT_VERIFICATION_PROVENANCE } from "../types.js";
 import { asCodexaQueryData, asPostEditReviewData } from "../query-data.js";
 import { compactComplexityReview } from "../query/complexity.js";
 import {
-  clampLargeStrings,
+  clampLargeStringsPreservingMcpGuidance,
   compactChangedEntry,
   compactCheck,
   compactCommandEnvelope,
@@ -91,7 +91,7 @@ export function compactMcpResult(result: QueryResult, options?: McpCompactionOpt
   const typedData = asCodexaQueryData(originalData, mode);
   const compaction = (typedData ? compactMcpDataByMode(typedData) : undefined) ?? compactGenericMcpData(originalData, effectiveMode);
   const decisionKernel = mcpDecisionKernel(originalData, effectiveMode, result.freshness);
-  const clamped = clampLargeStrings(compaction.data);
+  const clamped = clampLargeStringsPreservingMcpGuidance(compaction.data);
   const dataWithoutMetrics = attachMcpDecisionKernel(withMergedTruncation(clamped.value as Record<string, unknown>, compaction.truncation), decisionKernel);
   const compactedBytes = structuredByteLength(dataWithoutMetrics);
   const baseTargetBytes = options?.targetBytes === undefined
@@ -227,7 +227,7 @@ function enforceMcpStructuredBudget(
     "__mcp.hardBudget": { total: preEnforcementBytes, returned: targetBytes }
   });
   const hardCompacted = compactGenericValue(dataWithoutMetrics, { arrayLimit: 12, objectKeyLimit: 40, maxDepth: 6 }, hardTruncation);
-  const hardClamped = clampLargeStrings(hardCompacted, 240);
+  const hardClamped = clampLargeStringsPreservingMcpGuidance(hardCompacted, 240);
   const hardRecord = isRecord(hardClamped.value) ? hardClamped.value : { value: hardClamped.value };
   const hardData = attachMcpDecisionKernel(
     withMergedTruncation(reattachGuidanceFields(typeof hardRecord.mode === "string" ? hardRecord : { mode, ...hardRecord }, dataWithoutMetrics, hardTruncation), hardTruncation),
@@ -248,7 +248,7 @@ function enforceMcpStructuredBudget(
   const summaryTruncation = mergeTruncation(hardTruncation, {
     "__mcp.summaryBudget": { total: structuredByteLength(hardResult), returned: targetBytes }
   });
-  const summaryClamped = clampLargeStrings(buildMcpBudgetSummaryData(dataWithoutMetrics, mode, summaryTruncation), 160);
+  const summaryClamped = clampLargeStringsPreservingMcpGuidance(buildMcpBudgetSummaryData(dataWithoutMetrics, mode, summaryTruncation), 160);
   const summaryRecord = isRecord(summaryClamped.value) ? summaryClamped.value : { value: summaryClamped.value };
   const summaryResult = attachMcpMetrics(attachMcpDecisionKernel(withMergedTruncation(summaryRecord, summaryTruncation), decisionKernel), {
     ...structuredData,
@@ -265,7 +265,7 @@ function enforceMcpStructuredBudget(
   const fallbackTruncation = mergeTruncation(summaryTruncation, {
     "__mcp.fallbackBudget": { total: structuredByteLength(summaryResult), returned: targetBytes }
   });
-  const fallbackClamped = clampLargeStrings(
+  const fallbackClamped = clampLargeStringsPreservingMcpGuidance(
     {
       mode,
       task: typeof dataWithoutMetrics.task === "string" ? dataWithoutMetrics.task.slice(0, 160) : dataWithoutMetrics.task,
@@ -302,7 +302,7 @@ function enforceMcpStructuredBudget(
   const minimalTruncation = mergeTruncation(fallbackTruncation, {
     "__mcp.minimalBudget": { total: structuredByteLength(fallbackResult), returned: targetBytes }
   });
-  const minimalClamped = clampLargeStrings(
+  const minimalClamped = clampLargeStringsPreservingMcpGuidance(
     {
       mode,
       task: typeof dataWithoutMetrics.task === "string" ? dataWithoutMetrics.task.slice(0, 160) : undefined,
