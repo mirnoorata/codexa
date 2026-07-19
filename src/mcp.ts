@@ -407,7 +407,34 @@ async function createCodexaMcpServer(
     const modeResult = withMcpQueryMode(rawResult, toolName);
     const resultReferenceEscalation = mcpAutoEscalationReason(modeResult, toolInput);
     const semanticEscalation = requestedFormat === "auto" ? resultReferenceEscalation : undefined;
-    const selfContainedExactSearch = canOmitDetailedExactSearchResult(modeResult, toolName, requestedFormat, resultReferenceEscalation);
+    const effectiveFormat: "concise" | "detailed" = requestedFormat === "detailed" ? "detailed" : "concise";
+    const conciseProjection = effectiveFormat === "concise" ? compactMcpResult(modeResult, { format: "concise" }) : undefined;
+    const exactSearchCandidate = isSelfContainedExactSearchCandidate(modeResult, toolName, requestedFormat, resultReferenceEscalation);
+    const exactSearchProbeDelivery = exactSearchCandidate
+      ? {
+          schemaVersion: 1 as const,
+          requestedFormat,
+          effectiveFormat: "concise" as const,
+          detailAvailable: false,
+          detailRequired: false
+        }
+      : undefined;
+    const exactSearchProbeResult = conciseProjection && exactSearchProbeDelivery
+      ? withMcpDelivery(conciseProjection, exactSearchProbeDelivery)
+      : undefined;
+    const exactSearchToolResult = exactSearchProbeResult
+      ? toToolResult(
+          { ...exactSearchProbeResult, text: renderMcpConciseText(exactSearchProbeResult) },
+          toolName,
+          { ...policyOptions, input: toolInput }
+        )
+      : undefined;
+    const selfContainedExactSearch = Boolean(
+      exactSearchToolResult && deliveredExactSearchEvidenceIsComplete(modeResult, exactSearchToolResult)
+    );
+    const exactSearchDetailReason = exactSearchCandidate && !selfContainedExactSearch
+      ? "exact-search-evidence-compacted"
+      : undefined;
     const needsResultReference = requestedFormat !== "detailed" && !selfContainedExactSearch;
     const artifactDetailedResult = !needsResultReference
       ? undefined
@@ -421,10 +448,10 @@ async function createCodexaMcpServer(
         artifactFailure = error instanceof Error ? error.message : String(error);
       }
     }
+    const requiredDetailReason = semanticEscalation ?? exactSearchDetailReason;
     const escalationReason = artifactFailure
-      ? [semanticEscalation, "detailed-result-resource-unavailable"].filter(Boolean).join("+")
-      : semanticEscalation;
-    const effectiveFormat: "concise" | "detailed" = requestedFormat === "detailed" ? "detailed" : "concise";
+      ? [requiredDetailReason, "detailed-result-resource-unavailable"].filter(Boolean).join("+")
+      : requiredDetailReason;
     const unchangedReceipt = effectiveFormat === "concise" && requestedFormat === "auto" && Boolean(resultReference && emittedResultIds.has(resultReference.id));
     const delivery = {
       schemaVersion: 1 as const,
@@ -433,30 +460,35 @@ async function createCodexaMcpServer(
       resultId: resultReference?.id,
       resultUri: resultReference?.uri,
       detailAvailable: requestedFormat === "detailed" || Boolean(resultReference),
-      detailRequired: Boolean(semanticEscalation),
-      requiredDetailReason: semanticEscalation,
+      detailRequired: Boolean(requiredDetailReason),
+      requiredDetailReason,
       unchangedReceipt: unchangedReceipt || undefined,
       escalationReason
     };
-    let deliveredResult: QueryResult;
-    if (effectiveFormat === "detailed") {
+    let toolResult;
+    if (selfContainedExactSearch) {
+      toolResult = exactSearchToolResult!;
+    } else {
+      let deliveredResult: QueryResult;
+      if (effectiveFormat === "detailed") {
       // Build the host-bounded detailed packet only when it will actually be
       // returned. Normal auto/concise calls therefore do artifact+concise
       // compaction, never an unused third serialization pass.
-      deliveredResult = withMcpDelivery(canonicalMcpDetailedProjection(modeResult), delivery);
-    } else {
-      const conciseResult = withMcpDelivery(compactMcpResult(modeResult, { format: "concise" }), delivery);
-      deliveredResult = unchangedReceipt ? unchangedMcpReceipt(conciseResult) : conciseResult;
-      deliveredResult = { ...deliveredResult, text: renderMcpConciseText(deliveredResult) };
+        deliveredResult = withMcpDelivery(canonicalMcpDetailedProjection(modeResult), delivery);
+      } else {
+        const conciseResult = withMcpDelivery(conciseProjection!, delivery);
+        deliveredResult = unchangedReceipt ? unchangedMcpReceipt(conciseResult) : conciseResult;
+        deliveredResult = { ...deliveredResult, text: renderMcpConciseText(deliveredResult) };
+      }
+      toolResult = toToolResult(
+        deliveredResult,
+        toolName,
+        { ...policyOptions, input: toolInput }
+      );
     }
     if (resultReference) {
       rememberProtectedMcpResultId(emittedResultIds, resultReference.id);
     }
-    const toolResult = toToolResult(
-      deliveredResult,
-      toolName,
-      { ...policyOptions, input: toolInput }
-    );
     if (deliveryState.telemetry.destinationPath) {
       try {
         const elapsedMs = Math.max(0, Math.round((performance.now() - startedAt) * 1000) / 1000);
@@ -648,7 +680,7 @@ function withMcpQueryMode(result: QueryResult, toolName: string): QueryResult {
   return { ...result, data: { mode: toolName, ...result.data } };
 }
 
-function canOmitDetailedExactSearchResult(
+function isSelfContainedExactSearchCandidate(
   result: QueryResult,
   toolName: string,
   requestedFormat: McpResponseFormat,
@@ -657,13 +689,47 @@ function canOmitDetailedExactSearchResult(
   if (toolName !== "search" || requestedFormat === "detailed" || escalationReason) return false;
   const data = isRecord(result.data) ? result.data : {};
   const raw = isRecord(data.raw) ? data.raw : undefined;
+  const hits = Array.isArray(raw?.hits) ? raw.hits : [];
+  const files = Array.isArray(raw?.files) ? raw.files : [];
   return data.mode === "search"
     && data.actionability === "raw_search_sufficient"
     && raw?.sufficient === true
     && typeof data.rawExactHitCount === "number"
     && data.rawExactHitCount > 0
+    && data.rawExactHitCount === hits.length
+    && typeof data.rawExactFileCount === "number"
+    && data.rawExactFileCount > 0
+    && data.rawExactFileCount === files.length
     && Array.isArray(data.nextTools)
     && data.nextTools.length === 0;
+}
+
+function deliveredExactSearchEvidenceIsComplete(
+  sourceResult: QueryResult,
+  deliveredResult: { structuredContent?: unknown }
+): boolean {
+  const sourceData = isRecord(sourceResult.data) ? sourceResult.data : {};
+  const sourceRaw = isRecord(sourceData.raw) ? sourceData.raw : undefined;
+  const envelope = isRecord(deliveredResult.structuredContent) ? deliveredResult.structuredContent : {};
+  const deliveredData = isRecord(envelope.data) ? envelope.data : {};
+  const deliveredRaw = isRecord(deliveredData.raw) ? deliveredData.raw : undefined;
+  return envelope.actionability === "raw_search_sufficient"
+    && deliveredData.actionability === "raw_search_sufficient"
+    && deliveredRaw?.sufficient === true
+    && deliveredData.rawExactHitCount === sourceData.rawExactHitCount
+    && deliveredData.rawExactFileCount === sourceData.rawExactFileCount
+    && sameStructuredValue(deliveredRaw.hits, sourceRaw?.hits)
+    && sameStructuredValue(deliveredRaw.files, sourceRaw?.files)
+    && Array.isArray(envelope.nextTools)
+    && envelope.nextTools.length === 0;
+}
+
+function sameStructuredValue(left: unknown, right: unknown): boolean {
+  try {
+    return JSON.stringify(left) === JSON.stringify(right);
+  } catch {
+    return false;
+  }
 }
 
 function unchangedMcpReceipt(result: QueryResult): QueryResult {
