@@ -5,10 +5,10 @@ import { z } from "zod";
 // not instruct the model to call a tool the reduced profile never registered.
 export function registerWorkflowPrompts(server: McpServer, enabledTools?: ReadonlySet<string>): void {
   const toolAvailable = (name: string): boolean => !enabledTools || enabledTools.has(name);
-  const call = (name: string, purpose: string): string =>
+  const call = (name: string, purpose: string, operationArguments: Record<string, unknown> = {}): string =>
     toolAvailable(name)
       ? `Call \`${name}\` ${purpose}.`
-      : `Call \`capabilities\` with \`action: "invoke"\`, \`operation: "${name}"\`, and the operation arguments ${purpose}.`;
+      : `Call \`capabilities\` with \`action: "invoke"\`, \`operation: "${name}"\`, and \`arguments: ${JSON.stringify(operationArguments)}\` ${purpose}.`;
   server.registerPrompt(
     "impact_before_edit",
     {
@@ -28,9 +28,10 @@ export function registerWorkflowPrompts(server: McpServer, enabledTools?: Readon
             text: [
               `Use one bounded Codexa impact packet before editing ${target}.`,
               task ? `Task: ${task}` : undefined,
-              call("impact", "for this exact target"),
+              call("impact", "for this exact target", /[\\/]|\.[a-z0-9]+$/iu.test(target) ? { file: target } : { symbol: target }),
               "Do not also call `change_plan` unless the impact packet proves a material cross-boundary risk that needs a saved plan.",
-              "After editing, rely on the managed host completion gate; on a hookless host, run one post_edit_review only when drift accountability is still needed.",
+              "After editing, rely on the managed host completion gate. On a hookless host only:",
+              call("post_edit_review", "once when drift accountability is still needed"),
               "Read the returned freshness, confidence labels, known gaps, affected files, and likely tests before modifying code."
             ]
               .filter((line): line is string => Boolean(line))
@@ -60,7 +61,9 @@ export function registerWorkflowPrompts(server: McpServer, enabledTools?: Readon
               "Use Codexa to review the current dirty diff.",
               task ? `Expected intent: ${task}` : undefined,
               call("post_edit_review", "once for the current dirty diff and saved task id when one exists"),
-              "Inspect the returned source targets directly. Invoke diff_impact or test_plan only if this explicit review leaves a concrete impact or verification gap.",
+              "Inspect the returned source targets directly.",
+              call("diff_impact", "only if this explicit review leaves a concrete impact gap"),
+              call("test_plan", "only if this explicit review leaves a concrete verification gap", { diff: true }),
               "Check changed-but-unindexed files, parser errors, heuristic-only links, and candidate test command provenance."
             ]
               .filter((line): line is string => Boolean(line))
@@ -91,9 +94,10 @@ export function registerWorkflowPrompts(server: McpServer, enabledTools?: Readon
               "Use Codexa's snapshot edit loop.",
               `Task: ${task}`,
               target ? `Target: ${target}` : undefined,
-              "If the target is exact, call `change_plan` with `saveSnapshot: true` and a short `taskId`. If it is ambiguous, call `search` once and do not stack another context packet unless the scope becomes materially risky.",
+              target ? call("change_plan", "with `saveSnapshot: true` and a short `taskId`") : call("search", "once; do not stack another context packet unless the scope becomes materially risky"),
               "Use the returned planned files, tests, workflows, quality, and gaps to guide source reads.",
-              "After editing, rely on the managed host completion gate. Only on a hookless host, call post_edit_review once with that taskId and tests already run.",
+              "After editing, rely on the managed host completion gate. On a hookless host only:",
+              call("post_edit_review", "once with that taskId and tests already run", { taskId: "<saved taskId>" }),
               "If the review says `inspect` or `replan`, resolve that drift before claiming the edit is complete."
             ]
               .filter((line): line is string => Boolean(line))
@@ -122,7 +126,7 @@ export function registerWorkflowPrompts(server: McpServer, enabledTools?: Readon
             text: [
               "Use Codexa to create a targeted test plan.",
               task ? `Change under test: ${task}` : undefined,
-              call("test_plan", "with diff=true and the explicit target when known"),
+              call("test_plan", "with diff=true and the explicit target when known", { diff: true }),
               "If command provenance is missing, inspect the repo scripts before running a command."
             ]
               .filter((line): line is string => Boolean(line))
