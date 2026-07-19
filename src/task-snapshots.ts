@@ -300,9 +300,55 @@ async function publishLatestSnapshot(repoRoot: string, dir: string, candidate: R
 }
 
 async function shouldPublishLatest(dir: string, current: LatestSnapshotPointer, candidate: Record<string, unknown>): Promise<boolean> {
-  const currentAuthority = pointerAuthority(current, await latestPointerIsImplicit(dir, current));
+  const currentAuthority = await validatedLatestPointerAuthority(dir, current);
+  if (!currentAuthority) return true;
   const candidateAuthority = pointerAuthority(candidate, candidate.origin === "hook-implicit");
   return compareSnapshotAuthority(candidateAuthority, currentAuthority) > 0;
+}
+
+async function validatedLatestPointerAuthority(dir: string, pointer: LatestSnapshotPointer): Promise<SnapshotAuthority | undefined> {
+  const taskId = typeof pointer.taskId === "string" ? normalizeTaskId(pointer.taskId) : undefined;
+  if (!taskId || pointer.taskId !== taskId) return undefined;
+
+  if (pointer.blocked !== undefined && pointer.blocked !== false && pointer.blocked !== true) return undefined;
+  const kind = pointer.blocked === true ? "blocked" : "snapshot";
+  const artifactName = typeof pointer.path === "string" ? pointer.path : undefined;
+  const expectedName = kind === "blocked" ? `${taskId}.blocked.json` : `${taskId}.json`;
+  if (
+    !artifactName
+    || artifactName !== expectedName
+    || artifactName !== path.posix.basename(artifactName)
+    || artifactName !== path.win32.basename(artifactName)
+  ) {
+    return undefined;
+  }
+
+  const artifactPath = path.join(dir, artifactName);
+  const pointerSequence = validPublicationSequence(pointer.publicationSequence);
+  if (pointer.publicationSequence !== undefined && pointerSequence === undefined) return undefined;
+
+  if (kind === "blocked") {
+    const marker = await readJson<BlockedTaskSnapshotMarker>(artifactPath);
+    if (!marker.ok || !isBlockedSnapshotMarker(marker.value, taskId) || marker.value.taskId !== taskId) return undefined;
+    if (validPublicationSequence(marker.value.publicationSequence) !== pointerSequence) return undefined;
+    return pointerAuthority({
+      taskId,
+      path: artifactName,
+      blocked: true,
+      createdAt: marker.value.createdAt,
+      publicationSequence: marker.value.publicationSequence
+    }, false);
+  }
+
+  const snapshot = await readJson<TaskSnapshot>(artifactPath);
+  if (!snapshot.ok || !isTaskSnapshot(snapshot.value) || snapshot.value.taskId !== taskId) return undefined;
+  if (validPublicationSequence(snapshot.value.publicationSequence) !== pointerSequence) return undefined;
+  return pointerAuthority({
+    taskId,
+    path: artifactName,
+    createdAt: snapshot.value.createdAt,
+    publicationSequence: snapshot.value.publicationSequence
+  }, snapshot.value.origin === "hook-implicit");
 }
 
 function pointerAuthority(pointer: LatestSnapshotPointer | Record<string, unknown>, implicit: boolean): SnapshotAuthority {
@@ -358,13 +404,6 @@ async function maximumPublicationSequence(dir: string): Promise<number> {
     maximum = Math.max(maximum, validPublicationSequence(parsed.value.publicationSequence) ?? 0);
   }
   return maximum;
-}
-
-async function latestPointerIsImplicit(dir: string, pointer: LatestSnapshotPointer): Promise<boolean> {
-  if (pointer.origin === "hook-implicit") return true;
-  if (pointer.blocked === true || typeof pointer.path !== "string") return false;
-  const snapshot = await readJson<Partial<TaskSnapshot>>(path.join(dir, pointer.path));
-  return snapshot.ok && snapshot.value.origin === "hook-implicit";
 }
 
 async function readBlockedSnapshotMarker(
