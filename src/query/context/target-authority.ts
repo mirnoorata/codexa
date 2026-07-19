@@ -22,12 +22,14 @@ export type PlannedTargetAuthority = {
 export async function inspectPlannedTargetAuthority(
   proposedTargets: string[],
   repoRoot: string,
-  repositoryFiles: string[]
+  repositoryFiles: string[],
+  mentionedTargets: string[] = proposedTargets
 ): Promise<PlannedTargetAuthority> {
-  const inspections = await Promise.all(proposedTargets.map((filePath) => repositoryTargetPathAuthority(filePath, repoRoot, repositoryFiles)));
+  const plannedTargets = new Set(proposedTargets);
+  const inspections = await Promise.all(uniqueSorted([...proposedTargets, ...mentionedTargets]).map((filePath) => repositoryTargetPathAuthority(filePath, repoRoot, repositoryFiles)));
   return {
     inspections,
-    newTargets: uniqueSorted(inspections.filter((entry) => entry.status === "missing").flatMap((entry) => entry.path ? [entry.path] : [])),
+    newTargets: uniqueSorted(inspections.filter((entry) => entry.status === "missing" && plannedTargets.has(entry.requestedPath)).flatMap((entry) => entry.path ? [entry.path] : [])),
     indexedTargets: uniqueSorted(inspections.filter((entry) => entry.status === "indexed").flatMap((entry) => entry.path ? [entry.path] : [])),
     indexedTargetMentions: uniqueSorted(inspections.filter((entry) => entry.status === "indexed").map((entry) => entry.requestedPath))
   };
