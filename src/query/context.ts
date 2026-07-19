@@ -586,7 +586,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       actionGuidanceSuppressed: suppressActionGuidance,
       recipes,
       verificationCommands,
-      verificationCoverage,
+      verificationCoverage: verificationCoverage.slice(0, 40),
       verificationCommandPlan: commandPlan,
       value,
       quality,
