@@ -1,6 +1,6 @@
 {
   "name": "codexa",
-  "version": "0.15.0",
+  "version": "0.15.1",
   "description": "Selective Codex-native codebase intelligence for ambiguous, cross-cutting, or high-risk repository work.",
   "author": {
     "name": "Codexa maintainers",
