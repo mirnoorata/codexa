@@ -24,10 +24,20 @@ export function boundMcpToolResult<T extends McpToolResultShape>(result: T): T {
   const originalBytes = byteLength(result);
   const detailed = requestedFormat(result.structuredContent) === "detailed";
   const maxBytes = detailed ? MCP_TOOL_RESULT_DETAILED_MAX_BYTES : MCP_TOOL_RESULT_MAX_BYTES;
+  const followUpTruncated = hasExecutableFollowUpTruncation(result.structuredContent);
   // The budgeter is a lossless pass-through until the full serialized result
   // actually exceeds its tier. In particular, explicit detailed responses do
   // not silently lose freshness evidence merely because a compact tier exists.
-  if (originalBytes <= maxBytes) return result;
+  // Executable follow-up contracts are the exception: typed projection may
+  // already have truncated their arguments while leaving the whole ToolResult
+  // under this cap, and partial invocation authority must fail closed here.
+  if (originalBytes <= maxBytes && !followUpTruncated) return result;
+  if (originalBytes <= maxBytes) {
+    const receipt = withActualReturnedBytes(budgetReceipt(result, originalBytes, maxBytes, false));
+    return (byteLength(receipt) <= maxBytes
+      ? receipt
+      : withActualReturnedBytes(emergencyReceipt(result, originalBytes, maxBytes))) as T;
+  }
   const envelope = {
     ...result.structuredContent,
     freshness: compactFreshness(result.structuredContent.freshness),
@@ -38,13 +48,22 @@ export function boundMcpToolResult<T extends McpToolResultShape>(result: T): T {
     content: compactContent(result.content, detailed ? MCP_TOOL_RESULT_DETAILED_MAX_BYTES : TEXT_MAX_BYTES),
     structuredContent: envelope
   } as T;
-  const receipt = withActualReturnedBytes(budgetReceipt(candidate, originalBytes, maxBytes));
+  // Freshness and caller-visible text can be the only reason the original
+  // packet crossed the tier. Preserve the usable structured payload when that
+  // ancillary compaction is sufficient, and record the exact whole-result
+  // byte reduction that occurred.
+  const compactSummaryPreferred = stringValue(candidate.structuredContent.mode) === "freshness";
+  if (!compactSummaryPreferred && !followUpTruncated && !hasIncompleteFollowUpContract(candidate.structuredContent)) {
+    const boundedCandidate = withToolResultBudgetMetadata(candidate, originalBytes, maxBytes);
+    if (byteLength(boundedCandidate) <= maxBytes) return boundedCandidate;
+  }
+  const receipt = withActualReturnedBytes(budgetReceipt(candidate, originalBytes, maxBytes, true));
   return (byteLength(receipt) <= maxBytes
     ? receipt
     : withActualReturnedBytes(emergencyReceipt(candidate, originalBytes, maxBytes))) as T;
 }
 
-function budgetReceipt(result: McpToolResultShape, originalBytes: number, maxBytes: number): McpToolResultShape {
+function budgetReceipt(result: McpToolResultShape, originalBytes: number, maxBytes: number, budgetExceeded: boolean): McpToolResultShape {
   const envelope = result.structuredContent;
   const sourceData = isRecord(envelope.data) ? envelope.data : {};
   const mode = bounded(stringValue(envelope.mode) ?? stringValue(sourceData.mode) ?? "unknown", 60);
@@ -67,7 +86,8 @@ function budgetReceipt(result: McpToolResultShape, originalBytes: number, maxByt
   const sourceNextCall = isRecord(sourceData.nextCall) ? sourceData.nextCall : undefined;
   const completeNextCall = completeNextCallContract(sourceNextCall);
   const sourceNextCallIncomplete = sourceNextCall !== undefined && !completeNextCall;
-  const sourceNextCallTruncated = hasFirstNextCallContractTruncation(envelope.truncation, sourceData.truncation, sourceKernel.truncation);
+  const sourceNextCallTruncated = hasFirstNextCallContractTruncation(sourceNextCall, envelope.truncation, sourceData.truncation, sourceKernel.truncation);
+  const compactionReason = budgetExceeded ? "tool-result-budget" : "executable-follow-up-truncated";
 
   const buildReceipt = (
     nextToolContractOmitted: boolean,
@@ -117,11 +137,18 @@ function budgetReceipt(result: McpToolResultShape, originalBytes: number, maxByt
       effectiveFormat: "concise",
       detailAvailable: resultUri ? true : false,
       detailRequired: effectiveDetailRequired || detailUnavailable || sourceDelivery.detailRequired === true,
-      requiredDetailReason: sourceDelivery.requiredDetailReason ?? (effectiveDetailRequired || detailUnavailable ? "tool-result-budget" : undefined),
-      escalationReason: sourceDelivery.escalationReason ?? "tool-result-budget"
+      requiredDetailReason: sourceDelivery.requiredDetailReason ?? (effectiveDetailRequired || detailUnavailable ? compactionReason : undefined),
+      escalationReason: sourceDelivery.escalationReason ?? compactionReason
     });
     const truncation = {
-      "__mcp.toolResultBudget": { total: originalBytes, returned: maxBytes },
+      ...compactTruncationEvidence(
+        envelope.truncation,
+        sourceData.truncation,
+        sourceKernel.truncation,
+        isRecord(sourceNextTool) ? sourceNextTool.truncation : undefined,
+        isRecord(sourceNextCall) ? sourceNextCall.truncation : undefined
+      ),
+      ...(budgetExceeded ? { "__mcp.toolResultBudget": { total: originalBytes, returned: maxBytes } } : {}),
       ...(nextToolContractOmitted ? { "nextTools.0.requiredInputs.__transport": { total: byteLength(isRecord(sourceNextTool) ? sourceNextTool.requiredInputs ?? {} : {}), returned: 0 } } : {}),
       ...(nextCallContractOmitted ? { "nextCall.arguments.__transport": { total: byteLength(sourceNextCall?.arguments ?? {}), returned: 0 } } : {})
     };
@@ -136,7 +163,7 @@ function budgetReceipt(result: McpToolResultShape, originalBytes: number, maxByt
       decisionKernel: kernel,
       ...(authorizedNextCall ? { nextCall: authorizedNextCall } : {}),
       truncation,
-      mcp: { compacted: true, targetBytes: maxBytes, hardBudgetEnforced: true, budgetCompaction: "tool-result" }
+      mcp: defined({ compacted: true, targetBytes: maxBytes, hardBudgetEnforced: budgetExceeded || undefined, budgetCompaction: budgetExceeded ? "tool-result" : "follow-up-contract" })
     });
     const nextTools = authorityBlocked || terminalDetailRequired ? [] : projectedNextTools;
     const nextCallTool = executableNextCallTool(authorizedNextCall);
@@ -174,7 +201,9 @@ function budgetReceipt(result: McpToolResultShape, originalBytes: number, maxByt
       relatedResources
     };
     const text = [
-      `Codexa ${mode} result compacted to the MCP transport budget.`,
+      budgetExceeded
+        ? `Codexa ${mode} result compacted to the MCP transport budget.`
+        : `Codexa ${mode} result failed closed because executable follow-up inputs were truncated.`,
       `Actionability: ${actionability}`,
       stringValue(authority.verdict) ? `Verdict: ${bounded(stringValue(authority.verdict)!, 100)}` : undefined,
       stringValue(authority.completionAuthority) ? `Completion authority: ${bounded(stringValue(authority.completionAuthority)!, 100)}` : undefined,
@@ -201,6 +230,73 @@ function budgetReceipt(result: McpToolResultShape, originalBytes: number, maxByt
   }
   if (sourceNextCallTruncated || sourceNextCallIncomplete) return buildReceipt(false, [], true);
   return buildReceipt(false, [], false);
+}
+
+function hasExecutableFollowUpTruncation(envelope: Record<string, unknown>): boolean {
+  const data = isRecord(envelope.data) ? envelope.data : {};
+  const kernel = isRecord(data.decisionKernel) ? data.decisionKernel : {};
+  const nextTool = authoritativeNextTools(envelope, data)[0];
+  if (nextTool !== undefined && hasFirstNextToolContractTruncation(nextTool, envelope.truncation, data.truncation, kernel.truncation)) {
+    return true;
+  }
+  const nextCall = isRecord(data.nextCall) ? data.nextCall : undefined;
+  return executableNextCallTool(nextCall) !== undefined
+    && hasFirstNextCallContractTruncation(nextCall, envelope.truncation, data.truncation, kernel.truncation);
+}
+
+function hasIncompleteFollowUpContract(envelope: Record<string, unknown>): boolean {
+  const data = isRecord(envelope.data) ? envelope.data : {};
+  const nextTool = authoritativeNextTools(envelope, data)[0];
+  if (nextTool !== undefined && !completeNextToolContract(nextTool)) return true;
+  const nextCall = isRecord(data.nextCall) ? data.nextCall : undefined;
+  return nextCall !== undefined && !completeNextCallContract(nextCall);
+}
+
+function withToolResultBudgetMetadata<T extends McpToolResultShape>(result: T, originalBytes: number, maxBytes: number): T {
+  const sourceData = isRecord(result.structuredContent.data) ? result.structuredContent.data : undefined;
+  const budget = { total: originalBytes, returned: maxBytes };
+  const truncation = {
+    ...(isRecord(result.structuredContent.truncation) ? result.structuredContent.truncation : {}),
+    "__mcp.toolResultBudget": budget
+  };
+  const data = sourceData
+    ? {
+        ...sourceData,
+        truncation: {
+          ...(isRecord(sourceData.truncation) ? sourceData.truncation : {}),
+          "__mcp.toolResultBudget": { ...budget }
+        }
+      }
+    : result.structuredContent.data;
+  return withActualReturnedBytes({
+    ...result,
+    structuredContent: { ...result.structuredContent, data, truncation }
+  }) as T;
+}
+
+function compactTruncationEvidence(...values: unknown[]): Record<string, { total: number; returned: number }> {
+  const output: Record<string, { total: number; returned: number }> = {};
+  const visit = (value: unknown, pathName: string, depth: number): void => {
+    if (depth > 6 || !isRecord(value) || Object.keys(output).length >= 32) return;
+    for (const [key, entry] of Object.entries(value)) {
+      if (Object.keys(output).length >= 32) return;
+      const entryPath = pathName ? `${pathName}.${key}` : key;
+      if (isRecord(entry)
+        && typeof entry.total === "number"
+        && Number.isFinite(entry.total)
+        && typeof entry.returned === "number"
+        && Number.isFinite(entry.returned)) {
+        output[bounded(entryPath, 320)] = {
+          total: Math.max(0, Math.floor(entry.total)),
+          returned: Math.max(0, Math.floor(entry.returned))
+        };
+        continue;
+      }
+      visit(entry, entryPath, depth + 1);
+    }
+  };
+  for (const value of values) visit(value, "", 0);
+  return output;
 }
 
 /** Fixed-shape fail-closed receipt for any future field-growth regression. */

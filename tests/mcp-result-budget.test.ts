@@ -88,6 +88,48 @@ describe("MCP serialized ToolResult budget", () => {
     expect((result.structuredContent as { truncation?: unknown }).truncation).toBeUndefined();
   });
 
+  it("returns the detailed candidate when ancillary compaction brings the whole ToolResult under its cap", () => {
+    const dirtyFiles = Array.from({ length: 2_000 }, (_, index) => `src/detail-${String(index).padStart(4, "0")}-${"wide-path-".repeat(4)}.ts`);
+    const dirtyFileHashes = Object.fromEntries(dirtyFiles.map((file, index) => [file, `hash-${index}`]));
+    const evidence = "e".repeat(450_000);
+    const text = "d".repeat(80 * 1_024);
+    const result = toToolResult(
+      {
+        text,
+        data: {
+          mode: "capabilities",
+          actionability: "orientation",
+          evidence,
+          delivery: { schemaVersion: 1, requestedFormat: "detailed", effectiveFormat: "detailed", detailAvailable: true }
+        },
+        freshness: freshness({ dirtyFiles, dirtyFileHashes })
+      },
+      "capabilities",
+      POLICY
+    );
+
+    const envelope = result.structuredContent as {
+      actionability: string;
+      data: {
+        evidence?: string;
+        delivery: { effectiveFormat: string };
+        truncation: { "__mcp.toolResultBudget": { total: number; returned: number } };
+      };
+      freshness: { dirtyFiles: string[]; dirtyFileCount: number };
+      truncation: { "__mcp.toolResultBudget": { total: number; returned: number } };
+    };
+    expect(bytes(result)).toBeLessThanOrEqual(MCP_TOOL_RESULT_DETAILED_MAX_BYTES);
+    expect(envelope.actionability).toBe("orientation");
+    expect(envelope.data.evidence).toBe(evidence);
+    expect(envelope.data.delivery.effectiveFormat).toBe("detailed");
+    expect(result.content[0]).toEqual({ type: "text", text });
+    expect(envelope.freshness.dirtyFiles).toEqual(dirtyFiles.slice(0, 12));
+    expect(envelope.freshness.dirtyFileCount).toBe(dirtyFiles.length);
+    expect(envelope.truncation["__mcp.toolResultBudget"].total).toBeGreaterThan(MCP_TOOL_RESULT_DETAILED_MAX_BYTES);
+    expect(envelope.truncation["__mcp.toolResultBudget"].returned).toBe(bytes(result));
+    expect(envelope.data.truncation["__mcp.toolResultBudget"]).toEqual(envelope.truncation["__mcp.toolResultBudget"]);
+  });
+
   it.each(["concise", "detailed"] as const)("keeps executable strings over 1,000 characters lossless in %s projections", (format) => {
     const task = `Preserve this exact scope: ${"bounded-scope-".repeat(120)}`;
     const project = (data: Record<string, unknown>) => {
@@ -492,6 +534,80 @@ describe("MCP serialized ToolResult budget", () => {
     expect(envelope.data.decisionKernel).toMatchObject({ detailsRequired: true, nextTools: [] });
     expect(envelope.data.delivery.detailRequired).toBe(true);
     expect(envelope.systemMessage).toContain("next-tool arguments were omitted");
+  });
+
+  it("fails closed below the hard cap when core dispatch receives typed-compacted required inputs", () => {
+    const uri = `codexa://repo/mcp-results/rr_${"7".repeat(32)}/mr_${"9".repeat(64)}`;
+    const requiredInputs = Object.fromEntries(
+      Array.from({ length: 20 }, (_, index) => [`key${String(index).padStart(2, "0")}`, `value-${index}`])
+    );
+    const compacted = compactMcpResult(
+      {
+        text: "edit-ready context",
+        data: {
+          mode: "task_brief",
+          actionability: "edit_ready",
+          nextTools: [{
+            schemaVersion: 1,
+            tool: "session_memory",
+            reason: "record every required input",
+            requiredInputs,
+            readOnly: false,
+            writes: [".codex/cache/codexa-session-memory"]
+          }]
+        },
+        freshness: freshness()
+      },
+      { format: "concise" }
+    );
+    const delivered = withMcpDelivery(compacted, {
+      schemaVersion: 1,
+      requestedFormat: "auto",
+      effectiveFormat: "concise",
+      resultId: `mr_${"9".repeat(64)}`,
+      resultUri: uri,
+      detailAvailable: true,
+      detailRequired: false
+    });
+    const result = toToolResult(
+      delivered,
+      "task_brief",
+      { ...POLICY, enabledTools: new Set(CORE_PROFILE_TOOL_NAMES) }
+    );
+
+    const envelope = result.structuredContent as {
+      actionability: string;
+      nextTools: unknown[];
+      systemMessage: string;
+      lifecycle: { nextTools: string[] };
+      truncation: Record<string, { total: number; returned: number }>;
+      data: {
+        delivery: { detailRequired: boolean; requiredDetailReason?: string; escalationReason?: string };
+        decisionKernel: { authority: { actionability: string; originalActionability?: string }; nextTools: unknown[]; detailsRequired: boolean };
+        mcp: { budgetCompaction: string; hardBudgetEnforced?: boolean };
+      };
+    };
+    expect(bytes(result)).toBeLessThan(MCP_TOOL_RESULT_MAX_BYTES);
+    expect(envelope.actionability).toBe("blocked");
+    expect(envelope.nextTools).toEqual([]);
+    expect(envelope.lifecycle.nextTools).toEqual([]);
+    expect(envelope.data.decisionKernel).toMatchObject({
+      authority: { actionability: "blocked", originalActionability: "edit_ready" },
+      nextTools: [],
+      detailsRequired: true
+    });
+    expect(envelope.data.delivery).toMatchObject({
+      detailRequired: true,
+      requiredDetailReason: "executable-follow-up-truncated",
+      escalationReason: "executable-follow-up-truncated"
+    });
+    expect(envelope.data.mcp).toMatchObject({ budgetCompaction: "follow-up-contract" });
+    expect(envelope.data.mcp.hardBudgetEnforced).toBeUndefined();
+    expect(envelope.truncation["nextTools.0.requiredInputs.__keys"]).toEqual({ total: 20, returned: 16 });
+    expect(envelope.truncation["nextTools.0.requiredInputs.__transport"]?.returned).toBe(0);
+    expect(envelope.truncation["__mcp.toolResultBudget"]).toBeUndefined();
+    expect(envelope.systemMessage).toContain("next-tool arguments were omitted");
+    expect(result.content).toContainEqual(expect.objectContaining({ type: "resource_link", uri }));
   });
 
   it("fails closed when an oversized receipt carries string-only next-tool guidance", () => {
