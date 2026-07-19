@@ -2,6 +2,7 @@ import type { SymbolFact } from "../../types.js";
 import { stableId, uniqueSorted } from "../../util.js";
 import type { ChangePlanTargetCandidate, ChangePlanTargetCandidateBase, ChangePlanTargetCandidateDraft } from "../change-plan.js";
 import { normalizeSearchText } from "../search.js";
+import type { RepositoryTargetPathAuthority } from "../targets.js";
 
 export function candidateSymbols(symbols: SymbolFact[], taskTokens: string[]): SymbolFact[] {
   return symbols
@@ -57,6 +58,13 @@ export function uniqueInOrder(values: Iterable<string>): string[] {
     result.push(value);
   }
   return result;
+}
+
+export function canonicalCandidateReplayFiles(
+  files: string[] | undefined,
+  authorities: RepositoryTargetPathAuthority[]
+): string[] | undefined {
+  return files?.map((filePath, index) => authorities[index]?.status === "indexed" && authorities[index]?.path ? authorities[index].path : filePath);
 }
 
 export function meaningfulTaskTokens(value: string): string[] {
