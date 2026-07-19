@@ -6,7 +6,6 @@ import { compactChangedSymbol, compactDiffGroup, compactFileFact, compactSymbolF
 import { confidenceTier, tierScore, tierCounts, formatReasons, formatRecipes, clampInt } from "./formatting.js";
 import { graphEdgeSort, isImpactGraphEdge } from "./graph.js";
 import { edgeEvidenceForGraphEdges } from "./edge-evidence.js";
-import { nextTool } from "./next-tools.js";
 import { assessContextQuality, formatContextQuality, formatValueEstimate, type ContextQuality, valueEstimate } from "./quality.js";
 import { freshnessBanner, ambiguityResult } from "./runtime.js";
 import { ensureQuerySession, type QuerySessionInput } from "./session.js";
@@ -141,7 +140,9 @@ export async function impactQuery(
     ...formatRecipes(recipes),
     "",
     "Known gaps:",
-    ...formatGaps(gaps)
+    ...formatGaps(gaps),
+    "",
+    "Codexa handoff: blast radius, read-first sources, and tests are included; read them and stop."
   ]
     .filter((line): line is string => line !== undefined)
     .join("\n");
@@ -149,11 +150,7 @@ export async function impactQuery(
   const evidenceEdges = impactEvidenceEdges(index, ranked.map((entry) => entry.file.path), symbol?.id).slice(0, 120);
   const edgeEvidence = edgeEvidenceForGraphEdges(evidenceEdges, freshness, 120);
   const evidenceIdsByPath = impactEvidenceIdsByPath(edgeEvidence);
-  const nextTools = [
-    symbol ? nextTool("symbol_context", "inspect symbol neighborhood with relationship evidence", { symbol: symbol.id, depth: maxDepth }) : undefined,
-    readFirstFiles.length > 0 ? nextTool("change_plan", "save an edit-ready plan before changing these impact targets", { files: readFirstFiles.slice(0, 8), changeType, saveSnapshot: true }, true, [".codex/cache/codexa-task-snapshots"]) : undefined,
-    tests.length > 0 ? nextTool("test_plan", "choose targeted verification for the impact set", { files: readFirstFiles.slice(0, 8) }) : undefined
-  ].filter((tool): tool is ReturnType<typeof nextTool> => Boolean(tool));
+  const nextTools: [] = [];
   return {
     freshness,
     refresh,
@@ -183,7 +180,7 @@ export async function impactQuery(
       quality,
       gaps,
       nextTools,
-      systemMessage: nextTools[0]?.reason
+      systemMessage: "Blast radius, read-first sources, and verification guidance are included; read them and stop Codexa."
     }
   };
 }

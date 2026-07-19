@@ -347,6 +347,34 @@ export function mcpToolResultByteCounts(result: { content?: unknown; structuredC
   return { textBytes, structuredBytes, totalBytes };
 }
 
+/** Report the format that crossed the transport boundary after final budgeting. */
+export function mcpToolResultEffectiveFormat(
+  result: { structuredContent?: unknown },
+  fallback: "concise" | "detailed"
+): "concise" | "detailed" {
+  const structured = isRecord(result.structuredContent) ? result.structuredContent : undefined;
+  const data = isRecord(structured?.data) ? structured.data : undefined;
+  const delivery = isRecord(data?.delivery) ? data.delivery : undefined;
+  return delivery?.effectiveFormat === "concise" || delivery?.effectiveFormat === "detailed"
+    ? delivery.effectiveFormat
+    : fallback;
+}
+
+/** Report the final delivery reason, including transport-budget compaction. */
+export function mcpToolResultEscalationReason(
+  result: { structuredContent?: unknown },
+  fallback?: string
+): string | undefined {
+  const structured = isRecord(result.structuredContent) ? result.structuredContent : undefined;
+  const data = isRecord(structured?.data) ? structured.data : undefined;
+  const delivery = isRecord(data?.delivery) ? data.delivery : undefined;
+  return typeof delivery?.escalationReason === "string" ? delivery.escalationReason : fallback;
+}
+
 function errorCode(error: unknown): string {
   return error && typeof error === "object" && "code" in error ? String((error as { code?: unknown }).code) : "";
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
 }

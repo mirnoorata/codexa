@@ -45,7 +45,20 @@ if (mcpConfig) {
   requireField(Array.isArray(server?.env_vars) && server.env_vars.includes("CODEXA_REPO"), "plugin MCP server must expose CODEXA_REPO");
   requireField(Array.isArray(server?.env_vars) && server.env_vars.includes("CODEXA_FOCUSED_REPO"), "plugin MCP server must expose CODEXA_FOCUSED_REPO");
   requireField(Array.isArray(server?.env_vars) && server.env_vars.includes("CODEXA_WORKSPACE_FOCUS_FILE"), "plugin MCP server must expose CODEXA_WORKSPACE_FOCUS_FILE");
+  requireField(Array.isArray(server?.env_vars) && !server.env_vars.includes("CODEXA_MANAGED_POST_EDIT"), "plugin MCP server must not claim a post-edit gate it does not ship");
+  requireField(Array.isArray(server?.env_vars) && server.env_vars.includes("CODEXA_PLUGIN_TOOLS"), "plugin MCP server must expose CODEXA_PLUGIN_TOOLS");
 }
+
+const codexWrapperText = readFileSync(path.join(pluginRoot, "scripts/codexa-mcp.js"), "utf8");
+requireField(
+  codexWrapperText.includes('process.env.CODEXA_PLUGIN_TOOLS === "full" ? "full" : "core"'),
+  "plugin MCP wrapper must default CODEXA_PLUGIN_TOOLS to core"
+);
+requireField(
+  codexWrapperText.includes('"--tools", toolProfile'),
+  "plugin MCP wrapper must pass its tool profile to codexa serve"
+);
+requireField(!codexWrapperText.includes("CODEXA_MANAGED_POST_EDIT"), "plugin MCP wrapper must not claim a post-edit gate it does not ship");
 
 const marketplace = parseJson(marketplacePath, "plugin marketplace");
 if (marketplace) {
@@ -212,9 +225,12 @@ function validateSkillFrontmatter(file, text) {
 
 function validateCodexaSkillContract(file, text) {
   const requiredSnippets = [
-    "change_plan(saveSnapshot) -> edit/run planned verification -> post_edit_review",
-    "test_plan` only when verification guidance is unresolved",
-    "`capabilities` to discover or invoke any advanced operation",
+    "Use zero Codexa calls",
+    "should usually use no more than two Codexa calls",
+    "only three-call exception",
+    "raw search result is sufficient",
+    "has no deterministic host review gate",
+    "`capabilities` to discover or invoke any non-core operation",
     "Keep host adapters thin",
     "no source-mutating MCP tool path",
     "codexa search . --query"

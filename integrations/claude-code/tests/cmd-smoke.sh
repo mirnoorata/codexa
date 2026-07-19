@@ -76,6 +76,50 @@ run_cmd() {
   rm -f "$stdout" "$stderr"
 }
 
+# ---------- MCP launcher ----------
+section "codexa-mcp.js"
+
+MCP_REPO="$TMP/mcp-repo"
+MCP_CAPTURE="$TMP/mcp-capture.json"
+MCP_CLI="$TMP/mcp-cli.js"
+mkdir -p "$MCP_REPO"
+git init -q "$MCP_REPO"
+cat >"$MCP_CLI" <<'EOF'
+import { writeFileSync } from "node:fs";
+writeFileSync(
+  process.env.CODEXA_PLUGIN_CAPTURE,
+  JSON.stringify({
+    argv: process.argv.slice(2),
+    managedPostEdit: process.env.CODEXA_MANAGED_POST_EDIT,
+    sentinel: process.env.CODEXA_PLUGIN_SENTINEL
+  })
+);
+EOF
+(
+  cd "$MCP_REPO"
+  env -i HOME="$HOME" PATH="$PATH" \
+    CODEXA_CLI="$MCP_CLI" \
+    CODEXA_MANAGED_POST_EDIT=0 \
+    CODEXA_PLUGIN_CAPTURE="$MCP_CAPTURE" \
+    CODEXA_PLUGIN_SENTINEL=preserved \
+    node "$INTEG_ROOT/scripts/codexa-mcp.js"
+)
+if python3 - "$MCP_CAPTURE" "$MCP_REPO" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as handle:
+    capture = json.load(handle)
+assert capture["argv"] == ["serve", sys.argv[2], "--auto-refresh", "--tools", "core"]
+assert capture["managedPostEdit"] == "1"
+assert capture["sentinel"] == "preserved"
+PY
+then
+  pass "MCP launcher preserves the environment, defaults core, and marks managed review"
+else
+  fail "MCP launcher preserves the environment, defaults core, and marks managed review" "capture='$(cat "$MCP_CAPTURE" 2>/dev/null)'"
+fi
+
 # ---------- status ----------
 section "status.sh"
 

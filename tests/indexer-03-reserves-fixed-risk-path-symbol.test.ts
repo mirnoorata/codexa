@@ -664,9 +664,11 @@ it("compares exact raw search against Codexa-ranked context without overstating 
     const result = await searchQuery(repo, { query: "codexa_unique_fixture_literal", limit: 5 }, { autoRefresh: false });
     expect(result.text).toContain("raw-sufficient");
     expect(result.text).toContain("src/unique-marker.ts");
-    const resultData = result.data as { files: Array<{ path: string }>; actionability: string };
+    const resultData = result.data as { files: Array<{ path: string }>; actionability: string; nextTools: unknown[]; systemMessage: string };
     expect(resultData.files[0].path).toBe("src/unique-marker.ts");
     expect(resultData.actionability).toBe("raw_search_sufficient");
+    expect(resultData.nextTools).toEqual([]);
+    expect(resultData.systemMessage).toContain("Stop Codexa discovery and read the exact source hits");
     expect(result.text).toContain("Actionability: raw_search_sufficient");
 
     const dash = await searchQuery(repo, { query: "-codexa-dash-literal", limit: 5 }, { autoRefresh: false });

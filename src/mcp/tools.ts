@@ -39,7 +39,7 @@ import {
 import type { QueryOptions, QueryResult, SessionMemoryInput } from "../types.js";
 import type { QuerySession } from "../query/session.js";
 import { RAW_SEARCH_EXPLICIT_PATTERN_LIMIT } from "../query/raw-search.js";
-import { ADVANCED_MCP_TOOL_NAMES, MCP_TOOL_NAMES, MCP_TOOL_REGISTRY, mcpToolRegistryEntry, type McpToolName, type McpToolRegistryEntry } from "./tool-registry.js";
+import { DISPATCHABLE_MCP_TOOL_NAMES, MCP_TOOL_NAMES, MCP_TOOL_REGISTRY, mcpToolRegistryEntry, type McpToolName, type McpToolRegistryEntry } from "./tool-registry.js";
 
 export type McpOptionalQueryInput = Record<string, unknown> & {
   semantic?: boolean;
@@ -759,7 +759,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
     {
       inputSchema: {
         action: z.enum(["list", "describe", "invoke"]).optional(),
-        operation: z.enum(ADVANCED_MCP_TOOL_NAMES as unknown as [string, ...string[]]).optional(),
+        operation: z.enum(DISPATCHABLE_MCP_TOOL_NAMES as unknown as [string, ...string[]]).optional(),
         arguments: capabilityArgumentsSchema.optional(),
         ...responseFormatSchema
       },
@@ -771,8 +771,8 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
       if (action === "invoke") {
         if (!input.operation) throw new Error("capabilities action=invoke requires operation");
         const definition = toolDefinitions.get(input.operation as McpToolName);
-        if (!definition || !ADVANCED_MCP_TOOL_NAMES.includes(input.operation as (typeof ADVANCED_MCP_TOOL_NAMES)[number])) {
-          throw new Error(`Unknown advanced Codexa capability: ${input.operation}`);
+        if (!definition || !DISPATCHABLE_MCP_TOOL_NAMES.includes(input.operation as (typeof DISPATCHABLE_MCP_TOOL_NAMES)[number])) {
+          throw new Error(`Unknown non-core Codexa capability: ${input.operation}`);
         }
         const operationArguments = input.arguments as Record<string, unknown> | undefined;
         const argumentFormat = isResponseFormatInput(operationArguments) ? operationArguments.responseFormat : undefined;
@@ -791,7 +791,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
       }
       if (action === "describe" && !input.operation) throw new Error("capabilities action=describe requires operation");
       if (action === "list" && input.operation) throw new Error("capabilities action=list does not accept operation");
-      const operations = MCP_TOOL_REGISTRY.filter((entry) => entry.tier === "advanced").map(({ name, title, phase, cost, readOnly, writeEffects, useWhen, avoidWhen }) => {
+      const operations = MCP_TOOL_REGISTRY.filter((entry) => DISPATCHABLE_MCP_TOOL_NAMES.includes(entry.name as (typeof DISPATCHABLE_MCP_TOOL_NAMES)[number])).map(({ name, title, phase, cost, readOnly, writeEffects, useWhen, avoidWhen }) => {
         const schema = canonicalCapabilitySchema(toolDefinitions.get(name as McpToolName)?.inputSchema);
         return {
           name,
@@ -811,7 +811,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
       const described = input.operation
         ? (() => {
             const definition = toolDefinitions.get(input.operation as McpToolName);
-            if (!definition) throw new Error(`Unknown advanced Codexa capability: ${input.operation}`);
+            if (!definition) throw new Error(`Unknown non-core Codexa capability: ${input.operation}`);
             const schema = canonicalCapabilitySchema(definition.inputSchema);
             return {
               operation: input.operation,
@@ -826,7 +826,7 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
           refresh: session.refresh,
           text: described
             ? [`Codexa capability: ${described.operation}`, `Schema hash: ${described.schemaHash}`, `Required: ${described.schema.required?.join(", ") || "none"}`, `Inputs: ${Object.keys(described.schema.properties).join(", ") || "none"}`].join("\n")
-            : [`Codexa advanced capabilities (${operations.length})`, `Capability hash: ${capabilityHash}`, ...operations.map((entry) => `- ${entry.name} [${entry.cost}/${entry.phase}]; required ${entry.requiredInputs.join(",") || "none"}: ${entry.useWhen}`)].join("\n"),
+            : [`Codexa non-core capabilities (${operations.length})`, `Capability hash: ${capabilityHash}`, ...operations.map((entry) => `- ${entry.name} [${entry.cost}/${entry.phase}]; required ${entry.requiredInputs.join(",") || "none"}: ${entry.useWhen}`)].join("\n"),
           data: {
             mode: "capabilities",
             actionability: "orientation",

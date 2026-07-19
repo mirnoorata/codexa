@@ -74,8 +74,8 @@ export interface RefreshInfo {
 export interface QueryOptions {
   autoRefresh?: boolean;
   sessionMemory?: "auto" | "off";
-  // MCP server-side tool exposure: "core" registers only the primary-loop
-  // tools (for hosts without a client-side allowlist such as Claude Code).
+  // MCP server-side tool exposure: "core" registers the three bounded direct
+  // tools and routes every other logical operation through capabilities.
   toolProfile?: "core" | "full";
   commandBudgetMs?: number;
   maxResultBytes?: number;

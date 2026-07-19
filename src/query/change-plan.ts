@@ -176,6 +176,7 @@ export async function changePlanQuery(
       snapshotLoad: followBase?.snapshotLoad
     });
   }
+  const managedReview = editReadiness.editable && managedPostEditReviewAvailable();
   const planSteps = editReadiness.editable
     ? [
         editReadiness.source === "dirty-worktree"
@@ -192,28 +193,31 @@ export async function changePlanQuery(
           ? `3. Keep these tests in scope: ${plannedTests.slice(0, 5).map((test) => test.path).join(", ")}.`
           : "3. No targeted tests were proven; inspect repo test metadata before inventing a command.",
         plannedRecipes.length > 0 ? `4. Verification: ${plannedRecipes.slice(0, 3).join(" ")}` : "4. Run the narrowest verified test or type check that covers the touched files.",
-        editReadiness.source === "dirty-worktree"
-          ? "5. Run post_edit_review after edits; the snapshot dirty baseline separates pre-existing dirty files from new changes."
-          : "5. Run post_edit_review after edits with the saved task id and verification evidence."
+        managedReview
+          ? "5. Run the planned verification; the managed host completion gate owns post-edit review, so do not call post_edit_review manually."
+          : editReadiness.source === "dirty-worktree"
+            ? "5. On a hookless host, run post_edit_review once after edits; the snapshot dirty baseline separates pre-existing dirty files from new changes."
+            : "5. On a hookless host, run post_edit_review once after edits with the saved task id and verification evidence."
       ]
     : [
         `1. Do not edit yet: ${editReadiness.reason}.`,
         `2. Read ${files.slice(0, 6).join(", ") || "the orientation files returned by Codexa"} only to choose a concrete target.`,
         targetCandidates.length > 0
           ? "3. Pick one target candidate below, then re-run change_plan with followCandidate set to its candidateId."
-          : `3. Use ${editReadiness.recommendedNextTool ?? "search"} or raw search to identify the exact file or symbol.`,
+          : "3. Use one search call or raw source search to identify the exact file or symbol.",
         "4. Re-run change_plan with an explicit file or symbol target and saveSnapshot=true before editing.",
         "5. Treat any tests below as deferred until the edit target is explicit."
       ];
   const finalTaskId = effectiveInput.saveSnapshot && editReadiness.editable ? allocateTaskSnapshotId(repoRoot, effectiveInput) : effectiveInput.taskId;
   const structuredNextTools = editReadiness.editable
-    ? [
-        nextTool("post_edit_review", "review drift and verification after completing the planned edit", { taskId: finalTaskId }, true, [".codex/cache/codexa-outcomes"])
-      ].filter((tool): tool is ReturnType<typeof nextTool> => Boolean(tool))
-    : [
-        nextTool(editReadiness.recommendedNextTool ?? "search", "narrow the task to an explicit file or symbol target before editing", { task: effectiveInput.task }),
-        targetCandidates[0] ? nextTool("change_plan", "follow the highest-confidence target candidate", { taskId: blockedSnapshot?.taskId ?? effectiveInput.taskId, followCandidate: targetCandidates[0].candidateId, saveSnapshot: true }, true, [".codex/cache/codexa-task-snapshots"]) : undefined
-      ].filter((tool): tool is ReturnType<typeof nextTool> => Boolean(tool));
+    ? managedReview
+      ? []
+      : [
+          nextTool("post_edit_review", "on this hookless host, review drift and verification once after completing the planned edit", { taskId: finalTaskId }, true, [".codex/cache/codexa-outcomes"])
+        ].filter((tool): tool is ReturnType<typeof nextTool> => Boolean(tool))
+    : targetCandidates[0]
+      ? [nextTool("change_plan", "follow the highest-confidence target candidate", { taskId: blockedSnapshot?.taskId ?? effectiveInput.taskId, followCandidate: targetCandidates[0].candidateId, saveSnapshot: true }, true, [".codex/cache/codexa-task-snapshots"])]
+      : [nextTool("search", "narrow the task to an explicit file or symbol target before editing", { task: effectiveInput.task })];
   const complexityReview = buildPlanComplexityReview({
     editReadiness,
     plannedEditTargets,
@@ -350,8 +354,11 @@ export async function changePlanQuery(
       requiredWorkflowChecks: editReadiness.editable ? requiredWorkflowChecks : [],
 	      requiredDependencyChecks: editReadiness.editable ? requiredDependencyChecks : [],
 	      complexityReview,
+	      reviewOwner: managedReview ? "managed-host-gate" : "agent-on-hookless-host",
 	      nextTools: structuredNextTools,
-	      systemMessage: structuredNextTools[0]?.reason,
+	      systemMessage: managedReview
+          ? "Run the planned verification, then stop; the managed host completion gate owns post-edit review."
+          : structuredNextTools[0]?.reason,
 	      snapshot: savedSnapshot?.snapshot,
       snapshotBlock: blockedSnapshot
         ? {
@@ -362,6 +369,10 @@ export async function changePlanQuery(
         : undefined
     }
   };
+}
+
+function managedPostEditReviewAvailable(): boolean {
+  return process.env.CODEXA_MANAGED_POST_EDIT === "1";
 }
 
 function changePlanFreshnessBlockedResult(input: {

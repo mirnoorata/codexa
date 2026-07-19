@@ -5,7 +5,6 @@ import { formatGaps, indexGaps } from "./diff.js";
 import { edgeEvidenceForGraphEdges } from "./edge-evidence.js";
 import { confidenceTier } from "./formatting.js";
 import { formatGraphEdge, graphEdgeSort } from "./graph.js";
-import { nextTool } from "./next-tools.js";
 import { assessContextQuality, formatContextQuality, type ContextQuality } from "./quality.js";
 import { freshnessBanner } from "./runtime.js";
 import { ensureQuerySession, type QuerySessionInput } from "./session.js";
@@ -40,10 +39,25 @@ export async function callersQuery(input: QuerySessionInput, graphInput: { file?
     ...incoming.map(formatGraphEdge),
     "",
     "Caller files:",
-    ...(files.length > 0 ? files.map((file) => `- ${file}`) : ["- none"])
+    ...(files.length > 0 ? files.map((file) => `- ${file}`) : ["- none"]),
+    "",
+    "Codexa handoff: the requested caller/importer set is included; read the sources and stop."
   ].join("\n");
-  const nextTools = [nextTool("impact", "inspect blast radius and verification for this caller set", target.symbol ? { symbol: target.symbol.id } : { file: target.file?.path ?? [...target.paths][0] })];
-  return { freshness, refresh, text: limitText(text, 6000), data: { mode: "callers", target, edges: incoming, edgeEvidence: edgeEvidenceForGraphEdges(incoming, freshness), files, quality, nextTools, systemMessage: nextTools[0]?.reason } };
+  return {
+    freshness,
+    refresh,
+    text: limitText(text, 6000),
+    data: {
+      mode: "callers",
+      target,
+      edges: incoming,
+      edgeEvidence: edgeEvidenceForGraphEdges(incoming, freshness),
+      files,
+      quality,
+      nextTools: [],
+      systemMessage: "The requested caller/importer set is included; read the returned sources and stop Codexa."
+    }
+  };
 }
 
 export async function calleesQuery(input: QuerySessionInput, graphInput: { file?: string; symbol?: string; limit?: number }, options: QueryOptions = {}): Promise<QueryResult> {
@@ -75,10 +89,25 @@ export async function calleesQuery(input: QuerySessionInput, graphInput: { file?
     ...outgoing.map(formatGraphEdge),
     "",
     "Dependency files:",
-    ...(files.length > 0 ? files.map((file) => `- ${file}`) : ["- none"])
+    ...(files.length > 0 ? files.map((file) => `- ${file}`) : ["- none"]),
+    "",
+    "Codexa handoff: the requested callee/dependency set is included; read the sources and stop."
   ].join("\n");
-  const nextTools = [nextTool("impact", "inspect downstream dependency risk and verification", target.symbol ? { symbol: target.symbol.id } : { file: target.file?.path ?? [...target.paths][0] })];
-  return { freshness, refresh, text: limitText(text, 6000), data: { mode: "callees", target, edges: outgoing, edgeEvidence: edgeEvidenceForGraphEdges(outgoing, freshness), files, quality, nextTools, systemMessage: nextTools[0]?.reason } };
+  return {
+    freshness,
+    refresh,
+    text: limitText(text, 6000),
+    data: {
+      mode: "callees",
+      target,
+      edges: outgoing,
+      edgeEvidence: edgeEvidenceForGraphEdges(outgoing, freshness),
+      files,
+      quality,
+      nextTools: [],
+      systemMessage: "The requested callee/dependency set is included; read the returned sources and stop Codexa."
+    }
+  };
 }
 
 export async function dependencyPathQuery(

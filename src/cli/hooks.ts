@@ -64,18 +64,11 @@ export async function runPreEditHook(repo: string): Promise<void> {
   await runAdvisoryHook(configuredRoot, "pre-edit", "change-plan snapshot check", async () => {
     const baseline = await saveImplicitBaselineSnapshot(activeRepoRoot);
     if (baseline.status === "existing-snapshot") {
-      console.log(`Codexa: change-plan snapshot ready (${baseline.taskId}). After edits, post_edit_review will compare planned vs actual work.`);
       return { status: "ok", reason: "snapshot-ready", taskId: baseline.taskId };
     }
     if (baseline.status === "saved") {
-      console.log(
-        `Codexa: saved an implicit pre-edit baseline (${baseline.taskId}); post_edit_review will diff the final tree against it. Call change_plan with saveSnapshot=true to declare planned scope and tests.`
-      );
       return { status: "ok", reason: "implicit-baseline-saved", taskId: baseline.taskId };
     }
-    console.log(
-      `Codexa: no change-plan snapshot is available${baseline.reason ? ` (${baseline.reason})` : ""}. For code edits, call change_plan with saveSnapshot=true before editing when the task is non-trivial.`
-    );
     return { status: "skipped", reason: baseline.reason ?? "missing-change-plan-snapshot", taskId: baseline.latestTaskId };
   });
 }
@@ -96,7 +89,6 @@ export async function runPostEditHook(repo: string): Promise<void> {
     const { activeRepoRoot } = await resolveHookRepoRoots(repo);
     const release = await tryAcquirePostEditHookLock(activeRepoRoot);
     if (!release) {
-      console.log("Codexa: post-edit review skipped because another Codexa post-edit hook is active.");
       return { status: "skipped", reason: "post-edit-hook-lock-active" };
     }
     try {
@@ -111,8 +103,6 @@ export async function runPostEditHook(repo: string): Promise<void> {
       const signature = postEditHookReviewSignature({ freshness, taskId, autoVerifyMode });
       const previous = await loadPostEditHookReviewState(activeRepoRoot);
       if (previous?.signature === signature && duplicatePostEditReviewCanSkip(previous.autoVerifyStatus)) {
-        const verdict = previous.verdict ? `; last verdict ${previous.verdict}` : "";
-        console.log(`Codexa: post-edit review unchanged since last hook run${verdict}.`);
         return { status: "skipped", reason: "duplicate-dirty-tree", signature, taskId, verdict: previous.verdict, outcomeId: previous.outcomeId };
       }
       const reviewInput = {
@@ -141,20 +131,6 @@ export async function runPostEditHook(repo: string): Promise<void> {
         : autoVerifySkipReason
           ? { reports: [], attempted: [], skipped: [autoVerifySkipReason] }
           : await runAutoVerifyForPostEdit(activeRepoRoot, initialResult.data);
-      if (autoVerify.attempted.length > 0) {
-        console.log(`Codexa AutoVerify: ran ${autoVerify.attempted.length} targeted command(s).`);
-        for (const report of autoVerify.reports) {
-          const status = autoVerifyReportStatus(report);
-          const duration = report.durationMs === undefined ? "" : ` in ${report.durationMs}ms`;
-          console.log(`- ${status}${duration}: ${sanitizeAutoVerifyText(report.command, activeRepoRoot) ?? "<redacted-command>"}`);
-        }
-      }
-      if (autoVerify.skipped.length > 0 && autoVerify.attempted.length === 0) {
-        console.log(`Codexa AutoVerify: skipped ${autoVerify.skipped.length} unsafe or unsupported command(s).`);
-        for (const skipped of autoVerify.skipped.slice(0, 4)) {
-          console.log(`- ${sanitizeAutoVerifyText(skipped, activeRepoRoot) ?? "<redacted-command>"}`);
-        }
-      }
       const result = reviewPassPolicy.runFinalReview
         ? await postEditReviewWithTrustedRunnerReports(
             activeRepoRoot,
@@ -163,7 +139,13 @@ export async function runPostEditHook(repo: string): Promise<void> {
             { autoRefresh: true, commandBudgetMs: 15_000, maxResults: 6 }
           )
         : initialResult;
-      console.log(compactHookOutput(result.text));
+      if (postEditHookNeedsAttention(result.data)) {
+        const autoVerifyOutput = formatAutoVerifyHookOutput(autoVerify, activeRepoRoot);
+        if (autoVerifyOutput.length > 0) {
+          console.log(autoVerifyOutput.join("\n"));
+        }
+        console.log(compactHookOutput(result.text));
+      }
       const outcome = postEditOutcomeFromQueryResult(result.data);
       const autoVerifyStatus = summarizeAutoVerifyStatus(autoVerify);
       const reviewedSignature = postEditHookReviewSignature({ freshness: result.freshness, taskId, autoVerifyMode });
@@ -177,6 +159,26 @@ export async function runPostEditHook(repo: string): Promise<void> {
       await release();
     }
   });
+}
+
+/**
+ * Managed hooks stay silent when Codexa has no action for the agent. Only a
+ * blocked or incomplete review is injected back into the model transcript.
+ */
+export function postEditHookNeedsAttention(data: unknown): boolean {
+  if (!isCliRecord(data)) {
+    return true;
+  }
+  if (data.actionability === "blocked" || data.inspectMode === "blocking") {
+    return true;
+  }
+  if (data.verdict === "continue") {
+    return false;
+  }
+  if (data.verdict === "inspect") {
+    return false;
+  }
+  return true;
 }
 
 export function compactHookOutput(text: string): string {
@@ -301,6 +303,28 @@ function autoVerifyReportStatus(report: VerificationCommandReport): string {
     return "non-covering: timed out";
   }
   return report.exitCode === 0 ? "passed" : `failed exit ${report.exitCode ?? "unknown"}`;
+}
+
+function formatAutoVerifyHookOutput(
+  autoVerify: Awaited<ReturnType<typeof runAutoVerifyForPostEdit>>,
+  repoRoot: string
+): string[] {
+  const lines: string[] = [];
+  if (autoVerify.attempted.length > 0) {
+    lines.push(`Codexa AutoVerify: ran ${autoVerify.attempted.length} targeted command(s).`);
+    for (const report of autoVerify.reports) {
+      const status = autoVerifyReportStatus(report);
+      const duration = report.durationMs === undefined ? "" : ` in ${report.durationMs}ms`;
+      lines.push(`- ${status}${duration}: ${sanitizeAutoVerifyText(report.command, repoRoot) ?? "<redacted-command>"}`);
+    }
+  }
+  if (autoVerify.skipped.length > 0 && autoVerify.attempted.length === 0) {
+    lines.push(`Codexa AutoVerify: skipped ${autoVerify.skipped.length} unsafe or unsupported command(s).`);
+    for (const skipped of autoVerify.skipped.slice(0, 4)) {
+      lines.push(`- ${sanitizeAutoVerifyText(skipped, repoRoot) ?? "<redacted-command>"}`);
+    }
+  }
+  return lines;
 }
 
 function summarizeAutoVerifyStatus(autoVerify: Awaited<ReturnType<typeof runAutoVerifyForPostEdit>>): "off" | "covered" | "skipped" | "failed" | "non_covering" {

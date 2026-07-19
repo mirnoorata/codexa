@@ -14,6 +14,11 @@ export interface McpDeliveryMetadata {
   effectiveFormat: "concise" | "detailed";
   resultId?: string;
   resultUri?: string;
+  /** False when persistence failed and only the self-contained decision kernel is available. */
+  detailAvailable?: boolean;
+  /** True when this operation cannot authorize action without the omitted detailed projection. */
+  detailRequired?: boolean;
+  requiredDetailReason?: string;
   unchangedReceipt?: boolean;
   escalationReason?: string;
 }
@@ -123,10 +128,15 @@ export function withMcpDelivery(result: QueryResult, delivery: McpDeliveryMetada
   if (!isRecord(result.data)) return result;
   const mode = typeof result.data.mode === "string" ? result.data.mode : inferKernelMode(result.data) ?? "unknown";
   const projected = isRecord(result.data.decisionKernel) ? result.data.decisionKernel : mcpDecisionKernel(result.data, mode, result.freshness);
-  const kernel = delivery.effectiveFormat === "concise" && projected.detailsRequired === true ? failClosedDecisionKernel(projected) : projected;
+  const detailBlocked = delivery.effectiveFormat === "concise"
+    && (projected.detailsRequired === true || (delivery.detailRequired === true && delivery.detailAvailable === false));
+  const kernel = detailBlocked
+    ? failClosedDecisionKernel(projected, delivery.detailAvailable === false, delivery.requiredDetailReason)
+    : projected;
   const authority = isRecord(kernel.authority) ? kernel.authority : {};
   const delivered = reconcileMcpReturnedBytes({
     ...result.data,
+    ...(detailBlocked ? { nextTools: [], systemMessage: kernel.systemMessage } : {}),
     actionability: authority.actionability ?? result.data.actionability,
     delivery,
     decisionKernel: kernel
@@ -227,7 +237,12 @@ export function renderMcpConciseText(result: QueryResult): string {
   ].filter((line): line is string => Boolean(line));
   const tail = [
     delivery.unchangedReceipt === true ? "Detailed result: unchanged from the prior receipt." : undefined,
-    stringValue(delivery.resultUri) ? `Detailed result: ${stringValue(delivery.resultUri)}` : undefined
+    stringValue(delivery.resultUri) ? `Detailed result: ${stringValue(delivery.resultUri)}` : undefined,
+    delivery.detailAvailable === false && delivery.detailRequired === true
+      ? "Required detailed result unavailable; retry once with responseFormat \"detailed\"."
+      : delivery.detailAvailable === false
+        ? "Detailed result unavailable; rely only on this bounded decision receipt."
+        : undefined
   ].filter((line): line is string => Boolean(line));
   return fitConciseReceipt([...priorityLines, ...descriptiveLines], tail);
 }
@@ -389,7 +404,10 @@ function terminalDecisionKernel(kernel: Record<string, unknown>, failClosed = tr
     scope: terminalModeSection(kernel.scope),
     failureSignalCount: kernel.failureSignalCount,
     outcome: emergencyIdentityRecord(kernel.outcome),
-    nextTools: compactTerminalNextTools(kernel.nextTools),
+    nextTools: failClosed ? [] : compactTerminalNextTools(kernel.nextTools),
+    systemMessage: failClosed
+      ? "Required detailed evidence is omitted from this bounded receipt; read the linked detailed result before acting."
+      : boundedString(kernel.systemMessage, 220),
     gapCount,
     gapsOmitted: gapCount,
     detailsRequired: failClosed || undefined
@@ -697,7 +715,7 @@ function compactDeclaredInvariantKernel(invariantsValue: unknown, limit: number)
   return compactInvariantKernel(invariantsValue, undefined, limit)?.map((entry) => (isRecord(entry) ? { ...entry, status: "declared" } : entry));
 }
 
-function failClosedDecisionKernel(kernel: Record<string, unknown>): Record<string, unknown> {
+function failClosedDecisionKernel(kernel: Record<string, unknown>, detailUnavailable = false, reason?: string): Record<string, unknown> {
   const authority = isRecord(kernel.authority) ? kernel.authority : {};
   return {
     ...kernel,
@@ -706,6 +724,10 @@ function failClosedDecisionKernel(kernel: Record<string, unknown>): Record<strin
       originalActionability: authority.actionability,
       actionability: "blocked"
     },
+    nextTools: [],
+    systemMessage: detailUnavailable
+      ? `Required detailed evidence is unavailable${reason ? ` (${boundedReceiptValue(reason, 120)})` : ""}; do not act from this receipt. Retry once with responseFormat "detailed".`
+      : "Required detailed evidence is omitted from this concise receipt; read the linked detailed result before acting.",
     detailsRequired: true
   };
 }

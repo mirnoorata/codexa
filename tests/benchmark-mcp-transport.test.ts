@@ -29,8 +29,8 @@ describe("reproducible MCP transport comparison", () => {
       schemaVersion: number;
       passed: boolean;
       measurement: { unit: string };
-      baseline: { directToolCount: number; advertisedLogicalOperationNames: string[] };
-      candidate: { directToolCount: number; advertisedLogicalOperationNames: string[]; receiptFlags: boolean[]; detailedResourceReadable: boolean };
+      baseline: { directToolCount: number; directToolNames: string[]; advertisedLogicalOperationNames: string[]; serverInstructionsDecodedPayloadBytes: number; logicalInvocationRoutes: { freshness: string; task_brief: string } };
+      candidate: { directToolCount: number; directToolNames: string[]; advertisedLogicalOperationNames: string[]; serverInstructionsDecodedPayloadBytes: number; logicalInvocationRoutes: { freshness: string; task_brief: string }; receiptFlags: boolean[]; detailedResourceReadable: boolean };
       comparison: {
         advertisedLogicalOperationNameParity: boolean;
         baselineLogicalOperationsRetained: boolean;
@@ -38,14 +38,21 @@ describe("reproducible MCP transport comparison", () => {
         addedCandidateLogicalOperationNames: string[];
         baselineAdvertisementAndDiscoveryDecodedPayloadBytes: number;
         candidateAdvertisementAndDiscoveryDecodedPayloadBytes: number;
+        baselineStartupAdvertisementAndDiscoveryDecodedPayloadBytes: number;
+        candidateStartupAdvertisementAndDiscoveryDecodedPayloadBytes: number;
         toolsListDecodedPayloadReductionPercent: number;
       };
-      checks: { advertisedLogicalOperationCompatibility: boolean; advertisementAndDiscoveryPayloadReduction: boolean; baselineServerMatchesExecutable: boolean; candidateServerMatchesExecutable: boolean };
+      checks: { advertisedLogicalOperationCompatibility: boolean; advertisementAndDiscoveryPayloadReduction: boolean; startupAdvertisementAndDiscoveryPayloadReduction: boolean; currentFullProfileExact: boolean; candidateCoreProfileExact: boolean; candidateLogicalCatalogComplete: boolean; candidateDispatcherRoutes: boolean; baselineServerMatchesExecutable: boolean; candidateServerMatchesExecutable: boolean };
       claimBoundary: string;
     };
-    expect(report.schemaVersion).toBe(3);
+    expect(report.schemaVersion).toBe(4);
     expect(report.passed).toBe(true);
-    expect(report.candidate.directToolCount).toBeLessThan(report.baseline.directToolCount);
+    expect(report.baseline.directToolCount).toBe(23);
+    expect(report.candidate.directToolCount).toBe(3);
+    expect(report.candidate.directToolNames).toEqual(["capabilities", "change_plan", "search"]);
+    expect(report.baseline.logicalInvocationRoutes).toEqual({ freshness: "direct", task_brief: "direct" });
+    expect(report.candidate.logicalInvocationRoutes).toEqual({ freshness: "capabilities", task_brief: "capabilities" });
+    expect(report.candidate.advertisedLogicalOperationNames).toHaveLength(22);
     expect(report.candidate.advertisedLogicalOperationNames).toEqual(report.baseline.advertisedLogicalOperationNames);
     expect(report.comparison).toMatchObject({
       advertisedLogicalOperationNameParity: true,
@@ -55,9 +62,17 @@ describe("reproducible MCP transport comparison", () => {
     });
     expect(report.comparison.toolsListDecodedPayloadReductionPercent).toBeGreaterThan(0);
     expect(report.comparison.candidateAdvertisementAndDiscoveryDecodedPayloadBytes).toBeLessThan(report.comparison.baselineAdvertisementAndDiscoveryDecodedPayloadBytes);
+    expect(report.comparison.candidateStartupAdvertisementAndDiscoveryDecodedPayloadBytes).toBeLessThan(report.comparison.baselineStartupAdvertisementAndDiscoveryDecodedPayloadBytes);
+    expect(report.baseline.serverInstructionsDecodedPayloadBytes).toBeGreaterThan(0);
+    expect(report.candidate.serverInstructionsDecodedPayloadBytes).toBeGreaterThan(0);
     expect(report.checks).toMatchObject({
       advertisedLogicalOperationCompatibility: true,
       advertisementAndDiscoveryPayloadReduction: true,
+      startupAdvertisementAndDiscoveryPayloadReduction: true,
+      currentFullProfileExact: true,
+      candidateCoreProfileExact: true,
+      candidateLogicalCatalogComplete: true,
+      candidateDispatcherRoutes: true,
       baselineServerMatchesExecutable: true,
       candidateServerMatchesExecutable: true
     });
@@ -89,7 +104,7 @@ describe("reproducible MCP transport comparison", () => {
       comparison: { advertisedLogicalOperationNameParity: boolean; baselineLogicalOperationsRetained: boolean; missingCandidateLogicalOperationNames: string[]; addedCandidateLogicalOperationNames: string[] };
       checks: { advertisedLogicalOperationCompatibility: boolean; pinnedBaselineServerIdentity: boolean };
     };
-    expect(report).toMatchObject({ schemaVersion: 3, passed: true, comparisonMode: "pinned-release-versus-candidate" });
+    expect(report).toMatchObject({ schemaVersion: 4, passed: true, comparisonMode: "pinned-release-versus-candidate" });
     expect(report.input.baseline.release).toMatchObject({
       sourceCommit: "68061b022cfc9f4dcc1aaf3d7776710196cc69b0",
       dependencyMaterialization: "npm-ci-pinned-lock-ignore-scripts",

@@ -20,13 +20,13 @@ async function gitFixtureRepo(prefix: string): Promise<string> {
     return repo;
   }
 
-it("saves an implicit baseline once and reports the existing snapshot afterwards", async () => {
+it("saves an implicit baseline once and keeps subsequent successful pre-edit hooks silent", async () => {
     const repo = await gitFixtureRepo("codexa-implicit-baseline-");
     await writeFile(path.join(repo, "notes.txt"), "dirty before edit\n", "utf8");
 
     const first = spawnSync(process.execPath, [cli, "hook-pre-edit", repo], { cwd: repo, encoding: "utf8", env: testEnv() });
     expect(first.status).toBe(0);
-    expect(first.stdout).toContain("implicit pre-edit baseline");
+    expect(first.stdout).toBe("");
 
     const latest = JSON.parse(await readFile(path.join(repo, ".codex/cache/codexa-tasks/latest.json"), "utf8")) as { taskId: string; path: string };
     const snapshot = JSON.parse(await readFile(path.join(repo, ".codex/cache/codexa-tasks", latest.path), "utf8")) as {
@@ -42,7 +42,7 @@ it("saves an implicit baseline once and reports the existing snapshot afterwards
 
     const second = spawnSync(process.execPath, [cli, "hook-pre-edit", repo], { cwd: repo, encoding: "utf8", env: testEnv() });
     expect(second.status).toBe(0);
-    expect(second.stdout).toContain("change-plan snapshot ready");
+    expect(second.stdout).toBe("");
   });
 
 it("leaves a blocked change-plan marker in place instead of replacing it", async () => {
@@ -59,7 +59,7 @@ it("leaves a blocked change-plan marker in place instead of replacing it", async
 
     const result = spawnSync(process.execPath, [cli, "hook-pre-edit", repo], { cwd: repo, encoding: "utf8", env: testEnv() });
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain("no change-plan snapshot is available");
+    expect(result.stdout).toBe("");
     expect(await readFile(path.join(tasksDir, "latest.json"), "utf8")).toBe(latestContent);
   });
 
@@ -68,7 +68,7 @@ it("treats edits under an implicit baseline as in-scope in the post-edit review"
 
     const baseline = spawnSync(process.execPath, [cli, "hook-pre-edit", repo], { cwd: repo, encoding: "utf8", env: testEnv() });
     expect(baseline.status).toBe(0);
-    expect(baseline.stdout).toContain("implicit pre-edit baseline");
+    expect(baseline.stdout).toBe("");
 
     await writeFile(path.join(repo, "src.ts"), "export const value = 2;\n", "utf8");
 

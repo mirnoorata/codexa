@@ -35,7 +35,11 @@ child.on("error", (error) => {
 });
 
 function resolveCodexaLaunch(repoRoot, autoRefresh) {
-  const serveArgs = ["serve", repoRoot, autoRefresh ? "--auto-refresh" : "--no-auto-refresh"];
+  // Keep the advertised tool surface small for agent clients. Operators can
+  // explicitly widen it when direct access to every tool is worth the added
+  // schema/context cost.
+  const toolProfile = process.env.CODEXA_PLUGIN_TOOLS === "full" ? "full" : "core";
+  const serveArgs = ["serve", repoRoot, autoRefresh ? "--auto-refresh" : "--no-auto-refresh", "--tools", toolProfile];
   const scriptDir = path.dirname(fileURLToPath(import.meta.url));
   const bundledCli = path.resolve(scriptDir, "../../../dist/cli.js");
   if (existsSync(bundledCli)) {

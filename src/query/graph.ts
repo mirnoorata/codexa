@@ -6,7 +6,8 @@ export function recommendNextCodexaCall(
   intents: string[],
   workflows: WorkflowTraceFact[],
   changedFileCount: number,
-  task: string
+  task: string,
+  focusFiles: string[] = []
 ): { tool: string; reason: string; arguments?: Record<string, unknown> } {
   const lowerTask = task.toLowerCase();
   if (/\b(callers?|importers?)\b/.test(lowerTask)) {
@@ -18,16 +19,23 @@ export function recommendNextCodexaCall(
   if (/\b(path|between|connects?)\b/.test(lowerTask) && /\b(dependency|workflow|call)\b/.test(lowerTask)) {
     return { tool: "dependency_path", reason: "the task asks for a path between code elements" };
   }
-  if (intents.includes("workflow") && workflows.length > 0) {
+  if (intents.includes("workflow") && workflows.length > 0 && /\b(workflow|flow|route|job|process|end-to-end)\b/u.test(lowerTask)) {
     return { tool: "workflow_path", reason: "the task maps to route/job/process flow evidence", arguments: { query: task } };
   }
-  if (changedFileCount > 0 && intents.includes("testing")) {
-    return { tool: "test_plan", reason: "there are current changes and the task asks for verification", arguments: { diff: true } };
+  if (focusFiles.length > 0 && materiallyRiskyEditTask(lowerTask)) {
+    return {
+      tool: "change_plan",
+      reason: "the packet identifies the sources, but the materially risky edit decision still needs one bounded plan",
+      arguments: { task, files: focusFiles.slice(0, 8), diff: changedFileCount > 0, saveSnapshot: true }
+    };
   }
-  if (changedFileCount > 0) {
-    return { tool: "task_brief", reason: "there is a dirty tree; use task_brief to keep the read-first set target-led", arguments: { task, diff: true } };
-  }
-  return { tool: "task_brief", reason: "default Codexa first call before code edits", arguments: { task, diff: false } };
+  return { tool: "source", reason: "the packet already identifies the sources and tests; read them and stop Codexa" };
+}
+
+function materiallyRiskyEditTask(task: string): boolean {
+  const editIntent = /\b(change|fix|update|modify|rename|delete|remove|migrate|harden|implement|refactor)\b/u.test(task);
+  const materialRisk = /\b(api|contract|schema|migration|database|persistence|auth|security|permission|runtime|rename|delete|remove)\b/u.test(task);
+  return editIntent && materialRisk;
 }
 
 export function formatWorkflowSummary(workflow: WorkflowTraceFact): string {

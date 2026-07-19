@@ -5,25 +5,25 @@ import { mkdtemp } from "node:fs/promises";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { describe, expect, it } from "vitest";
-import { ADVANCED_MCP_TOOL_NAMES } from "../src/mcp/tool-registry.js";
+import { CORE_PROFILE_TOOL_NAMES, DISPATCHABLE_MCP_TOOL_NAMES } from "../src/mcp/tool-registry.js";
 import { createIndexedMcpRepo } from "./mcp-fixtures.js";
 
 type ToolResult = Awaited<ReturnType<Client["callTool"]>>;
 
 describe("MCP capability dispatcher parity", () => {
-  it("exposes the exact advanced manifest and preserves direct runtime envelopes", async () => {
+  it("exposes the exact non-core manifest and preserves direct runtime envelopes", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-capabilities-"));
     const repo = await createIndexedMcpRepo(workspace, "repo", "alpha", "alphaSymbol");
     const { client, close } = await connect(repo, "full");
     try {
       const listedTools = await client.listTools();
-      const directAdvanced = listedTools.tools.map((tool) => tool.name).filter((name) => (ADVANCED_MCP_TOOL_NAMES as readonly string[]).includes(name)).sort();
-      expect(directAdvanced).toEqual([...ADVANCED_MCP_TOOL_NAMES].sort());
+      const directDispatchable = listedTools.tools.map((tool) => tool.name).filter((name) => (DISPATCHABLE_MCP_TOOL_NAMES as readonly string[]).includes(name)).sort();
+      expect(directDispatchable).toEqual([...DISPATCHABLE_MCP_TOOL_NAMES].sort());
 
       const manifestResult = await client.callTool({ name: "capabilities", arguments: { action: "list", responseFormat: "detailed" } });
       const manifest = queryData(manifestResult) as { capabilityHash: string; operationCount: number; operations: Array<{ name: string; schemaHash: string }> };
-      expect(manifest.operations.map((entry) => entry.name).sort()).toEqual([...ADVANCED_MCP_TOOL_NAMES].sort());
-      expect(manifest.operationCount).toBe(ADVANCED_MCP_TOOL_NAMES.length);
+      expect(manifest.operations.map((entry) => entry.name).sort()).toEqual([...DISPATCHABLE_MCP_TOOL_NAMES].sort());
+      expect(manifest.operationCount).toBe(DISPATCHABLE_MCP_TOOL_NAMES.length);
       for (const operation of manifest.operations) {
         const direct = listedTools.tools.find((tool) => tool.name === operation.name);
         expect(direct, operation.name).toBeDefined();
@@ -33,6 +33,8 @@ describe("MCP capability dispatcher parity", () => {
       expect(manifest.capabilityHash).toBe(createHash("sha256").update(JSON.stringify(manifest.operations)).digest("hex"));
 
       const representative: Array<{ operation: string; arguments: Record<string, unknown> }> = [
+        { operation: "session_context", arguments: { responseFormat: "detailed" } },
+        { operation: "task_brief", arguments: { task: "inspect alphaSymbol", files: ["src/alpha.ts"], tokenBudget: 900, limit: 3, responseFormat: "detailed" } },
         { operation: "repo_map", arguments: { limit: 3, responseFormat: "detailed" } },
         { operation: "callers", arguments: { symbol: "alphaSymbol", limit: 5, responseFormat: "detailed" } },
         { operation: "workflow_path", arguments: { symbol: "alphaSymbol", limit: 3, responseFormat: "detailed" } },
@@ -58,8 +60,9 @@ describe("MCP capability dispatcher parity", () => {
     const repo = await createIndexedMcpRepo(workspace, "repo", "alpha", "alphaSymbol");
     const { client, close } = await connect(repo, "core");
     try {
+      expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual(CORE_PROFILE_TOOL_NAMES);
       const autoList = await client.callTool({ name: "capabilities", arguments: { action: "list" } });
-      for (const operation of ADVANCED_MCP_TOOL_NAMES) expect(textContent(autoList)).toContain(operation);
+      for (const operation of DISPATCHABLE_MCP_TOOL_NAMES) expect(textContent(autoList)).toContain(operation);
       expect(delivery(autoList)).toMatchObject({ requestedFormat: "auto", effectiveFormat: "concise" });
 
       const calls = [
@@ -107,11 +110,9 @@ describe("MCP capability dispatcher parity", () => {
       expect(Object.keys(range?.properties ?? {})).toEqual(expect.arrayContaining(["startLine", "endLine", "startByte", "endByte"]));
 
       const autoDescription = await client.callTool({ name: "capabilities", arguments: { action: "describe", operation: "session_memory" } });
-      expect(delivery(autoDescription)).toMatchObject({ requestedFormat: "auto", effectiveFormat: "detailed" });
-      expect(textContent(autoDescription)).toContain("Codexa capability: session_memory");
-      const autoDescribed = (queryData(autoDescription) as { described?: { schema?: CapabilitySchema; schemaHash?: string } }).described;
-      expect(autoDescribed?.schema).toEqual(described);
-      expect(autoDescribed?.schemaHash).toBe(describedPacket.schemaHash);
+      expect(delivery(autoDescription)).toMatchObject({ requestedFormat: "auto", effectiveFormat: "concise", resultUri: expect.stringMatching(/^codexa:\/\/repo\/mcp-results\//u) });
+      expect(textContent(autoDescription)).toContain("Capability: session_memory");
+      expect(textContent(autoDescription)).toContain(describedPacket.schemaHash);
 
       const result = await client.callTool({
         name: "capabilities",
@@ -174,7 +175,7 @@ interface CapabilitySchema {
 async function connect(repo: string, profile: "core" | "full"): Promise<{ client: Client; close: () => Promise<void> }> {
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh", "--tools", profile],
+    args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh", "--session-memory", "off", "--tools", profile],
     stderr: "pipe"
   });
   const client = new Client({ name: "codexa-capability-parity-test", version: "0.1.0" });

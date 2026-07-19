@@ -23,13 +23,15 @@ import {
   appendMcpOverheadTelemetryAtPath,
   finalizeMcpOverheadTelemetryAtPath,
   mcpTelemetryPath,
+  mcpToolResultEffectiveFormat,
+  mcpToolResultEscalationReason,
   mcpToolResultByteCounts,
   type McpOverheadTelemetryEvent
 } from "./mcp/telemetry.js";
-import { CORE_PROFILE_TOOL_NAMES, MCP_TOOL_NAMES, NO_SOURCE_MUTATION_CONTRACT, PRIMARY_CODEX_LOOP } from "./mcp-tool-catalog.js";
+import { CORE_PROFILE_TOOL_NAMES, NO_SOURCE_MUTATION_CONTRACT, PRIMARY_CODEX_LOOP } from "./mcp-tool-catalog.js";
 import { CODEXA_VERSION } from "./version.js";
 export { compactMcpResult, compactNonPostEditMcpResult, compactPostEditMcpResult } from "./mcp/compaction.js";
-export { MCP_TOOL_CATALOG, PRIMARY_CODEX_LOOP, PRIMARY_MCP_TOOL_NAMES } from "./mcp-tool-catalog.js";
+export { DISPATCHABLE_MCP_TOOL_NAMES, MCP_TOOL_CATALOG, PRIMARY_CODEX_LOOP, PRIMARY_MCP_TOOL_NAMES } from "./mcp-tool-catalog.js";
 
 export type McpTransportKind = "stdio" | "http";
 
@@ -46,12 +48,14 @@ interface McpDeliverySessionState {
 }
 
 const MCP_SERVER_INSTRUCTIONS = [
-  `Codexa is a Codex-native codebase context and edit-safety server. Loop: ${PRIMARY_CODEX_LOOP}.`,
-  "Target unclear -> search first. Before edits -> change_plan(saveSnapshot=true) and run its planned verification. After edits -> post_edit_review with the commands that actually ran. Use test_plan only when verification guidance remains unresolved; use proof_card only for policy checks or a formal handoff.",
+  `Codexa is a selective codebase context and edit-safety server. Routing: ${PRIMARY_CODEX_LOOP}.`,
+  "Known file/symbol/error or exact local task -> use source tools with zero Codexa calls. Ambiguous target -> make one search call; if raw evidence is sufficient, stop Codexa. Do not stack session_context, search, and task_brief for one task.",
+  "Use change_plan only for non-trivial multi-file, API, runtime, persistence, security, or otherwise high-risk edits. Use post_edit_review once only when no deterministic host hook/completion gate already owns review. Most tasks need no more than two Codexa calls; the narrow three-call safety exception is an ambiguous materially risky edit on a hookless host: search, change_plan, then post_edit_review.",
+  "Use test_plan only when verification guidance remains unresolved; use proof_card only for policy checks or a formal handoff; use session memory only to recover real context loss.",
   "Each tool description states its typical output cost (compact/medium/large); prefer the cheapest sufficient tool. Tools refresh stale Codexa artifacts automatically when auto-refresh is enabled.",
   `Trust rules: ${NO_SOURCE_MUTATION_CONTRACT} Semantic retrieval is used only when configured; verify heuristic-heavy packets against source before editing.`,
-  "responseFormat defaults to auto: ordinary packets return a semantic decision receipt plus a content-addressed detailed-result resource; ambiguous or blocking packets safely escalate to detailed. Structured results preserve a mandatory decision kernel across byte-budget tiers.",
-  "The core profile keeps the primary loop plus a compact capabilities dispatcher; use capabilities to discover or invoke advanced operations without paying their schemas on every turn."
+  "responseFormat defaults to auto: every automatic packet stays concise and links a content-addressed detailed result when persistence succeeds. If detail is unavailable, the self-contained decision kernel blocks whenever omitted evidence is required. Only an explicit responseFormat=detailed returns bounded detail inline.",
+  "The core profile exposes search, change_plan, and a compact capabilities dispatcher. Use capabilities only for a concretely triggered non-core operation without paying every schema on every turn."
 ].join("\n");
 
 export async function serveMcp(repoRoot: string, options: QueryOptions = { autoRefresh: true }): Promise<void> {
@@ -362,12 +366,7 @@ async function createCodexaMcpServer(
     lspMaxFiles: input.lspMaxFiles ?? queryOptions.lspMaxFiles
   });
   const enabledTools = queryOptions.toolProfile === "core" ? new Set<string>(CORE_PROFILE_TOOL_NAMES) : undefined;
-  // The core profile registers advanced operations behind `capabilities`.
-  // Envelope guidance must therefore filter against the logical callable set,
-  // not only the directly registered tool names, or dispatched results lose
-  // valid next steps that remain callable through the dispatcher.
-  const logicalEnabledTools = enabledTools?.has("capabilities") ? new Set<string>(MCP_TOOL_NAMES) : enabledTools;
-  const policyOptions: McpToolPolicyOptions = { autoRefresh: queryOptions.autoRefresh ?? true, sessionMemoryMode, enabledTools: logicalEnabledTools };
+  const policyOptions: McpToolPolicyOptions = { autoRefresh: queryOptions.autoRefresh ?? true, sessionMemoryMode, enabledTools };
   const runTool = async (
     producer: (session: QuerySession) => Promise<QueryResult>,
     toolContext: string | {
@@ -407,7 +406,7 @@ async function createCodexaMcpServer(
     }
     const modeResult = withMcpQueryMode(rawResult, toolName);
     const semanticEscalation = requestedFormat === "auto" ? mcpAutoEscalationReason(modeResult, toolInput) : undefined;
-    const needsResultReference = requestedFormat !== "detailed" && !semanticEscalation;
+    const needsResultReference = requestedFormat !== "detailed";
     const artifactDetailedResult = !needsResultReference
       ? undefined
       : canonicalMcpDetailedProjection(modeResult);
@@ -420,8 +419,10 @@ async function createCodexaMcpServer(
         artifactFailure = error instanceof Error ? error.message : String(error);
       }
     }
-    const escalationReason = artifactFailure ? "detailed-result-resource-unavailable" : semanticEscalation;
-    const effectiveFormat: "concise" | "detailed" = requestedFormat === "detailed" || Boolean(escalationReason) ? "detailed" : "concise";
+    const escalationReason = artifactFailure
+      ? [semanticEscalation, "detailed-result-resource-unavailable"].filter(Boolean).join("+")
+      : semanticEscalation;
+    const effectiveFormat: "concise" | "detailed" = requestedFormat === "detailed" ? "detailed" : "concise";
     const unchangedReceipt = effectiveFormat === "concise" && requestedFormat === "auto" && Boolean(resultReference && emittedResultIds.has(resultReference.id));
     const delivery = {
       schemaVersion: 1 as const,
@@ -429,6 +430,9 @@ async function createCodexaMcpServer(
       effectiveFormat,
       resultId: resultReference?.id,
       resultUri: resultReference?.uri,
+      detailAvailable: requestedFormat === "detailed" || Boolean(resultReference),
+      detailRequired: Boolean(semanticEscalation),
+      requiredDetailReason: semanticEscalation,
       unchangedReceipt: unchangedReceipt || undefined,
       escalationReason
     };
@@ -455,14 +459,16 @@ async function createCodexaMcpServer(
       try {
         const elapsedMs = Math.max(0, Math.round((performance.now() - startedAt) * 1000) / 1000);
         const byteCounts = mcpToolResultByteCounts(toolResult);
+        const deliveredFormat = mcpToolResultEffectiveFormat(toolResult, effectiveFormat);
+        const deliveredEscalationReason = mcpToolResultEscalationReason(toolResult, escalationReason);
         emitTelemetry({
           eventKind: "tool",
           tool: transportToolName,
           logicalOperation: toolName,
           outcome: "ok",
           requestedFormat: telemetryRequestedFormat,
-          effectiveFormat,
-          escalationReason,
+          effectiveFormat: deliveredFormat,
+          escalationReason: deliveredEscalationReason,
           requestBytes: telemetryRequestBytes(transportInput),
           ...byteCounts,
           elapsedMs,
@@ -538,13 +544,16 @@ async function createCodexaMcpServer(
         );
         if (deliveryState.telemetry.destinationPath) {
           try {
+            const deliveredFormat = mcpToolResultEffectiveFormat(result, "detailed");
+            const deliveredEscalationReason = mcpToolResultEscalationReason(result);
             emitTelemetry({
               eventKind: "tool",
               tool: transportToolName,
               logicalOperation: "freshness",
               outcome: "ok",
               requestedFormat,
-              effectiveFormat: "detailed",
+              effectiveFormat: deliveredFormat,
+              escalationReason: deliveredEscalationReason,
               requestBytes: telemetryRequestBytes(transportInput),
               ...mcpToolResultByteCounts(result),
               elapsedMs: Math.max(0, Math.round((performance.now() - startedAt) * 1000) / 1000),

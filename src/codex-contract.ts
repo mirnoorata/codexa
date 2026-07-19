@@ -1,5 +1,5 @@
 import type { FreshnessInfo } from "./types.js";
-import { NO_SOURCE_MUTATION_CONTRACT, PRIMARY_CODEX_LOOP, PRIMARY_MCP_TOOL_NAMES } from "./mcp-tool-catalog.js";
+import { CORE_PROFILE_TOOL_NAMES, NO_SOURCE_MUTATION_CONTRACT, PRIMARY_CODEX_LOOP } from "./mcp-tool-catalog.js";
 
 export function renderCodexUseContract(freshness: FreshnessInfo): string {
   const stale = freshness.stale ? `stale (${freshness.reason})` : `fresh (${freshness.reason})`;
@@ -11,15 +11,14 @@ export function renderCodexUseContract(freshness: FreshnessInfo): string {
   const nextAction = freshness.missing
     ? "Run `codexa index <repo>` or use an auto-refreshing MCP tool before relying on Codexa context."
     : dirty > 0
-      ? "For an explicit bounded task, call `change_plan` with `diff: true`; use `session_context`, `search`, or `task_brief` only if the dirty scope leaves the target or context unclear."
-      : "For an explicit bounded task, call `change_plan` directly; use `session_context`, `search`, or `task_brief` only when the target or context is unclear.";
+      ? "Use source tools first for an exact task. Call `change_plan` with `diff: true` only when the dirty scope or material risk makes a saved plan useful."
+      : "Use source tools with zero Codexa calls for exact local work. Call `search` once for ambiguity or `change_plan` for a non-trivial risky edit.";
 
   return `# Codexa Codex Contract
 
-Codexa is the Codex-native edit safety layer for this repo. Use it to choose
-the smallest useful context packet, run first-class hybrid semantic target
-search when needed, save an edit snapshot, and review drift after source
-changes. Do not treat it as an unbounded graph dump.
+Codexa is a selective codebase context and edit-safety layer. Use it when one
+bounded packet replaces repeated exploration or protects a material edit. Do
+not add Codexa calls to exact local work merely because the server is present.
 
 ## Current State
 
@@ -33,32 +32,27 @@ changes. Do not treat it as an unbounded graph dump.
 
 ## Automatic Use Rules
 
-1. Explicit bounded edit, debug, or review task: call \`change_plan\` with \`saveSnapshot: true\` directly and keep the returned task id.
-2. Broad or ambiguous request: call \`session_context\`; if the target is unclear or actionability says \`needs_target\`, \`raw_search_better\`, or \`raw_search_sufficient\`, use first-class \`search\`. Use \`task_brief\` only when a plausible target still needs more repository context before planning.
-3. Edit, then run the targeted tests and verification commands returned by \`change_plan\`.
-4. Call \`test_plan\` only when the plan or review leaves verification guidance unresolved, or when a dedicated test plan is explicitly requested.
-5. After editing: call \`post_edit_review\` as the go-to review gate with the saved task id and evidence that actually ran.
-6. Call \`proof_card\` only for policy changes, formal audits, releases, artifact handoffs, or decision-integrity proof.
-7. Use \`capabilities\` to discover or invoke advanced operations in optimized/core mode without reducing logical capability. Full mode also exposes every advanced tool directly.
-8. Route, job, queue, adapter, manifest, or runtime behavior: invoke \`workflow_path\` directly or through \`capabilities\`.
-9. API, rename, delete, or exported contract change: invoke \`callers\`, \`callees\`, or \`dependency_path\` directly or through \`capabilities\`.
+1. Known file, symbol, error, exact raw match, read-only check, or small local edit: use source tools and tests directly. Make zero Codexa calls.
+2. Ambiguous target: call \`search\` once. If it reports \`raw_search_sufficient\`, stop Codexa and read the exact hits; do not chain another context tool.
+3. Non-trivial multi-file, API, runtime, persistence, security, or otherwise high-risk edit: call \`change_plan\` with \`saveSnapshot: true\`, then run its planned verification.
+4. Call \`post_edit_review\` once only on a hookless host, for a formal requested review, or when no deterministic completion gate already owns drift review.
+5. Normal agentic work should usually use no more than two Codexa calls. The only three-call safety exception is \`search -> change_plan -> post_edit_review\` for an ambiguous materially risky edit on a hookless host. Do not stack \`session_context\`, \`search\`, and \`task_brief\` for one task.
+6. Call \`test_plan\` only when verification guidance remains unresolved; call \`proof_card\` only for policy, audit, release, or formal handoff proof.
+7. Use \`capabilities\` only when a concrete trigger requires a non-core operation. Full mode exposes every operation directly but does not make them mandatory.
 
 Primary Codex loop: \`${PRIMARY_CODEX_LOOP}\`.
-Primary MCP tools: ${PRIMARY_MCP_TOOL_NAMES.map((tool) => `\`${tool}\``).join(", ")}.
+Core direct MCP tools: ${CORE_PROFILE_TOOL_NAMES.map((tool) => `\`${tool}\``).join(", ")}.
 
 ## Session Memory Protocol
 
 - Codexa auto-records \`viewed\` memory for focused MCP packets such as
   \`task_brief\`, \`context_pack\`, \`focus_brief\`, \`impact\`, \`test_plan\`,
   \`change_plan\`, and \`post_edit_review\`.
-- At session start or resume, call \`session_memory\` with \`action: "summary"\`
-  before re-reading files already surfaced by Codexa.
-- After establishing a non-trivial task-local claim, decision, constraint,
-  risk, open question, next read, or ruled-out path, call \`session_memory\`
-  with \`action: "remember"\` and explicit refs/files/symbols when available.
-- Before deep-reading a file again, call \`session_memory\` with
-  \`action: "read"\` and the file/symbol/task filter. Prefer a narrower graph
-  tool when the memory says the file was already viewed.
+- Use \`session_memory\` only after real context loss or when a compact recall
+  will prevent repeated deep reads. Do not call it ritualistically at session
+  start; focused packets are already auto-recorded.
+- Explicitly remember only durable task-local decisions or constraints whose
+  reuse will save more context than the memory call costs.
 - When a claim is replaced, pass the old entry id in \`supersedes\`; do not
   leave contradictory active entries unlinked.
 - Agent-asserted entries are working memory, not parser facts. Use their
@@ -71,7 +65,7 @@ Primary MCP tools: ${PRIMARY_MCP_TOOL_NAMES.map((tool) => `\`${tool}\``).join(",
 - If a packet is heuristic-heavy, verify with source reads before editing.
 - If the dirty tree is broad, keep the task's read-first set target-led.
 - Treat \`search\` as the first-class locator: it combines raw search, exact/symbol evidence, semantic retrieval when configured, ranking, likely tests, and gaps. If its semantic lane is disabled, it still must not silently create embeddings.
-- If Codexa says raw search is enough, read the exact raw hit and then return to a focused Codexa tool.
+- If Codexa says raw search is enough, stop Codexa and read the exact raw hit.
 - ${NO_SOURCE_MUTATION_CONTRACT}
 - Session memory recall is deterministic filtering by session, task, refs,
   files, symbols, kind, topic, and recency. It is not semantic search.

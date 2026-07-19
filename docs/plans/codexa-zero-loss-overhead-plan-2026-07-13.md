@@ -5,6 +5,11 @@ Status: implemented; repository verification and publication in progress
 Owner: Codex backend worker `20260713-codexa-zero-loss-overhead`
 Branch: `codex/backend/codexa-20260713-codexa-zero-loss-overhead`
 
+Update (2026-07-18): the compatibility decision below is superseded. Bare
+`codexa serve` now defaults to the core profile so unmanaged agent launchers
+receive the bounded surface too; `--tools full` remains the explicit direct-tool
+compatibility mode. Historical pilot descriptions remain unchanged.
+
 ## Decision
 
 Reduce Codexa's agent-visible schema, response, and lifecycle overhead without

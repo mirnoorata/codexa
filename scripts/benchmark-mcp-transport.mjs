@@ -33,7 +33,7 @@ const repoRoot = canonicalPath(options.repo ?? process.cwd());
 const repoHead = requiredGitHead(repoRoot);
 const repoClean = gitClean(repoRoot);
 const candidateCli = path.resolve(options.candidateCli ?? path.join(scriptRepoRoot, "dist/cli.js"));
-const baselineTools = options.baselineTools ?? "bare";
+const baselineTools = options.baselineTools ?? (options.releaseBaseline ? "bare" : "full");
 const candidateTools = options.candidateTools ?? "core";
 const calls = options.calls ?? 5;
 const task = options.task ?? "Measure generic repository context overhead";
@@ -59,6 +59,12 @@ try {
   const baselineLogicalOperationsRetained = missingCandidateLogicalOperationNames.length === 0;
   const baselineAdvertisementAndDiscoveryBytes = baseline.toolsListDecodedPayloadBytes + baseline.capabilityDiscoveryDecodedPayloadBytes;
   const candidateAdvertisementAndDiscoveryBytes = candidate.toolsListDecodedPayloadBytes + candidate.capabilityDiscoveryDecodedPayloadBytes;
+  const baselineStartupAdvertisementAndDiscoveryBytes = baseline.serverInstructionsDecodedPayloadBytes + baselineAdvertisementAndDiscoveryBytes;
+  const candidateStartupAdvertisementAndDiscoveryBytes = candidate.serverInstructionsDecodedPayloadBytes + candidateAdvertisementAndDiscoveryBytes;
+  const expectedCoreTools = ["capabilities", "change_plan", "search"];
+  const sameBuildFullExposure = !materializedBaseline
+    && baselineIdentity.version === candidateIdentity.version
+    && baselineTools === "full";
   const checks = {
     cleanTargetCheckout: repoClean,
     freshIndexedCheckout: baseline.fresh && candidate.fresh,
@@ -66,13 +72,18 @@ try {
     candidateServerMatchesExecutable: candidate.serverIdentity.name === "codexa" && candidate.serverIdentity.version === candidateIdentity.version,
     pinnedBaselineServerIdentity: !materializedBaseline || (baseline.serverIdentity.name === "codexa" && baseline.serverIdentity.version === materializedBaseline.release.version),
     advertisedLogicalOperationCompatibility: materializedBaseline ? baselineLogicalOperationsRetained : advertisedLogicalOperationNameParity,
+    currentFullProfileExact: !sameBuildFullExposure || (baseline.directToolCount === 23 && baseline.advertisedLogicalOperationCount === 22),
+    candidateCoreProfileExact: candidateTools !== "core" || equalArrays(candidate.directToolNames, expectedCoreTools),
+    candidateLogicalCatalogComplete: candidateTools !== "core" || candidate.advertisedLogicalOperationCount === 22,
+    candidateDispatcherRoutes: candidateTools !== "core" || (candidate.logicalInvocationRoutes.freshness === "capabilities" && candidate.logicalInvocationRoutes.task_brief === "capabilities"),
     directSchemaReduction: candidate.directToolCount < baseline.directToolCount,
     advertisementAndDiscoveryPayloadReduction: candidateAdvertisementAndDiscoveryBytes < baselineAdvertisementAndDiscoveryBytes,
+    startupAdvertisementAndDiscoveryPayloadReduction: candidateStartupAdvertisementAndDiscoveryBytes < baselineStartupAdvertisementAndDiscoveryBytes,
     candidateDetailedResourceReadable: candidate.detailedResourceReadable === true,
     candidateReceiptOrdering: candidate.receiptFlags[0] === false && candidate.receiptFlags.slice(1).every(Boolean)
   };
   const report = {
-    schemaVersion: 3,
+    schemaVersion: 4,
     kind: "codexa-mcp-decoded-application-payload-comparison",
     comparisonMode: materializedBaseline
       ? "pinned-release-versus-candidate"
@@ -81,7 +92,7 @@ try {
         : "explicit-executables",
     measurement: {
       unit: "utf8-bytes-of-json-serialized-decoded-mcp-application-payload",
-      includes: ["tools/list result", "freshness result", "capability discovery result when requested", "task_brief results", "detailed resource response when fetched"],
+      includes: ["initialize server instructions field", "tools/list result", "freshness logical-operation result", "capability discovery result when requested", "task_brief logical-operation results", "detailed resource response when fetched"],
       excludes: ["JSON-RPC framing", "stdio framing", "model tokens", "provider prompt serialization", "network overhead"]
     },
     input: {
@@ -104,6 +115,9 @@ try {
       baselineAdvertisementAndDiscoveryDecodedPayloadBytes: baselineAdvertisementAndDiscoveryBytes,
       candidateAdvertisementAndDiscoveryDecodedPayloadBytes: candidateAdvertisementAndDiscoveryBytes,
       advertisementAndDiscoveryDecodedPayloadReductionPercent: reductionPercent(baselineAdvertisementAndDiscoveryBytes, candidateAdvertisementAndDiscoveryBytes),
+      baselineStartupAdvertisementAndDiscoveryDecodedPayloadBytes: baselineStartupAdvertisementAndDiscoveryBytes,
+      candidateStartupAdvertisementAndDiscoveryDecodedPayloadBytes: candidateStartupAdvertisementAndDiscoveryBytes,
+      startupAdvertisementAndDiscoveryDecodedPayloadReductionPercent: reductionPercent(baselineStartupAdvertisementAndDiscoveryBytes, candidateStartupAdvertisementAndDiscoveryBytes),
       toolsListDecodedPayloadReductionPercent: reductionPercent(baseline.toolsListDecodedPayloadBytes, candidate.toolsListDecodedPayloadBytes),
       firstTaskResultDecodedPayloadReductionPercent: reductionPercent(baseline.firstTaskResultDecodedPayloadBytes, candidate.firstTaskResultDecodedPayloadBytes),
       repeatedTaskResultDecodedPayloadReductionPercent: reductionPercent(baseline.repeatedTaskResultDecodedPayloadMedianBytes, candidate.repeatedTaskResultDecodedPayloadMedianBytes)
@@ -139,13 +153,22 @@ async function measureArm(label, cli, tools, expectedHead) {
     if (!initializedServer || typeof initializedServer.name !== "string" || typeof initializedServer.version !== "string") {
       throw new Error(`${label} MCP initialize response omitted server identity`);
     }
+    const serverInstructions = client.getInstructions() ?? "";
     const listed = await withTimeout(client.listTools(), 15_000, `${label} tools/list`);
     const directToolNames = listed.tools.map((tool) => tool.name).sort();
     const discovery = directToolNames.includes("capabilities")
       ? await capabilityNames(client, label)
       : { names: [], decodedPayloadBytes: 0 };
     const advertisedLogicalOperationNames = [...new Set([...directToolNames.filter((name) => name !== "capabilities"), ...discovery.names])].sort();
-    const freshnessResult = await withTimeout(client.callTool({ name: "freshness", arguments: {} }), 15_000, `${label} freshness`);
+    const logicalInvocationRoutes = {
+      freshness: directToolNames.includes("freshness") ? "direct" : "capabilities",
+      task_brief: directToolNames.includes("task_brief") ? "direct" : "capabilities"
+    };
+    const freshnessResult = await withTimeout(
+      callLogicalTool(client, directToolNames, "freshness", {}),
+      15_000,
+      `${label} freshness`
+    );
     assertSuccessfulToolResult(freshnessResult, `${label} freshness`);
     const freshness = findFreshness(freshnessResult.structuredContent);
     const freshnessIdentity = inspectFreshnessIdentity(freshness, repoRoot, expectedHead);
@@ -156,10 +179,16 @@ async function measureArm(label, cli, tools, expectedHead) {
     let detailedResourceDecodedPayloadBytes;
     let detailedResourceReadable = false;
     for (let index = 0; index < calls; index += 1) {
-      const result = await withTimeout(client.callTool({
-        name: "task_brief",
-        arguments: { task, files: [file], tokenBudget: 1_600, limit: 6, includeSnippets: false }
-      }), 30_000, `${label} task_brief call ${index + 1}`);
+      const result = await withTimeout(
+        callLogicalTool(
+          client,
+          directToolNames,
+          "task_brief",
+          { task, files: [file], tokenBudget: 1_600, limit: 6, includeSnippets: false }
+        ),
+        30_000,
+        `${label} task_brief call ${index + 1}`
+      );
       assertSuccessfulToolResult(result, `${label} task_brief call ${index + 1}`);
       results.push(utf8Bytes(result));
       const delivery = queryDelivery(result.structuredContent);
@@ -184,6 +213,7 @@ async function measureArm(label, cli, tools, expectedHead) {
       label,
       tools,
       serverIdentity: { name: initializedServer.name, version: initializedServer.version },
+      serverInstructionsDecodedPayloadBytes: utf8Bytes({ instructions: serverInstructions }),
       fresh: freshnessIdentity.valid,
       freshnessIdentity,
       freshnessDecodedPayloadBytes: utf8Bytes(freshnessResult),
@@ -191,6 +221,7 @@ async function measureArm(label, cli, tools, expectedHead) {
       directToolNames,
       advertisedLogicalOperationCount: advertisedLogicalOperationNames.length,
       advertisedLogicalOperationNames,
+      logicalInvocationRoutes,
       capabilityDiscoveryDecodedPayloadBytes: discovery.decodedPayloadBytes,
       toolsListDecodedPayloadBytes: utf8Bytes(listed),
       taskResultDecodedPayloadBytes: results,
@@ -206,6 +237,15 @@ async function measureArm(label, cli, tools, expectedHead) {
   } finally {
     await client.close().catch(() => undefined);
   }
+}
+
+function callLogicalTool(client, directToolNames, operation, argumentsValue) {
+  return directToolNames.includes(operation)
+    ? client.callTool({ name: operation, arguments: argumentsValue })
+    : client.callTool({
+        name: "capabilities",
+        arguments: { action: "invoke", operation, arguments: argumentsValue }
+      });
 }
 
 async function capabilityNames(client, label) {

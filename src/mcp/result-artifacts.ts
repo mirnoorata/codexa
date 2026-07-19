@@ -124,7 +124,7 @@ export async function persistMcpResultArtifact(
   const { directory, repoReal } = await ensureMcpResultArtifactDir(repoRoot);
   const repoLocator = router.reserve(repoReal);
   if (!repoLocator) {
-    throw new Error("Codexa MCP detailed-result routing capacity is exhausted; return the detailed result inline");
+    throw new Error("Codexa MCP detailed-result routing capacity is exhausted; retain only a bounded self-contained decision receipt and block if it requires omitted detail");
   }
   let promised = false;
   try {
@@ -169,7 +169,7 @@ export async function persistMcpResultArtifact(
       await release();
     }
     if (!(await router.activateLease(directory))) {
-      throw new Error("Codexa MCP detailed-result session closed before the resource URI could be promised; return the detailed result inline");
+      throw new Error("Codexa MCP detailed-result session closed before the resource URI could be promised; retain only a bounded self-contained decision receipt and block if it requires omitted detail");
     }
     const reference = { id, uri: mcpResultArtifactUri(repoLocator, id), byteLength };
     promised = true;
@@ -241,8 +241,9 @@ export function requireMcpResultArtifactRepoLocator(locator: string): void {
 /**
  * A server-scoped registry gives result URIs a fixed-size opaque route without
  * disclosing checkout paths. Committed roots are never evicted: once the
- * bounded root capacity is reached, callers must return detailed data inline
- * instead of emitting a URI that could later become unreadable.
+ * bounded root capacity is reached, callers must not emit a URI that could
+ * later become unreadable. They may retain a bounded self-contained decision
+ * receipt, but must block whenever safe action requires omitted detail.
  */
 export function createMcpResultArtifactRouter(maxRoots = MCP_RESULT_ROUTER_MAX_ROOTS): McpResultArtifactRouter {
   if (!Number.isInteger(maxRoots) || maxRoots < 1 || maxRoots > MCP_RESULT_ROUTER_MAX_ROOTS) {
@@ -404,11 +405,11 @@ async function pinAndPruneMcpResultArtifactsLocked(directory: string, repoReal: 
   const leases = await loadLiveMcpResultLeasesLocked(leaseDirectory);
   const ownLease = leases.find((lease) => lease.sessionId === sessionId);
   if (!ownLease && leases.length >= MCP_RESULT_LEASE_MAX_FILES) {
-    throw new Error("Codexa MCP detailed-result live-session capacity is exhausted; return the detailed result inline");
+    throw new Error("Codexa MCP detailed-result live-session capacity is exhausted; retain only a bounded self-contained decision receipt and block if it requires omitted detail");
   }
   const pinnedIds = new Set(leases.flatMap((lease) => lease.ids));
   if (!pinnedIds.has(currentId) && pinnedIds.size >= MCP_RESULT_ARTIFACT_MAX_FILES) {
-    throw new Error("Codexa MCP detailed-result live retention capacity is exhausted; return the detailed result inline");
+    throw new Error("Codexa MCP detailed-result live retention capacity is exhausted; retain only a bounded self-contained decision receipt and block if it requires omitted detail");
   }
 
   const names = await artifactRecordNames(directory);
@@ -464,7 +465,7 @@ async function pinAndPruneMcpResultArtifactsLocked(directory: string, repoReal: 
     remaining -= 1;
   }
   if (remaining > MCP_RESULT_ARTIFACT_MAX_FILES) {
-    throw new Error("Codexa MCP detailed-result live retention capacity is exhausted; return the detailed result inline");
+    throw new Error("Codexa MCP detailed-result live retention capacity is exhausted; retain only a bounded self-contained decision receipt and block if it requires omitted detail");
   }
 
   // Commit the pin only after every fallible retention operation succeeds.
@@ -660,7 +661,7 @@ async function acquireInProcessPruneLock(directory: string): Promise<InProcessPr
     return inProcessPruneLockRelease(directory, lock);
   }
   if (existing.waiters.length >= MCP_RESULT_IN_PROCESS_LOCK_MAX_WAITERS) {
-    throw new Error("Codexa MCP result in-process retention queue is full; return the detailed result inline");
+    throw new Error("Codexa MCP result in-process retention queue is full; retain only a bounded self-contained decision receipt and block if it requires omitted detail");
   }
   return new Promise<InProcessPruneLockRelease>((resolve, reject) => {
     existing.waiters.push({ resolve, reject });
@@ -769,7 +770,8 @@ async function waitForCanonicalPruneLockOwnership(lockPath: string, token: strin
  * directory and a new live owner from appearing at the same pathname between
  * the ownership check and rename (the classic stale-lock ABA race). A process
  * crash in this tiny cleanup window intentionally leaves a bounded marker and
- * makes callers fall back inline rather than risking a promised result.
+ * makes callers retain only a bounded self-contained decision receipt rather
+ * than risking a promised result; omitted required detail remains blocking.
  */
 async function reapUnownedPruneLock(lockPath: string, observedOwner: StoredMcpResultLockOwner | undefined): Promise<boolean> {
   const markerPath = path.join(lockPath, MCP_RESULT_PRUNE_LOCK_REAPER);

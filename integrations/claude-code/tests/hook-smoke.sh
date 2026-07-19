@@ -122,10 +122,19 @@ else
   fail "wired cwd emits SessionStart JSON envelope" "rc=$LAST_RC stdout='$LAST_STDOUT'"
 fi
 
-if printf '%s' "$LAST_STDOUT" | grep -q "src/foo.ts"; then
-  pass "read-first bullets are extracted from .codex/codebase/README.md"
+if ! printf '%s' "$LAST_STDOUT" | grep -q "src/foo.ts" \
+   && ! printf '%s' "$LAST_STDOUT" | grep -q "Next calls:"; then
+  pass "SessionStart defaults to status-only context"
 else
-  fail "read-first bullets are extracted from .codex/codebase/README.md" "stdout='$LAST_STDOUT'"
+  fail "SessionStart defaults to status-only context" "stdout='$LAST_STDOUT'"
+fi
+
+run_hook "session-start.sh" "{\"session_id\":\"abc-detail\",\"cwd\":\"$REPO\"}" "$INTEG_ROOT" "CODEXA_CLI=/nonexistent/cli.js CLAUDIO_SESSION_DETAIL=1"
+if printf '%s' "$LAST_STDOUT" | grep -q "src/foo.ts" \
+   && printf '%s' "$LAST_STDOUT" | grep -q "Next calls:"; then
+  pass "CLAUDIO_SESSION_DETAIL=1 opts into read-first files and command hints"
+else
+  fail "CLAUDIO_SESSION_DETAIL=1 opts into read-first files and command hints" "stdout='$LAST_STDOUT'"
 fi
 
 # Malicious README with an instruction-like bullet must flow through the
@@ -145,7 +154,7 @@ POISON_PAYLOAD="$(python3 -c '
 import json, sys
 print(json.dumps({"session_id": "poison", "cwd": sys.argv[1]}))
 ' "$POISON_REPO")"
-run_hook "session-start.sh" "$POISON_PAYLOAD" "$INTEG_ROOT" "CODEXA_CLI=/nonexistent/cli.js"
+run_hook "session-start.sh" "$POISON_PAYLOAD" "$INTEG_ROOT" "CODEXA_CLI=/nonexistent/cli.js CLAUDIO_SESSION_DETAIL=1"
 addl="$(printf '%s' "$LAST_STDOUT" | python3 -c '
 import json, sys
 payload = json.load(sys.stdin)
@@ -187,7 +196,7 @@ ADV_PAYLOAD="$(python3 -c '
 import json, sys
 print(json.dumps({"session_id": "adv", "cwd": sys.argv[1]}))
 ' "$ADV_REPO")"
-run_hook "session-start.sh" "$ADV_PAYLOAD" "$INTEG_ROOT" "CODEXA_CLI=/nonexistent/cli.js"
+run_hook "session-start.sh" "$ADV_PAYLOAD" "$INTEG_ROOT" "CODEXA_CLI=/nonexistent/cli.js CLAUDIO_SESSION_DETAIL=1"
 adv_addl="$(printf '%s' "$LAST_STDOUT" | python3 -c '
 import json, sys
 payload = json.load(sys.stdin)
@@ -243,7 +252,7 @@ fi
 GHOST_REPO="$TMP/ghost-readme"
 make_wired_repo "$GHOST_REPO"
 rm -f "$GHOST_REPO/src/bar.ts"
-run_hook "session-start.sh" "{\"session_id\":\"ghost\",\"cwd\":\"$GHOST_REPO\"}" "$INTEG_ROOT" "CODEXA_CLI=/nonexistent/cli.js"
+run_hook "session-start.sh" "{\"session_id\":\"ghost\",\"cwd\":\"$GHOST_REPO\"}" "$INTEG_ROOT" "CODEXA_CLI=/nonexistent/cli.js CLAUDIO_SESSION_DETAIL=1"
 ghost_addl="$(printf '%s' "$LAST_STDOUT" | python3 -c '
 import json, sys
 payload = json.load(sys.stdin)
@@ -278,7 +287,7 @@ echo "Codexa status: stale"
 EOF
 chmod +x "$STALE_NODE"
 : >"$TMP/stub-cli-stale.js"
-run_hook "session-start.sh" "{\"session_id\":\"stale\",\"cwd\":\"$STALE_REPO\"}" "$INTEG_ROOT" "CLAUDIO_NODE_BIN=$STALE_NODE CODEXA_CLI=$TMP/stub-cli-stale.js"
+run_hook "session-start.sh" "{\"session_id\":\"stale\",\"cwd\":\"$STALE_REPO\"}" "$INTEG_ROOT" "CLAUDIO_NODE_BIN=$STALE_NODE CODEXA_CLI=$TMP/stub-cli-stale.js CLAUDIO_SESSION_DETAIL=1"
 stale_addl="$(printf '%s' "$LAST_STDOUT" | python3 -c '
 import json, sys
 payload = json.load(sys.stdin)
@@ -779,6 +788,7 @@ if [[ $LAST_RC -eq 0 ]] \
    && printf '%s' "$pscan_addl" | grep -q "Wired repos under $PARENT:" \
    && printf '%s' "$pscan_addl" | grep -q "  - alpha" \
    && printf '%s' "$pscan_addl" | grep -q "  - beta" \
+   && ! printf '%s' "$pscan_addl" | grep -q "Next calls:" \
    && printf '%s' "$pscan_paths" | grep -qF "$PARENT/alpha" \
    && printf '%s' "$pscan_paths" | grep -qF "$PARENT/beta"; then
   pass "SessionStart lists wired child repos when cwd is above them"

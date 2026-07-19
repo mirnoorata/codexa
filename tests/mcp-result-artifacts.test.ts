@@ -125,7 +125,7 @@ describe("content-addressed MCP result artifacts", () => {
 
     await expect(
       persistMcpResultArtifact(repo, result(256), { ...binding, checkout: { ...binding.checkout, repoRoot: repo } }, router)
-    ).rejects.toThrow(/live retention capacity.*return the detailed result inline/u);
+    ).rejects.toThrow(/live retention capacity.*bounded self-contained decision receipt/u);
     for (const [index, reference] of references.entries()) {
       expect(await readMcpResultArtifact(repo, reference.id)).toContain(`"index":${index}`);
       expect(router.resolve(resultRepoLocator(reference.uri))).toBe(await fsRealpath(repo));

@@ -4,7 +4,6 @@ import { confidenceTier, tierScore, clampInt, fitLinesToTokenBudget } from "./fo
 import { assessContextQuality, formatContextQuality, formatValueEstimate, valueEstimate } from "./quality.js";
 import { assertRawSearchPatternLimit, normalizeRawSearchPatterns, RAW_SEARCH_PATTERN_LIMIT, rawSearch, type RawSearchHit, type RawSearchResult } from "./raw-search.js";
 import { freshnessBanner } from "./runtime.js";
-import { nextTool } from "./next-tools.js";
 import { ensureQuerySession, type QuerySessionInput } from "./session.js";
 import { formatTestRecommendations, recommendTests } from "./tests.js";
 import { findFile } from "./targets.js";
@@ -141,12 +140,10 @@ export async function searchQuery(
   const searchDiscipline = searchDisciplineLine(raw);
   const actionability = raw.sufficient ? "raw_search_sufficient" : actionabilityFromSearchVerdict(retrieval.intentConfidence.verdict);
   const rawAnchorLine = formatRawExactAnchorLine(rawExactHitCount, retrieval);
-  const nextTools = [
-    interpreted.symbols.length === 1 ? nextTool("symbol_context", "one symbol matched; inspect its proof-carrying neighborhood", { symbol: interpreted.symbols[0].id, depth: 1 }) : undefined,
-    interpreted.symbols.length > 1 ? nextTool("symbol_context", "multiple symbols matched; rerun with an exact symbol id", { symbol: interpreted.symbols[0].id, depth: 1 }) : undefined,
-    searchFiles.length > 0 ? nextTool("task_brief", "turn search hits into an edit-ready context packet", { task: queryInput.query, files: searchFiles.slice(0, 5).map((file) => file.path) }) : undefined,
-    tests.length > 0 ? nextTool("test_plan", "select targeted verification for the returned files", { files: searchFiles.slice(0, 5).map((file) => file.path) }) : undefined
-  ].filter((tool): tool is ReturnType<typeof nextTool> => Boolean(tool));
+  const nextTools: [] = [];
+  const systemMessage = raw.sufficient
+    ? "Stop Codexa discovery and read the exact source hits. If the original task already crosses an API, runtime, persistence, security, rename, or delete boundary, one change_plan call is still warranted."
+    : "Stop Codexa discovery and inspect the ranked source targets. Use change_plan only if those reads confirm a material cross-boundary edit; do not stack another context packet.";
   const text = [
     freshnessBanner(freshness, refresh),
     formatContextQuality(quality),
@@ -208,7 +205,7 @@ export async function searchQuery(
       quality,
 	      gaps: indexGaps(index, freshness),
 	      nextTools,
-	      systemMessage: nextTools[0]?.reason,
+	      systemMessage,
 	      session: { warnings: session.warnings, provenance: session.provenance }
     }
   };
@@ -291,7 +288,7 @@ function rawSearchPatternsForQuery(query: string, explicitPatterns?: string[]): 
 
 function searchDisciplineLine(raw: RawSearchResult): string {
   if (raw.sufficient) {
-    return "Search discipline: raw search is narrow; read the top source file now unless you need impact/tests.";
+    return "Search discipline: raw search is sufficient; stop Codexa discovery and read the exact source hits now.";
   }
   if (raw.patterns.length > 1 && raw.hits.length > 0) {
     return `Search discipline: searched ${raw.patterns.length} literal patterns in one pass; read the best hybrid targets before trying more variants.`;

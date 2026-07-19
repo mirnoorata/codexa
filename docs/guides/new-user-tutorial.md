@@ -9,7 +9,7 @@ repository without sending source code to a hosted indexing service.
 1. Install Codexa.
 2. Wire Codexa into one local repository, including optional local policy defaults.
 3. Check that the index and MCP server are ready.
-4. Run the normal plan, edit, review, and verification loop for a small change.
+4. Use the smallest source, search, plan, edit, and review sequence the task needs.
 5. Print a proof card for the final handoff.
 6. Know where to look when setup is not ready.
 
@@ -64,6 +64,14 @@ repo, then builds the first `.codex/codebase/` index. It does not edit your
 source files. Generated Codexa artifacts live under `.codex/codebase/` and
 `.codex/cache/`.
 
+Fresh managed installs and bare `codexa serve` use the core MCP profile. It advertises only `search`,
+`change_plan`, and `capabilities`; the dispatcher keeps every non-core
+operation reachable without adding every tool schema to each agent turn. Use
+`--tools full` only when direct exposure of the complete tool surface is worth
+the larger decoded `tools/list` JSON surface. This is a serialized-byte proxy,
+not a measurement of model tokens, provider cost, or provider-specific wire
+serialization.
+
 With `--policy-pack`, init also creates `.codex/policies/verification.json`,
 `.codex/policies/complexity.json`, and `.codex/policies/security.json`. These
 files are plain JSON consumed by `codexa prove`; they are not executable and
@@ -73,17 +81,18 @@ intentionally want to replace existing policy files.
 
 ## 3. Check readiness
 
-Start every new session with:
+After setup, or whenever freshness is in doubt, check readiness with:
 
 ```bash
 codexa session-start /path/to/project
 ```
 
 A ready repository reports the repo path, the current commit, freshness, dirty
-file count, parser error count, and the automatic-use loop. `fresh` means the
-stored Codexa index matches the current checkout. `stale` usually means the
-checkout changed since the last index, and most context commands can refresh it
-automatically.
+file count, parser error count, and the selective-use policy. Managed host hooks
+surface status automatically, so an agent does not need to call this command at
+the start of every turn. `fresh` means the stored Codexa index matches the
+current checkout. `stale` usually means the checkout changed since the last
+index, and most context commands can refresh it automatically.
 
 For a fuller setup check, run:
 
@@ -96,8 +105,12 @@ starting, hooks did not run, or freshness looks wrong.
 
 ## 4. Use the everyday edit loop
 
-Codexa is most useful when it brackets real edits. For a small issue such as
-"rename this CLI option in the docs and help text", use this loop:
+Codexa is most useful when it supplies evidence that direct source inspection
+cannot. For an exact, local, low-risk issue, read the named files and run the
+repository's checks with zero Codexa calls.
+
+For a non-trivial issue such as "rename this CLI option across docs, parsing,
+and generated help", save one plan before editing:
 
 ```bash
 codexa change-plan /path/to/project \
@@ -107,14 +120,23 @@ codexa change-plan /path/to/project \
 ```
 
 Because the task already names a bounded target, no separate brief is needed.
-For a broad task, add `session-context`, `search`, and `brief` only as needed to
-identify a target and obtain enough repository context to plan safely.
+When the target is ambiguous, make one `search` call and stop discovery if its
+raw results are sufficient. A materially risky edit may still warrant one
+`change-plan` after source inspection establishes the target. Use
+`session-context` instead of search only for genuinely broad or resumed work;
+do not stack session context, search, and brief for one discovery need. A
+normal bounded task should usually use no more than two Codexa calls.
 
 Then make the source or docs edits with your normal editor or agent. Codexa MCP
 tools do not edit source files. Run the targeted tests and verification commands
 returned by the change plan.
 
-After editing, review the real dirty tree against the saved plan:
+The hooks written by `codexa init` review a Codex session's dirty tree, and the
+Claude plugin ships its own managed Stop review. Do not add a duplicate manual
+call when either gate owns the review. The Codex plugin bundle itself is
+hookless unless the repository was separately initialized with Codexa hooks.
+In a host without a deterministic post-edit gate, review once against the saved
+plan:
 
 ```bash
 codexa post-edit-review /path/to/project \
@@ -138,14 +160,20 @@ codexa test-plan /path/to/project --diff
 codexa test-plan /path/to/project --file src/index.ts
 ```
 
-The same flow is available through MCP tools inside an agent host:
+The same selective policy applies to MCP tools inside an agent host:
 
 ```text
-change_plan(saveSnapshot) -> edit/run planned verification -> post_edit_review
-add session_context/search/task_brief only when target or context is unclear
-add test_plan only when verification guidance is unresolved
-add proof_card only for policy or formal handoff
+exact/local/source-sufficient -> source tools, zero Codexa calls
+ambiguous/raw-sufficient -> search, then stop
+exact materially risky + managed gate -> change_plan(saveSnapshot)
+ambiguous materially risky + managed gate -> search -> change_plan(saveSnapshot)
+exact materially risky + no managed gate -> change_plan(saveSnapshot) -> post_edit_review
+ambiguous materially risky + no managed gate -> search -> change_plan(saveSnapshot) -> post_edit_review
 ```
+
+The last line is the narrow three-call safety exception: ambiguity, material
+risk, and no managed post-edit gate must all be present. These examples do not
+authorize automatic chaining; each call must resolve a need the task still has.
 
 ## 5. Print a proof card
 
@@ -163,11 +191,11 @@ remaining gaps.
 
 ## 6. What success looks like
 
-After the loop, you should be able to answer four questions with evidence:
+After the work, you should be able to answer four questions with evidence:
 
-- Which files did Codexa tell the agent to read first?
-- What edit scope did the saved change plan record?
-- Did the dirty tree stay inside that planned scope?
+- Which exact source evidence established the target?
+- If a plan was warranted, what edit scope did it record?
+- If a plan was warranted, did the dirty tree stay inside that scope?
 - Which checks were run, and what behavior did they actually cover?
 
 That evidence is the point of Codexa. It does not replace judgment, tests, or
@@ -197,8 +225,9 @@ If the wrong repository is being indexed, rerun commands with the explicit
 target repo path and inspect the generated MCP config in that repository.
 
 If a command output looks heuristic-heavy, treat it as a reading list rather
-than proof. Open the cited files, run the relevant checks, and pass the actual
-commands back to `post-edit-review`.
+than proof. Open the cited files and run the relevant checks. Pass the actual
+commands to a manual `post-edit-review` only when no managed host gate owns the
+review.
 
 ## Next steps
 

@@ -131,13 +131,15 @@ describe("QuerySession", () => {
       },
       { autoRefresh: false }
     );
-    const data = result.data as { actionGuidanceSuppressed?: boolean; tests?: unknown[]; verificationCommands?: unknown[] };
+    const data = result.data as { actionGuidanceSuppressed?: boolean; tests?: unknown[]; verificationCommands?: unknown[]; nextTools?: Array<{ tool?: string }> };
 
     expect(data.actionGuidanceSuppressed).toBe(true);
     expect(data.tests).toEqual([]);
     expect(data.verificationCommands).toEqual([]);
     expect(result.text).toContain("Likely tests:\n- deferred until Codexa has an explicit file, symbol, or higher-confidence packet.");
     expect(result.text).toContain("Recommended next MCP call: search");
+    expect(data.nextTools).toHaveLength(1);
+    expect(data.nextTools?.[0]?.tool).toBe("search");
     expect(result.text).not.toContain("Recommended next MCP call: find_context");
     expect(result.text).not.toMatch(/Read first:[\s\S]*\n- none\n\nLikely tests:/u);
     expect(result.text).not.toContain("If run, these commands would cover:");
@@ -367,6 +369,7 @@ describe("QuerySession", () => {
     expect(briefData.focusFiles?.length).toBeLessThanOrEqual(2);
     expect(briefData.contextSources?.map((entry) => entry.source)).toContain("dirty_worktree");
     const guidedChangePlan = briefData.nextTools?.find((tool) => tool.tool === "change_plan");
+    expect(briefData.nextTools).toHaveLength(1);
     expect(guidedChangePlan?.reason).toContain("full dirty-worktree edit plan");
     expect(guidedChangePlan?.requiredInputs).toMatchObject({
       task: "Fix the current dirty worktree and choose focused verification.",

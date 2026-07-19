@@ -2,8 +2,9 @@
 # SessionStart hook. Behaves in two modes depending on cwd:
 #
 #   (1) Single-repo mode — cwd is inside a codexa-wired repo (walks up to
-#       find `.codex/config.toml`). Emits a structured packet with that
-#       repo's freshness + top read-first files, all allowlist-validated.
+#       find `.codex/config.toml`). Emits a structured status packet. Detailed
+#       read-first files and command hints are opt-in with
+#       CLAUDIO_SESSION_DETAIL=1.
 #
 #   (2) Parent-scan mode — cwd has no wired repo above it but contains
 #       wired child repos one level down (for example, cwd=~/code with
@@ -37,15 +38,18 @@ fi
 # --- Mode 1: Single repo (existing behavior). ------------------------------
 repo="$(claudio_find_codexa_repo "$cwd")"
 if [[ -n "$repo" ]]; then
+  detailed_context="${CLAUDIO_SESSION_DETAIL:-0}"
   status_raw=""
   if claudio_codexa_available; then
     status_raw="$(claudio_codexa_run 5 status "$repo" 2>/dev/null || true)"
   fi
 
   readme_raw=""
-  readme_path="$repo/.codex/codebase/README.md"
-  if [[ -f "$readme_path" ]]; then
-    readme_raw="$(head -c 65536 "$readme_path" 2>/dev/null || true)"
+  if [[ "$detailed_context" == "1" ]]; then
+    readme_path="$repo/.codex/codebase/README.md"
+    if [[ -f "$readme_path" ]]; then
+      readme_raw="$(head -c 65536 "$readme_path" 2>/dev/null || true)"
+    fi
   fi
 
   status_fields="$(claudio_parse_codexa_status "$status_raw")"
@@ -61,40 +65,42 @@ if [[ -n "$repo" ]]; then
     else
       printf '  (unavailable)\n'
     fi
-    if [[ -n "$freshness_token" && "$freshness_token" != "fresh" ]]; then
-      printf '\nRead-first (top-ranked files; index: %s):\n' "$freshness_token"
-    else
-      printf '\nRead-first (top-ranked files):\n'
-    fi
-    if [[ -n "$read_first_entries" ]]; then
-      # A stale index can rank files that no longer exist; naming ghosts
-      # burns the reader's trust, so prune here and say so.
-      pruned=0
-      emitted=0
-      while IFS=$'\t' read -r p r; do
-        [[ -z "$p" ]] && continue
-        if [[ ! -e "$repo/$p" ]]; then
-          pruned=$((pruned + 1))
-          continue
+    if [[ "$detailed_context" == "1" ]]; then
+      if [[ -n "$freshness_token" && "$freshness_token" != "fresh" ]]; then
+        printf '\nRead-first (top-ranked files; index: %s):\n' "$freshness_token"
+      else
+        printf '\nRead-first (top-ranked files):\n'
+      fi
+      if [[ -n "$read_first_entries" ]]; then
+        # A stale index can rank files that no longer exist; naming ghosts
+        # burns the reader's trust, so prune here and say so.
+        pruned=0
+        emitted=0
+        while IFS=$'\t' read -r p r; do
+          [[ -z "$p" ]] && continue
+          if [[ ! -e "$repo/$p" ]]; then
+            pruned=$((pruned + 1))
+            continue
+          fi
+          printf '  - %s (rank %s)\n' "$p" "$r"
+          emitted=$((emitted + 1))
+        done <<<"$read_first_entries"
+        if [[ "$emitted" -eq 0 ]]; then
+          printf '  (none on disk)\n'
         fi
-        printf '  - %s (rank %s)\n' "$p" "$r"
-        emitted=$((emitted + 1))
-      done <<<"$read_first_entries"
-      if [[ "$emitted" -eq 0 ]]; then
-        printf '  (none on disk)\n'
+        if [[ "$pruned" -gt 0 ]]; then
+          printf '  (%d deleted file(s) pruned from this list — rebuild the index)\n' "$pruned"
+        fi
+      else
+        printf '  (none parsed)\n'
       fi
-      if [[ "$pruned" -gt 0 ]]; then
-        printf '  (%d deleted file(s) pruned from this list — rebuild the index)\n' "$pruned"
-      fi
-    else
-      printf '  (none parsed)\n'
+      printf '\nNext calls:\n'
+      printf '  - /codexa-status    — refresh this packet\n'
+      printf '  - /codexa-brief     — task brief + diff impact\n'
+      printf '  - /codexa-plan      — save a change-plan snapshot\n'
+      printf '  - /codexa-review    — post-edit drift review\n'
+      printf '  - /codexa-impact    — blast-radius for a file or symbol\n'
     fi
-    printf '\nNext calls:\n'
-    printf '  - /codexa-status    — refresh this packet\n'
-    printf '  - /codexa-brief     — task brief + diff impact\n'
-    printf '  - /codexa-plan      — save a change-plan snapshot\n'
-    printf '  - /codexa-review    — post-edit drift review\n'
-    printf '  - /codexa-impact    — blast-radius for a file or symbol\n'
   )"
 
   python3 - "$repo" "$context" <<'PY'
@@ -155,6 +161,7 @@ safe_cwd="$(claudio_display_path "$cwd")"
 # started from a shared parent directory where exposing sibling project
 # names to the session context would leak information.
 reveal_names="${CLAUDIO_PARENT_SCAN_NAMES:-1}"
+detailed_context="${CLAUDIO_SESSION_DETAIL:-0}"
 
 context="$(
   printf 'codexa/plugin v%s — parent-scan session context.\n' "$(claudio_plugin_version)"
@@ -179,15 +186,19 @@ context="$(
       fi
       printf '  - %s\n' "$safe_name"
     done
-    printf '\n(Run /codexa-status after cd-ing into any repo for freshness / commit / dirty-file detail.)\n'
+    if [[ "$detailed_context" == "1" ]]; then
+      printf '\n(Run /codexa-status after cd-ing into any repo for freshness / commit / dirty-file detail.)\n'
+    fi
   fi  # end reveal_names branch
-  printf '\nNext calls:\n'
-  printf '  - cd into any wired repo to enable auto-nudges on Edit/Write/MultiEdit\n'
-  printf '  - /codexa-status    — full status for the repo containing your cwd\n'
-  printf '  - /codexa-brief     — task brief + diff impact\n'
-  printf '  - /codexa-plan      — save a change-plan snapshot before editing\n'
-  printf '  - /codexa-review    — post-edit drift review\n'
-  printf '  - codexa init <repo>  — wire an unwired project\n'
+  if [[ "$detailed_context" == "1" ]]; then
+    printf '\nNext calls:\n'
+    printf '  - cd into any wired repo to enable auto-nudges on Edit/Write/MultiEdit\n'
+    printf '  - /codexa-status    — full status for the repo containing your cwd\n'
+    printf '  - /codexa-brief     — task brief + diff impact\n'
+    printf '  - /codexa-plan      — save a change-plan snapshot before editing\n'
+    printf '  - /codexa-review    — post-edit drift review\n'
+    printf '  - codexa init <repo>  — wire an unwired project\n'
+  fi
 )"
 
 # Emit multi-repo envelope. `codexaRepoPaths` is a JSON array of the raw

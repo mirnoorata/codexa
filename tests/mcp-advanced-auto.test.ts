@@ -4,7 +4,9 @@ import { mkdtemp, writeFile } from "node:fs/promises";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { describe, expect, it } from "vitest";
-import { mcpAutoEscalationReason, mcpDecisionKernel, renderMcpConciseText } from "../src/mcp/decision-kernel.js";
+import { mcpAutoEscalationReason, mcpDecisionKernel, renderMcpConciseText, withMcpDelivery } from "../src/mcp/decision-kernel.js";
+import { compactMcpResult } from "../src/mcp/compaction.js";
+import { toToolResult } from "../src/mcp/envelope.js";
 import { ADVANCED_MCP_TOOL_NAMES } from "../src/mcp/tool-registry.js";
 import { changePlanQuery } from "../src/queries.js";
 import { createIndexedMcpRepo } from "./mcp-fixtures.js";
@@ -44,6 +46,39 @@ describe("advanced MCP auto/concise projections", () => {
     expect(mcpAutoEscalationReason({ text: "ambiguous", data: { mode: "callers", ambiguous: true, candidates: [{ id: "one" }, { id: "two" }] } })).toBe("ambiguous-target");
     expect(mcpAutoEscalationReason({ text: "describe", data: { mode: "capabilities", described: { operation: "session_memory", schema: { type: "object" } } } })).toBe("capability-schema-requested");
     expect(mcpAutoEscalationReason({ text: "list", data: { mode: "capabilities", operationCount: 1, operations: [{ name: "repo_map", requiredInputs: [] }] } })).toBeUndefined();
+  });
+
+  it("blocks a capability description when required detail could not be persisted", () => {
+    const packet = {
+      text: "capability description",
+      data: {
+        mode: "capabilities",
+        actionability: "orientation",
+        described: { operation: "session_memory", schema: { type: "object", properties: { payload: { type: "string" } } } },
+        nextTools: [{ tool: "session_memory", reason: "invoke the described operation", requiredInputs: { action: "summary" }, readOnly: true, writes: [] }]
+      },
+      freshness: { missing: false, stale: false }
+    };
+    const delivered = withMcpDelivery(compactMcpResult(packet, { format: "concise" }), {
+      schemaVersion: 1,
+      requestedFormat: "auto",
+      effectiveFormat: "concise",
+      detailAvailable: false,
+      detailRequired: true,
+      requiredDetailReason: "capability-schema-requested",
+      escalationReason: "capability-schema-requested+detailed-result-resource-unavailable"
+    });
+    const result = toToolResult(delivered, "capabilities", { autoRefresh: false, sessionMemoryMode: "off" });
+    const envelope = record(result.structuredContent)!;
+    const data = record(envelope.data)!;
+    const kernel = record(data.decisionKernel)!;
+    const authority = record(kernel.authority)!;
+
+    expect(envelope.actionability).toBe("blocked");
+    expect(authority).toMatchObject({ actionability: "blocked", originalActionability: "orientation" });
+    expect(data.nextTools).toEqual([]);
+    expect(kernel.nextTools).toEqual([]);
+    expect(data.systemMessage).toContain('responseFormat "detailed"');
   });
 
   it("labels external session-memory summaries as untrusted and strips control characters", () => {

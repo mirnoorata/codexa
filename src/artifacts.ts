@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { renderCodexUseContract } from "./codex-contract.js";
-import { ADVANCED_MCP_TOOL_NAMES, NO_SOURCE_MUTATION_CONTRACT, PRIMARY_MCP_TOOL_NAMES } from "./mcp-tool-catalog.js";
+import { CORE_PROFILE_TOOL_NAMES, DISPATCHABLE_MCP_TOOL_NAMES, NO_SOURCE_MUTATION_CONTRACT } from "./mcp-tool-catalog.js";
 import { isPlaceholderRisk, placeholderCategory } from "./placeholder-signals.js";
 import type { CodexaIndex, FileFact, ModuleClusterFact, WorkflowTraceFact, SymbolFact } from "./types.js";
 import { escapeMarkdown, formatPathLine, topBy } from "./util.js";
@@ -51,20 +51,22 @@ ${index.files.slice(0, 12).map((file, idx) => `${idx + 1}. \`${file.path}\` - ra
 
 ## Dynamic Queries
 
-Use the primary Codexa MCP tools for the normal edit loop:
+The optimized core exposes only the decision points that can usually repay
+their schema and response cost:
 
-${PRIMARY_MCP_TOOL_NAMES.map((tool) => `- \`${tool}\``).join("\n")}
+${CORE_PROFILE_TOOL_NAMES.map((tool) => `- \`${tool}\``).join("\n")}
 
-Advanced MCP tools remain available for deeper inspection:
+All non-core operations remain available through \`capabilities\` (or directly
+in full mode):
 
-${ADVANCED_MCP_TOOL_NAMES.map((tool) => `- \`${tool}\``).join("\n")}
+${DISPATCHABLE_MCP_TOOL_NAMES.map((tool) => `- \`${tool}\``).join("\n")}
 
 MCP resources expose this generated artifact set under \`codexa://repo/codebase/...\`.
 MCP prompts provide small workflows for snapshot-backed editing, impact-before-edit,
 dirty-diff review, and targeted test planning.
 Use \`search\` as the first-class target-discovery surface when a task is
 ambiguous; it combines raw hits, semantic retrieval when configured, Codexa
-ranking, likely tests, and gaps before \`task_brief\`.
+ranking, likely tests, and gaps. Stop Codexa when raw evidence is sufficient.
 Read \`relational-packets.md\` when exact grep misses but the task likely maps
 to a process, symbol neighborhood, or module cluster.
 Use \`relational-packets.json\`, \`relational-graph.json\`, and
@@ -496,13 +498,15 @@ function renderConventions(index: CodexaIndex): string {
   provenance means Codexa should omit the command instead of inventing one.
 - Context packs include known gaps such as parser errors, stale state,
   heuristic-only links, and changed files without symbol ranges.
-- For code edits, use \`change_plan\` with \`saveSnapshot: true\` before editing
-  and \`post_edit_review\` after editing.
+- For exact local edits, use source tools and tests with zero Codexa calls.
+  Use \`change_plan\` only for multi-file or materially risky changes.
+- Let a managed completion hook own post-edit review. On a hookless host, call
+  \`post_edit_review\` once only when drift accountability is needed.
 - Use \`session_memory\` to recall or explicitly save session-local working
   memory. Auto-recorded \`viewed\` entries are Codexa-derived; agent claims stay
   agent-asserted and must not be promoted into codebase facts.
-- Use \`focus_brief\` for broad natural-language tasks, then narrow with
-  \`search\`, \`repo_map\`, or explicit files before verification planning. Use
+- Use one \`search\` call for ambiguous natural-language tasks, then read the
+  returned source targets instead of stacking context packets. Use
   \`workflow_path\` for route/job/process changes and \`dependency_path\` for
   explicit source-to-target relationship questions.
 - Rule signals cover queue/run lifecycle, generator-node invariants,
@@ -555,12 +559,12 @@ how to approach changes safely without loading the whole graph.
 
 ## General Protocol
 
-1. Run \`change_plan\` with \`saveSnapshot: true\` directly for an explicit bounded task.
-2. Add \`session_context\`, \`search\`, or \`task_brief\` first only when the target or context is unclear.
-3. Edit, run the tests and commands returned by the plan, then run \`post_edit_review\`.
-4. Run \`test_plan\` only when verification guidance remains unresolved.
-5. Run \`proof_card\` only for policy, formal audit, release, or artifact handoff proof.
-6. Use \`capabilities\` to discover or invoke advanced operations in core mode without reducing logical capability.
+1. Exact file, symbol, error, read-only check, or local edit: use source tools and tests with zero Codexa calls.
+2. Ambiguous target: run \`search\` once; stop Codexa when raw evidence is sufficient.
+3. For a non-trivial multi-file or high-risk edit, run \`change_plan\` with \`saveSnapshot: true\`, then edit and run its planned verification.
+4. Let a managed host gate review the edit. On a hookless host, run one \`post_edit_review\` only when needed.
+5. Run \`test_plan\` only when verification guidance remains unresolved; run \`proof_card\` only for policy, audit, release, or formal handoff proof.
+6. Use \`capabilities\` only for a concretely triggered non-core operation.
 
 ## Module Playbooks
 
@@ -585,7 +589,7 @@ ${module.summary}
 
 - Languages: ${languages.join(", ") || "unknown"}
 - Read first: ${moduleFiles.slice(0, 8).map((file) => `\`${file.path}\``).join(", ") || "none"}
-- Use \`task_brief\` with the concrete file/symbol once the target is known.
+- Read the concrete source file directly once the target is known.
 - Use \`workflow_path\` if any workflow below is related to the change.
 - Treat heuristic risks as prompts to verify source, not as proof.
 
@@ -606,8 +610,8 @@ ${tests.length > 0 ? tests.map((edge) => `- \`${edge.path}\`${edge.targetPath ? 
 1. Read the target and the top importer/caller from Codexa output.
 2. Check risk signals before changing public surface, adapters, config, routes, or generated manifests.
 3. Prefer tests listed above; if none are listed, inspect repo test metadata before inventing commands.
-4. Run \`post_edit_review\` after edits if a snapshot exists; otherwise re-run
-   \`task_brief\` if freshness reports \`dirty-files-changed\`.
+4. Let the managed host gate review edits; on a hookless host, run one
+   \`post_edit_review\` only if a saved snapshot needs drift accountability.
 `;
 }
 

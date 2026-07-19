@@ -272,21 +272,27 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
   const changePlanInputs = dirtyScopeChangePlan
     ? { task: contextInput.task, diff: true, changeType, saveSnapshot: true }
     : { task: contextInput.task, files: focusPaths.slice(0, 8), changeType, saveSnapshot: true };
-  const nextTools = [
-    packetIntent?.verdict === "needs-target" || packetIntent?.verdict === "orientation-only"
-      ? nextTool(packetIntent.recommendedNextTool, "context packet needs a narrower edit target", { task: contextInput.task ?? explicitQuery })
-      : undefined,
-    focusPaths.length > 0
-      ? nextTool(
-          "change_plan",
-          dirtyScopeChangePlan ? "save the full dirty-worktree edit plan and planned verification before editing" : "save the focused edit plan and planned verification before editing",
-          changePlanInputs,
-          true,
-          [".codex/cache/codexa-task-snapshots"]
-        )
-      : undefined,
-    displayedTests.length > 0 ? nextTool("test_plan", "inspect targeted verification for the focused files", { files: focusPaths.slice(0, 8) }) : undefined
-  ].filter((tool): tool is ReturnType<typeof nextTool> => Boolean(tool));
+  const unresolvedTarget = packetIntent?.verdict === "needs-target" || packetIntent?.verdict === "raw-search-better";
+  const riskyEditNeedsPlan = focusPaths.length > 0 && (dirtyScopeChangePlan || materiallyRiskyContextEdit(contextInput.task, changeType));
+  const nextTools = unresolvedTarget
+    ? [nextTool("search", "context packet still needs one exact file or symbol target", { query: contextInput.task ?? explicitQuery })]
+    : riskyEditNeedsPlan
+      ? [
+          nextTool(
+            "change_plan",
+            dirtyScopeChangePlan ? "save the full dirty-worktree edit plan and planned verification before editing" : "save one bounded plan for this materially risky edit",
+            changePlanInputs,
+            true,
+            [".codex/cache/codexa-task-snapshots"]
+          )
+        ]
+      : [];
+  const contextHandoff = nextTools[0]
+    ? `Recommended next MCP call: ${nextTools[0].tool}`
+    : "Codexa handoff: read the returned source files and verification guidance, then stop; do not stack another context packet.";
+  const handoffIntent = packetIntent
+    ? { ...packetIntent, recommendedNextTool: nextTools[0]?.tool ?? "source" }
+    : undefined;
 
   const text = [
     freshnessBanner(freshness, refresh),
@@ -297,7 +303,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     packetIntent ? `Packet verdict: ${packetIntent.verdict}; edit-ready ${packetIntent.editReady ? "yes" : "no"}; confidence ${Math.round(packetIntent.confidence * 100)}%` : undefined,
     `Actionability: ${actionability}`,
     packetIntent ? `Intent mode: ${packetIntent.mode}; primary ${packetIntent.intent}; anchors ${packetIntent.anchors.slice(0, 4).join(", ") || "none"}` : undefined,
-    packetIntent ? `Recommended next MCP call: ${packetIntent.recommendedNextTool}` : undefined,
+    contextHandoff,
     packetDiagnostics.length ? `Retrieval diagnostics: ${packetDiagnostics.join("; ")}` : undefined,
     `Change type: ${changeType}`,
     `Budget: ${tokenBudget} tokens approx; focus files: ${focusEntries.length}; changed files: ${changed.length}`,
@@ -375,7 +381,9 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       warnings: uniqueSorted([...session.warnings, ...warnings]),
       nextReads,
       baseline,
-      retrieval: naturalRetrieval ? compactRetrievalResult(naturalRetrieval) : undefined,
+      retrieval: naturalRetrieval
+        ? { ...compactRetrievalResult(naturalRetrieval), intentConfidence: handoffIntent }
+        : undefined,
       lspAssist,
       sessionMemory: sessionMemory.data,
       workspaceGuidance: workspaceGuidance.data,
@@ -390,7 +398,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
           }
         : undefined,
       targetPlaybooks,
-      intentConfidence: packetIntent,
+      intentConfidence: handoffIntent,
       packetVerdict: packetIntent?.verdict,
       actionability,
       diagnostics: packetDiagnostics,
@@ -403,7 +411,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       quality,
 	      gaps,
 	      nextTools,
-	      systemMessage: nextTools[0]?.reason,
+	      systemMessage: nextTools[0]?.reason ?? "Read the returned source files and verification guidance; stop Codexa unless the task materially changes.",
 	      session: { commandBudgetMs: session.commandBudgetMs, maxResultBytes: session.maxResultBytes, maxResults: session.maxResults, provenance: session.provenance }
     }
   };
@@ -493,12 +501,21 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
   const focusFiles = uniqueFiles(selected.map((entry) => entry.file)).slice(0, limit);
   const tiersByPath = new Map(selected.map((entry) => [entry.file.path, entry.tier]));
   const tests = recommendTests(index, focusFiles.map((file) => file.path), repoRoot).slice(0, 10);
-  const nextCall = recommendNextCodexaCall(retrieval.intents, retrieval.workflows, changed.length, task);
+  const proposedNextCall = recommendNextCodexaCall(
+    retrieval.intents,
+    retrieval.workflows,
+    changed.length,
+    task,
+    focusFiles.map((file) => file.path)
+  );
+  const nextCall = retrieval.intentConfidence.verdict === "needs-target" || retrieval.intentConfidence.verdict === "raw-search-better"
+    ? { tool: "search", reason: "the session packet still lacks one exact source target", arguments: { query: task } }
+    : proposedNextCall;
   const actionability = actionabilityFromPacketVerdict(retrieval.intentConfidence.verdict);
-  const recommendedNextCall =
-    retrieval.intentConfidence.recommendedNextTool === nextCall.tool
-      ? `${nextCall.tool} - ${nextCall.reason}`
-      : `${retrieval.intentConfidence.recommendedNextTool} - ${nextCall.reason}`;
+  const handoff = nextCall.tool === "source"
+    ? "Codexa handoff: read the returned source files and tests, then stop; do not call task_brief, context_pack, or session_context again."
+    : `Recommended next MCP call: ${nextCall.tool} - ${nextCall.reason}`;
+  const handoffIntent = { ...retrieval.intentConfidence, recommendedNextTool: nextCall.tool };
   const gaps = [
     ...indexGaps(index, freshness, unindexedChanged),
     ...(worktree ? worktreeStateGaps(worktree) : []),
@@ -545,7 +562,7 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
     `Actionability: ${actionability}`,
     `Intent mode: ${retrieval.intentConfidence.mode}; primary ${retrieval.intentConfidence.intent}; anchors ${retrieval.intentConfidence.anchors.slice(0, 4).join(", ") || "none"}`,
     retrieval.diagnostics.length > 0 ? `Retrieval diagnostics: ${retrieval.diagnostics.join("; ")}` : undefined,
-    `Recommended next MCP call: ${recommendedNextCall}`,
+    handoff,
     nextCall.arguments ? `Suggested arguments: ${JSON.stringify(nextCall.arguments)}` : undefined,
     "",
     "Likely subsystems:",
@@ -588,8 +605,8 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
     data: {
       mode: "focus_brief",
       task,
-      retrieval: compactRetrievalResult(retrieval),
-      intentConfidence: retrieval.intentConfidence,
+      retrieval: { ...compactRetrievalResult(retrieval), intentConfidence: handoffIntent },
+      intentConfidence: handoffIntent,
       packetVerdict: retrieval.intentConfidence.verdict,
       actionability,
       diagnostics: retrieval.diagnostics,
@@ -607,6 +624,16 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
       gaps
     }
   };
+}
+
+function materiallyRiskyContextEdit(task: string | undefined, changeType: ContextPackInput["changeType"]): boolean {
+  if (changeType === "api" || changeType === "rename" || changeType === "delete") {
+    return true;
+  }
+  const normalizedTask = task?.toLowerCase() ?? "";
+  const editIntent = /\b(change|fix|update|modify|rename|delete|remove|migrate|harden|implement|refactor)\b/u.test(normalizedTask);
+  const materialRisk = /\b(api|contract|schema|migration|database|persistence|auth|security|permission|runtime|rename|delete|remove)\b/u.test(normalizedTask);
+  return editIntent && materialRisk;
 }
 
 async function contextSnippets(

@@ -78,9 +78,12 @@ it("uses symbol usages and changed diff ranges for impact and test planning", as
     await buildIndex({ repoRoot: repo });
 
     const fileImpact = await impactQuery(repo, { file: "src/util.ts" }, { autoRefresh: false });
+    expect((fileImpact.data as { nextTools?: unknown[]; systemMessage?: string }).nextTools).toEqual([]);
+    expect((fileImpact.data as { systemMessage?: string }).systemMessage).toContain("read them and stop Codexa");
     expect(fileImpact.text).toContain("src/api.ts");
     expect(fileImpact.text).toContain("call helper");
     const symbolImpact = await impactQuery(repo, { symbol: "helper" }, { autoRefresh: false });
+    expect((symbolImpact.data as { nextTools?: unknown[] }).nextTools).toEqual([]);
     expect(symbolImpact.text).toContain("src/aliased.ts");
     expect(symbolImpact.text).toContain("src/ns.ts");
 

@@ -36,7 +36,7 @@ describe("Codexa plugin package", () => {
     expect(result.stdout).toContain("plugin-package: Codexa plugin package passed");
   });
 
-  it("launches the packaged MCP wrapper against the focused git repository", async () => {
+  it("launches the packaged MCP wrapper with a core default and an explicit full override", async () => {
     const temp = await mkdtemp(path.join(os.tmpdir(), "codexa-plugin-wrapper-"));
     try {
       const repo = path.join(temp, "repo");
@@ -64,7 +64,7 @@ describe("Codexa plugin package", () => {
         [
           "#!/usr/bin/env node",
           "import { writeFileSync } from 'node:fs';",
-          "writeFileSync(process.env.CODEXA_PLUGIN_CAPTURE, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), execPath: process.execPath }, null, 2));"
+          "writeFileSync(process.env.CODEXA_PLUGIN_CAPTURE, JSON.stringify({ argv: process.argv.slice(2), cwd: process.cwd(), execPath: process.execPath, managedPostEdit: process.env.CODEXA_MANAGED_POST_EDIT, sentinel: process.env.CODEXA_PLUGIN_SENTINEL }, null, 2));"
         ].join("\n") + "\n",
         "utf8"
       );
@@ -75,16 +75,41 @@ describe("Codexa plugin package", () => {
         env: {
           ...process.env,
           CODEXA_REPO: repo,
+          CODEXA_MANAGED_POST_EDIT: "0",
           CODEXA_PLUGIN_AUTO_REFRESH: "0",
-          CODEXA_PLUGIN_CAPTURE: capturePath
+          CODEXA_PLUGIN_CAPTURE: capturePath,
+          CODEXA_PLUGIN_SENTINEL: "preserved"
         },
         encoding: "utf8"
       });
 
-      const capture = JSON.parse(await readFile(capturePath, "utf8")) as { argv: string[]; cwd: string; execPath: string };
+      const capture = JSON.parse(await readFile(capturePath, "utf8")) as {
+        argv: string[];
+        cwd: string;
+        execPath: string;
+        managedPostEdit: string;
+        sentinel: string;
+      };
       expect(capture.cwd).toBe(repo);
       expect(capture.execPath).toBe(process.execPath);
-      expect(capture.argv).toEqual(["serve", repo, "--no-auto-refresh"]);
+      expect(capture.managedPostEdit).toBe("0");
+      expect(capture.sentinel).toBe("preserved");
+      expect(capture.argv).toEqual(["serve", repo, "--no-auto-refresh", "--tools", "core"]);
+
+      const fullCapturePath = path.join(temp, "capture-full.json");
+      await execFileAsync(process.execPath, [wrapper], {
+        cwd: temp,
+        env: {
+          ...process.env,
+          CODEXA_REPO: repo,
+          CODEXA_PLUGIN_AUTO_REFRESH: "0",
+          CODEXA_PLUGIN_TOOLS: "full",
+          CODEXA_PLUGIN_CAPTURE: fullCapturePath
+        },
+        encoding: "utf8"
+      });
+      const fullCapture = JSON.parse(await readFile(fullCapturePath, "utf8")) as { argv: string[] };
+      expect(fullCapture.argv).toEqual(["serve", repo, "--no-auto-refresh", "--tools", "full"]);
     } finally {
       await rm(temp, { recursive: true, force: true });
     }
@@ -142,7 +167,7 @@ describe("Codexa plugin package", () => {
       const capture = JSON.parse(await readFile(capturePath, "utf8")) as { argv: string[]; cwd: string; execPath: string };
       expect(capture.cwd).toBe(workspace);
       expect(capture.execPath).toBe(process.execPath);
-      expect(capture.argv).toEqual(["serve", workspace, "--no-auto-refresh"]);
+      expect(capture.argv).toEqual(["serve", workspace, "--no-auto-refresh", "--tools", "core"]);
     } finally {
       await rm(temp, { recursive: true, force: true });
     }

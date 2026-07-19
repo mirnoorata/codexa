@@ -3,10 +3,11 @@ import { z } from "zod";
 import { MCP_TOOL_CATALOG } from "../mcp-tool-catalog.js";
 import { nextToolNames } from "../query/next-tools.js";
 import { CURRENT_VERIFICATION_PROVENANCE } from "../types.js";
-import type { FreshnessInfo, QueryResult } from "../types.js";
+import type { FreshnessInfo, QueryResult, RefreshInfo } from "../types.js";
 import { compactNextTools, inferMcpDataMode } from "./compaction.js";
-import { deriveMcpActionability, mcpAuthorityBlocked } from "./decision-kernel.js";
-import { MEMORY_RECORDING_MCP_TOOL_NAMES, SOURCE_CONTEXT_MCP_TOOL_NAMES } from "./tool-registry.js";
+import { deriveMcpActionability, mcpAuthorityBlocked, renderMcpConciseText } from "./decision-kernel.js";
+import { boundMcpToolResult } from "./result-budget.js";
+import { DISPATCHABLE_MCP_TOOL_NAMES, MEMORY_RECORDING_MCP_TOOL_NAMES, SOURCE_CONTEXT_MCP_TOOL_NAMES } from "./tool-registry.js";
 
 export const MCP_ACTIONABILITY_VALUES = ["orientation", "edit_ready", "blocked", "review", "verify", "done", "needs_target", "raw_search_better", "raw_search_sufficient", "inspect_first"] as const;
 type McpActionability = (typeof MCP_ACTIONABILITY_VALUES)[number];
@@ -168,16 +169,21 @@ export function createMcpOutputSchema(detail: McpOutputSchemaDetail = mcpOutputS
 
 export function toToolResult(result: { text: string; data: unknown; freshness: unknown; refresh?: unknown }, toolName: string, policyOptions: McpToolPolicyOptions) {
   const envelope = buildMcpEnvelope(result, toolName, policyOptions);
-  return {
+  const envelopeData = isRecord(envelope.data) ? envelope.data : {};
+  const delivery = isRecord(envelopeData.delivery) ? envelopeData.delivery : undefined;
+  const text = delivery?.effectiveFormat === "concise"
+    ? renderMcpConciseText({ text: result.text, data: envelopeData, freshness: envelope.freshness as FreshnessInfo, refresh: envelope.refresh as RefreshInfo })
+    : result.text;
+  return boundMcpToolResult({
     content: [
       {
         type: "text" as const,
-        text: result.text
+        text
       },
       ...envelope.relatedResources.map((resource) => ({ type: "resource_link" as const, ...resource }))
     ],
     structuredContent: envelope
-  };
+  });
 }
 
 function buildMcpEnvelope(result: { data: unknown; freshness: unknown; refresh?: unknown }, toolName: string, policyOptions: McpToolPolicyOptions): Record<string, unknown> & {
@@ -189,16 +195,18 @@ function buildMcpEnvelope(result: { data: unknown; freshness: unknown; refresh?:
   refresh: unknown;
   relatedResources: Array<{ uri: string; name: string; mimeType?: string; description?: string }>;
 } {
-  const data = ensureMcpDataMode(result.data);
-  const record = isRecord(data) ? data : {};
+  const normalizedData = ensureMcpDataMode(result.data);
+  const sourceRecord = isRecord(normalizedData) ? normalizedData : {};
+  const record = routeMcpGuidanceForProfile(sourceRecord, policyOptions.enabledTools);
+  const data = record;
   const mode = typeof record.mode === "string" ? record.mode : "unknown";
   const lifecycle = lifecycleForMcpData(mode, record);
   if (policyOptions.enabledTools) {
     const enabled = policyOptions.enabledTools;
     lifecycle.nextTools = lifecycle.nextTools.filter((tool) => enabled.has(tool));
   }
-  const guidance = guidanceForMcpEnvelope(record, lifecycle.nextTools, policyOptions.enabledTools);
-  const relatedResources = relatedResourcesForMode(mode, record);
+  const guidance = guidanceForMcpEnvelope(record, policyOptions.enabledTools);
+  const relatedResources = relatedResourcesForData(record);
   const worktree = worktreeForMcpData(record);
   const toolPolicy = mcpToolPolicyForTool(toolName, { ...policyOptions, data: record });
   return {
@@ -220,13 +228,63 @@ function buildMcpEnvelope(result: { data: unknown; freshness: unknown; refresh?:
   };
 }
 
+function routeMcpGuidanceForProfile(record: Record<string, unknown>, enabledTools?: ReadonlySet<string>): Record<string, unknown> {
+  if (!enabledTools) return record;
+  const routed = routeNextToolsForProfile(record.nextTools, enabledTools);
+  const sourceKernel = isRecord(record.decisionKernel) ? record.decisionKernel : undefined;
+  const routedKernel = sourceKernel
+    ? routeNextToolsForProfile(sourceKernel.nextTools, enabledTools)
+    : { nextTools: [], dispatchedOperations: [] };
+  const dispatchedOperations = [...new Set([...routed.dispatchedOperations, ...routedKernel.dispatchedOperations])];
+  const systemMessage = dispatchedOperations.length > 0
+    ? `Use capabilities once with action=invoke and operation=${dispatchedOperations[0]}; do not call ${dispatchedOperations[0]} as a direct tool in the core profile.`
+    : record.systemMessage;
+  const decisionKernel = sourceKernel
+    ? {
+        ...sourceKernel,
+        ...(Array.isArray(sourceKernel.nextTools) ? { nextTools: routedKernel.nextTools } : {}),
+        ...(dispatchedOperations.length > 0 ? { systemMessage } : {})
+      }
+    : record.decisionKernel;
+  return {
+    ...record,
+    ...(Array.isArray(record.nextTools) ? { nextTools: routed.nextTools } : {}),
+    ...(dispatchedOperations.length > 0 ? { systemMessage } : {}),
+    ...(decisionKernel === undefined ? {} : { decisionKernel })
+  };
+}
+
+function routeNextToolsForProfile(value: unknown, enabledTools: ReadonlySet<string>): { nextTools: unknown[]; dispatchedOperations: string[] } {
+  if (!Array.isArray(value)) return { nextTools: [], dispatchedOperations: [] };
+  const dispatchable = new Set<string>(DISPATCHABLE_MCP_TOOL_NAMES);
+  const canDispatch = enabledTools.has("capabilities");
+  const dispatchedOperations: string[] = [];
+  const nextTools = value.flatMap((entry) => {
+    const name = typeof entry === "string" ? entry : isRecord(entry) && typeof entry.tool === "string" ? entry.tool : undefined;
+    if (!name) return [];
+    if (enabledTools.has(name)) return [entry];
+    if (!canDispatch || !dispatchable.has(name)) return [];
+    dispatchedOperations.push(name);
+    const requiredInputs = isRecord(entry) && isRecord(entry.requiredInputs) ? entry.requiredInputs : {};
+    const reason = isRecord(entry) && typeof entry.reason === "string" ? entry.reason : `invoke the ${name} operation`;
+    return [{
+      schemaVersion: 1,
+      tool: "capabilities",
+      reason: `Invoke ${name} through the core dispatcher: ${reason}`,
+      requiredInputs: { action: "invoke", operation: name, arguments: requiredInputs },
+      readOnly: isRecord(entry) && typeof entry.readOnly === "boolean" ? entry.readOnly : false,
+      writes: isRecord(entry) && Array.isArray(entry.writes) ? entry.writes : []
+    }];
+  });
+  return { nextTools, dispatchedOperations };
+}
+
 function guidanceForMcpEnvelope(
   record: Record<string, unknown>,
-  lifecycleNextTools: string[],
   enabledTools?: ReadonlySet<string>
 ): { nextTools: unknown[]; systemMessage?: string } {
   const explicitNextTools = Array.isArray(record.nextTools);
-  const rawNextTools = explicitNextTools ? (compactNextTools(record.nextTools) as unknown[]) : lifecycleNextTools;
+  const rawNextTools = explicitNextTools ? (compactNextTools(record.nextTools) as unknown[]) : [];
   const nextTools = enabledTools
     ? rawNextTools.filter((entry) => {
         const name = typeof entry === "string" ? entry : isRecord(entry) && typeof entry.tool === "string" ? entry.tool : undefined;
@@ -234,10 +292,9 @@ function guidanceForMcpEnvelope(
       })
     : rawNextTools;
   const explicitSystemMessage = stringValue(record.systemMessage);
-  const lifecycleFallback = typeof nextTools[0] === "string" ? (nextTools[0] as string) : undefined;
   return {
     nextTools,
-    systemMessage: explicitSystemMessage ?? (explicitNextTools ? undefined : lifecycleFallback)
+    systemMessage: explicitSystemMessage
   };
 }
 
@@ -376,7 +433,7 @@ function lifecycleForMcpData(mode: string, data: Record<string, unknown>): {
     ...stringArray(data.gaps).filter((gap) => gap.startsWith("worktree state unavailable")).slice(0, 2)
   ].filter((entry): entry is string => Boolean(entry));
   const snapshotStatus = snapshotBlock ? "blocked" : snapshot ? "saved" : snapshotLoad ? "loaded" : mode === "post_edit_review" ? "missing-or-ambiguous" : undefined;
-  const nextTools = nextToolsForMode(mode, data, snapshotStatus);
+  const nextTools = nextToolNames(data.nextTools);
   return {
     phase: lifecyclePhaseForMode(mode),
     taskId,
@@ -401,21 +458,6 @@ function preconditionsForMode(mode: string, snapshotStatus: string | undefined):
   if (mode === "post_edit_review") return snapshotStatus === "loaded" || snapshotStatus === "saved" ? ["saved change_plan snapshot loaded"] : ["exact taskId is recommended when more than one snapshot exists"];
   if (mode === "test_plan") return ["use when change_plan or post_edit_review leaves verification guidance unresolved"];
   if (mode === "proof_card") return ["use for policy, formal audit, release, or artifact handoff proof", "reported commands/tests are classified as evidence but are not executed by Codexa"];
-  return [];
-}
-
-function nextToolsForMode(mode: string, data: Record<string, unknown>, snapshotStatus: string | undefined): string[] {
-  const explicitNextTools = Array.isArray(data.nextTools);
-  const structured = nextToolNames(data.nextTools);
-  if (explicitNextTools) {
-    return structured;
-  }
-  if (mode === "focus_brief" || mode === "session_context") return ["task_brief", "search"];
-  if (mode === "task_brief" || mode === "context_pack") return ["change_plan"];
-  if (mode === "change_plan") return snapshotStatus === "blocked" ? ["search", "task_brief"] : ["post_edit_review"];
-  if (mode === "post_edit_review") return [];
-  if (mode === "test_plan") return stringArray(data.verificationCommands).length > 0 ? ["post_edit_review"] : ["search"];
-  if (mode === "proof_card") return [];
   return [];
 }
 
@@ -454,31 +496,8 @@ function worktreeForMcpData(data: Record<string, unknown>): { knownClean: boolea
   };
 }
 
-function relatedResourcesForMode(mode: string, data: Record<string, unknown>): Array<{ uri: string; name: string; mimeType?: string; description?: string }> {
-  const resources = [
-    {
-      uri: "codexa://repo/codebase/codex-contract.md",
-      name: "Codexa Codex contract",
-      mimeType: "text/markdown",
-      description: "Automatic-use rules for Codex in this repository"
-    }
-  ];
-  if (mode === "repo_map" || mode === "focus_brief" || mode === "session_context" || mode === "task_brief" || mode === "context_pack") {
-    resources.push({
-      uri: "codexa://repo/codebase/repo-map.md",
-      name: "Codexa repo map",
-      mimeType: "text/markdown",
-      description: "Ranked repository map generated by Codexa"
-    });
-  }
-  if (mode === "test_plan" || mode === "post_edit_review" || mode === "change_plan" || mode === "proof_card") {
-    resources.push({
-      uri: "codexa://repo/codebase/test-map.md",
-      name: "Codexa test map",
-      mimeType: "text/markdown",
-      description: "Detected tests and test relationships"
-    });
-  }
+function relatedResourcesForData(data: Record<string, unknown>): Array<{ uri: string; name: string; mimeType?: string; description?: string }> {
+  const resources: Array<{ uri: string; name: string; mimeType?: string; description?: string }> = [];
   const delivery = isRecord(data.delivery) ? data.delivery : undefined;
   const resultUri = stringValue(delivery?.resultUri);
   if (resultUri?.match(/^codexa:\/\/repo\/mcp-results\/rr_[a-f0-9]{32}\/mr_[a-f0-9]{64}$/u)) {
