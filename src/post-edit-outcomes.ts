@@ -25,7 +25,7 @@ import type {
   VerificationArtifactSummary
 } from "./types.js";
 import { stableId } from "./util.js";
-import { workspaceStateDigest } from "./workspace-state.js";
+import { exactWorkspaceStateDigest, workspaceStateDigest } from "./workspace-state.js";
 
 type OutcomeCommandReport = VerificationCommandReport & { runner?: AutoVerifyReportRunner };
 
@@ -291,6 +291,10 @@ export async function savePostEditOutcome(input: PostEditOutcomeInput): Promise<
   const repoRoot = path.resolve(input.repoRoot);
   const createdAt = new Date().toISOString();
   const outcome = buildPostEditOutcome(input, createdAt);
+  // Persist the stricter completion identity when the checkout can be observed
+  // exactly. The legacy content-only digest remains useful for ordinary outcome
+  // records, but completion probes will never trust it as a skip authority.
+  outcome.workspaceStateDigest = (await exactWorkspaceStateDigest(repoRoot, input.freshness)) ?? outcome.workspaceStateDigest;
   const dir = path.join(repoRoot, OUTCOME_DIR);
   await fs.mkdir(dir, { recursive: true });
   const outcomePath = path.join(dir, `${outcome.outcomeId}.json`);
@@ -350,7 +354,10 @@ export async function latestCompletedPostEditReviewMatches(input: {
   if (pointer.completionAuthority !== "complete" && pointer.completionAuthority !== "advisory_inspect") {
     return false;
   }
-  const currentDigest = workspaceStateDigest(input.freshness);
+  const currentDigest = await exactWorkspaceStateDigest(repoRoot, input.freshness);
+  if (!currentDigest) {
+    return false;
+  }
   return (
     pointer.taskId === input.taskId &&
     pointer.planRevision === input.planRevision &&
