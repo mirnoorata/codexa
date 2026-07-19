@@ -35,12 +35,14 @@ export async function rawSearch(repoRoot: string, query: string | string[], limi
     maxBufferBytes: RG_MAX_BUFFER_BYTES
   });
   const result = isMissingCommand(rgResult) ? await gitGrep(repoRoot, patterns) : rgResult;
-  const hits = parseRgHits(result.stdout, limit, patterns);
+  const parsedHits = parseRgHits(result.stdout, limit + 1, patterns);
+  const overflowed = parsedHits.length > limit;
+  const hits = parsedHits.slice(0, limit);
   const files = uniqueSorted(hits.map((hit) => hit.path));
   return {
     hits,
     files,
-    sufficient: result.ok && exactish(patterns, hits) && files.length <= 3 && hits.length <= 20,
+    sufficient: result.ok && !overflowed && exactish(patterns, hits) && files.length <= 3 && hits.length <= 20,
     command: result === rgResult ? command : `${gitGrepCommand(patterns)} (fallback; rg unavailable)`,
     patterns
   };
