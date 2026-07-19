@@ -26,7 +26,8 @@ The first milestone used a private application repository as the acceptance proj
   `.codex/codebase/codex-contract.md` plus SessionStart packet. It tells Codex
   when to call `change_plan` directly, when ambiguity justifies `search` or
   `task_brief`, and when formal proof or advanced graph inspection is actually
-  needed, avoiding a noisy fixed lifecycle at startup.
+  needed, avoiding a noisy fixed lifecycle at startup. It does not prescribe
+  automatic chaining after any result.
 - The v1 graph is in-memory and serialized to JSON/NDJSON. No graph DB, vector
   DB, always-on LSP daemon, formal solver, web UI, or generated wiki subsystem
   ships in v1. Embeddings and LSP are optional side lanes that are disabled by
@@ -125,10 +126,12 @@ they do not override an explicit git repository argument.
 `init` is the user-facing setup command. It writes the repo-local `.codex/config.toml`
 MCP entry, writes/updates the SessionStart and edit-loop hooks, and indexes the repo unless
 `--no-index` is passed. `--tools core` launches `serve --tools core` and also writes a Codex
-`enabled_tools` hint, exposing only the primary-loop tools (plus `impact` and `freshness`) to
-cut per-turn schema token cost. The server-side profile remains authoritative if a client
-ignores the hint. Its primary `capabilities` dispatcher preserves access to every advanced
-operation through the same operation-specific schema and handler. `--agents-md`
+`enabled_tools` hint, advertising only `search`, `change_plan`, and
+`capabilities`. This reduces the decoded `tools/list` JSON surface; it is not a
+measurement of model tokens, price, or provider-specific wire serialization.
+The server-side profile remains authoritative if a client ignores the hint.
+The `capabilities` dispatcher preserves access to every non-core operation
+through the same operation-specific schema and handler. `--agents-md`
 (opt-in) writes a managed Codexa workflow block into the repo's `AGENTS.md` for Codex, and
 `--claude-md` (opt-in) writes the same managed block into `CLAUDE.md` for Claude Code; both share
 one fail-closed managed-doc writer that aborts on unbalanced markers. After `codexa init`,
@@ -136,9 +139,10 @@ future Codex sessions should only need `focus on <repo>`; Codexa is discovered f
 `.codex` config.
 `index` writes `.codex/codebase/*` inside the target repo. `watch` keeps those
 artifacts live during active edit sessions with debounced filesystem events plus
-a fallback git freshness poll. Bare `serve` keeps the historical full stdio
-surface so existing launchers do not lose direct tool names on upgrade; fresh
-managed installs pass `serve --tools core` explicitly. It
+a fallback git freshness poll. Bare `serve` and fresh managed installs both use
+the core stdio surface. Existing clients that require every direct tool name
+can opt into `serve --tools full`; all logical operations remain available in
+core through `capabilities`. It
 must keep stdout protocol-clean; logs go to stderr. With `--transport http`, it
 starts an optional Streamable HTTP MCP endpoint, defaulting to
 `http://127.0.0.1:8729/mcp`.
@@ -223,8 +227,9 @@ deterministic and small:
 - context reflection: every search/impact/context-pack response includes a
   quality label, evidence counts, and a recommendation for whether to trust,
   verify, or narrow the packet
-- token-budget discipline: repo-map/context-pack outputs fit explicit budgets and
-  prefer ranked files plus key symbols over raw graph dumps
+- result-budget discipline: repo-map/context-pack outputs fit explicit
+  serialized-byte budgets and prefer ranked files plus key symbols over raw
+  graph dumps
 
 Fallback context is never presented as evidence-backed context. If Codexa cannot
 find a confident file/symbol/diff focus, it says so and recommends raw search or
@@ -232,9 +237,12 @@ an explicit target.
 
 Candidate test commands are ranked hints, not authoritative execution contracts. They include command provenance through package/Python metadata and are omitted when Codexa cannot find evidence for a runner.
 
-`brief` is the preferred edit-context query once the target is known. For
-ambiguous tasks, `search` comes first, then `brief` uses the same compact packet
-format as `context-pack` with a smaller task budget.
+`brief` is an optional edit-context query once the target is known but direct
+source inspection is still insufficient. For ambiguous tasks, `search` is the
+discovery call; if its raw hits and subsequent source reads are sufficient, the
+caller stops instead of automatically requesting a brief. When separately
+justified, `brief` uses the same compact packet format as `context-pack` with a
+smaller task budget.
 
 `context-pack` composes existing facts rather than inventing a second wiki layer. It accepts a task, focus files, symbols, query text, current diff inclusion, and a token budget, then returns the highest-utility files, bounded impact expansion, change groups, snippets, tests, freshness, warnings, known gaps, baseline search noise, and next-read order. Explicit files/symbols and small focused diffs seed bounded impact expansion, so likely callers and covering tests appear in the same packet instead of requiring a separate `impact` call for ordinary tasks.
 
@@ -242,8 +250,8 @@ format as `context-pack` with a smaller task budget.
 without requiring file or symbol seeds. They classify intent, run a small BM25
 retrieval pass over indexed paths/symbols/imports/usages/risks, group likely
 subsystems, explain matched terms, list read-first files, include likely tests,
-and recommend the next MCP call. Decoy/mock/fixture-looking files are filtered
-unless the query asks for them.
+and provide a next source read or conditional MCP escalation. Decoy/mock/
+fixture-looking files are filtered unless the query asks for them.
 
 `symbol_context` is the primary symbol inspection surface. It returns the
 definition, containing symbol/file, direct callers, direct callees, importers,
@@ -395,8 +403,9 @@ Codexa persists first-class graph facts rather than exposing only file tables.
 - `TYPE_EXPORTS`
 
 Graph tools return bounded edge lists and file sets with freshness and evidence
-quality labels. They are intended for follow-up precision after a task brief, not
-for dumping the entire graph into context.
+quality labels. They are intended for explicitly requested relationship
+precision, not as an automatic follow-up to a task brief or a way to dump the
+entire graph into context.
 
 `EdgeEvidenceV1` is the compact public DTO for graph claims. It carries schema
 version, edge id/kind, endpoints, paths or symbol ids when available, source,
@@ -507,7 +516,7 @@ related workflows, likely tests, and a safe change recipe.
 
 ### MCP Server
 
-The MCP context server exposes:
+The full MCP context server exposes:
 
 ```text
 repo_map
@@ -534,14 +543,19 @@ session_memory
 freshness
 ```
 
-Tool responses are bounded and include freshness, provenance, confidence labels,
-relationship evidence where relevant, next-call guidance, and a value estimate
-where the query can be compared with raw search. MCP tools expose `outputSchema`
-for their structured result wrapper. When a response includes structured
-`nextTools`, that array is authoritative for agent guidance: each entry names
-the tool, reason, required inputs, whether it is read-only, and any local
-cache/snapshot writes. Broad focus/session packets may return a simpler
-`nextCall`. The prose `systemMessage` is only a compact convenience. Tool
+The default core profile advertises only `search`, `change_plan`, and
+`capabilities`. The dispatcher validates and invokes every non-core operation,
+so core reduces advertisement and capability-discovery payload without changing
+the operation handlers.
+
+Tool responses are bounded and include freshness, provenance, confidence
+labels, relationship evidence where relevant, and a value estimate where the
+query can be compared with raw search. MCP tools expose `outputSchema` for
+their structured result wrapper. A response may include conditional
+`nextTools` or `nextCall` guidance, but it never authorizes automatic chaining:
+the caller must stop when source is sufficient and justify another Codexa call
+from unresolved ambiguity, material edit risk, or a missing managed review
+gate. The prose `systemMessage` is only a compact convenience. Tool
 annotations are non-destructive and closed-world unless the server is configured
 for OpenAI semantic embeddings. When auto-refresh is disabled, context tools are
 strict filesystem reads and advertise `readOnlyHint: true` unless they
@@ -556,25 +570,32 @@ cache-write semantics because `saveSnapshot=true` writes
 never mutate source files.
 
 The MCP handshake reports the `package.json` version and server-level
-instructions. Those instructions surface the adaptive primary Codexa loop
-(`change_plan(saveSnapshot) -> edit/run planned verification -> post_edit_review`,
-with orientation, a dedicated test plan, and formal proof added only when their
-gates apply), the source
+instructions. Those instructions surface the selective Codexa policy: exact or
+low-risk work can use zero calls; normal bounded work usually uses no more than
+two; and only an ambiguous, materially risky task without a managed post-edit
+gate uses the three-call `search -> change_plan -> post_edit_review` exception.
+They also state the source
 mutation prohibition, semantic-search conditions, per-tool output-cost hints
 (each tool description states compact/medium/large), and the expectation that
 heuristic-heavy packets are verified against source before editing. Structured
 results are budget-compacted with truncation records naming dropped fields.
-`CODEXA_MCP_STRUCTURED_BUDGET_BYTES` is a clamped byte budget for the
-`structuredContent.data` subobject, not the complete MCP result; mandatory
-envelope metadata remains outside that budget and product telemetry reports the
-complete result as `totalBytes`. The immutable resource packet and explicit
-detailed response share one canonical detailed projection and target (512 KiB
-by default, or the same explicit override), so delivery choice does not change
-evidence capacity. Analysis tools with expandable evidence accept
-automatic, concise, or detailed delivery; the already-bounded `freshness` result
-does not need a format switch. Automatic delivery preserves a bounded semantic
-decision receipt and stores the detailed packet behind a content-addressed MCP
-resource unless a fail-closed escalation returns it inline.
+`CODEXA_MCP_STRUCTURED_BUDGET_BYTES` is a clamped serialized UTF-8 JSON-byte
+budget for the `structuredContent.data` subobject, not the complete MCP result;
+mandatory envelope metadata remains outside that budget and product telemetry
+reserializes the complete decoded result as `totalBytes`. Analysis tools with
+expandable evidence accept automatic, concise, or detailed delivery; the
+already-bounded `freshness` result does not need a format switch. Automatic and
+explicit concise delivery always stays concise. It stores a bounded detailed
+packet behind a content-addressed MCP resource when persistence succeeds. If
+omitted detail is decision-critical and no resource URI is available, the
+receipt fails closed and requests explicit detailed output. Explicit detailed
+output is inline but remains subject to the hard total-result budget.
+
+The deterministic transport benchmark uses the same reserialization of decoded
+JSON as a provider-agnostic byte proxy. It does not measure model input tokens,
+price, or provider-specific wire serialization. Clean-fixture evidence supports
+reduced advertisement plus capability-discovery bytes and a hard worst-case
+result bound; ordinary first and repeated task-result bytes were unchanged.
 
 Stdio remains the default transport for local Codex CLI use. Codexa also supports
 explicit Streamable HTTP with `codexa serve <repo> --transport http`, defaulting
@@ -629,8 +650,11 @@ lease under the same cross-process retention lock as pruning. The repository
 keeps at most 256 result records and 256 lease files. Every result pinned by a
 live server process is non-evictable for that session; unpinned records are
 LRU-prunable. A 257th unique pin, 257th lease, route-capacity failure, or any
-persistence failure returns the detailed packet inline without publishing a
-URI. Graceful shutdown removes that session's leases. Crash-orphaned leases
+persistence failure leaves the response within the concise budget without
+publishing a URI. The receipt stays actionable if its retained evidence is
+sufficient; if omitted detail is required for a safe decision, it blocks and
+requests bounded explicit detailed output. Graceful shutdown removes that
+session's leases. Crash-orphaned leases
 are reclaimed only after the stale window and a process-identity check. The
 retention lock likewise records an exact owner identity and cannot be stolen
 solely because 30 seconds elapsed; stale cleanup claims the old lock directory
@@ -648,10 +672,11 @@ distinguish an untouched valid stale stream from current evidence.
 
 MCP prompts are intentionally workflow-shaped and small: `impact_before_edit`,
 `dirty_diff_review`, `snapshot_edit_loop`, and `targeted_test_plan`. The
-edit/review prompts prefer `change_plan saveSnapshot` before source edits and
-`post_edit_review` after edits when a snapshot exists, while reserving separate
-`impact`, `diff_impact`, or `test_plan` calls for medium/low-quality packets,
-broad fanout, or high-risk public contracts.
+edit/review prompts prefer `change_plan saveSnapshot` before materially risky
+source edits. After editing, repositories initialized with `codexa init` hooks
+and the Claude plugin already own post-edit review; hookless hosts may make one
+manual `post_edit_review`. Separate `impact`, `diff_impact`, or `test_plan`
+calls are reserved for unresolved evidence needs, not automatically chained.
 
 MCP exposes no source mutation or manual reindex tool and never edits source
 files, but context tool handlers can rebuild the generated `.codex/codebase/`
@@ -678,6 +703,11 @@ startup/resume. The helper prints cheap status by default; setting
 `CODEXA_SESSIONSTART_CONTEXT=1` also prints a bounded no-refresh `context-pack`
 preview. It does not mutate source files, but context commands can refresh
 generated Codexa cache artifacts when auto-refresh is enabled.
+
+The Codex plugin bundle does not ship hooks and must not claim this managed
+review gate; it is hookless unless the repository is separately initialized.
+The Claude plugin does ship its own Stop hook and marks that gate in its MCP
+launcher so `change_plan` does not recommend a duplicate manual review.
 
 When Codex edit hooks are available, init also writes `hook-pre-edit` and
 `hook-post-edit` entries for edit tools. The pre-edit helper is intentionally a

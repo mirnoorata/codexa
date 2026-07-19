@@ -12,7 +12,7 @@ import { buildIndex } from "../src/indexer.js";
 import { MCP_TOOL_CATALOG, PRIMARY_CODEX_LOOP, compactNonPostEditMcpResult, compactPostEditMcpResult } from "../src/mcp.js";
 import { conciseText } from "../src/mcp/compaction.js";
 import { toToolResult } from "../src/mcp/envelope.js";
-import { CORE_PROFILE_TOOL_NAMES, MCP_TOOL_NAMES, MCP_TOOL_REGISTRY } from "../src/mcp/tool-registry.js";
+import { CORE_PROFILE_TOOL_NAMES, DISPATCHABLE_MCP_TOOL_NAMES, MCP_TOOL_NAMES, MCP_TOOL_REGISTRY } from "../src/mcp/tool-registry.js";
 import { MCP_REGISTERED_TOOL_NAMES } from "../src/mcp/tools.js";
 import { loadSkillHints } from "../src/skill-hints.js";
 import { CURRENT_VERIFICATION_PROVENANCE } from "../src/types.js";
@@ -27,16 +27,15 @@ it("keeps lifecycle envelope fallbacks adaptive and honors explicit terminal gui
       options
     ).structuredContent as { lifecycle: { preconditions: string[]; nextTools: string[] } };
     expect(changePlan.lifecycle.preconditions.join(" ")).toContain("explicit bounded target");
-    expect(changePlan.lifecycle.nextTools).toEqual(["post_edit_review"]);
+    expect(changePlan.lifecycle.nextTools).toEqual([]);
 
     const completedReview = toToolResult(
       { text: "review complete", freshness: freshnessFixture(), data: { mode: "post_edit_review", verdict: "continue", nextTools: [] } },
       "post_edit_review",
       options
-    ).structuredContent as { lifecycle: { nextTools: string[] }; nextTools?: unknown[]; toolPolicy?: { nextToolUse?: string[] } };
+    ).structuredContent as { lifecycle: { nextTools: string[] }; nextTools?: unknown[] };
     expect(completedReview.lifecycle.nextTools).toEqual([]);
     expect(completedReview.nextTools).toEqual([]);
-    expect(completedReview.toolPolicy?.nextToolUse).toEqual([]);
 
     const replanReview = toToolResult(
       { text: "replan", freshness: freshnessFixture(), data: { mode: "post_edit_review", verdict: "replan", nextTools: [{ tool: "change_plan" }] } },
@@ -54,19 +53,25 @@ it("keeps lifecycle envelope fallbacks adaptive and honors explicit terminal gui
     expect(proof.lifecycle.nextTools).toEqual([]);
   });
 
-it("keeps the primary MCP happy path small and demotes graph/workflow tools", () => {
+it("keeps the core MCP surface selective while preserving every logical operation", () => {
     const primaryTools = MCP_TOOL_CATALOG.filter((tool) => tool.tier === "primary").map((tool) => tool.name);
 
     expect(primaryTools).toEqual(["session_context", "search", "task_brief", "change_plan", "post_edit_review", "test_plan", "proof_card", "capabilities"]);
+    expect(CORE_PROFILE_TOOL_NAMES).toEqual(["search", "change_plan", "capabilities"]);
+    expect(MCP_TOOL_NAMES).toHaveLength(23);
+    expect(DISPATCHABLE_MCP_TOOL_NAMES).toEqual(MCP_TOOL_NAMES.filter((name) => !CORE_PROFILE_TOOL_NAMES.includes(name as (typeof CORE_PROFILE_TOOL_NAMES)[number])));
+    expect(DISPATCHABLE_MCP_TOOL_NAMES).toEqual(expect.arrayContaining(["session_context", "task_brief", "post_edit_review", "workflow_path"]));
+    expect(PRIMARY_CODEX_LOOP).toContain("source tools with zero Codexa calls");
+    expect(PRIMARY_CODEX_LOOP).toContain("post_edit_review only when no deterministic host gate owns review");
     expect(MCP_TOOL_CATALOG.find((tool) => tool.name === "workflow_path")).toMatchObject({ tier: "advanced" });
     expect(MCP_TOOL_CATALOG.find((tool) => tool.name === "change_plan")).toMatchObject({
       useWhen: expect.stringContaining("saveSnapshot=true"),
-      avoidWhen: expect.stringContaining("post_edit_review")
+      avoidWhen: expect.stringContaining("exact, local, low-risk edit")
     });
     expect(MCP_TOOL_CATALOG.find((tool) => tool.name === "search")).toMatchObject({
       readOnly: false,
       writeEffects: expect.stringContaining("index-cache-if-auto-refresh"),
-      useWhen: expect.stringContaining("target is unclear")
+      useWhen: expect.stringContaining("target is ambiguous")
     });
     expect(MCP_TOOL_CATALOG.find((tool) => tool.name === "post_edit_review")?.nextToolUse).toEqual([]);
     expect(MCP_TOOL_CATALOG.find((tool) => tool.name === "capabilities")?.nextToolUse).toEqual([]);
@@ -74,7 +79,7 @@ it("keeps the primary MCP happy path small and demotes graph/workflow tools", ()
     expect(MCP_REGISTERED_TOOL_NAMES).toEqual(MCP_TOOL_NAMES);
     expect(MCP_TOOL_REGISTRY.map((tool) => ({ name: tool.name, title: tool.title, description: tool.description }))).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ name: "change_plan", title: "Codexa change plan", description: expect.stringContaining("saveSnapshot=true") }),
+        expect.objectContaining({ name: "change_plan", title: "Codexa change plan", description: expect.stringContaining("Plan a non-trivial code change") }),
         expect.objectContaining({ name: "search", title: "Codexa hybrid semantic search", description: expect.stringContaining("Search the codebase") }),
         expect.objectContaining({ name: "post_edit_review", title: "Codexa post-edit review", description: expect.stringContaining("Review code changes for drift") }),
         expect.objectContaining({ name: "proof_card", title: "Codexa proof card", description: expect.stringContaining("Final proof packet") }),
@@ -142,7 +147,7 @@ it("routes a focus row written AFTER server spawn (no frozen configured-root pre
     // configured workspace root.
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace, "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-late-focus-test", version: "0.1.0" });
@@ -183,7 +188,7 @@ it("fails closed when explicit workspace routing matches no focus row", async ()
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace, "--workspace-focus-file", focusFile],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace, "--workspace-focus-file", focusFile, "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-focus-miss-test", version: "0.1.0" });
@@ -226,7 +231,7 @@ it("routes unscoped workspace default despite active-session rows", async () => 
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace, "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-working-default-routing-test", version: "0.1.0" });
@@ -266,7 +271,7 @@ it("fails closed when active project focus conflicts with workspace default", as
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace, "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-working-top-conflict-test", version: "0.1.0" });
@@ -322,7 +327,7 @@ it("exposes configured skill hints and surfaces path-matched skills in task brie
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh"],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh", "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-skill-hints-test", version: "0.1.0" });
@@ -408,7 +413,7 @@ it("reports invalid skill hint config through MCP output", async () => {
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh"],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh", "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-skill-hints-invalid-test", version: "0.1.0" });
@@ -471,7 +476,7 @@ it("ignores terminal composite session statuses when checking workspace conflict
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace, "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-working-merged-live-test", version: "0.1.0" });
@@ -514,7 +519,7 @@ it("treats workspace-root default subdirectories as configured-root defaults", a
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace, "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-working-subdir-default-test", version: "0.1.0" });
@@ -559,7 +564,7 @@ it("falls back to active session rows when workspace defaults are invalid", asyn
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace, "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-working-invalid-default-routing-test", version: "0.1.0" });
@@ -603,7 +608,7 @@ it("does not treat workspace-level active project focus prose as the focused rep
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace, "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-working-prose-focus-routing-test", version: "0.1.0" });
@@ -646,7 +651,7 @@ it("keeps workspace-root defaults below ambiguous active-session rows", async ()
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace, "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-working-root-default-ambiguity-test", version: "0.1.0" });
@@ -689,7 +694,7 @@ it("routes workspace default despite verified live session rows", async () => {
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace, "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-working-verified-status-test", version: "0.1.0" });
@@ -731,7 +736,7 @@ it("fails closed when active-session rows are ambiguous without a workspace sess
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace, "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-working-ambiguous-active-test", version: "0.1.0" });
@@ -776,7 +781,7 @@ it("routes ambiguous workspace active rows through an explicit workspace session
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace, "--workspace-session", "codex-target"],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace, "--workspace-session", "codex-target", "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-working-selected-session-test", version: "0.1.0" });
@@ -828,7 +833,7 @@ it("fails closed when a workspace session selector has no active row", async () 
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace, "--tools", "full"],
       env: { PATH: process.env.PATH ?? "", CODEXA_WORKSPACE_SESSION: "codex-missing-session" },
       stderr: "pipe"
     });
@@ -876,7 +881,7 @@ it("routes a shared workspace WORKING.md shape through an explicit current Codex
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace, "--workspace-session", "codex-current-session"],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace, "--workspace-session", "codex-current-session", "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-srv-working-shape-routing-test", version: "0.1.0" });
@@ -921,7 +926,7 @@ it("routes configured workspace roots through workspace default despite other ac
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace, "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-configured-workspace-default-routing-test", version: "0.1.0" });
@@ -969,7 +974,7 @@ it("routes configured workspace roots through the active project focus line when
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace, "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-configured-workspace-focus-routing-test", version: "0.1.0" });
@@ -1016,7 +1021,7 @@ it("fails closed when active project focus conflicts with another active session
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace, "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-configured-workspace-conflict-test", version: "0.1.0" });

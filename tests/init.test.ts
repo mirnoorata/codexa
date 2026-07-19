@@ -64,6 +64,7 @@ describe("Codexa project init", () => {
     expect(config).not.toContain("codex_hooks");
     expect(config).toContain(`[mcp_servers.${result.serverName}]`);
     expect(config).toContain(`args = ["/opt/codexa/dist/cli.js", "serve", "${repo}", "--auto-refresh", "--tools", "core"]`);
+    expect(config).toContain('env = { CODEXA_MANAGED_POST_EDIT = "1" }');
 
     const hooks = JSON.parse(await readFile(path.join(repo, ".codex/hooks.json"), "utf8")) as {
       hooks: {
@@ -85,9 +86,10 @@ describe("Codexa project init", () => {
     const summary = await sessionStartSummary(repo, false);
     expect(summary).toContain(`Codexa context for ${repo}`);
     expect(summary).toContain("Codexa MCP is ready");
-    expect(summary).toContain("primary loop change_plan(saveSnapshot) -> edit/run planned verification -> post_edit_review");
-    expect(summary).toContain("test_plan only when verification guidance is unresolved");
-    expect(summary).not.toContain("broad task -> focus_brief/session_context");
+    expect(summary).toContain("exact/local work -> source tools with zero Codexa calls");
+    expect(summary).toContain("usually no more than two");
+    expect(summary).toContain("ambiguous materially risky edit on a hookless host");
+    expect(summary).not.toContain("primary loop change_plan(saveSnapshot) -> edit/run planned verification -> post_edit_review");
   });
 
   it("can create the local policy pack during init without overwriting existing policy files", async () => {
@@ -164,20 +166,23 @@ describe("Codexa project init", () => {
     });
 
     const config = await readFile(path.join(repo, ".codex/config.toml"), "utf8");
-    expect(config).toContain("enabled_tools = [");
-    expect(config).toContain('"session_context"');
-    expect(config).toContain('"post_edit_review"');
-    expect(config).toContain('"capabilities"');
-    expect(config).toContain('"impact"');
+    expect(config).toContain('enabled_tools = ["search", "change_plan", "capabilities"]');
+    expect(config).not.toContain('"session_context"');
+    expect(config).not.toContain('"post_edit_review"');
+    expect(config).not.toContain('"impact"');
     expect(config).toContain("startup_timeout_sec = 20");
 
     expect(result.agentsMdPath).toBe(path.join(repo, "AGENTS.md"));
     const agentsMd = await readFile(path.join(repo, "AGENTS.md"), "utf8");
     expect(agentsMd).toContain("Keep this content.");
     expect(agentsMd).toContain("<!-- >>> codexa managed -->");
-    expect(agentsMd).toContain("change_plan");
+    expect(agentsMd).toContain("use source tools and tests directly with zero Codexa calls");
+    expect(agentsMd).toContain("call `search` once");
+    expect(agentsMd).toContain("usually needs no more than two Codexa calls");
+    expect(agentsMd).toContain("ambiguous materially risky edit on a hookless host");
+    expect(agentsMd).toContain("no deterministic host hook/completion gate already owns review");
     expect(agentsMd).toContain("Call `test_plan` only when verification guidance remains unresolved");
-    expect(agentsMd).toContain("use `capabilities` to discover or invoke advanced operations in core mode");
+    expect(agentsMd).toContain("use `capabilities` only for a concretely triggered non-core operation");
     expect(agentsMd).not.toContain("then `test_plan`");
 
     // Re-run init: managed block must be replaced, not duplicated.
@@ -436,7 +441,28 @@ describe("Codexa project init", () => {
     const config = await readFile(path.join(repo, ".codex/config.toml"), "utf8");
     expect(config).not.toContain("hooks = true");
     expect(config).not.toContain("codex_hooks");
+    expect(config).not.toContain("CODEXA_MANAGED_POST_EDIT");
     await expect(readFile(path.join(repo, ".codex/hooks.json"), "utf8")).rejects.toThrow();
+  });
+
+  it("revokes the managed-review marker before a hook update that fails", async () => {
+    const repo = await createInitRepo();
+    await initializeProject(repo, {
+      cliPath: "/opt/context/dist/cli.js",
+      index: false
+    });
+    const configPath = path.join(repo, ".codex/config.toml");
+    const hooksPath = path.join(repo, ".codex/hooks.json");
+    expect(await readFile(configPath, "utf8")).toContain("CODEXA_MANAGED_POST_EDIT");
+    await writeFile(hooksPath, "{ malformed hooks", "utf8");
+
+    await expect(initializeProject(repo, {
+      cliPath: "/opt/context/dist/cli.js",
+      index: false
+    })).rejects.toThrow(/Cannot update .*hooks\.json/u);
+
+    expect(await readFile(configPath, "utf8")).not.toContain("CODEXA_MANAGED_POST_EDIT");
+    expect(await readFile(hooksPath, "utf8")).toBe("{ malformed hooks");
   });
 
   it("preserves unmanaged hooks and their feature flag when no-hooks removes only Codexa hooks", async () => {
@@ -484,6 +510,7 @@ describe("Codexa project init", () => {
     const config = await readFile(path.join(repo, ".codex/config.toml"), "utf8");
     expect(config).toContain("hooks = true");
     expect(config).not.toContain("codex_hooks");
+    expect(config).not.toContain("CODEXA_MANAGED_POST_EDIT");
     const hooks = JSON.parse(await readFile(path.join(repo, ".codex/hooks.json"), "utf8")) as {
       hooks: {
         SessionStart: Array<{ hooks: Array<{ command: string }> }>;

@@ -30,7 +30,7 @@ it("reports package version and Codexa loop instructions during MCP initializati
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh"],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh", "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-server-info-test", version: "0.1.0" });
@@ -188,7 +188,7 @@ it("can disable MCP session-memory auto-recording while retaining truthful resul
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh", "--session-memory", "off"],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh", "--session-memory", "off", "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-test", version: "0.1.0" });
@@ -218,7 +218,7 @@ it("does not claim session-memory writes when only auto-refresh cache writes are
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--session-memory", "off"],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--session-memory", "off", "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-test", version: "0.1.0" });
@@ -228,7 +228,7 @@ it("does not claim session-memory writes when only auto-refresh cache writes are
       const policy = (result.structuredContent as { toolPolicy?: { readOnly?: boolean; writeEffects?: string } }).toolPolicy;
       expect(policy).toMatchObject({
         readOnly: false,
-        writeEffects: "index-cache-if-auto-refresh"
+        writeEffects: "mcp-detailed-result-cache+index-cache-if-auto-refresh"
       });
       expect(policy?.writeEffects).not.toContain("session-memory-auto");
       await expect(readdir(path.join(repo, ".codex/cache/codexa-session-memory"))).rejects.toThrow();
@@ -297,7 +297,7 @@ it("marks semantic OpenAI-capable MCP tools as open-world, including post_edit_r
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh", "--semantic", "--semantic-provider", "openai"],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh", "--semantic", "--semantic-provider", "openai", "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-test", version: "0.1.0" });
@@ -329,7 +329,7 @@ it("surfaces missing advertised artifacts as resource errors", async () => {
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh"],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh", "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-test", version: "0.1.0" });
@@ -428,8 +428,11 @@ it("returns a bounded missing-index packet instead of a tool error when auto-ref
     const client = new Client({ name: "codexa-test", version: "0.1.0" });
     await client.connect(transport);
     const result = await client.callTool({ name: "focus_brief", arguments: { task: "start work", limit: 4 } });
-    expect(JSON.stringify(result)).toContain("Codexa index missing");
-    expect(JSON.stringify(result)).toContain("missing-index");
+    expect(result.structuredContent).toMatchObject({
+      actionability: "blocked",
+      freshness: { missing: true, reason: "missing-index" },
+      data: { delivery: { effectiveFormat: "concise", escalationReason: "index-missing" } }
+    });
     await client.close();
   });
 

@@ -28,6 +28,7 @@ import {
   repoMapQuery,
   searchQuery,
   statusQuery,
+  symbolContextQuery,
   taskBriefQuery,
   testPlanQuery,
   workflowPathQuery
@@ -47,6 +48,7 @@ it("answers broad focus, graph, workflow, dependency, and change-plan queries", 
     const fallbackFocus = await focusBriefQuery(repo, { task: "narlple frondicate zindle", diff: false, limit: 4, tokenBudget: 900 }, { autoRefresh: false });
     expect((fallbackFocus.data as { quality: { counts: { fallback: number; derived: number } } }).quality.counts.fallback).toBeGreaterThan(0);
     expect((fallbackFocus.data as { quality: { counts: { fallback: number; derived: number } } }).quality.counts.derived).toBe(0);
+    expect((fallbackFocus.data as { nextCall: { tool: string } }).nextCall.tool).toBe("search");
 
     const ambiguousEdit = await taskBriefQuery(repo, { task: "Change behavior safely", diff: false, limit: 6, tokenBudget: 1200 }, { autoRefresh: false });
     const ambiguousData = ambiguousEdit.data as {
@@ -54,6 +56,7 @@ it("answers broad focus, graph, workflow, dependency, and change-plan queries", 
       actionability?: string;
       intentConfidence?: { editReady: boolean; anchors: string[]; missingAnchors: string[] };
       quality?: { level: string; reasons: string[] };
+      nextTools?: Array<{ tool?: string }>;
     };
     expect(["raw-search-better", "needs-target"]).toContain(ambiguousData.packetVerdict);
     expect(["raw_search_better", "needs_target"]).toContain(ambiguousData.actionability);
@@ -62,6 +65,7 @@ it("answers broad focus, graph, workflow, dependency, and change-plan queries", 
     expect(ambiguousData.packetVerdict).not.toBe("edit-ready");
     expect(["low", "medium"]).toContain(ambiguousData.quality?.level);
     expect(ambiguousEdit.text).toContain("Recommended next MCP call: search");
+    expect(ambiguousData.nextTools).toEqual([expect.objectContaining({ tool: "search" })]);
 
     const ambiguousPlan = await changePlanQuery(
       repo,
@@ -302,6 +306,25 @@ it("answers broad focus, graph, workflow, dependency, and change-plan queries", 
     expect((exactFocus.data as { focusFiles: Array<{ path: string }>; quality: { counts: { derived: number } } }).focusFiles.map((file) => file.path)).toContain("src/api.ts");
     expect((exactFocus.data as { quality: { counts: { derived: number } } }).quality.counts.derived).toBeGreaterThan(0);
 
+    const terminalFocus = await focusBriefQuery(repo, { task: "Inspect src/api.ts handleThing", diff: false, limit: 4, tokenBudget: 900 }, { autoRefresh: false });
+    const terminalFocusData = terminalFocus.data as {
+      nextCall: { tool: string };
+      intentConfidence: { recommendedNextTool: string };
+      retrieval: { intentConfidence: { recommendedNextTool: string } };
+    };
+    expect(terminalFocusData.nextCall.tool).toBe("source");
+    expect(terminalFocusData.intentConfidence.recommendedNextTool).toBe("source");
+    expect(terminalFocusData.retrieval.intentConfidence.recommendedNextTool).toBe("source");
+    expect(terminalFocus.text).toContain("read the returned source files and tests, then stop");
+
+    const terminalPack = await contextPackQuery(
+      repo,
+      { task: "Inspect handleThing", files: ["src/api.ts"], diff: false, includeSnippets: false, limit: 4, tokenBudget: 900 },
+      { autoRefresh: false }
+    );
+    expect((terminalPack.data as { nextTools?: unknown[] }).nextTools).toEqual([]);
+    expect(terminalPack.text).toContain("do not stack another context packet");
+
     const pathAliasFocus = await focusBriefQuery(repo, { task: "Fix TypeScript path alias configuration", diff: false, limit: 4, tokenBudget: 900 }, { autoRefresh: false });
     expect((pathAliasFocus.data as { retrieval: { intents: string[] }; nextCall: { tool: string } }).retrieval.intents).not.toContain("workflow");
     expect((pathAliasFocus.data as { retrieval: { intents: string[] }; nextCall: { tool: string } }).nextCall.tool).not.toBe("workflow_path");
@@ -310,10 +333,19 @@ it("answers broad focus, graph, workflow, dependency, and change-plan queries", 
     expect(callers.text).toContain("Callers/importers");
     expect(callers.text).toContain("service/app.py");
     expect((callers.data as { edges: Array<{ edgeKind: string }> }).edges.some((edge) => edge.edgeKind === "CALLS" || edge.edgeKind === "REFERENCES")).toBe(true);
+    expect((callers.data as { nextTools?: unknown[] }).nextTools).toEqual([]);
 
     const callees = await calleesQuery(repo, { symbol: "route_thing", limit: 20 }, { autoRefresh: false });
     expect(callees.text).toContain("Callees/dependencies");
     expect(callees.text).toContain("normalize");
+    expect((callees.data as { nextTools?: unknown[] }).nextTools).toEqual([]);
+
+    const symbolContext = await symbolContextQuery(repo, "normalize", { autoRefresh: false });
+    expect((symbolContext.data as { nextTools?: unknown[]; systemMessage?: string }).nextTools).toEqual([]);
+    expect((symbolContext.data as { systemMessage?: string }).systemMessage).toContain("exact symbol packet is complete");
+
+    const missingSymbol = await symbolContextQuery(repo, "definitely_missing_symbol", { autoRefresh: false });
+    expect((missingSymbol.data as { nextTools?: Array<{ tool?: string }> }).nextTools).toEqual([expect.objectContaining({ tool: "search" })]);
 
     const dependency = await dependencyPathQuery(repo, { fromSymbol: "route_thing", toSymbol: "normalize", maxDepth: 4 }, { autoRefresh: false });
     expect(dependency.text).toContain("Dependency path");

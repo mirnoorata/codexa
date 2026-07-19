@@ -64,12 +64,7 @@ export async function symbolContextQuery(input: QuerySessionInput, symbolIdOrNam
   const file = index.files.find((candidate) => candidate.path === symbol.path);
   const lspAssist = options.lsp || process.env.CODEXA_LSP === "1" ? await lspAssistForSymbol(repoRoot, index, symbol, lspOptionsFromQueryOptions(options)) : undefined;
   const impactedFiles = uniqueSorted(neighborhoodEdges.flatMap((edge) => [edge.fromPath, edge.toPath].filter((value): value is string => Boolean(value))));
-  const nextTools = [
-    nextTool("impact", "inspect blast radius and verification for this symbol", { symbol: symbol.id, depth }),
-    callers.length > 0 ? nextTool("callers", "inspect direct callers/importers with edge evidence", { symbol: symbol.id }) : undefined,
-    callees.length > 0 ? nextTool("callees", "inspect direct dependencies with edge evidence", { symbol: symbol.id }) : undefined,
-    tests.length > 0 ? nextTool("test_plan", "choose targeted verification for this symbol neighborhood", { files: [symbol.path] }) : undefined
-  ].filter((tool): tool is ReturnType<typeof nextTool> => Boolean(tool));
+  const nextTools: [] = [];
   const text = [
     freshnessBanner(freshness, refresh),
     `Symbol: ${symbol.qualifiedName} (${symbol.kind}, ${symbol.language})`,
@@ -100,8 +95,7 @@ export async function symbolContextQuery(input: QuerySessionInput, symbolIdOrNam
     "Related risks:",
     ...(risks.length > 0 ? risks.map((risk) => `- ${risk.signal}: ${risk.reason} (${risk.confidence})`) : ["- none"]),
     "",
-    "Recommended next tools:",
-    ...nextTools.map((tool) => `- ${tool.tool}: ${tool.reason}`),
+    "Codexa handoff: this packet includes the symbol neighborhood, callers, callees, impact radius, and tests; read the sources and stop.",
     ...formatLspAssist(lspAssist)
   ].filter((line): line is string => line !== undefined).join("\n");
   return {
@@ -128,7 +122,7 @@ export async function symbolContextQuery(input: QuerySessionInput, symbolIdOrNam
       },
       edgeEvidence: includeEvidence ? edgeEvidenceForGraphEdges(neighborhoodEdges, freshness, 80) : [],
       nextTools,
-      systemMessage: nextTools[0]?.reason,
+      systemMessage: "The exact symbol packet is complete; read the returned sources and stop Codexa.",
       lspAssist
     }
   };

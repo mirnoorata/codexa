@@ -129,8 +129,7 @@ it("runs AutoVerify with a minimal child environment and redacts runner output",
       env: hookEnv
     });
     expect(postEdit.status).toBe(0);
-    expect(postEdit.stdout).toContain("Codexa AutoVerify: ran 1 targeted command(s).");
-    expect(postEdit.stdout).toContain("passed");
+    expect(postEdit.stdout).toBe("");
 
     const outcomeFiles = (await readdir(path.join(repo, ".codex/cache/codexa-outcomes"))).filter(
       (entry) => entry.endsWith(".json") && entry !== "latest.json" && entry !== "latest-hook-review.json"
@@ -292,7 +291,7 @@ it("skips duplicate hook-post-edit reviews for an unchanged dirty tree", async (
       encoding: "utf8"
     });
     expect(second.status).toBe(0);
-    expect(second.stdout).toContain("Codexa: post-edit review unchanged since last hook run");
+    expect(second.stdout).toBe("");
 
     const outcomeFiles = (await readdir(path.join(repo, ".codex/cache/codexa-outcomes"))).filter(
       (entry) => entry.endsWith(".json") && entry !== "latest.json" && entry !== "latest-hook-review.json"

@@ -91,7 +91,7 @@ describe("index checkout identity", () => {
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh"],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh", "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-index-identity-test", version: "0.1.0" });
@@ -121,7 +121,7 @@ describe("index checkout identity", () => {
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-index-identity-resource-test", version: "0.1.0" });
@@ -143,7 +143,7 @@ describe("index checkout identity", () => {
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh"],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh", "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-dirty-artifact-test", version: "0.1.0" });

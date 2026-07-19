@@ -95,7 +95,7 @@ it("ignores out-of-tree repo paths from workspace focus files", async () => {
 
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", workspace, "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-focused-root-boundary-test", version: "0.1.0" });
@@ -210,11 +210,10 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
       actionability: expect.any(String),
       toolPolicy: {
         name: "freshness",
-        readOnly: true,
-        useWhen: expect.stringContaining("Check whether indexed artifacts")
+        readOnly: true
       }
     });
-    expect(JSON.stringify(freshness.content)).toContain("resource_link");
+    expect(JSON.stringify(freshness.content)).not.toContain("resource_link");
 
     const sourcePolicyCases: Array<[string, Record<string, unknown>]> = [
       ["search", { query: "main", limit: 3 }],
@@ -237,7 +236,7 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
 	    const symbolData = (symbolContext.structuredContent as { data?: { mode?: string; edgeEvidence?: unknown[]; nextTools?: Array<{ tool?: string }> } }).data;
 	    expect(symbolData?.mode).toBe("symbol_context");
 	    expect(Array.isArray(symbolData?.edgeEvidence)).toBe(true);
-	    expect(symbolData?.nextTools?.some((tool) => tool.tool === "impact")).toBe(true);
+	    expect(symbolData?.nextTools ?? []).toEqual([]);
 
 	    const rejectedFollow = await client.callTool({ name: "change_plan", arguments: { taskId: "missing-mcp-follow", followCandidate: "candidate-missing", responseFormat: "detailed" } });
     expect(JSON.stringify(rejectedFollow)).toContain("Follow candidate: rejected");
@@ -328,15 +327,19 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
     const cleanProofCard = await client.callTool({ name: "proof_card", arguments: { diff: false } });
     const cleanProofCardData = cleanProofCard.structuredContent as {
       actionability?: string;
-      data?: { actionability?: string; verification?: { tests?: unknown[]; recommendedCommands?: unknown[] }; gaps?: string[] };
+      data?: {
+        actionability?: string;
+        delivery?: { effectiveFormat?: string; resultUri?: string };
+        decisionKernel?: { verification?: { testCount?: number; recommendedCommandCount?: number }; gapCount?: number };
+      };
     };
     expect(cleanProofCardData.actionability).toBe("needs_target");
     expect(cleanProofCardData.data?.actionability).toBe("needs_target");
-    expect(cleanProofCardData.data?.verification?.tests).toEqual([]);
-    expect(cleanProofCardData.data?.verification?.recommendedCommands).toEqual([]);
-    expect(cleanProofCardData.data?.gaps).toContain("test plan needs target files or a dirty diff");
+    expect(cleanProofCardData.data?.delivery).toMatchObject({ effectiveFormat: "concise", resultUri: expect.stringMatching(/^codexa:\/\/repo\/mcp-results\//u) });
+    expect(cleanProofCardData.data?.decisionKernel?.verification).toMatchObject({ testCount: 0, recommendedCommandCount: 0 });
+    expect(cleanProofCardData.data?.decisionKernel?.gapCount).toBeGreaterThan(0);
 
-    const targetedProofCard = await client.callTool({ name: "proof_card", arguments: { files: ["src/index.ts"], diff: false } });
+    const targetedProofCard = await client.callTool({ name: "proof_card", arguments: { files: ["src/index.ts"], diff: false, responseFormat: "detailed" } });
     const targetedProofCardData = targetedProofCard.structuredContent as { actionability?: string; data?: { actionability?: string; verification?: { tests?: unknown[] } } };
     expect(targetedProofCardData.actionability).toBe("verify");
     expect(targetedProofCardData.data?.actionability).toBe("verify");
@@ -677,7 +680,7 @@ it("does not execute AutoVerify through MCP even when CODEXA_AUTOVERIFY is enabl
     const repo = await createIndexedMcpAutoVerifyRepo(workspace);
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--tools", "full"],
       env: { CODEXA_AUTOVERIFY: "1" },
       stderr: "pipe"
     });
@@ -759,7 +762,10 @@ it("blocks stale lifecycle authority before snapshot or outcome persistence", as
       await expect(stat(path.join(repo, ".codex/cache/codexa-task-snapshots", `${taskId}.json`))).rejects.toThrow();
       await expect(stat(path.join(repo, ".codex/cache/codexa-task-snapshots", `${taskId}.blocked.json`))).rejects.toThrow();
 
-      const postEdit = await client.callTool({ name: "post_edit_review", arguments: { taskId, responseFormat: "detailed" } });
+      const postEdit = await client.callTool({
+        name: "capabilities",
+        arguments: { action: "invoke", operation: "post_edit_review", arguments: { taskId, responseFormat: "detailed" } }
+      });
       const postEnvelope = postEdit.structuredContent as {
         actionability?: string;
         data?: { completionAuthority?: string; outcome?: { persisted?: boolean }; loopReview?: { status?: string } };

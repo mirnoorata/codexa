@@ -25,7 +25,10 @@ const launch = resolveCodexaLaunch(repoRoot, autoRefresh);
 const child = spawn(launch.command, launch.args, {
   cwd: repoRoot,
   stdio: ["inherit", "inherit", "inherit"],
-  env: process.env
+  env: {
+    ...process.env,
+    CODEXA_MANAGED_POST_EDIT: "1"
+  }
 });
 
 child.on("exit", (code, signal) => {

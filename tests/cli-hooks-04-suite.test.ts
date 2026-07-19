@@ -34,7 +34,7 @@ it("records the CURRENT head commit even when a stale index bundle exists", asyn
 
     const baseline = spawnSync(process.execPath, [cli, "hook-pre-edit", repo], { cwd: repo, encoding: "utf8", env: testEnv() });
     expect(baseline.status).toBe(0);
-    expect(baseline.stdout).toContain("implicit pre-edit baseline");
+    expect(baseline.stdout).toBe("");
 
     const latest = JSON.parse(await readFile(path.join(repo, ".codex/cache/codexa-tasks/latest.json"), "utf8")) as { path: string };
     const snapshot = JSON.parse(await readFile(path.join(repo, ".codex/cache/codexa-tasks", latest.path), "utf8")) as {

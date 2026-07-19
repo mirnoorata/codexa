@@ -42,12 +42,13 @@ async function listToolsWith(repo: string, extraArgs: string[], env?: Record<str
     }
   }
 
-it("keeps legacy bare serve full while explicit core stays compact", async () => {
+it("defaults bare serve to core while explicit full remains available", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-token-"));
     const repo = await createIndexedMcpRepo(workspace, "repo", "alpha", "alphaSymbol");
 
-    const legacyDefault = await listToolsWith(repo, []);
-    expect(legacyDefault.toolNames).toHaveLength(MCP_TOOL_NAMES.length);
+    const defaultCore = await listToolsWith(repo, []);
+    expect([...defaultCore.toolNames].sort()).toEqual([...CORE_PROFILE_TOOL_NAMES].sort());
+    expect(defaultCore.bytes).toBeLessThan(30_000);
     const compact = await listToolsWith(repo, ["--tools", "full"]);
     expect(compact.toolNames).toHaveLength(MCP_TOOL_NAMES.length);
     expect(compact.bytes).toBeLessThan(70_000);
@@ -72,7 +73,7 @@ it("compacts the text content block for responseFormat concise", async () => {
     const repo = await createIndexedMcpRepo(workspace, "repo", "alpha", "alphaSymbol");
     const transport = new StdioClientTransport({
       command: process.execPath,
-      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh"],
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh", "--tools", "full"],
       stderr: "pipe"
     });
     const client = new Client({ name: "codexa-concise-text-test", version: "0.1.0" });
@@ -105,8 +106,12 @@ it("keeps clean read-first task briefs concise and names the concrete read targe
     await client.connect(transport);
     try {
       const result = await client.callTool({
-        name: "task_brief",
-        arguments: { task: "Assess the implementation", files: ["src/alpha.ts"], tokenBudget: 900, limit: 3 }
+        name: "capabilities",
+        arguments: {
+          action: "invoke",
+          operation: "task_brief",
+          arguments: { task: "Assess the implementation", files: ["src/alpha.ts"], tokenBudget: 900, limit: 3 }
+        }
       });
       const data = (result.structuredContent as {
         data?: {
@@ -163,9 +168,10 @@ it("returns an unchanged task_brief receipt with default session-memory recordin
     await client.connect(transport);
     try {
       const argumentsWithMemory = { task: "inspect alphaSymbol" } as const;
-      const first = await client.callTool({ name: "task_brief", arguments: argumentsWithMemory });
-      const second = await client.callTool({ name: "task_brief", arguments: argumentsWithMemory });
-      const third = await client.callTool({ name: "task_brief", arguments: argumentsWithMemory });
+      const request = { name: "capabilities", arguments: { action: "invoke", operation: "task_brief", arguments: argumentsWithMemory } } as const;
+      const first = await client.callTool(request);
+      const second = await client.callTool(request);
+      const third = await client.callTool(request);
       const firstDelivery = (first.structuredContent as { data?: { delivery?: Record<string, unknown> } })?.data?.delivery;
       const secondDelivery = (second.structuredContent as { data?: { delivery?: Record<string, unknown> } })?.data?.delivery;
       const thirdDelivery = (third.structuredContent as { data?: { delivery?: Record<string, unknown> } })?.data?.delivery;
@@ -187,8 +193,12 @@ it("returns an unchanged task_brief receipt with default session-memory recordin
       expect(JSON.stringify(third)).toContain("unchanged from the prior receipt");
 
       const memory = await client.callTool({
-        name: "session_memory",
-        arguments: { action: "summary", responseFormat: "detailed" }
+        name: "capabilities",
+        arguments: {
+          action: "invoke",
+          operation: "session_memory",
+          arguments: { action: "summary", responseFormat: "detailed" }
+        }
       });
       expect((memory.structuredContent as { data?: { revision?: number } }).data?.revision).toBe(1);
     } finally {

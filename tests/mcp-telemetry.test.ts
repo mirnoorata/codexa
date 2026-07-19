@@ -10,11 +10,15 @@ import {
   finalizeMcpOverheadTelemetry,
   flushMcpOverheadTelemetry,
   mcpToolResultByteCounts,
+  mcpToolResultEffectiveFormat,
+  mcpToolResultEscalationReason,
   resetMcpOverheadTelemetryForTests,
   type McpOverheadTelemetryCompletionRecord,
   type McpOverheadTelemetryEvent
 } from "../src/mcp/telemetry.js";
 import { createIndexedMcpRepo } from "./mcp-fixtures.js";
+import { toToolResult } from "../src/mcp/envelope.js";
+import { MCP_TOOL_RESULT_DETAILED_MAX_BYTES } from "../src/mcp/result-budget.js";
 
 const previousTelemetryPath = process.env.CODEXA_MCP_TELEMETRY_PATH;
 
@@ -70,6 +74,25 @@ describe("MCP overhead telemetry", () => {
       structuredBytes: Buffer.byteLength(JSON.stringify(result.structuredContent), "utf8"),
       totalBytes: Buffer.byteLength(JSON.stringify(result), "utf8")
     });
+    expect(mcpToolResultEffectiveFormat({ structuredContent: { data: { delivery: { effectiveFormat: "concise" } } } }, "detailed")).toBe("concise");
+    expect(mcpToolResultEffectiveFormat({ structuredContent: {} }, "detailed")).toBe("detailed");
+    expect(mcpToolResultEscalationReason({ structuredContent: { data: { delivery: { escalationReason: "tool-result-budget" } } } })).toBe("tool-result-budget");
+
+    const budgetedDetailed = toToolResult(
+      {
+        text: "oversized detailed response",
+        data: {
+          mode: "capabilities",
+          evidence: "x".repeat(MCP_TOOL_RESULT_DETAILED_MAX_BYTES * 2),
+          delivery: { schemaVersion: 1, requestedFormat: "detailed", effectiveFormat: "detailed", detailAvailable: true }
+        },
+        freshness: {}
+      },
+      "capabilities",
+      { autoRefresh: false, sessionMemoryMode: "off" }
+    );
+    expect(mcpToolResultEffectiveFormat(budgetedDetailed, "detailed")).toBe("concise");
+    expect(mcpToolResultEscalationReason(budgetedDetailed)).toBe("tool-result-budget");
   });
 
   it("refuses a pre-existing regular log without mutating prior evidence", async () => {
@@ -269,7 +292,10 @@ describe("MCP overhead telemetry", () => {
     const client = new Client({ name: "codexa-telemetry-integration-test", version: "0.1.0" });
     await client.connect(transport);
     try {
-      await client.callTool({ name: "freshness", arguments: {} });
+      await client.callTool({
+        name: "capabilities",
+        arguments: { action: "invoke", operation: "freshness", arguments: {} }
+      });
       const dispatched = await client.callTool({
         name: "capabilities",
         arguments: { action: "invoke", operation: "repo_map", arguments: { limit: 3 } }
@@ -281,7 +307,7 @@ describe("MCP overhead telemetry", () => {
       const records = await waitForTelemetryRecords(telemetryPath, 3);
 
       expect(records.map((entry) => [entry.sequence, entry.eventKind ?? "tool", entry.tool, entry.logicalOperation, entry.outcome])).toEqual([
-        [1, "tool", "freshness", "freshness", "ok"],
+        [1, "tool", "capabilities", "freshness", "ok"],
         [2, "tool", "capabilities", "repo_map", "ok"],
         [3, "resource-read", "read_mcp_resource", "mcp-detailed-result", "ok"]
       ]);

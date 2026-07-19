@@ -281,7 +281,8 @@ describe("mandatory MCP decision kernel", () => {
       requestedFormat: "concise",
       effectiveFormat: "concise",
       resultId: `mr_${"c".repeat(64)}`,
-      resultUri: uri
+      resultUri: uri,
+      detailAvailable: true
     });
     const data = delivered.data as { decisionKernel: { authority: { actionability: string }; gapCount: number; gapsOmitted: number; invariants: Array<[string, string]> }; delivery: { resultUri: string } };
     expect(Buffer.byteLength(JSON.stringify(data), "utf8")).toBeLessThanOrEqual(4000);
@@ -294,7 +295,7 @@ describe("mandatory MCP decision kernel", () => {
     expect(text).toContain("Actionability: blocked");
     expect(text).toContain("Verification unresolved (40)");
     expect(text).toContain("Gaps (40)");
-    expect(text).toContain("Next: change_plan");
+    expect(text).not.toContain("Next: change_plan");
     expect(text).toContain(data.decisionKernel.invariants.at(-1)![0]);
     expect(text).toContain("violated=1");
     expect(text).toContain(uri);

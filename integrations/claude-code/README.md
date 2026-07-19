@@ -1,22 +1,23 @@
 # Codexa for Claude Code
 
-Ships Codexa's edit-safety loop into Claude Code the way it already ships into
-Codex. One install, both tools wired to the same engine and the same
-`<repo>/.codex/` state.
+Ships Codexa's selective edit-safety loop into Claude Code the way it already
+ships into Codex. One install, both tools wired to the same engine and the same
+`<repo>/.codex/` state without forcing a context-tool ritual around local work.
 
 ## What it does
 
 When Claude Code is running in a Codexa-wired repo (one that contains
 `<repo>/.codex/config.toml`), this plugin:
 
-- **MCP server** — exposes the Codexa query tools (`task_brief`,
-  `change_plan`, `post_edit_review`, `impact`, `search`, …) directly to
-  Claude through the plugin's `.mcp.json`. The launcher resolves the repo
-  from the session's project directory and the CLI from `CODEXA_CLI`, the
-  package's own `dist/cli.js`, or a global install.
-- **SessionStart** — injects a short Codexa freshness status and the top
-  read-first files from `.codex/codebase/README.md` into Claude's session
-  context.
+- **MCP server** — advertises only `search`, `change_plan`, and `capabilities`
+  in the default core profile. `capabilities` keeps every non-core operation
+  available without advertising every schema on every turn. The launcher
+  resolves the repo from the session's project directory and the CLI from
+  `CODEXA_CLI`, the package's own `dist/cli.js`, or a global install.
+- **SessionStart** — injects a short allowlist-validated freshness status. It
+  does not inject task-agnostic top-file or command-menu context by default;
+  set `CLAUDIO_SESSION_DETAIL=1` to opt into the validated read-first list and
+  command hints.
 - **PreToolUse** — before `Edit`/`Write`/`MultiEdit`/`NotebookEdit` lands on a
   file inside the wired repo, saves an implicit pre-edit baseline via
   `codexa hook-pre-edit` when no change-plan snapshot exists yet, so the
@@ -34,7 +35,9 @@ When Claude Code is running in a Codexa-wired repo (one that contains
   Clean and advisory verdicts stay quiet. Debounced
   per session+repo+dirty-tree state, with a `stop_hook_active` re-entrancy
   guard, so it blocks at most once per stop and never loops. Set
-  `CLAUDIO_STOP_BLOCK=0` for stderr-only behavior.
+  `CLAUDIO_STOP_BLOCK=0` for stderr-only behavior. The MCP launcher marks this
+  managed gate internally so `change_plan` does not steer Claude into a
+  duplicate manual review.
 
 Slash commands available to Claude:
 
@@ -49,7 +52,8 @@ Slash commands available to Claude:
 
 Current Codexa packets are proof-carrying. Impact and symbol lookups can include
 edge evidence, confidence labels, stale/degraded flags, and structured
-`nextTools` entries that name the next read-only or cache-writing Codexa call.
+conditional guidance. That guidance does not authorize automatic chaining;
+Claude should stop when direct source evidence is sufficient.
 Post-edit review compares against planned-test provenance from the saved
 snapshot, degrades legacy or scope-mismatched tests, and persists compact local
 outcomes that may visibly influence future ranking/test recommendations.
@@ -58,18 +62,28 @@ outcomes that may visibly influence future ranking/test recommendations.
 
 Claude Code commands and hooks are adapters over the shared Codexa engine.
 They do not maintain a separate index, ranking layer, planner, or source-editing
-path. The primary Codexa path stays:
+path. Use the smallest sequence that resolves the task:
 
 ```text
-change_plan(saveSnapshot) -> edit/run planned verification -> post_edit_review
-add session_context/search/task_brief only when target or context is unclear
-add test_plan only when verification guidance is unresolved
-add proof_card only for policy or formal handoff
+exact/local/source-sufficient -> source tools, zero Codexa calls
+ambiguous/raw-sufficient -> search, then stop
+exact non-trivial -> change_plan(saveSnapshot), then let Stop review
+ambiguous non-trivial -> search -> change_plan(saveSnapshot), then let Stop review
 ```
 
-In core mode, `capabilities` discovers or invokes every advanced operation
+Keep normal bounded work at two Codexa calls or fewer. The Stop hook is the
+deterministic post-edit gate, so do not duplicate it with a manual
+`post_edit_review`. Call `test_plan` only when verification guidance remains
+unresolved and `proof_card` only for policy or formal handoff.
+
+The general narrow three-call exception—ambiguous target, materially risky
+edit, and no managed post-edit gate—does not apply while this plugin's Stop hook
+owns review. The separate Codex plugin bundle is hookless unless its repository
+was also initialized with `codexa init` hooks.
+
+In core mode, `capabilities` discovers or invokes every non-core operation
 through the same operation-specific schema and handler; full mode also exposes
-those advanced tools directly. Use `symbol_context`, `impact`, `callers`, and
+those operations directly. Use `symbol_context`, `impact`, `callers`, and
 `callees` when Claude needs to audit who uses a symbol, what may break, and
 which tests are relationship-backed.
 For non-TypeScript/JavaScript/Python repositories, the shared engine can consume
@@ -153,8 +167,9 @@ Environment variables the hooks honor:
 | `CLAUDIO_NODE_BIN`                 | `node` on `$PATH`                      | Node binary to run the CLI                                                   |
 | `CLAUDIO_DEBUG`                    | unset                                  | Set to `1` for `[claudio]` stderr traces                                     |
 | `CLAUDIO_STOP_BLOCK`               | `1`                                    | Set to `0` to keep drift verdicts stderr-only (never block)                  |
+| `CLAUDIO_SESSION_DETAIL`           | `0`                                    | Set to `1` to add validated read-first files and command hints at startup    |
 | `CODEXA_REPO`                      | session project dir                    | Repository the plugin MCP server serves                                      |
-| `CODEXA_PLUGIN_TOOLS`              | `core`                                 | MCP tool profile served by the plugin (`full` exposes every direct tool)     |
+| `CODEXA_PLUGIN_TOOLS`              | `core`                                 | MCP profile (`core` advertises 3 direct tools; `full` advertises every tool) |
 | `CODEXA_PLUGIN_AUTO_REFRESH`       | `1`                                    | Set to `0` to stop the MCP server refreshing stale indexes                   |
 | `CODEXA_PLUGIN_ALLOW_NPX_FALLBACK` | unset                                  | Set to `1` to let the MCP launcher fall back to `npx -y @mirnoorata/codexa`  |
 
@@ -182,9 +197,11 @@ bash integrations/claude-code/tests/hook-smoke.sh
 bash integrations/claude-code/tests/cmd-smoke.sh
 ```
 
-Hook smoke: non-wired cwd, empty/malformed payloads, read-first extraction,
-snapshot presence/absence, `MultiEdit`/`NotebookEdit` dispatch, relative-path
-rejection, Stop debouncing, re-entrancy, failed post-edit passthrough.
+Hook smoke: non-wired cwd, empty/malformed payloads, status-only startup,
+detailed-context opt-in and read-first validation, snapshot presence/absence,
+`MultiEdit`/`NotebookEdit` dispatch, relative-path rejection, Stop debouncing,
+re-entrancy, failed post-edit passthrough.
 
-Command smoke: `shlex` parsing of quoted tasks and paths with spaces,
-unknown-flag rejection, path-traversal-like tokens, empty arguments.
+Command smoke: MCP launcher profile/environment propagation, `shlex` parsing
+of quoted tasks and paths with spaces, unknown-flag rejection,
+path-traversal-like tokens, and empty arguments.

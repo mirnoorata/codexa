@@ -83,7 +83,7 @@ program
   .option("--no-hooks", "do not write hooks.json")
   .option("--index", "index the repository immediately", true)
   .option("--no-index", "only write Codex config and hooks")
-  .option("--tools <profile>", "MCP tool exposure profile: core (primary loop, cheaper per turn) or full; defaults to the repo's existing profile, else core", parseToolProfile)
+  .option("--tools <profile>", "MCP tool exposure profile: core (3 direct tools plus dispatcher) or full; defaults to the repo's existing profile, else core", parseToolProfile)
   .option("--agents-md", "write a managed Codexa workflow block into the repo's AGENTS.md (Codex)", false)
   .option("--claude-md", "write a managed Codexa workflow block into the repo's CLAUDE.md (Claude Code)", false)
   .option("--claude", "write the codexa MCP server entry into the repo's .mcp.json for Claude Code", false)
@@ -609,9 +609,9 @@ program
   .option("--auto-refresh", "refresh a stale or missing index before answering MCP context tools", true)
   .option("--no-auto-refresh", "do not refresh a stale or missing index before answering MCP context tools")
   .option("--session-memory <mode>", "auto-record MCP session memory: auto or off", parseSessionMemoryMode, "auto")
-  // Preserve the historical bare-serve API for existing unmanaged launchers.
-  // Fresh managed installs pass `--tools core` explicitly.
-  .option("--tools <profile>", "server-side tool exposure: core (primary loop plus capabilities dispatcher, cheaper per turn) or full", parseToolProfile, "full")
+  // Keep unmanaged/manual launchers on the same bounded default as managed
+  // integrations. Full direct-tool exposure remains an explicit opt-in.
+  .option("--tools <profile>", "server-side tool exposure: core (default: search, change_plan, capabilities) or full", parseToolProfile, "core")
   .option("--workspace-focus-file <path>", "workspace focus file to consult when <repo> is a workspace launch root")
   .option("--workspace-session <id>", "active WORKING.md session row to prefer when <repo> is a workspace launch root")
   .option("--transport <transport>", "MCP transport: stdio or http", parseMcpTransport, "stdio")

@@ -116,28 +116,32 @@ export async function initializeProject(repoInput: string | undefined, options: 
     await assertCiWorkflowWritable(repoRoot);
   }
   await mkdir(codexDir, { recursive: true });
-  const keepHooksFeature = writeHooks
-    ? true
-    : await removeCodexaManagedHooksConfig(hooksPath, {
-        cliPath,
-        repoRoot
-      });
-  await upsertCodexConfig(configPath, {
+  const hookOptions = {
+    cliPath,
+    launch: pinNodeLaunch(launch, repoRoot, path.join(".codex", "hooks.json")),
+    repoRoot
+  };
+  const configOptions = {
     autoRefresh,
     cliPath,
     launch: pinNodeLaunch(launch, repoRoot, path.join(".codex", "config.toml")),
     repoRoot,
     serverName,
-    hooks: keepHooksFeature,
     toolProfile
-  });
+  };
+
+  // Revoke any previous ownership claim before touching hooks. Every failure
+  // path is then conservative: a hook may exist without a marker, but the MCP
+  // server can never suppress manual review for a hook that failed to install.
+  await upsertCodexConfig(configPath, { ...configOptions, hooksFeature: true, managedPostEditHook: false });
 
   if (writeHooks) {
-    await upsertHooksConfig(hooksPath, {
-      cliPath,
-      launch: pinNodeLaunch(launch, repoRoot, path.join(".codex", "hooks.json")),
-      repoRoot
-    });
+    await upsertHooksConfig(hooksPath, hookOptions);
+    await upsertCodexConfig(configPath, { ...configOptions, hooksFeature: true, managedPostEditHook: true });
+  } else {
+    const removal = await planCodexaManagedHooksRemoval(hooksPath, hookOptions);
+    await upsertCodexConfig(configPath, { ...configOptions, hooksFeature: removal.keepHooksFeature, managedPostEditHook: false });
+    await applyCodexaManagedHooksRemoval(hooksPath, removal);
   }
 
   const agentsMdPath = options.agentsMd ? await upsertManagedDoc(repoRoot, "AGENTS.md", serverName) : null;
@@ -238,7 +242,7 @@ export async function sessionStartSummary(repoInput: string | undefined, include
   }
 
   lines.push("Codexa MCP is ready.");
-  lines.push(`Automatic-use contract: primary loop ${PRIMARY_CODEX_LOOP}; broad task -> session_context then search if actionability needs a target; resume/reuse working memory -> session_memory; workflow/runtime change -> workflow_path; API/rename/delete -> callers/callees/dependency_path.`);
+  lines.push(`Selective-use contract: ${PRIMARY_CODEX_LOOP}. Normal agent budget: zero calls for exact local work and usually no more than two; only an ambiguous materially risky edit on a hookless host needs search -> change_plan -> post_edit_review.`);
   return lines.join("\n");
 }
 
@@ -420,7 +424,8 @@ async function upsertCodexConfig(
     launch: LaunchSpec;
     repoRoot: string;
     serverName: string;
-    hooks: boolean;
+    hooksFeature: boolean;
+    managedPostEditHook: boolean;
     toolProfile: InitToolProfile;
   }
 ): Promise<void> {
@@ -430,11 +435,11 @@ async function upsertCodexConfig(
   // "-y", which would also match unrelated npx-launched server blocks.
   next = removeCodexaMcpServerBlocks(next, { cliPath: options.cliPath, repoRoot: options.repoRoot });
   next = removeMcpServerBlock(next, options.serverName);
-  if (options.hooks) {
+  if (options.hooksFeature) {
     next = ensureHooksFeature(next);
-	  } else {
-	    next = removeHooksFeature(next);
-	  }
+  } else {
+    next = removeHooksFeature(next);
+  }
   next = trimTrailingBlankLines(next);
   if (next) {
     next += "\n\n";
@@ -443,20 +448,20 @@ async function upsertCodexConfig(
   await writeFile(configPath, `${next}\n`, "utf8");
 }
 
-function renderMcpServerBlock(options: { autoRefresh: boolean; launch: LaunchSpec; repoRoot: string; serverName: string; toolProfile: InitToolProfile }): string {
+function renderMcpServerBlock(options: { autoRefresh: boolean; launch: LaunchSpec; repoRoot: string; serverName: string; hooksFeature: boolean; managedPostEditHook: boolean; toolProfile: InitToolProfile }): string {
   const args = [...options.launch.args, "serve", options.repoRoot];
   args.push(options.autoRefresh ? "--auto-refresh" : "--no-auto-refresh");
-  // Keep every generated profile explicit. Bare `serve` remains full for
-  // backward compatibility with managed blocks written before profiles existed.
+  // Keep every generated profile explicit so checked-in config records the
+  // intended exposure even though bare `serve` now defaults to core.
   args.push("--tools", options.toolProfile);
   const toolProfileLines =
     options.toolProfile === "core"
       ? [
-          "# Core profile (default): fewer exposed tools means less per-turn schema cost and better routing.",
+          "# Core profile (default): fewer exposed tools means a smaller serialized tool-schema payload and simpler routing.",
           `# Re-run \`codexa init --tools full\` to expose every tool.`,
           `enabled_tools = [${CORE_PROFILE_TOOL_NAMES.map(tomlString).join(", ")}]`
         ]
-      : [`# Full profile: every tool is exposed. \`codexa init\` (core default) exposes only ${CORE_PROFILE_TOOL_NAMES.join(", ")} to cut per-turn token cost.`];
+      : [`# Full profile: every tool is exposed. \`codexa init\` (core default) exposes only ${CORE_PROFILE_TOOL_NAMES.join(", ")} to shrink the serialized tool-schema payload.`];
   const refreshCommand = options.toolProfile === "core" ? "codexa init" : "codexa init --tools full";
   return [
     "# >>> codexa managed",
@@ -464,6 +469,7 @@ function renderMcpServerBlock(options: { autoRefresh: boolean; launch: LaunchSpe
     `[mcp_servers.${options.serverName}]`,
     `command = ${tomlString(options.launch.command)}`,
     `args = [${args.map(tomlString).join(", ")}]`,
+    ...(options.managedPostEditHook ? ['env = { CODEXA_MANAGED_POST_EDIT = "1" }'] : []),
     "startup_timeout_sec = 20",
     "tool_timeout_sec = 60",
     ...toolProfileLines,
@@ -547,12 +553,15 @@ async function upsertManagedDoc(repoRoot: string, fileName: string, serverName: 
     MANAGED_DOC_START,
     `## Codexa (\`${serverName}\` MCP server)`,
     "",
-    "Codexa serves evidence-backed repository context. Prefer it over raw grep for cross-file questions.",
+    "Codexa serves bounded, evidence-backed repository context when it saves more exploration than it costs.",
     "",
-    "- Explicit bounded edit: call `change_plan` with `saveSnapshot=true` directly; edit and run its planned verification, then call `post_edit_review` with the evidence that actually ran.",
-    "- Ambiguous or degraded context: add `session_context`, `search`, and then `task_brief` only as needed before `change_plan`.",
+    "- Exact file/symbol/error, read-only check, or small local edit: use source tools and tests directly with zero Codexa calls.",
+    "- Ambiguous target: call `search` once; when raw evidence is sufficient, stop Codexa and read the exact hits.",
+    "- Non-trivial multi-file or high-risk edit: call `change_plan` with `saveSnapshot=true`, then edit and run its planned verification.",
+    "- Call `post_edit_review` once only when no deterministic host hook/completion gate already owns review, or for an explicitly requested formal review.",
+    "- Do not stack `session_context`, `search`, and `task_brief`; normal agentic work usually needs no more than two Codexa calls. The only three-call safety exception is an ambiguous materially risky edit on a hookless host.",
     "- Call `test_plan` only when verification guidance remains unresolved; call `proof_card` only for policy, formal audit, release, or artifact handoff proof.",
-    "- Inspect: use `capabilities` to discover or invoke advanced operations in core mode; full mode also exposes every advanced tool directly.",
+    "- Inspect: use `capabilities` only for a concretely triggered non-core operation; full mode exposes every operation directly.",
     "",
     "Each tool description states its output cost; prefer the cheapest sufficient tool.",
     MANAGED_DOC_END
@@ -669,11 +678,15 @@ async function upsertHooksConfig(hooksPath: string, options: { cliPath: string; 
   await writeFile(hooksPath, `${JSON.stringify(next, null, 2)}\n`, "utf8");
 }
 
-async function removeCodexaManagedHooksConfig(hooksPath: string, options: { cliPath: string; repoRoot: string }): Promise<boolean> {
+interface CodexaManagedHooksRemoval {
+  keepHooksFeature: boolean;
+  contents?: string;
+}
+
+async function planCodexaManagedHooksRemoval(hooksPath: string, options: { cliPath: string; repoRoot: string }): Promise<CodexaManagedHooksRemoval> {
   const existing = await readTextIfExists(hooksPath);
   if (!existing.trim()) {
-    await rm(hooksPath, { force: true });
-    return false;
+    return { keepHooksFeature: false };
   }
   const parsed = parseHooksJson(existing, hooksPath);
   const hooks = isPlainObject(parsed.hooks) ? parsed.hooks : {};
@@ -688,11 +701,20 @@ async function removeCodexaManagedHooksConfig(hooksPath: string, options: { cliP
   }
   const hasRemainingHooks = Object.values(cleanedHooks).some((value) => Array.isArray(value) && value.length > 0);
   if (!hasRemainingHooks) {
-    await rm(hooksPath, { force: true });
-    return false;
+    return { keepHooksFeature: false };
   }
-  await writeFile(hooksPath, `${JSON.stringify({ ...parsed, hooks: cleanedHooks }, null, 2)}\n`, "utf8");
-  return true;
+  return {
+    keepHooksFeature: true,
+    contents: `${JSON.stringify({ ...parsed, hooks: cleanedHooks }, null, 2)}\n`
+  };
+}
+
+async function applyCodexaManagedHooksRemoval(hooksPath: string, removal: CodexaManagedHooksRemoval): Promise<void> {
+  if (removal.contents === undefined) {
+    await rm(hooksPath, { force: true });
+    return;
+  }
+  await writeFile(hooksPath, removal.contents, "utf8");
 }
 
 function cleanHookList(value: unknown, options: { cliPath: string; repoRoot: string }): Record<string, unknown>[] {

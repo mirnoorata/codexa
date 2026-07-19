@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { runAutoVerifyForPostEdit, sanitizeAutoVerifyText } from "../src/autoverify.js";
-import { postEditHookReviewPassPolicy } from "../src/cli/hooks.js";
+import { postEditHookNeedsAttention, postEditHookReviewPassPolicy } from "../src/cli/hooks.js";
 import { trackedTmpDir, testEnv, createHookFixtureRepo, createWorkspaceGitRepo, createAutoVerifyFixtureRepo, addFakeVitestBin, addFakeWindowsVitestCmdBin, createFakeCmdExe, createNestedAutoVerifyFixtureRepo } from "./cli-hooks-fixtures.js";
 describe("Codexa hook CLI", () => {
 it("coalesces read-only post-edit hooks to one persisted review and retains the full-access preview pass", () => {
@@ -18,6 +18,17 @@ it("coalesces read-only post-edit hooks to one persisted review and retains the 
       runAutoVerify: true,
       runFinalReview: true
     });
+  });
+
+it("only emits managed post-edit output when the agent must act", () => {
+    expect(postEditHookNeedsAttention({ verdict: "continue", inspectMode: "none" })).toBe(false);
+    expect(postEditHookNeedsAttention({ verdict: "inspect", inspectMode: "advisory" })).toBe(false);
+    expect(postEditHookNeedsAttention({ verdict: "inspect", inspectMode: "none" })).toBe(false);
+    expect(postEditHookNeedsAttention({ verdict: "run_tests", inspectMode: "none" })).toBe(true);
+    expect(postEditHookNeedsAttention({ verdict: "replan", inspectMode: "none" })).toBe(true);
+    expect(postEditHookNeedsAttention({ verdict: "inspect", inspectMode: "blocking" })).toBe(true);
+    expect(postEditHookNeedsAttention({ actionability: "blocked", verdict: "continue", inspectMode: "none" })).toBe(true);
+    expect(postEditHookNeedsAttention(undefined)).toBe(true);
   });
 
 it("rejects malformed integer options instead of truncating them", async () => {
@@ -481,7 +492,7 @@ it("routes workspace-root edit hooks through the focused repository", async () =
       encoding: "utf8"
     });
     expect(preEdit.status).toBe(0);
-    expect(preEdit.stdout).toContain("Codexa: saved an implicit pre-edit baseline");
+    expect(preEdit.stdout).toBe("");
     expect(preEdit.stdout).not.toContain("Failed to read git status");
 
     const postEdit = spawnSync(process.execPath, [cli, "hook-post-edit", workspace], {
@@ -490,6 +501,7 @@ it("routes workspace-root edit hooks through the focused repository", async () =
     });
     expect(postEdit.status, `${postEdit.stderr}\n${postEdit.stdout}`).toBe(0);
     expect(postEdit.stdout).toContain("Codexa post-edit review");
+    expect(postEdit.stdout).toContain("Verdict: inspect");
     expect(postEdit.stdout).not.toContain("Failed to read git status");
     const latest = JSON.parse(await readFile(path.join(workspace, ".codex/cache/codexa-hooks/latest.json"), "utf8")) as { hook: string; status: string };
     expect(latest).toMatchObject({ hook: "post-edit", status: "ok" });
@@ -528,7 +540,7 @@ it("keeps explicit wired hook repos authoritative when ambient workspace env is 
     });
 
     expect(preEdit.status).toBe(0);
-    expect(preEdit.stdout).toContain("Codexa: saved an implicit pre-edit baseline");
+    expect(preEdit.stdout).toBe("");
     expect(preEdit.stdout).not.toContain("workspace session stale-session is not active");
   });
 
@@ -703,7 +715,7 @@ it("does not suppress AutoVerify when a later hook run enables it for the same d
       env: testEnv({ CODEXA_HOME: codexaHome, CODEXA_AUTOVERIFY: "1" })
     });
     expect(withAutoVerify.status).toBe(0);
-    expect(withAutoVerify.stdout).toContain("Codexa AutoVerify: ran 1 targeted command(s).");
+    expect(withAutoVerify.stdout).toBe("");
     expect(withAutoVerify.stdout).not.toContain("post-edit review unchanged since last hook run");
   });
 
@@ -741,7 +753,7 @@ it("skips AutoVerify when hook-post-edit only has an ambiguous latest snapshot",
       env: { ...process.env, CODEXA_AUTOVERIFY: "1" }
     });
     expect(duplicatePostEdit.status).toBe(0);
-    expect(duplicatePostEdit.stdout).toContain("post-edit review unchanged since last hook run");
+    expect(duplicatePostEdit.stdout).toBe("");
     expect(duplicatePostEdit.stdout).not.toContain("Codexa post-edit review");
   });
 
@@ -802,8 +814,7 @@ it("auto-runs trusted verification from user-owned full-access autonomy without 
       env: testEnv({ CODEXA_HOME: codexaHome })
     });
     expect(postEdit.status).toBe(0);
-    expect(postEdit.stdout).toContain("Codexa AutoVerify: ran 1 targeted command(s).");
-    expect(postEdit.stdout).toContain("passed");
+    expect(postEdit.stdout).toBe("");
   });
 
 it("lets a repo-specific read-only policy override global full-access autonomy", async () => {
@@ -871,8 +882,7 @@ it("auto-runs targeted safe verification before persisting hook-post-edit outcom
       env: { ...process.env, CODEXA_AUTOVERIFY: "1" }
     });
     expect(postEdit.status).toBe(0);
-    expect(postEdit.stdout).toContain("Codexa AutoVerify: ran 1 targeted command(s).");
-    expect(postEdit.stdout).toContain("passed");
+    expect(postEdit.stdout).toBe("");
 
     const outcomeFiles = (await readdir(path.join(repo, ".codex/cache/codexa-outcomes"))).filter(
       (entry) => entry.endsWith(".json") && entry !== "latest.json" && entry !== "latest-hook-review.json"
@@ -912,7 +922,7 @@ it("keeps AutoVerify dirty hashes aligned when Codexa is rooted in a git subdire
       env: { ...process.env, CODEXA_AUTOVERIFY: "1" }
     });
     expect(postEdit.status).toBe(0);
-    expect(postEdit.stdout).toContain("Codexa AutoVerify: ran 1 targeted command(s).");
+    expect(postEdit.stdout).toBe("");
 
     const outcomeFiles = (await readdir(path.join(repo, ".codex/cache/codexa-outcomes"))).filter(
       (entry) => entry.endsWith(".json") && entry !== "latest.json" && entry !== "latest-hook-review.json"
@@ -984,8 +994,7 @@ it("executes safe package scripts as direct runners instead of package-manager s
       env: { ...process.env, CODEXA_AUTOVERIFY: "1" }
     });
     expect(postEdit.status).toBe(0);
-    expect(postEdit.stdout).toContain("Codexa AutoVerify: ran 1 targeted command(s).");
-    expect(postEdit.stdout).toContain("passed");
+    expect(postEdit.stdout).toBe("");
     await expect(readFile(path.join(repo, "deployed.txt"), "utf8")).rejects.toThrow();
   });
 
@@ -1006,7 +1015,6 @@ it("resolves validated package scripts through package-local runner bins", async
       env: { ...process.env, CODEXA_AUTOVERIFY: "1" }
     });
     expect(postEdit.status).toBe(0);
-    expect(postEdit.stdout).toContain("Codexa AutoVerify: ran 1 targeted command(s).");
-    expect(postEdit.stdout).toContain("passed");
+    expect(postEdit.stdout).toBe("");
   });
 });
