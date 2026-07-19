@@ -673,9 +673,10 @@ distinguish an untouched valid stale stream from current evidence.
 MCP prompts are intentionally workflow-shaped and small: `impact_before_edit`,
 `dirty_diff_review`, `snapshot_edit_loop`, and `targeted_test_plan`. The
 edit/review prompts prefer `change_plan saveSnapshot` before materially risky
-source edits. After editing, repositories initialized with `codexa init` hooks
-and the Claude plugin already own post-edit review; hookless hosts may make one
-manual `post_edit_review`. Separate `impact`, `diff_impact`, or `test_plan`
+source edits. After planned verification, a true completion/Stop gate such as
+the Claude plugin owns final review. Codex's `codexa init` hooks are edit-scoped,
+so they retain one final `post_edit_review` route with the actual verification
+evidence. Separate `impact`, `diff_impact`, or `test_plan`
 calls are reserved for unresolved evidence needs, not automatically chained.
 
 MCP exposes no source mutation or manual reindex tool and never edits source
@@ -704,10 +705,11 @@ startup/resume. The helper prints cheap status by default; setting
 preview. It does not mutate source files, but context commands can refresh
 generated Codexa cache artifacts when auto-refresh is enabled.
 
-The Codex plugin bundle does not ship hooks and must not claim this managed
-review gate; it is hookless unless the repository is separately initialized.
-The Claude plugin does ship its own Stop hook and marks that gate in its MCP
-launcher so `change_plan` does not recommend a duplicate manual review.
+The Codex plugin bundle does not ship hooks. `codexa init` can add edit-scoped
+Codex hooks, but they run before later shell verification and do not claim
+completion ownership. The Claude plugin does ship its own Stop hook and marks
+that gate in its MCP launcher so `change_plan` does not recommend a duplicate
+final review.
 
 When Codex edit hooks are available, init also writes `hook-pre-edit` and
 `hook-post-edit` entries for edit tools. The pre-edit helper is intentionally a

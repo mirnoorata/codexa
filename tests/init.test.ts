@@ -2,9 +2,10 @@ import { execFileSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
+import { runPostEditHook } from "../src/cli/hooks.js";
 import { initializeProject, sessionStartSummary } from "../src/init.js";
-import { statusQuery } from "../src/queries.js";
+import { changePlanQuery, postEditReviewQuery, statusQuery } from "../src/queries.js";
 import { CODEXA_VERSION } from "../src/version.js";
 
 describe("Codexa project init", () => {
@@ -64,7 +65,7 @@ describe("Codexa project init", () => {
     expect(config).not.toContain("codex_hooks");
     expect(config).toContain(`[mcp_servers.${result.serverName}]`);
     expect(config).toContain(`args = ["/opt/codexa/dist/cli.js", "serve", "${repo}", "--auto-refresh", "--tools", "core"]`);
-    expect(config).toContain('env = { CODEXA_MANAGED_POST_EDIT = "1" }');
+    expect(config).not.toContain("CODEXA_MANAGED_POST_EDIT");
 
     const hooks = JSON.parse(await readFile(path.join(repo, ".codex/hooks.json"), "utf8")) as {
       hooks: {
@@ -88,8 +89,74 @@ describe("Codexa project init", () => {
     expect(summary).toContain("Codexa MCP is ready");
     expect(summary).toContain("exact/local work -> source tools with zero Codexa calls");
     expect(summary).toContain("usually no more than two");
-    expect(summary).toContain("ambiguous materially risky edit on a hookless host");
+    expect(summary).toContain("ambiguous materially risky edit without a completion/Stop gate");
     expect(summary).not.toContain("primary loop change_plan(saveSnapshot) -> edit/run planned verification -> post_edit_review");
+  });
+
+  it("keeps a final review route after the edit hook so shell verification can be recorded", async () => {
+    const repo = await createInitRepo();
+    await mkdir(path.join(repo, "tests"), { recursive: true });
+    await writeFile(
+      path.join(repo, "package.json"),
+      `${JSON.stringify({ type: "module", scripts: { test: "node --test tests/main.test.js" } }, null, 2)}\n`,
+      "utf8"
+    );
+    await writeFile(
+      path.join(repo, "tests/main.test.js"),
+      "import assert from 'node:assert/strict';\nimport test from 'node:test';\ntest('fixture smoke', () => assert.equal(1, 1));\n",
+      "utf8"
+    );
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "add verification fixture"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    await initializeProject(repo, { cliPath: "/opt/codexa/dist/cli.js" });
+
+    const priorOwnership = process.env.CODEXA_MANAGED_POST_EDIT;
+    delete process.env.CODEXA_MANAGED_POST_EDIT;
+    const log = vi.spyOn(console, "log").mockImplementation(() => undefined);
+    try {
+      const plan = await changePlanQuery(
+        repo,
+        {
+          task: "Change the main runtime behavior safely",
+          taskId: "edit-hook-final-review",
+          files: ["src/main.ts"],
+          changeType: "behavior",
+          saveSnapshot: true
+        },
+        { autoRefresh: false }
+      );
+      const planData = plan.data as {
+        reviewOwner?: string;
+        nextTools?: Array<{ tool?: string; requiredInputs?: { taskId?: string } }>;
+      };
+      expect(planData.reviewOwner).toBe("agent-final-review");
+      expect(planData.nextTools).toEqual([
+        expect.objectContaining({ tool: "post_edit_review", requiredInputs: { taskId: "edit-hook-final-review" } })
+      ]);
+
+      await writeFile(path.join(repo, "src/main.ts"), "export function main() { return 2 }\n", "utf8");
+      await runPostEditHook(repo);
+      execFileSync("npm", ["test"], { cwd: repo, stdio: "ignore" });
+
+      const finalReview = await postEditReviewQuery(
+        repo,
+        { taskId: "edit-hook-final-review", ranCommands: ["npm test"], persistOutcome: true },
+        { autoRefresh: false }
+      );
+      const finalData = finalReview.data as {
+        outcome?: { ranCommands?: string[] };
+        verificationLedger?: Array<{ status?: string; evidence?: string[] }>;
+      };
+      expect(finalData.outcome?.ranCommands).toEqual(["npm test"]);
+      expect(finalData.verificationLedger?.some((entry) => entry.status === "covered" && entry.evidence?.some((item) => item.includes("npm test")))).toBe(true);
+    } finally {
+      log.mockRestore();
+      if (priorOwnership === undefined) delete process.env.CODEXA_MANAGED_POST_EDIT;
+      else process.env.CODEXA_MANAGED_POST_EDIT = priorOwnership;
+    }
   });
 
   it("can create the local policy pack during init without overwriting existing policy files", async () => {
@@ -179,8 +246,8 @@ describe("Codexa project init", () => {
     expect(agentsMd).toContain("use source tools and tests directly with zero Codexa calls");
     expect(agentsMd).toContain("call `search` once");
     expect(agentsMd).toContain("usually needs no more than two Codexa calls");
-    expect(agentsMd).toContain("ambiguous materially risky edit on a hookless host");
-    expect(agentsMd).toContain("no deterministic host hook/completion gate already owns review");
+    expect(agentsMd).toContain("ambiguous materially risky edit without a completion/Stop gate");
+    expect(agentsMd).toContain("unless a true completion/Stop gate already owns final review");
     expect(agentsMd).toContain("Call `test_plan` only when verification guidance remains unresolved");
     expect(agentsMd).toContain("use `capabilities` only for a concretely triggered non-core operation");
     expect(agentsMd).not.toContain("then `test_plan`");
@@ -445,7 +512,7 @@ describe("Codexa project init", () => {
     await expect(readFile(path.join(repo, ".codex/hooks.json"), "utf8")).rejects.toThrow();
   });
 
-  it("revokes the managed-review marker before a hook update that fails", async () => {
+  it("never claims completion ownership for edit-only hooks, including a failed refresh", async () => {
     const repo = await createInitRepo();
     await initializeProject(repo, {
       cliPath: "/opt/context/dist/cli.js",
@@ -453,7 +520,7 @@ describe("Codexa project init", () => {
     });
     const configPath = path.join(repo, ".codex/config.toml");
     const hooksPath = path.join(repo, ".codex/hooks.json");
-    expect(await readFile(configPath, "utf8")).toContain("CODEXA_MANAGED_POST_EDIT");
+    expect(await readFile(configPath, "utf8")).not.toContain("CODEXA_MANAGED_POST_EDIT");
     await writeFile(hooksPath, "{ malformed hooks", "utf8");
 
     await expect(initializeProject(repo, {

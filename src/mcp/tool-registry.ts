@@ -77,14 +77,14 @@ export const MCP_TOOL_REGISTRY = [
     name: "post_edit_review",
     title: "Codexa post-edit review",
     description:
-      "Review code changes for drift when no deterministic host completion gate already owns review: compares the dirty tree against a change_plan snapshot, accounts for declared invariants and selected verification artifacts, and persists a sanitized task outcome used by the replan budget. Pass the snapshot task id plus evidence that actually ran. Large output, budget-compacted.",
+      "Review code changes for final drift after planned verification when no true completion/Stop gate already owns review: compares the dirty tree against a change_plan snapshot, accounts for declared invariants and selected verification artifacts, and persists a sanitized task outcome used by the replan budget. An edit-only hook is not a completion gate. Pass the snapshot task id plus evidence that actually ran. Large output, budget-compacted.",
     tier: "primary",
     phase: "review",
     cost: "large",
     writeEffects: "task-outcome-cache+session-memory-auto",
     readOnly: false,
-    useWhen: "A hookless host needs one drift review, or the user requests a formal review; pass the saved task id plus commands/tests that actually ran.",
-    avoidWhen: "A managed host hook or completion gate already reviewed the edit, before editing, or without a meaningful diff.",
+    useWhen: "No completion/Stop gate owns final review, or the user requests a formal review; pass the saved task id plus commands/tests that actually ran.",
+    avoidWhen: "A true completion/Stop gate already reviewed the final edit and verification, before editing, or without a meaningful diff.",
     nextToolUse: []
   },
   {

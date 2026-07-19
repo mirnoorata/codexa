@@ -131,12 +131,11 @@ Then make the source or docs edits with your normal editor or agent. Codexa MCP
 tools do not edit source files. Run the targeted tests and verification commands
 returned by the change plan.
 
-The hooks written by `codexa init` review a Codex session's dirty tree, and the
-Claude plugin ships its own managed Stop review. Do not add a duplicate manual
-call when either gate owns the review. The Codex plugin bundle itself is
-hookless unless the repository was separately initialized with Codexa hooks.
-In a host without a deterministic post-edit gate, review once against the saved
-plan:
+The hooks written by `codexa init` review the dirty tree after edit tools, before
+later shell verification. They do not replace one final review with the actual
+verification evidence. The Claude plugin's managed Stop hook does own final
+review. In a host without a true completion/Stop gate, review once against the
+saved plan after verification:
 
 ```bash
 codexa post-edit-review /path/to/project \
@@ -165,14 +164,14 @@ The same selective policy applies to MCP tools inside an agent host:
 ```text
 exact/local/source-sufficient -> source tools, zero Codexa calls
 ambiguous/raw-sufficient -> search, then stop
-exact materially risky + managed gate -> change_plan(saveSnapshot)
-ambiguous materially risky + managed gate -> search -> change_plan(saveSnapshot)
-exact materially risky + no managed gate -> change_plan(saveSnapshot) -> post_edit_review
-ambiguous materially risky + no managed gate -> search -> change_plan(saveSnapshot) -> post_edit_review
+exact materially risky + completion/Stop gate -> change_plan(saveSnapshot)
+ambiguous materially risky + completion/Stop gate -> search -> change_plan(saveSnapshot)
+exact materially risky + no completion gate -> change_plan(saveSnapshot) -> post_edit_review
+ambiguous materially risky + no completion gate -> search -> change_plan(saveSnapshot) -> post_edit_review
 ```
 
 The last line is the narrow three-call safety exception: ambiguity, material
-risk, and no managed post-edit gate must all be present. These examples do not
+risk, and no completion/Stop gate must all be present. These examples do not
 authorize automatic chaining; each call must resolve a need the task still has.
 
 ## 5. Print a proof card
@@ -226,8 +225,8 @@ target repo path and inspect the generated MCP config in that repository.
 
 If a command output looks heuristic-heavy, treat it as a reading list rather
 than proof. Open the cited files and run the relevant checks. Pass the actual
-commands to a manual `post-edit-review` only when no managed host gate owns the
-review.
+commands to one final `post-edit-review` unless a true completion/Stop gate owns
+the review. An edit-only hook is not a completion gate.
 
 ## Next steps
 

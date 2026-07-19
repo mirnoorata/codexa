@@ -77,9 +77,9 @@ deterministic post-edit gate, so do not duplicate it with a manual
 unresolved and `proof_card` only for policy or formal handoff.
 
 The general narrow three-call exception—ambiguous target, materially risky
-edit, and no managed post-edit gate—does not apply while this plugin's Stop hook
-owns review. The separate Codex plugin bundle is hookless unless its repository
-was also initialized with `codexa init` hooks.
+edit, and no completion/Stop gate—does not apply while this plugin's Stop hook
+owns review. The separate Codex plugin bundle ships no completion hook; Codex
+edit-only hooks from `codexa init` do not claim final review ownership.
 
 In core mode, `capabilities` discovers or invokes every non-core operation
 through the same operation-specific schema and handler; full mode also exposes

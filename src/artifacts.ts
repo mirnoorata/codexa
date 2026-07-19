@@ -500,8 +500,8 @@ function renderConventions(index: CodexaIndex): string {
   heuristic-only links, and changed files without symbol ranges.
 - For exact local edits, use source tools and tests with zero Codexa calls.
   Use \`change_plan\` only for multi-file or materially risky changes.
-- Let a managed completion hook own post-edit review. On a hookless host, call
-  \`post_edit_review\` once only when drift accountability is needed.
+- Let a true completion/Stop hook own final post-edit review. An edit-only hook
+  runs too early to replace one final \`post_edit_review\` with verification evidence.
 - Use \`session_memory\` to recall or explicitly save session-local working
   memory. Auto-recorded \`viewed\` entries are Codexa-derived; agent claims stay
   agent-asserted and must not be promoted into codebase facts.
@@ -562,7 +562,7 @@ how to approach changes safely without loading the whole graph.
 1. Exact file, symbol, error, read-only check, or local edit: use source tools and tests with zero Codexa calls.
 2. Ambiguous target: run \`search\` once; stop Codexa when raw evidence is sufficient.
 3. For a non-trivial multi-file or high-risk edit, run \`change_plan\` with \`saveSnapshot: true\`, then edit and run its planned verification.
-4. Let a managed host gate review the edit. On a hookless host, run one \`post_edit_review\` only when needed.
+4. After planned verification, run one \`post_edit_review\` unless a true completion/Stop gate owns final review; an edit-only hook does not.
 5. Run \`test_plan\` only when verification guidance remains unresolved; run \`proof_card\` only for policy, audit, release, or formal handoff proof.
 6. Use \`capabilities\` only for a concretely triggered non-core operation.
 
@@ -610,8 +610,8 @@ ${tests.length > 0 ? tests.map((edge) => `- \`${edge.path}\`${edge.targetPath ? 
 1. Read the target and the top importer/caller from Codexa output.
 2. Check risk signals before changing public surface, adapters, config, routes, or generated manifests.
 3. Prefer tests listed above; if none are listed, inspect repo test metadata before inventing commands.
-4. Let the managed host gate review edits; on a hookless host, run one
-   \`post_edit_review\` only if a saved snapshot needs drift accountability.
+4. After planned verification, run one \`post_edit_review\` if a saved snapshot
+   needs final drift accountability and no completion/Stop gate owns it.
 `;
 }
 

@@ -38,8 +38,8 @@ export function registerWorkflowPrompts(server: McpServer, enabledTools?: Readon
               task ? `Task: ${task}` : undefined,
               impactCall(target, targetKind),
               "Do not also call `change_plan` unless the impact packet proves a material cross-boundary risk that needs a saved plan.",
-              "After editing, rely on the managed host completion gate. On a hookless host only:",
-              call("post_edit_review", "once when drift accountability is still needed"),
+              "After planned verification, rely on a true completion/Stop gate when present. An edit-only hook is not a completion gate; otherwise:",
+              call("post_edit_review", "once when final drift accountability is still needed"),
               "Read the returned freshness, confidence labels, known gaps, affected files, and likely tests before modifying code."
             ]
               .filter((line): line is string => Boolean(line))
@@ -110,7 +110,7 @@ export function registerWorkflowPrompts(server: McpServer, enabledTools?: Readon
               target ? `Target: ${target}` : undefined,
               target ? call("change_plan", "with `saveSnapshot: true` and a short `taskId`") : call("search", "once; do not stack another context packet unless the scope becomes materially risky"),
               "Use the returned planned files, tests, workflows, quality, and gaps to guide source reads.",
-              "After editing, rely on the managed host completion gate. On a hookless host only:",
+              "After planned verification, rely on a true completion/Stop gate when present. An edit-only hook is not a completion gate; otherwise:",
               call("post_edit_review", "once with that taskId and tests already run", { taskId: "<saved taskId>" }),
               "If the review says `inspect` or `replan`, resolve that drift before claiming the edit is complete."
             ]

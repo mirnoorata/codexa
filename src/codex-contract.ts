@@ -35,8 +35,8 @@ not add Codexa calls to exact local work merely because the server is present.
 1. Known file, symbol, error, exact raw match, read-only check, or small local edit: use source tools and tests directly. Make zero Codexa calls.
 2. Ambiguous target: call \`search\` once. If it reports \`raw_search_sufficient\`, stop Codexa and read the exact hits; do not chain another context tool.
 3. Non-trivial multi-file, API, runtime, persistence, security, or otherwise high-risk edit: call \`change_plan\` with \`saveSnapshot: true\`, then run its planned verification.
-4. Call \`post_edit_review\` once only on a hookless host, for a formal requested review, or when no deterministic completion gate already owns drift review.
-5. Normal agentic work should usually use no more than two Codexa calls. The only three-call safety exception is \`search -> change_plan -> post_edit_review\` for an ambiguous materially risky edit on a hookless host. Do not stack \`session_context\`, \`search\`, and \`task_brief\` for one task.
+4. After planned verification, call \`post_edit_review\` once unless a true completion/Stop gate already owns final drift review, or when a formal review is requested. An edit-only hook is not a completion gate.
+5. Normal agentic work should usually use no more than two Codexa calls. The only three-call safety exception is \`search -> change_plan -> post_edit_review\` for an ambiguous materially risky edit without a completion/Stop gate. Do not stack \`session_context\`, \`search\`, and \`task_brief\` for one task.
 6. Call \`test_plan\` only when verification guidance remains unresolved; call \`proof_card\` only for policy, audit, release, or formal handoff proof.
 7. Use \`capabilities\` only when a concrete trigger requires a non-core operation. Full mode exposes every operation directly but does not make them mandatory.
 

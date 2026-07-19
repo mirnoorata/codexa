@@ -229,7 +229,7 @@ function validateCodexaSkillContract(file, text) {
     "should usually use no more than two Codexa calls",
     "only three-call exception",
     "raw search result is sufficient",
-    "has no deterministic host review gate",
+    "no completion/Stop gate",
     "`capabilities` to discover or invoke any non-core operation",
     "Keep host adapters thin",
     "no source-mutating MCP tool path",
