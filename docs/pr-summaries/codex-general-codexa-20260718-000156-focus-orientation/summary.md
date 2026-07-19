@@ -3,7 +3,7 @@
 - Project: `codexa`
 - Branch: `codex/general/codexa-20260718-000156-focus-orientation`
 - Base: `main`
-- Source head before summary refresh: `81ef637f913e`
+- Source head before final summary refresh: `a893db57af1d`
 - Subject: `perf(mcp): reduce agentic Codexa overhead`
 
 ## Goal and Outcome
@@ -79,6 +79,7 @@ estimate. It has no task-clustered interval or comparable provider-cost metric.
 | Package hygiene | Generated npm and plugin contents passed |
 | Installed-package smoke | 31 checks passed against the packed 0.15.0 tarball |
 | Source hygiene | Passed; `task-snapshots.ts` is 994 lines |
+| CI regression cases | Raw-search fallback 4/4; exhaustive routing scope 1/1 |
 | Adversarial review | Latest strict pass: `NO ACTIONABLE FINDINGS` |
 | Bloat audit | No high-confidence removable production bloat found |
 
