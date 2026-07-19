@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -232,6 +233,55 @@ it("core-profile envelopes steer only to directly registered or dispatcher-calla
       expect(oversizedEnvelope.data?.decisionKernel?.systemMessage).toBeUndefined();
       expect(oversizedEnvelope.systemMessage).toContain("data.nextCall contract");
       expect(JSON.stringify(oversizedCallers).split(JSON.stringify(expectedCallersDispatch))).toHaveLength(2);
+    } finally {
+      await client.close();
+    }
+  }, 90_000);
+
+  it("never elides both exact hits and their detailed result after final transport compaction", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-exact-transport-"));
+    const repo = await createIndexedMcpRepo(workspace, "repo", "alpha", "alphaSymbol");
+    await Promise.all(Array.from({ length: 80 }, async (_, index) => {
+      const suffix = String(index).padStart(3, "0");
+      await writeFile(
+        path.join(repo, "src", `mcp-structured-data-target-bytes-${suffix}.ts`),
+        index === 0
+          ? "export const mcpStructuredDataTargetBytes = 12_000;\n"
+          : `export const context${suffix} = "mcp structured data target bytes ${suffix}";\n`,
+        "utf8"
+      );
+    }));
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "exact search fixture"], { cwd: repo, stdio: "ignore" });
+    await buildIndex({ repoRoot: repo });
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh", "--session-memory", "off", "--no-semantic", "--tools", "core"],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-exact-transport-test", version: "0.1.0" });
+    await client.connect(transport);
+    try {
+      const result = await client.callTool({ name: "search", arguments: { query: "mcpStructuredDataTargetBytes", limit: 50 } });
+      const envelope = result.structuredContent as {
+        data?: {
+          rawExactHitCount?: number;
+          raw?: { sufficient?: boolean; hits?: unknown[]; files?: string[] };
+          delivery?: { resultUri?: string };
+        };
+      };
+      const data = envelope.data;
+      const retainedCompleteHits = data?.raw?.sufficient === true
+        && Array.isArray(data.raw.hits)
+        && data.raw.hits.length === data.rawExactHitCount;
+      const resultUri = data?.delivery?.resultUri;
+      expect(retainedCompleteHits || Boolean(resultUri)).toBe(true);
+      if (!retainedCompleteHits) {
+        expect(resultUri).toMatch(/^codexa:\/\/repo\/mcp-results\//u);
+        const linkedDetail = await client.readResource({ uri: resultUri! });
+        expect(linkedDetail.contents.some((entry) => typeof entry.text === "string" && entry.text.includes("mcpStructuredDataTargetBytes"))).toBe(true);
+      }
     } finally {
       await client.close();
     }
