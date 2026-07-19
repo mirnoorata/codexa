@@ -109,6 +109,7 @@ export interface TaskSnapshot {
   origin?: "hook-implicit";
   changeType: ChangeType;
   planRevision?: number;
+  publicationSequence?: number;
   invariants?: TaskInvariant[];
   createdAt: string;
   snapshotFreshness: FreshnessInfo;

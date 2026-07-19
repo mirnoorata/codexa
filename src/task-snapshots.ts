@@ -10,12 +10,13 @@ import { stableId } from "./util.js";
 const SNAPSHOT_DIR = ".codex/cache/codexa-tasks";
 const LEGACY_SNAPSHOT_DIR = ".codex/cache/codexa-task-snapshots";
 const LATEST_FILE = "latest.json";
+const PUBLICATION_SEQUENCE_FILE = ".latest-publication-sequence";
 const CHANGE_TYPES = new Set<ChangeType>(["style", "api", "behavior", "rename", "delete", "unknown"]);
 
 export interface SaveTaskSnapshotInput {
   repoRoot: string;
   input: ChangePlanInput;
-  snapshot: Omit<TaskSnapshot, "schemaVersion" | "taskId" | "repoRoot" | "createdAt" | "input">;
+  snapshot: Omit<TaskSnapshot, "schemaVersion" | "taskId" | "repoRoot" | "createdAt" | "publicationSequence" | "input">;
   beforePersist?: () => Promise<void>;
 }
 
@@ -42,6 +43,7 @@ export interface BlockedTaskSnapshotMarker {
   taskId: string;
   repoRoot?: string;
   createdAt?: string;
+  publicationSequence?: number;
   input?: ChangePlanInput;
   reason?: string;
   details?: unknown;
@@ -60,12 +62,14 @@ export async function saveTaskSnapshot({ repoRoot, input, snapshot, beforePersis
     const lifecycle = await loadTaskLifecycleState(repo, taskId);
     const planRevision = Math.max(priorSnapshot?.planRevision ?? (priorSnapshot ? 1 : 0), lifecycle?.planRevision ?? 0) + 1;
     const invariants = normalizeTaskInvariants(lifecycle?.invariants ?? priorSnapshot?.invariants, input.invariants ?? snapshot.invariants?.map((entry) => entry.statement));
+    const publicationSequence = await reservePublicationSequence(repo, dir);
     const saved = redactRepoPath(
       {
         schemaVersion: 1,
         taskId,
         repoRoot: ".",
         createdAt,
+        publicationSequence,
         input: { ...input, taskId, saveSnapshot: Boolean(input.saveSnapshot) },
         ...snapshot,
         planRevision,
@@ -82,6 +86,7 @@ export async function saveTaskSnapshot({ repoRoot, input, snapshot, beforePersis
       taskId,
       path: path.basename(snapshotPath),
       createdAt,
+      publicationSequence,
       origin: saved.origin
     });
     if (published) await removeImplicitSiblingSnapshots(dir, taskId);
@@ -130,6 +135,7 @@ export async function saveBlockedTaskSnapshot({ repoRoot, input, reason, details
       return { taskId, path: snapshotPath, preservedSnapshot: true as const };
     }
     const markerPath = path.join(dir, `${taskId}.blocked.json`);
+    const publicationSequence = await reservePublicationSequence(repo, dir);
   const marker = redactRepoPath(
     {
       schemaVersion: 1,
@@ -137,6 +143,7 @@ export async function saveBlockedTaskSnapshot({ repoRoot, input, reason, details
       taskId,
       repoRoot: ".",
       createdAt,
+      publicationSequence,
       input: { ...input, taskId, saveSnapshot: Boolean(input.saveSnapshot) },
       reason,
       details
@@ -150,6 +157,7 @@ export async function saveBlockedTaskSnapshot({ repoRoot, input, reason, details
       taskId,
       path: path.basename(markerPath),
       createdAt,
+      publicationSequence,
       blocked: true,
       reason,
       origin: "blocked"
@@ -256,7 +264,29 @@ interface LatestSnapshotPointer {
   blocked?: unknown;
   reason?: unknown;
   createdAt?: unknown;
+  publicationSequence?: unknown;
   origin?: unknown;
+}
+
+interface SnapshotAuthority {
+  taskId: string;
+  path: string;
+  implicit: boolean;
+  publicationSequence?: number;
+  createdAtMs?: number;
+  kind: "snapshot" | "blocked";
+}
+
+async function reservePublicationSequence(repoRoot: string, dir: string): Promise<number> {
+  return withTaskLifecycleLock(repoRoot, "\0codexa-latest-snapshot-publication", async () => {
+    const sequencePath = path.join(dir, PUBLICATION_SEQUENCE_FILE);
+    const persisted = await readPublicationSequence(sequencePath);
+    const maximum = persisted ?? await maximumPublicationSequence(dir);
+    if (maximum >= Number.MAX_SAFE_INTEGER) throw new Error("task snapshot publication sequence is exhausted");
+    const next = maximum + 1;
+    await atomicTextWrite(sequencePath, `${next}\n`);
+    return next;
+  });
 }
 
 async function publishLatestSnapshot(repoRoot: string, dir: string, candidate: Record<string, unknown>): Promise<boolean> {
@@ -270,15 +300,64 @@ async function publishLatestSnapshot(repoRoot: string, dir: string, candidate: R
 }
 
 async function shouldPublishLatest(dir: string, current: LatestSnapshotPointer, candidate: Record<string, unknown>): Promise<boolean> {
-  const currentImplicit = await latestPointerIsImplicit(dir, current);
-  const candidateImplicit = candidate.origin === "hook-implicit";
-  if (currentImplicit !== candidateImplicit) return !candidateImplicit;
-  const currentTime = typeof current.createdAt === "string" ? Date.parse(current.createdAt) : Number.NaN;
-  const candidateTime = typeof candidate.createdAt === "string" ? Date.parse(candidate.createdAt) : Number.NaN;
-  if (Number.isFinite(currentTime) && Number.isFinite(candidateTime) && candidateTime !== currentTime) return candidateTime > currentTime;
-  const currentTaskId = typeof current.taskId === "string" ? current.taskId : "";
-  const candidateTaskId = typeof candidate.taskId === "string" ? candidate.taskId : "";
-  return candidateTaskId.localeCompare(currentTaskId) > 0;
+  const currentAuthority = pointerAuthority(current, await latestPointerIsImplicit(dir, current));
+  const candidateAuthority = pointerAuthority(candidate, candidate.origin === "hook-implicit");
+  return compareSnapshotAuthority(candidateAuthority, currentAuthority) > 0;
+}
+
+function pointerAuthority(pointer: LatestSnapshotPointer | Record<string, unknown>, implicit: boolean): SnapshotAuthority {
+  const createdAtMs = typeof pointer.createdAt === "string" ? Date.parse(pointer.createdAt) : Number.NaN;
+  return {
+    taskId: typeof pointer.taskId === "string" ? pointer.taskId : "",
+    path: typeof pointer.path === "string" ? pointer.path : "",
+    implicit,
+    publicationSequence: validPublicationSequence(pointer.publicationSequence),
+    createdAtMs: Number.isFinite(createdAtMs) ? createdAtMs : undefined,
+    kind: pointer.blocked === true ? "blocked" : "snapshot"
+  };
+}
+
+function compareSnapshotAuthority(left: SnapshotAuthority, right: SnapshotAuthority): number {
+  if (left.implicit !== right.implicit) return left.implicit ? -1 : 1;
+  const leftSequence = left.publicationSequence;
+  const rightSequence = right.publicationSequence;
+  if (leftSequence !== undefined || rightSequence !== undefined) {
+    if (leftSequence === undefined) return -1;
+    if (rightSequence === undefined) return 1;
+    if (leftSequence !== rightSequence) return leftSequence - rightSequence;
+  } else if (left.createdAtMs !== right.createdAtMs) {
+    return (left.createdAtMs ?? 0) - (right.createdAtMs ?? 0);
+  }
+  return left.taskId.localeCompare(right.taskId) || left.path.localeCompare(right.path) || left.kind.localeCompare(right.kind);
+}
+
+function validPublicationSequence(value: unknown): number | undefined {
+  return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : undefined;
+}
+
+async function readPublicationSequence(filePath: string): Promise<number | undefined> {
+  try {
+    return validPublicationSequence(Number((await fs.readFile(filePath, "utf8")).trim()));
+  } catch {
+    return undefined;
+  }
+}
+
+async function maximumPublicationSequence(dir: string): Promise<number> {
+  let maximum = 0;
+  let entries: string[] = [];
+  try {
+    entries = await fs.readdir(dir);
+  } catch {
+    return maximum;
+  }
+  for (const entry of entries) {
+    if (!entry.endsWith(".json")) continue;
+    const parsed = await readJson<Record<string, unknown>>(path.join(dir, entry));
+    if (!parsed.ok) continue;
+    maximum = Math.max(maximum, validPublicationSequence(parsed.value.publicationSequence) ?? 0);
+  }
+  return maximum;
 }
 
 async function latestPointerIsImplicit(dir: string, pointer: LatestSnapshotPointer): Promise<boolean> {
@@ -322,7 +401,11 @@ function isBlockedSnapshotMarker(value: unknown, taskId?: string): value is Bloc
   }
   const record = value as Partial<BlockedTaskSnapshotMarker>;
   const normalizedTaskId = typeof record.taskId === "string" ? normalizeTaskId(record.taskId) : undefined;
-  return record.schemaVersion === 1 && record.kind === "change-plan-snapshot-blocked" && Boolean(normalizedTaskId) && (!taskId || normalizedTaskId === taskId);
+  return record.schemaVersion === 1
+    && record.kind === "change-plan-snapshot-blocked"
+    && Boolean(normalizedTaskId)
+    && (!taskId || normalizedTaskId === taskId)
+    && (record.publicationSequence === undefined || validPublicationSequence(record.publicationSequence) !== undefined);
 }
 
 function blockedSnapshotLoadResult(marker: BlockedTaskSnapshotMarker, markerPath: string, recoveredLatest = false): TaskSnapshotLoadResult {
@@ -470,7 +553,7 @@ async function recoverLatestSnapshot(dirs: string[], currentDir?: string): Promi
       path: invalidCurrentBlocked.path
     };
   }
-  const latest = candidates.sort((a, b) => b.createdAtMs - a.createdAtMs || recoveredCandidateTaskId(a).localeCompare(recoveredCandidateTaskId(b)) || a.kind.localeCompare(b.kind))[0];
+  const latest = candidates.sort((left, right) => compareSnapshotAuthority(recoveredCandidateAuthority(right), recoveredCandidateAuthority(left)))[0];
   if (!latest) {
     return undefined;
   }
@@ -494,6 +577,18 @@ function recoveredCandidateTaskId(candidate: RecoveredSnapshotCandidate): string
     return candidate.snapshot.taskId;
   }
   return typeof candidate.marker.taskId === "string" ? normalizeTaskId(candidate.marker.taskId) ?? "" : "";
+}
+
+function recoveredCandidateAuthority(candidate: RecoveredSnapshotCandidate): SnapshotAuthority {
+  const record = candidate.kind === "snapshot" ? candidate.snapshot : candidate.marker;
+  return {
+    taskId: recoveredCandidateTaskId(candidate),
+    path: path.basename(candidate.path),
+    implicit: candidate.kind === "snapshot" && candidate.snapshot.origin === "hook-implicit",
+    publicationSequence: validPublicationSequence(record.publicationSequence),
+    createdAtMs: candidate.createdAtMs,
+    kind: candidate.kind
+  };
 }
 
 export function taskSnapshotCacheDir(repoRoot: string): string {
@@ -545,6 +640,16 @@ async function atomicJsonWrite(filePath: string, value: unknown): Promise<void> 
   }
 }
 
+async function atomicTextWrite(filePath: string, value: string): Promise<void> {
+  const tmp = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(tmp, value, { encoding: "utf8", flag: "wx" });
+    await fs.rename(tmp, filePath);
+  } finally {
+    await fs.rm(tmp, { force: true }).catch(() => undefined);
+  }
+}
+
 function redactRepoPath(value: unknown, repoRoot: string): unknown {
   if (typeof value === "string") {
     return value.replaceAll(repoRoot, "<repo>");
@@ -583,6 +688,7 @@ export function isTaskSnapshot(value: unknown): value is TaskSnapshot {
     typeof record.createdAt === "string" &&
     typeof record.changeType === "string" &&
     (record.planRevision === undefined || (Number.isInteger(record.planRevision) && record.planRevision > 0)) &&
+    (record.publicationSequence === undefined || validPublicationSequence(record.publicationSequence) !== undefined) &&
     (record.invariants === undefined || isTaskInvariants(record.invariants)) &&
     Boolean(record.snapshotFreshness) &&
     Boolean(record.input) &&
