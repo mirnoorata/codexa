@@ -1,3 +1,4 @@
+import path from "node:path";
 import { isTestPath } from "../language.js";
 import type { ChangeType, GraphEdgeFact, GraphEdgeKind, SymbolFact, WorkflowTraceFact } from "../types.js";
 import { uniqueSorted } from "../util.js";
@@ -363,8 +364,13 @@ function focusPathMentions(task: string): FocusPathMention[] {
     .map((match) => {
       const raw = match[1];
       const index = (match.index ?? 0) + match[0].indexOf(raw);
-      return { candidate: raw.replace(/^\.\//u, "").replace(/\.$/u, ""), index, end: index + raw.length, explicit: raw.startsWith("./") };
+      return { candidate: normalizeMentionCandidate(raw), index, end: index + raw.length, explicit: raw.startsWith("./") };
     });
+}
+
+function normalizeMentionCandidate(value: string): string {
+  const normalized = path.posix.normalize(value.replace(/\.$/u, ""));
+  return normalized.replace(/^\.\//u, "");
 }
 
 function unknownFocusPathMentions(task: string, repositoryFiles: string[]): FocusPathMention[] {
@@ -485,14 +491,15 @@ function focusFileTaskIndex(task: string, file: string): number {
   let start = 0;
   while (start < task.length) {
     const index = task.indexOf(file, start);
-    if (index < 0) return -1;
+    if (index < 0) break;
     const before = index > 0 ? task[index - 1] : "";
     const after = task[index + file.length] ?? "";
     const terminalPeriod = after === "." && !/[a-z0-9_]/iu.test(task[index + file.length + 1] ?? "");
     if (!/[a-z0-9_./-]/iu.test(before) && (terminalPeriod || !/[a-z0-9_./-]/iu.test(after))) return index;
     start = index + 1;
   }
-  return -1;
+  const normalizedFile = normalizeMentionCandidate(file);
+  return focusPathMentions(task).find((mention) => mention.candidate === normalizedFile)?.index ?? -1;
 }
 
 export function classifyChangePlanNeed(input: ChangePlanRoutingInput): ChangePlanNeed | undefined {

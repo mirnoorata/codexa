@@ -61,6 +61,9 @@ describe("query graph routing", () => {
   it("recognizes explicit and compact new-target syntax without accepting likely typos", () => {
     const repositoryFiles = ["src/util.ts"];
     expect(plannedNewFocusPathTargets("Create ./util.ts", repositoryFiles)).toEqual(["util.ts"]);
+    expect(plannedNewFocusPathTargets("Create src/./util.ts", repositoryFiles)).toEqual([]);
+    expect(unresolvedFocusPathTargets("Create src/./util.ts", repositoryFiles)).toEqual([]);
+    expect(focusFilesInTaskOrder("Create src/./util.ts", repositoryFiles, repositoryFiles)).toEqual(["src/util.ts"]);
     expect(plannedNewFocusPathTargets("Rename src/util.ts->src/helpers.ts", repositoryFiles)).toEqual(["src/helpers.ts"]);
     expect(plannedNewFocusPathTargets("Rename src/util.ts to [src/helpers.ts]", repositoryFiles)).toEqual(["src/helpers.ts"]);
     expect(plannedNewFocusPathTargets("Create src/new.ts,src/worker.ts", repositoryFiles)).toEqual(["src/new.ts", "src/worker.ts"]);

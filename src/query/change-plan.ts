@@ -3,7 +3,7 @@ import { formatGaps } from "./diff.js";
 import { buildPlanComplexityReview, formatComplexityReview } from "./complexity.js";
 import { nextTool } from "./next-tools.js";
 import { contextPackQuery } from "./context.js";
-import { structuredNewTargetAuthority } from "./context/target-authority.js";
+import { inspectPlannedTargetAuthority, structuredNewTargetAuthority } from "./context/target-authority.js";
 import { focusFilesAndSymbolsInTaskOrder, focusFilesInTaskOrder, isLikelyPathTypo, normalizeTaskRepositoryPaths, plannedNewFocusPathTargets } from "./graph.js";
 import { formatContextQuality, type ContextQuality } from "./quality.js";
 import {
@@ -15,7 +15,7 @@ import {
 import { ensureQuerySession, type QuerySession, type QuerySessionInput } from "./session.js";
 import { normalizeSearchText } from "./search.js";
 import { formatTestRecommendations, recommendTests, uniqueTests } from "./tests.js";
-import { findFile, newTargetPathIsContained, normalizeInputPath, normalizeInputPaths, resolveFileTarget, resolveSymbolTarget } from "./targets.js";
+import { findFile, normalizeInputPaths, repositoryTargetPathAuthority, resolveFileTarget, resolveSymbolTarget } from "./targets.js";
 import { getWorktreeState } from "./worktree-state.js";
 import { taskReferencesDirtyContext } from "./context/focus.js";
 import { compactSnapshotTests, snapshotRiskBaseline, snapshotSymbolBaseline } from "./post-edit/snapshot-contract.js";
@@ -46,6 +46,8 @@ import { getDiffFootprint } from "./worktree.js";
 import { formatTaskInvariants, nextTaskPlanLifecycle } from "../task-lifecycle.js";
 import { changePlanEditReadiness, normalizeTargetCandidateSelector, resolveChangePlanFollowBaseInput } from "./change-plan/readiness.js";
 import { candidateSymbols, dedupeTargetCandidates, followedReplaySnapshotTargets, formatTargetCandidates, meaningfulTaskTokens, rawSearchQueries, uniqueInOrder, withTargetCandidateId } from "./change-plan/candidate-helpers.js";
+import { validateChangePlanTargetCandidate } from "./change-plan/candidate-validation.js";
+export { validateChangePlanTargetCandidate } from "./change-plan/candidate-validation.js";
 export async function changePlanQuery(
   sessionInput: QuerySessionInput,
   input: ChangePlanInput = {},
@@ -110,47 +112,59 @@ export async function changePlanQuery(
   const recipes = packData.recipes ?? [];
   const quality = packData.quality;
   const files = focusFiles.map((entry) => entry.file.path);
-  const requestedExplicitFiles = normalizeInputPaths(effectiveInput.files ?? [], repoRoot);
   const structuredNewTargetMode = structuredNewTargetAuthority(effectiveInput.task, effectiveInput.changeType);
   const repositoryFiles = session.index.files.map((file) => file.path);
-  const packetPlanTargets = (await Promise.all((packData.boundedPlanTargets ?? []).map(async (filePath) => (repositoryFiles.includes(filePath) || await newTargetPathIsContained(filePath, repoRoot)) ? filePath : undefined))).filter((filePath): filePath is string => Boolean(filePath));
+  const requestedFileAuthorities = await Promise.all((effectiveInput.files ?? []).map((filePath) => repositoryTargetPathAuthority(filePath, repoRoot, repositoryFiles)));
+  const packetTargetAuthority = await Promise.all((packData.boundedPlanTargets ?? []).map((filePath) => repositoryTargetPathAuthority(filePath, repoRoot, repositoryFiles)));
+  const packetPlanTargets = packetTargetAuthority
+    .filter((entry) => entry.status === "indexed" || entry.status === "missing")
+    .flatMap((entry) => entry.path ? [entry.path] : []);
   const targetTask = normalizeTaskRepositoryPaths(effectiveInput.task ?? "", repoRoot);
-  const detectedNaturalNewTargets = (await Promise.all(plannedNewFocusPathTargets(targetTask, repositoryFiles).map(async (filePath) => (await newTargetPathIsContained(filePath, repoRoot)) ? filePath : undefined))).filter((filePath): filePath is string => Boolean(filePath));
-  const tentativeNaturalPlanTargets = focusFilesAndSymbolsInTaskOrder(targetTask, [...repositoryFiles, ...detectedNaturalNewTargets], [...repositoryFiles, ...detectedNaturalNewTargets], session.index.symbols);
+  const naturalTargetAuthority = await inspectPlannedTargetAuthority(plannedNewFocusPathTargets(targetTask, repositoryFiles), repoRoot, repositoryFiles);
+  const detectedNaturalNewTargets = naturalTargetAuthority.newTargets;
+  const tentativeNaturalPlanTargets = [...new Set([
+    ...focusFilesAndSymbolsInTaskOrder(targetTask, [...repositoryFiles, ...detectedNaturalNewTargets], [...repositoryFiles, ...detectedNaturalNewTargets], session.index.symbols),
+    ...naturalTargetAuthority.indexedTargets
+  ])];
   const naturalStructuralSourcePresent = [...tentativeNaturalPlanTargets, ...packetPlanTargets].some((filePath) => repositoryFiles.includes(filePath));
   const naturalNewTargets = structuredNewTargetMode.structural && !naturalStructuralSourcePresent ? [] : detectedNaturalNewTargets;
-  const naturalPathPlanTargets = focusFilesInTaskOrder(targetTask, [...repositoryFiles, ...naturalNewTargets], [...repositoryFiles, ...naturalNewTargets]);
+  const naturalPathPlanTargets = [...new Set([
+    ...focusFilesInTaskOrder(targetTask, [...repositoryFiles, ...naturalNewTargets], [...repositoryFiles, ...naturalNewTargets]),
+    ...naturalTargetAuthority.indexedTargets
+  ])];
   const explicitScopeTargets = packetPlanTargets.length > 0 ? packetPlanTargets : naturalPathPlanTargets;
-  const explicitRootNewPaths = new Set((effectiveInput.files ?? []).flatMap((filePath) => {
-    if (!filePath.replaceAll("\\", "/").startsWith("./")) return [];
-    const normalized = normalizeInputPath(filePath, repoRoot);
-    return normalized && !repositoryFiles.includes(normalized) ? [normalized] : [];
-  }));
-  const existingRequestedFileCount = requestedExplicitFiles.filter((filePath) => Boolean(resolveFileTarget(session.index, filePath, repoRoot).file)).length;
+  const explicitRootNewPaths = new Set(requestedFileAuthorities.flatMap((entry) => entry.status === "missing" && entry.requestedPath.replaceAll("\\", "/").startsWith("./") && entry.path ? [entry.path] : []));
+  const existingRequestedFileCount = requestedFileAuthorities.filter((entry) => entry.status === "indexed" || Boolean(resolveFileTarget(session.index, entry.requestedPath, repoRoot).file)).length;
   const validatedExplicitFiles: string[] = [];
   const explicitResolutionCandidateFiles: FileFact[] = [];
   const dirtyExplicitPaths = taskReferencesDirtyContext(effectiveInput.task ?? "")
     ? new Set((await getWorktreeState(session)).files.filter((filePath) => !filePath.startsWith(".codex/")))
     : new Set<string>();
-  let invalidExplicitTarget = requestedExplicitFiles.length !== (effectiveInput.files ?? []).length
+  let invalidExplicitTarget = requestedFileAuthorities.some((entry) => !entry.path || entry.status === "invalid" || entry.status === "existing-unindexed")
     || (packData.targetCandidates?.length ?? 0) > 0 || (packData.unresolvedTargets?.length ?? 0) > 0
     || (packData.packetVerdict === "needs-target" && packetPlanTargets.length === 0);
   let ambiguousExplicitFile = false;
-  for (const filePath of requestedExplicitFiles) {
-    const resolved = resolveFileTarget(session.index, filePath, repoRoot);
+  for (const authority of requestedFileAuthorities) {
+    const filePath = authority.path;
+    if (!filePath) {
+      invalidExplicitTarget = true;
+      continue;
+    }
+    const resolved = resolveFileTarget(session.index, authority.requestedPath, repoRoot);
     if (resolved.file) {
       validatedExplicitFiles.push(resolved.file.path);
-    } else if (dirtyExplicitPaths.has(filePath) && await newTargetPathIsContained(filePath, repoRoot)) {
+    } else if (authority.status === "indexed") {
       validatedExplicitFiles.push(filePath);
-    } else if (explicitRootNewPaths.has(filePath) && structuredNewTargetMode.allowed && (!structuredNewTargetMode.structural || naturalStructuralSourcePresent)) {
-      if (await newTargetPathIsContained(filePath, repoRoot)) validatedExplicitFiles.push(filePath);
-      else invalidExplicitTarget = true;
+    } else if (dirtyExplicitPaths.has(filePath) && authority.status !== "invalid") {
+      validatedExplicitFiles.push(filePath);
+    } else if (explicitRootNewPaths.has(filePath) && authority.status === "missing" && structuredNewTargetMode.allowed && (!structuredNewTargetMode.structural || naturalStructuralSourcePresent)) {
+      validatedExplicitFiles.push(filePath);
     } else if (resolved.ambiguous.length > 0) {
       invalidExplicitTarget = true;
       ambiguousExplicitFile = true;
       explicitResolutionCandidateFiles.push(...resolved.ambiguous);
     } else if (
-      await newTargetPathIsContained(filePath, repoRoot) && ((naturalNewTargets.includes(filePath) && (!structuredNewTargetMode.structural || naturalStructuralSourcePresent))
+      authority.status === "missing" && ((naturalNewTargets.includes(filePath) && (!structuredNewTargetMode.structural || naturalStructuralSourcePresent))
       || (structuredNewTargetMode.structural && !targetTask.includes(filePath) && existingRequestedFileCount > 0)
       || (!structuredNewTargetMode.structural && structuredNewTargetMode.allowed && !isLikelyPathTypo(filePath, repositoryFiles)))
     ) {
@@ -551,6 +565,19 @@ async function changePlanFollowCandidateResult(input: {
       snapshotLoad: input.snapshotLoad
     });
   }
+  const blockedRequestScope = resolvedChangePlanInputScope(input.baseInput, input.session.index, input.session.repoRoot);
+  const missingBlockedScope = blockedRequestScope.filter((filePath) => !revalidation.wouldPlanEditTargets.includes(filePath));
+  if (missingBlockedScope.length > 0) {
+    return changePlanFollowCandidateRejectedResult({
+      session: input.session,
+      requestedCandidate: input.requestedCandidate,
+      reason: `target candidate does not preserve the resolved blocked-request scope: ${missingBlockedScope.join(", ")}`,
+      targetCandidates: [revalidatedCandidate, ...input.targetCandidates.filter((candidate) => candidate.candidateId !== selected.candidateId)],
+      editReadiness: input.editReadiness,
+      quality: input.quality,
+      snapshotLoad: input.snapshotLoad
+    });
+  }
 
   const allowRequestOverrides = !input.snapshotLoad?.blockedSnapshot;
   const followedInput: ChangePlanInput = {
@@ -565,7 +592,7 @@ async function changePlanFollowCandidateResult(input: {
   };
   const result = await changePlanQuery(input.session, followedInput, { ...input.options, autoRefresh: false, preserveBlockedSnapshotOnFailure: true });
   const resultData = result.data && typeof result.data === "object" ? (result.data as Record<string, unknown>) : {};
-  const replayTargets = followedReplaySnapshotTargets(resultData, revalidation.wouldPlanEditTargets);
+  const replayTargets = followedReplaySnapshotTargets(resultData, [...revalidation.wouldPlanEditTargets, ...blockedRequestScope]);
   if (!replayTargets) {
     return changePlanFollowCandidateRejectedResult({
       session: input.session,
@@ -757,6 +784,7 @@ function changePlanTargetCandidates(input: {
       taskTokens,
       symbol: undefined
     });
+    const fileReplayTargets = candidateScopedReplayTargets(input.input, input.index, input.repoRoot, { filePath: file.path });
     candidates.push({
       rank: 0,
       kind: "file",
@@ -767,7 +795,8 @@ function changePlanTargetCandidates(input: {
       missingAnchors: input.missingAnchors,
       nextChangePlanArgs: {
         task: input.input.task,
-        files: [file.path],
+        files: fileReplayTargets.files,
+        symbols: fileReplayTargets.symbols,
         query: input.input.query,
         taskId: input.taskId,
         invariants: input.input.invariants,
@@ -788,6 +817,7 @@ function changePlanTargetCandidates(input: {
         taskTokens,
         symbol
       });
+      const symbolReplayTargets = candidateScopedReplayTargets(input.input, input.index, input.repoRoot, { filePath: file.path, symbol });
       candidates.push({
         rank: 0,
         kind: "symbol",
@@ -804,7 +834,8 @@ function changePlanTargetCandidates(input: {
         missingAnchors: input.missingAnchors,
         nextChangePlanArgs: {
           task: input.input.task,
-          symbols: [symbol.id],
+          files: symbolReplayTargets.files,
+          symbols: symbolReplayTargets.symbols,
           query: input.input.query,
           taskId: input.taskId,
           invariants: input.input.invariants,
@@ -826,105 +857,59 @@ function changePlanTargetCandidates(input: {
     .slice(0, 8)
     .map((candidate, index) => ({ ...candidate, rank: index + 1 }));
 }
-export function validateChangePlanTargetCandidate(
-  candidate: ChangePlanTargetCandidateBase,
-  context: { index: CodexaIndex; repoRoot: string }
-): ChangePlanTargetCandidateValidation {
-  const validationReasons: string[] = [];
-  const wouldPlanEditTargets = new Set<string>();
-  let unresolvedTarget = false;
-  let ambiguousTarget = false;
-  const requestedFiles = candidate.nextChangePlanArgs.files ?? [];
-  const requestedSymbols = candidate.nextChangePlanArgs.symbols ?? [];
-  if (requestedFiles.length === 0 && requestedSymbols.length === 0) {
-    validationReasons.push("no explicit file or symbol target in nextChangePlanArgs");
-    unresolvedTarget = true;
-  }
 
-  for (const requestedFile of requestedFiles) {
-    const resolved = resolveFileTarget(context.index, requestedFile, context.repoRoot);
-    if (resolved.file) {
-      wouldPlanEditTargets.add(resolved.file.path);
-      validationReasons.push(`file target resolves: ${resolved.file.path}`);
-    } else if (resolved.ambiguous.length > 0) {
-      ambiguousTarget = true;
-      validationReasons.push(`file target is ambiguous: ${requestedFile}`);
-    } else {
-      unresolvedTarget = true;
-      validationReasons.push(`file target not indexed: ${requestedFile}`);
-    }
+function candidateScopedReplayTargets(
+  input: ChangePlanInput,
+  index: CodexaIndex,
+  repoRoot: string,
+  selected: { filePath: string; symbol?: SymbolFact }
+): { files?: string[]; symbols?: string[] } {
+  const files: string[] = [];
+  const symbols: string[] = [];
+  let selectedByFile = false;
+  let selectedBySymbol = false;
+  for (const requestedFile of input.files ?? []) {
+    const resolved = resolveFileTarget(index, requestedFile, repoRoot);
+    if (resolved.file) files.push(resolved.file.path);
+    else if (resolved.ambiguous.some((candidate) => candidate.path === selected.filePath)) {
+      files.push(selected.filePath);
+      selectedByFile = true;
+    } else files.push(requestedFile);
   }
-
-  for (const requestedSymbol of requestedSymbols) {
-    const resolved = resolveSymbolTarget(context.index, requestedSymbol);
-    if (resolved.symbol) {
-      wouldPlanEditTargets.add(resolved.symbol.path);
-      validationReasons.push(`symbol target resolves: ${resolved.symbol.qualifiedName} in ${resolved.symbol.path}`);
-    } else if (resolved.ambiguous.length > 0) {
-      ambiguousTarget = true;
-      validationReasons.push(`symbol target is ambiguous: ${requestedSymbol}`);
-    } else {
-      unresolvedTarget = true;
-      validationReasons.push(`symbol target not indexed: ${requestedSymbol}`);
-    }
+  for (const requestedSymbol of input.symbols ?? []) {
+    const resolved = resolveSymbolTarget(index, requestedSymbol);
+    if (resolved.symbol) symbols.push(resolved.symbol.id);
+    else if (selected.symbol && resolved.ambiguous.some((candidate) => candidate.id === selected.symbol!.id)) {
+      symbols.push(selected.symbol.id);
+      selectedBySymbol = true;
+    } else symbols.push(requestedSymbol);
   }
-
-  const plannedTargets = uniqueSorted(wouldPlanEditTargets);
-  if (candidate.confidence === "fallback") {
-    validationReasons.push("candidate evidence is fallback");
-  } else if (candidate.evidence.length > 0) {
-    validationReasons.push(`candidate has ${candidate.confidence} evidence`);
+  if (!selectedByFile && !selectedBySymbol) {
+    if (selected.symbol) symbols.push(selected.symbol.id);
+    else files.push(selected.filePath);
   }
-  if (candidate.evidence.length === 0) {
-    validationReasons.push("candidate has no supporting evidence");
-  }
-
-  const wouldRecommendTests = plannedTargets.length > 0
-    ? recommendTests(context.index, plannedTargets, context.repoRoot, candidate.nextChangePlanArgs.changeType).map((test) => test.path).slice(0, 8)
-    : [];
-  if (wouldRecommendTests.length > 0) {
-    validationReasons.push(`would recommend ${wouldRecommendTests.length} targeted test(s)`);
-  } else {
-    validationReasons.push("no targeted test recommendation proven");
-  }
-
-  const candidateRisk = candidateRiskForTargets(context.index, plannedTargets);
-  if (candidateRisk.score > 0) {
-    validationReasons.push(`candidate risk score ${candidateRisk.score.toFixed(1)}`);
-  }
-
-  const hasStrongEvidence = (candidate.confidence === "authoritative" || candidate.confidence === "derived") && candidate.evidence.length > 0;
-  const validationStatus: TargetCandidateValidationStatus =
-    plannedTargets.length === 0 || unresolvedTarget || ambiguousTarget
-      ? "needs-more-context"
-      : hasStrongEvidence
-        ? "edit-ready"
-        : "weak";
-
+  const uniqueFiles = uniqueInOrder(files);
+  const uniqueSymbols = uniqueInOrder(symbols);
   return {
-    validationStatus,
-    validationReasons: uniqueInOrder(validationReasons).slice(0, 8),
-    wouldPlanEditTargets: plannedTargets,
-    wouldRecommendTests,
-    candidateRisk
+    ...(uniqueFiles.length > 0 ? { files: uniqueFiles } : {}),
+    ...(uniqueSymbols.length > 0 ? { symbols: uniqueSymbols } : {})
   };
 }
 
-function candidateRiskForTargets(index: CodexaIndex, paths: string[]): TargetCandidateRisk {
-  const pathSet = new Set(paths);
-  const fileReasons = paths
-    .map((filePath) => findFile(index, filePath))
-    .filter((file): file is FileFact => Boolean(file))
-    .filter((file) => file.riskScore > 0)
-    .map((file) => ({ score: file.riskScore, reason: `${file.path}: indexed risk ${file.riskScore.toFixed(1)}` }));
-  const signalReasons = index.risks
-    .filter((risk) => pathSet.has(risk.path))
-    .map((risk) => ({ score: risk.score, reason: `${risk.path}: ${risk.signal} - ${risk.reason}` }));
-  const scoredReasons = [...fileReasons, ...signalReasons].sort((left, right) => right.score - left.score || left.reason.localeCompare(right.reason));
-  return {
-    score: Math.max(0, ...scoredReasons.map((entry) => entry.score)),
-    reasons: uniqueInOrder(scoredReasons.map((entry) => entry.reason)).slice(0, 6)
-  };
+function resolvedChangePlanInputScope(input: ChangePlanInput, index: CodexaIndex, repoRoot: string): string[] {
+  const files = (input.files ?? []).flatMap((filePath) => {
+    const resolved = resolveFileTarget(index, filePath, repoRoot);
+    return resolved.file ? [resolved.file.path] : [];
+  });
+  const fileSet = new Set(files);
+  const symbols = (input.symbols ?? []).flatMap((symbolName) => {
+    const resolved = resolveSymbolTarget(index, symbolName);
+    const selected = resolved.symbol ?? (resolved.ambiguous.filter((symbol) => fileSet.has(symbol.path)).length === 1
+      ? resolved.ambiguous.find((symbol) => fileSet.has(symbol.path))
+      : undefined);
+    return selected ? [selected.path] : [];
+  });
+  return uniqueSorted([...files, ...symbols]);
 }
 
 function compareTargetCandidates(left: ChangePlanTargetCandidate, right: ChangePlanTargetCandidate): number {
