@@ -277,6 +277,11 @@ interface SnapshotAuthority {
   kind: "snapshot" | "blocked";
 }
 
+interface RecoverableSnapshotAuthority {
+  authority: SnapshotAuthority;
+  pointer: Record<string, unknown>;
+}
+
 async function reservePublicationSequence(repoRoot: string, dir: string): Promise<number> {
   return withTaskLifecycleLock(repoRoot, "\0codexa-latest-snapshot-publication", async () => {
     const sequencePath = path.join(dir, PUBLICATION_SEQUENCE_FILE);
@@ -293,17 +298,24 @@ async function publishLatestSnapshot(repoRoot: string, dir: string, candidate: R
   return withTaskLifecycleLock(repoRoot, "\0codexa-latest-snapshot-publication", async () => {
     const latestPath = path.join(dir, LATEST_FILE);
     const current = await readJson<LatestSnapshotPointer>(latestPath);
-    if (current.ok && !(await shouldPublishLatest(dir, current.value, candidate))) return false;
-    await atomicJsonWrite(latestPath, candidate);
-    return true;
-  });
-}
+    const candidateAuthority = await validatedLatestPointerAuthority(dir, candidate);
+    const currentAuthority = current.ok ? await validatedLatestPointerAuthority(dir, current.value) : undefined;
+    if (currentAuthority) {
+      if (!candidateAuthority || compareSnapshotAuthority(candidateAuthority, currentAuthority) <= 0) return false;
+      await atomicJsonWrite(latestPath, candidate);
+      return true;
+    }
 
-async function shouldPublishLatest(dir: string, current: LatestSnapshotPointer, candidate: Record<string, unknown>): Promise<boolean> {
-  const currentAuthority = await validatedLatestPointerAuthority(dir, current);
-  if (!currentAuthority) return true;
-  const candidateAuthority = pointerAuthority(candidate, candidate.origin === "hook-implicit");
-  return compareSnapshotAuthority(candidateAuthority, currentAuthority) > 0;
+    // A same-task revision replaces its artifact before latest.json is updated.
+    // If that writer is interrupted, the old pointer no longer validates. Treating
+    // the mismatch as empty authority lets an older delayed writer regress latest.
+    // Rebuild authority from exact validated artifacts while holding the publication
+    // lock, and repair latest.json to the strongest artifact already on disk.
+    const recovered = await highestRecoverableSnapshotAuthority(dir);
+    if (!recovered) return false;
+    await atomicJsonWrite(latestPath, recovered.pointer);
+    return Boolean(candidateAuthority && compareSnapshotAuthority(candidateAuthority, recovered.authority) === 0);
+  });
 }
 
 async function validatedLatestPointerAuthority(dir: string, pointer: LatestSnapshotPointer): Promise<SnapshotAuthority | undefined> {
@@ -349,6 +361,55 @@ async function validatedLatestPointerAuthority(dir: string, pointer: LatestSnaps
     createdAt: snapshot.value.createdAt,
     publicationSequence: snapshot.value.publicationSequence
   }, snapshot.value.origin === "hook-implicit");
+}
+
+async function highestRecoverableSnapshotAuthority(dir: string): Promise<RecoverableSnapshotAuthority | undefined> {
+  let entries: string[];
+  try {
+    entries = await fs.readdir(dir);
+  } catch {
+    return undefined;
+  }
+  let highest: RecoverableSnapshotAuthority | undefined;
+  for (const entry of entries) {
+    if (!entry.endsWith(".json") || entry === LATEST_FILE) continue;
+    const recovered = await recoverableSnapshotAuthority(dir, entry);
+    if (!recovered) continue;
+    if (!highest || compareSnapshotAuthority(recovered.authority, highest.authority) > 0) highest = recovered;
+  }
+  return highest;
+}
+
+async function recoverableSnapshotAuthority(dir: string, artifactName: string): Promise<RecoverableSnapshotAuthority | undefined> {
+  const artifactPath = path.join(dir, artifactName);
+  let pointer: Record<string, unknown>;
+  if (artifactName.endsWith(".blocked.json")) {
+    const marker = await readJson<BlockedTaskSnapshotMarker>(artifactPath);
+    if (!marker.ok || !isBlockedSnapshotMarker(marker.value)) return undefined;
+    pointer = {
+      schemaVersion: 1,
+      taskId: marker.value.taskId,
+      path: artifactName,
+      createdAt: marker.value.createdAt,
+      publicationSequence: marker.value.publicationSequence,
+      blocked: true,
+      reason: marker.value.reason,
+      origin: "blocked"
+    };
+  } else {
+    const snapshot = await readJson<TaskSnapshot>(artifactPath);
+    if (!snapshot.ok || !isTaskSnapshot(snapshot.value)) return undefined;
+    pointer = {
+      schemaVersion: 1,
+      taskId: snapshot.value.taskId,
+      path: artifactName,
+      createdAt: snapshot.value.createdAt,
+      publicationSequence: snapshot.value.publicationSequence,
+      origin: snapshot.value.origin
+    };
+  }
+  const authority = await validatedLatestPointerAuthority(dir, pointer);
+  return authority ? { authority, pointer } : undefined;
 }
 
 function pointerAuthority(pointer: LatestSnapshotPointer | Record<string, unknown>, implicit: boolean): SnapshotAuthority {

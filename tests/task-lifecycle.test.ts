@@ -275,6 +275,80 @@ describe("task lifecycle governance", () => {
     });
   });
 
+  it("repairs an interrupted same-task artifact before a delayed writer can regress latest", async () => {
+    const repo = await createHookFixtureRepo();
+    const index = await buildIndex({ repoRoot: repo });
+    const snapshot = (task: string) => ({
+      task,
+      changeType: "unknown" as const,
+      snapshotFreshness: index.freshness,
+      plannedEditTargets: ["src/main.ts"],
+      plannedFiles: ["src/main.ts"],
+      focusFiles: [],
+      plannedTests: [],
+      requiredWorkflowChecks: [],
+      requiredDependencyChecks: [],
+      recipes: [],
+      dirtyBaseline: {
+        changedEntries: [],
+        dirtyFiles: [],
+        dirtyFileHashes: {},
+        headCommit: index.freshness.headCommit,
+        indexedAt: index.freshness.indexedAt
+      },
+      gaps: [],
+      warnings: []
+    });
+    let releaseDelayed!: () => void;
+    let delayedEntered!: () => void;
+    const releaseGate = new Promise<void>((resolve) => { releaseDelayed = resolve; });
+    const enteredGate = new Promise<void>((resolve) => { delayedEntered = resolve; });
+    let delayed: ReturnType<typeof saveTaskSnapshot> | undefined;
+    try {
+      delayed = saveTaskSnapshot({
+        repoRoot: repo,
+        input: { task: "Delayed stale plan", taskId: "delayed-stale", files: ["src/main.ts"], saveSnapshot: true },
+        snapshot: snapshot("Delayed stale plan"),
+        beforePersist: async () => {
+          delayedEntered();
+          await releaseGate;
+        }
+      });
+      await enteredGate;
+      const current = await saveTaskSnapshot({
+        repoRoot: repo,
+        input: { task: "Current authority", taskId: "current-authority", files: ["src/main.ts"], saveSnapshot: true },
+        snapshot: snapshot("Current authority")
+      });
+      const interruptedSequence = (current.snapshot.publicationSequence ?? 0) + 1;
+      const currentPath = path.join(repo, ".codex/cache/codexa-tasks/current-authority.json");
+      // Model a crash after the same-task artifact rename but before latest.json:
+      // the artifact and sequence reservation advanced, while the pointer did not.
+      await writeFile(currentPath, `${JSON.stringify({
+        ...current.snapshot,
+        planRevision: (current.snapshot.planRevision ?? 1) + 1,
+        publicationSequence: interruptedSequence
+      }, null, 2)}\n`, "utf8");
+      await writeFile(path.join(repo, ".codex/cache/codexa-tasks/.latest-publication-sequence"), `${interruptedSequence}\n`, "utf8");
+
+      releaseDelayed();
+      const stale = await delayed;
+      expect(stale.snapshot.publicationSequence).toBeLessThan(interruptedSequence);
+      expect(JSON.parse(await readFile(path.join(repo, ".codex/cache/codexa-tasks/latest.json"), "utf8"))).toMatchObject({
+        taskId: "current-authority",
+        path: "current-authority.json",
+        publicationSequence: interruptedSequence
+      });
+      expect(await loadTaskSnapshot(repo)).toMatchObject({
+        latestTaskId: "current-authority",
+        snapshot: { taskId: "current-authority", publicationSequence: interruptedSequence }
+      });
+    } finally {
+      releaseDelayed?.();
+      await delayed?.catch(() => undefined);
+    }
+  });
+
   it("uses one authority order for delayed same-time publications and recovery", async () => {
     const repo = await createHookFixtureRepo();
     const index = await buildIndex({ repoRoot: repo });
