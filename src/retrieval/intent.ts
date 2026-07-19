@@ -3,6 +3,8 @@ const passiveEditVerb = "added|addressed|adjusted|allowed|annotated|applied|buil
 const mutationHead = new RegExp(`^(?:(?:(?:(?:i|we|you)\\s+)?(?:need|want|plan|have)\\s+(?:you\\s+)?to|(?:i|we|you)\\s+(?:should|must|can|could|would)|let['’]s)\\s+)?(?:${editVerb})\\b`, "u");
 const collaborativeMutationHead = new RegExp(`^(?:(?:can|could|would|will)\\s+we\\s+(?:please\\s+)?|(?:i|we)\\s+(?:would\\s+like|need|want)\\s+(?:help\\s+)?(?:to\\s+)?|i(?:['’]d|\\s+would)\\s+like\\s+(?:you\\s+)?to\\s+|help(?:\\s+(?:me|us))?\\s+(?:to\\s+)?|mind\\s+|proceed\\s+(?:to|with)\\s+|(?:i|we)\\s+are\\s+)(?:${editVerb})\\b`, "u");
 const passiveMutation = new RegExp(`(?:\\b(?:needs?|requires?)\\s+(?:to\\s+be\\s+)?(?:${editVerb}|${passiveEditVerb})\\b|\\b(?:should|must|can|could|would)\\s+be\\s+(?:${passiveEditVerb})\\b|^(?:(?:i|we)\\s+)?(?:need|want)\\b[^.!?]{0,100}\\b(?:${passiveEditVerb})\\b)`, "u");
+const modalSubjectPassiveMutation = new RegExp(`^(?:can|could|would|should|must)\\s+[^.!?]{1,100}?\\s+be\\s+(?:${passiveEditVerb})\\b`, "u");
+const requiredSubjectPassiveMutation = new RegExp(`^[^.!?]{1,100}?\\s+(?:has|have)\\s+to\\s+be\\s+(?:${passiveEditVerb})\\b`, "u");
 const readOnlyRequestHead = /^(?:(?:i|we)\s+)?(?:need|want)\s+(?:(?:(?:an?|the|some)\s+)?(?:analysis|assessment|checklist|context|details|diagram|document|explanation|information|inventory|list|map|overview|plan|proposal|report|review|summary|understanding)\b|(?:(?:you|help(?:\s+(?:me|us))?)\s+)?(?:to\s+)?(?:describe|explain|inspect|know|review|see|show|understand(?:ing)?)\b)/u;
 const readOnlyLead = /^(?:what|which|who|where|when|why|how|does|check|assess|determine|verify|tell|show|review|inspect|compare|summarize|explain|list|identify|describe|understand|map|audit|analy[sz]e|report|find|locate|debug|diagnose)\b/u;
 const readOnlyMutationNounHead = /^(?:change|patch)\s+review\b/u;
@@ -30,7 +32,9 @@ export function promptModeForTask(query: string | undefined, changeType = "unkno
   if (readOnlyLead.test(normalized) && !laterEdit) return "orientation";
   if (readOnlyRequestHead.test(normalized) && !laterEdit) return "orientation";
   const passiveTask = normalized.replace(/(?:\.\/)?(?:[a-z0-9_@.-]+\/)*[a-z0-9_@.-]+\.[a-z0-9]+/gu, "target");
-  return mutationHead.test(normalized) || collaborativeMutationHead.test(normalized) || passiveMutation.test(passiveTask) || nominalMutation.test(passiveTask) || laterEdit ? "edit" : "orientation";
+  return mutationHead.test(normalized) || collaborativeMutationHead.test(normalized) || passiveMutation.test(passiveTask)
+    || modalSubjectPassiveMutation.test(passiveTask) || requiredSubjectPassiveMutation.test(passiveTask)
+    || nominalMutation.test(passiveTask) || laterEdit ? "edit" : "orientation";
 }
 
 function unwrapControlledDirective(task: string): string | undefined {

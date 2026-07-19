@@ -1,6 +1,9 @@
 import { describe, expect, it } from "vitest";
+import { buildIndex } from "../src/indexer.js";
+import { focusBriefQuery } from "../src/queries.js";
 import { classifyTaskIntent, expandedQueryTerms } from "../src/retrieval.js";
 import { promptModeForTask } from "../src/retrieval/intent.js";
+import { createFixtureRepo } from "./indexer-fixtures.js";
 
 describe("retrieval prompt intent", () => {
   it.each([
@@ -66,7 +69,10 @@ describe("retrieval prompt intent", () => {
     "Patch review for API changes in src/api.ts",
     "Change review for the API in src/api.ts",
     "Does src/util.ts need changes?",
-    "Review whether src/util.ts needs changes"
+    "Review whether src/util.ts needs changes",
+    "Does auth have to be fixed in src/api.ts?",
+    "Can you review whether auth has to be fixed in src/api.ts?",
+    "Could you explain whether src/util.ts has to be fixed?"
   ])("keeps %s read-only", (task) => {
     expect(promptModeForTask(task)).toBe("orientation");
     expect(classifyTaskIntent(task)).not.toContain("implementation");
@@ -181,10 +187,33 @@ describe("retrieval prompt intent", () => {
     "The endpoint requires a change in src/api.ts",
     "We need changes to src/api.ts",
     "src/api.ts needs changes",
-    "We require updates to src/api.ts"
+    "We require updates to src/api.ts",
+    "Can auth be fixed in src/api.ts?",
+    "Could src/util.ts be fixed?",
+    "Auth has to be fixed in src/api.ts"
   ])("keeps %s edit-directed", (task) => {
     expect(promptModeForTask(task)).toBe("edit");
     expect(classifyTaskIntent(task)).toContain("implementation");
+  });
+
+  it("routes modal-subject passive mutations through edit-ready focus authority", async () => {
+    const repo = await createFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+    for (const task of ["Can auth be fixed in src/api.ts?", "Auth has to be fixed in src/api.ts"]) {
+      const result = await focusBriefQuery(repo, { task, diff: false, limit: 6, tokenBudget: 1000 }, { autoRefresh: false });
+      expect((result.data as { intentConfidence: { mode: string }; actionability: string; nextCall: { tool: string } }), task).toMatchObject({
+        intentConfidence: { mode: "edit" },
+        actionability: "edit_ready",
+        nextCall: { tool: "change_plan" }
+      });
+    }
+
+    const localEdit = await focusBriefQuery(repo, { task: "Could src/util.ts be fixed?", diff: false, limit: 6, tokenBudget: 1000 }, { autoRefresh: false });
+    expect((localEdit.data as { intentConfidence: { mode: string }; actionability: string; nextCall: { tool: string } })).toMatchObject({
+      intentConfidence: { mode: "edit" },
+      actionability: "edit_ready",
+      nextCall: { tool: "source" }
+    });
   });
 
   it("keeps retrieval synonyms out of topical and edit authority", () => {
