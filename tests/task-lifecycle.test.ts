@@ -235,6 +235,46 @@ describe("task lifecycle governance", () => {
     expect(recovered).toMatchObject({ recoveredLatest: true, latestTaskId: "after-clock-rollback" });
   });
 
+  it("repairs a high-sequence latest pointer when its blocked artifact is dangling", async () => {
+    const repo = await createHookFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+    const first = await changePlanQuery(
+      repo,
+      { task: "Initial authority", taskId: "initial-authority", files: ["src/main.ts"], saveSnapshot: true },
+      { autoRefresh: false }
+    );
+    const firstSnapshot = (first.data as { snapshot: TaskSnapshot }).snapshot;
+    const latestPath = path.join(repo, ".codex/cache/codexa-tasks/latest.json");
+    const danglingSequence = (firstSnapshot.publicationSequence ?? 1) + 10_000;
+    await writeFile(latestPath, `${JSON.stringify({
+      schemaVersion: 1,
+      taskId: "dangling-blocked",
+      path: "dangling-blocked.blocked.json",
+      createdAt: new Date().toISOString(),
+      publicationSequence: danglingSequence,
+      blocked: true,
+      reason: "dangling test marker",
+      origin: "blocked"
+    }, null, 2)}\n`, "utf8");
+
+    const later = await changePlanQuery(
+      repo,
+      { task: "Valid later authority", taskId: "valid-later-authority", files: ["src/main.ts"], saveSnapshot: true },
+      { autoRefresh: false }
+    );
+    const laterSnapshot = (later.data as { snapshot: TaskSnapshot }).snapshot;
+    expect(laterSnapshot.publicationSequence).toBeLessThan(danglingSequence);
+    expect(JSON.parse(await readFile(latestPath, "utf8"))).toMatchObject({
+      taskId: "valid-later-authority",
+      path: "valid-later-authority.json",
+      publicationSequence: laterSnapshot.publicationSequence
+    });
+    expect(await loadTaskSnapshot(repo)).toMatchObject({
+      latestTaskId: "valid-later-authority",
+      snapshot: { taskId: "valid-later-authority", publicationSequence: laterSnapshot.publicationSequence }
+    });
+  });
+
   it("uses one authority order for delayed same-time publications and recovery", async () => {
     const repo = await createHookFixtureRepo();
     const index = await buildIndex({ repoRoot: repo });
