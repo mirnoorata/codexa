@@ -3,7 +3,7 @@
 - Project: `codexa`
 - Branch: `codex/general/codexa-20260718-000156-focus-orientation`
 - Base: `main`
-- Source head before final summary refresh: `a893db57af1d`
+- Source head before final summary refresh: `e05804a50f79`
 - Subject: `perf(mcp): reduce agentic Codexa overhead`
 
 ## Goal and Outcome
@@ -67,6 +67,8 @@ estimate. It has no task-clustered interval or comparable provider-cost metric.
   replans without colliding with dotted task IDs.
 - Rollback artifacts use an isolated internal namespace with symlink and
   containment checks, preventing writes outside the repository.
+- Broad context packets cap verification previews at 40 entries, keeping the
+  dirty-repository eval packet below its structured-data budget.
 - The storage helpers were extracted to keep `task-snapshots.ts` below the
   repository's 1,000-line source-hygiene ceiling.
 
@@ -80,6 +82,7 @@ estimate. It has no task-clustered interval or comparable provider-cost metric.
 | Installed-package smoke | 31 checks passed against the packed 0.15.0 tarball |
 | Source hygiene | Passed; `task-snapshots.ts` is 994 lines |
 | CI regression cases | Raw-search fallback 4/4; exhaustive routing scope 1/1 |
+| Retrieval eval | 21/21 passed; score 1; dirty packet 119,210 B; raw baseline wins 0 |
 | Adversarial review | Latest strict pass: `NO ACTIONABLE FINDINGS` |
 | Bloat audit | No high-confidence removable production bloat found |
 
