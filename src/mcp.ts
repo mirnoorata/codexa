@@ -54,7 +54,7 @@ const MCP_SERVER_INSTRUCTIONS = [
   "Use test_plan only when verification guidance remains unresolved; use proof_card only for policy checks or a formal handoff; use session memory only to recover real context loss.",
   "Each tool description states its typical output cost (compact/medium/large); prefer the cheapest sufficient tool. Tools refresh stale Codexa artifacts automatically when auto-refresh is enabled.",
   `Trust rules: ${NO_SOURCE_MUTATION_CONTRACT} Semantic retrieval is used only when configured; verify heuristic-heavy packets against source before editing.`,
-  "responseFormat defaults to auto: every automatic packet stays concise and links a content-addressed detailed result when persistence succeeds. If detail is unavailable, the self-contained decision kernel blocks whenever omitted evidence is required. Only an explicit responseFormat=detailed returns bounded detail inline.",
+  "responseFormat defaults to auto: automatic packets stay concise. A healthy exact-search stop receipt is self-contained; other concise packets link a content-addressed detailed result when persistence succeeds. If detail is unavailable, the self-contained decision kernel blocks whenever omitted evidence is required. Only an explicit responseFormat=detailed returns bounded detail inline.",
   "The core profile exposes search, change_plan, and a compact capabilities dispatcher. Use capabilities only for a concretely triggered non-core operation without paying every schema on every turn."
 ].join("\n");
 
@@ -405,8 +405,10 @@ async function createCodexaMcpServer(
       rawResult = withRoutingRuntime(authorityBlock, activeResolution);
     }
     const modeResult = withMcpQueryMode(rawResult, toolName);
-    const semanticEscalation = requestedFormat === "auto" ? mcpAutoEscalationReason(modeResult, toolInput) : undefined;
-    const needsResultReference = requestedFormat !== "detailed";
+    const resultReferenceEscalation = mcpAutoEscalationReason(modeResult, toolInput);
+    const semanticEscalation = requestedFormat === "auto" ? resultReferenceEscalation : undefined;
+    const selfContainedExactSearch = canOmitDetailedExactSearchResult(modeResult, toolName, requestedFormat, resultReferenceEscalation);
+    const needsResultReference = requestedFormat !== "detailed" && !selfContainedExactSearch;
     const artifactDetailedResult = !needsResultReference
       ? undefined
       : canonicalMcpDetailedProjection(modeResult);
@@ -644,6 +646,24 @@ function mcpResultBinding(tool: string, activeRepoRoot: string, result: QueryRes
 function withMcpQueryMode(result: QueryResult, toolName: string): QueryResult {
   if (!isRecord(result.data) || typeof result.data.mode === "string") return result;
   return { ...result, data: { mode: toolName, ...result.data } };
+}
+
+function canOmitDetailedExactSearchResult(
+  result: QueryResult,
+  toolName: string,
+  requestedFormat: McpResponseFormat,
+  escalationReason: string | undefined
+): boolean {
+  if (toolName !== "search" || requestedFormat === "detailed" || escalationReason) return false;
+  const data = isRecord(result.data) ? result.data : {};
+  const raw = isRecord(data.raw) ? data.raw : undefined;
+  return data.mode === "search"
+    && data.actionability === "raw_search_sufficient"
+    && raw?.sufficient === true
+    && typeof data.rawExactHitCount === "number"
+    && data.rawExactHitCount > 0
+    && Array.isArray(data.nextTools)
+    && data.nextTools.length === 0;
 }
 
 function unchangedMcpReceipt(result: QueryResult): QueryResult {

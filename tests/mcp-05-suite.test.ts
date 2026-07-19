@@ -94,6 +94,47 @@ it("compacts the text content block for responseFormat concise", async () => {
     }
   }, 60_000);
 
+it("keeps healthy exact-search stop receipts self-contained without a detailed artifact", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-exact-search-"));
+    const repo = await createIndexedMcpRepo(workspace, "repo", "alpha", "alphaSymbol");
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--no-auto-refresh", "--session-memory", "off", "--tools", "core"],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-exact-search-receipt-test", version: "0.1.0" });
+    await client.connect(transport);
+    try {
+      for (const responseFormat of [undefined, "concise"] as const) {
+        const result = await client.callTool({
+          name: "search",
+          arguments: { query: "alphaSymbol", limit: 3, ...(responseFormat ? { responseFormat } : {}) }
+        });
+        const data = (result.structuredContent as {
+          data?: {
+            actionability?: string;
+            delivery?: { detailAvailable?: boolean; detailRequired?: boolean; resultId?: string; resultUri?: string };
+          };
+        }).data;
+        expect(data).toMatchObject({
+          actionability: "raw_search_sufficient",
+          delivery: { detailAvailable: false, detailRequired: false }
+        });
+        expect(data?.delivery?.resultId).toBeUndefined();
+        expect(data?.delivery?.resultUri).toBeUndefined();
+        expect((result.content as Array<{ type?: string }>).some((entry) => entry.type === "resource_link")).toBe(false);
+      }
+
+      const degraded = await client.callTool({ name: "search", arguments: { query: "codexa_absent_exact_search_qxjv", limit: 3 } });
+      const degradedData = (degraded.structuredContent as { data?: { delivery?: { resultUri?: string; requiredDetailReason?: string } } }).data;
+      expect(degradedData?.delivery?.requiredDetailReason).toContain("low-context-quality");
+      expect(degradedData?.delivery?.resultUri).toMatch(/^codexa:\/\/repo\/mcp-results\//u);
+      expect((degraded.content as Array<{ type?: string }>).some((entry) => entry.type === "resource_link")).toBe(true);
+    } finally {
+      await client.close();
+    }
+  }, 60_000);
+
 it("keeps clean read-first task briefs concise and names the concrete read target", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-read-first-"));
     const repo = await createIndexedMcpRepo(workspace, "repo", "alpha", "alphaSymbol");
