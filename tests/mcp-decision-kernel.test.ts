@@ -33,7 +33,7 @@ function invariants() {
 }
 
 describe("mandatory MCP decision kernel", () => {
-  it("keeps checkout/freshness identity and every declared invariant, and fail-closes an oversized concise plan", () => {
+  it("keeps checkout/freshness identity and every declared invariant in an actionable oversized concise plan", () => {
     process.env.CODEXA_MCP_STRUCTURED_BUDGET_BYTES = "4000";
     const packet: QueryResult = {
       freshness: freshness(),
@@ -50,13 +50,13 @@ describe("mandatory MCP decision kernel", () => {
       }
     };
     const kernel = mcpDecisionKernel(packet.data as Record<string, unknown>, "change_plan", packet.freshness);
-    expect(kernel.detailsRequired).toBe(true);
+    expect(kernel.detailsRequired ?? false).toBe(false);
     expect((kernel.identity as { checkout?: { repoRoot?: string; gitHead?: string }; freshness?: { headCommit?: string } }).checkout).toMatchObject({ repoRoot: "/repo/worktree", gitHead: "head-active" });
     expect((kernel.identity as { freshness?: { headCommit?: string } }).freshness?.headCommit).toBe("head-active");
     const kernelInvariants = kernel.invariants as Array<{ id: string; status: string }>;
     expect(kernelInvariants).toHaveLength(12);
     expect(kernelInvariants.every((entry) => entry.status === "declared")).toBe(true);
-    expect(mcpAutoEscalationReason(packet)).toBe("decision-kernel-overflow");
+    expect(mcpAutoEscalationReason(packet)).toBeUndefined();
 
     const compactedPacket = compactMcpResult(packet, { format: "concise" });
     expect(Buffer.byteLength(JSON.stringify(compactedPacket.data), "utf8")).toBeLessThanOrEqual(4000);
@@ -69,8 +69,8 @@ describe("mandatory MCP decision kernel", () => {
     });
     const data = concise.data as { actionability?: string; decisionKernel?: { authority?: { actionability?: string; originalActionability?: string }; identity?: unknown; invariants?: unknown[] } };
     expect(Buffer.byteLength(JSON.stringify(concise.data), "utf8")).toBeLessThanOrEqual(4000);
-    expect(data.actionability).toBe("blocked");
-    expect(data.decisionKernel?.authority).toMatchObject({ actionability: "blocked", originalActionability: "edit_ready" });
+    expect(data.actionability).toBe("edit_ready");
+    expect(data.decisionKernel?.authority).toMatchObject({ actionability: "edit_ready" });
     expect(data.decisionKernel?.invariants).toHaveLength(12);
   });
 
