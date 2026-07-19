@@ -1,7 +1,7 @@
 import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { runPreEditHook } from "../src/cli/hooks.js";
 import { buildIndex } from "../src/indexer.js";
 import { changePlanQuery, postEditReviewQuery } from "../src/queries.js";
@@ -203,6 +203,97 @@ describe("task lifecycle governance", () => {
     const latest = JSON.parse(await readFile(path.join(repo, ".codex/cache/codexa-tasks/latest.json"), "utf8")) as { taskId: string; path: string };
     expect(taskIds).toContain(latest.taskId);
     expect(latest.path).toBe(`${latest.taskId}.json`);
+  });
+
+  it("ignores future wall-clock values when publishing and recovering later authority", async () => {
+    const repo = await createHookFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+    const first = await changePlanQuery(
+      repo,
+      { task: "First authority", taskId: "future-first", files: ["src/main.ts"], saveSnapshot: true },
+      { autoRefresh: false }
+    );
+    const firstSnapshot = (first.data as { snapshot: TaskSnapshot }).snapshot;
+    const snapshotPath = path.join(repo, ".codex/cache/codexa-tasks/future-first.json");
+    const latestPath = path.join(repo, ".codex/cache/codexa-tasks/latest.json");
+    const futureCreatedAt = "9999-12-31T23:59:59.999Z";
+    await writeFile(snapshotPath, `${JSON.stringify({ ...firstSnapshot, createdAt: futureCreatedAt }, null, 2)}\n`, "utf8");
+    const firstPointer = JSON.parse(await readFile(latestPath, "utf8")) as Record<string, unknown>;
+    await writeFile(latestPath, `${JSON.stringify({ ...firstPointer, createdAt: futureCreatedAt }, null, 2)}\n`, "utf8");
+
+    const second = await changePlanQuery(
+      repo,
+      { task: "Authority after clock rollback", taskId: "after-clock-rollback", files: ["src/main.ts"], saveSnapshot: true },
+      { autoRefresh: false }
+    );
+    const secondSnapshot = (second.data as { snapshot: TaskSnapshot }).snapshot;
+    expect(secondSnapshot.publicationSequence).toBeGreaterThan(firstSnapshot.publicationSequence ?? 0);
+    expect((await loadTaskSnapshot(repo)).snapshot?.taskId).toBe("after-clock-rollback");
+
+    await writeFile(latestPath, "{corrupt\n", "utf8");
+    const recovered = await loadTaskSnapshot(repo);
+    expect(recovered).toMatchObject({ recoveredLatest: true, latestTaskId: "after-clock-rollback" });
+  });
+
+  it("uses one authority order for delayed same-time publications and recovery", async () => {
+    const repo = await createHookFixtureRepo();
+    const index = await buildIndex({ repoRoot: repo });
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-07-19T12:00:00.000Z"));
+    let releaseDelayed!: () => void;
+    let delayedEntered!: () => void;
+    const releaseGate = new Promise<void>((resolve) => { releaseDelayed = resolve; });
+    const enteredGate = new Promise<void>((resolve) => { delayedEntered = resolve; });
+    const snapshot = (task: string) => ({
+      task,
+      changeType: "unknown" as const,
+      snapshotFreshness: index.freshness,
+      plannedEditTargets: ["src/main.ts"],
+      plannedFiles: ["src/main.ts"],
+      focusFiles: [],
+      plannedTests: [],
+      requiredWorkflowChecks: [],
+      requiredDependencyChecks: [],
+      recipes: [],
+      dirtyBaseline: {
+        changedEntries: [],
+        dirtyFiles: [],
+        dirtyFileHashes: {},
+        headCommit: index.freshness.headCommit,
+        indexedAt: index.freshness.indexedAt
+      },
+      gaps: [],
+      warnings: []
+    });
+    let delayed: ReturnType<typeof saveTaskSnapshot> | undefined;
+    try {
+      delayed = saveTaskSnapshot({
+        repoRoot: repo,
+        input: { task: "Delayed explicit", taskId: "z-delayed-explicit", files: ["src/main.ts"], saveSnapshot: true },
+        snapshot: snapshot("Delayed explicit"),
+        beforePersist: async () => {
+          delayedEntered();
+          await releaseGate;
+        }
+      });
+      await enteredGate;
+      const newer = await saveTaskSnapshot({
+        repoRoot: repo,
+        input: { task: "Newer explicit", taskId: "a-newer-explicit", files: ["src/main.ts"], saveSnapshot: true },
+        snapshot: snapshot("Newer explicit")
+      });
+      releaseDelayed();
+      const older = await delayed;
+      expect(newer.snapshot.publicationSequence).toBeGreaterThan(older.snapshot.publicationSequence ?? 0);
+      expect((await loadTaskSnapshot(repo)).snapshot?.taskId).toBe("a-newer-explicit");
+
+      await writeFile(path.join(repo, ".codex/cache/codexa-tasks/latest.json"), "{corrupt\n", "utf8");
+      expect(await loadTaskSnapshot(repo)).toMatchObject({ recoveredLatest: true, latestTaskId: "a-newer-explicit" });
+    } finally {
+      releaseDelayed?.();
+      await delayed?.catch(() => undefined);
+      vi.useRealTimers();
+    }
   });
 
   it("preserves a valid same-task snapshot when a later orientation-only plan is blocked", async () => {
