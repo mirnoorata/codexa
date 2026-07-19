@@ -130,17 +130,16 @@ export async function initializeProject(repoInput: string | undefined, options: 
     toolProfile
   };
 
-  // Revoke any previous ownership claim before touching hooks. Every failure
-  // path is then conservative: a hook may exist without a marker, but the MCP
-  // server can never suppress manual review for a hook that failed to install.
-  await upsertCodexConfig(configPath, { ...configOptions, hooksFeature: true, managedPostEditHook: false });
-
   if (writeHooks) {
     await upsertHooksConfig(hooksPath, hookOptions);
-    await upsertCodexConfig(configPath, { ...configOptions, hooksFeature: true, managedPostEditHook: true });
+    // Codex only exposes an edit-scoped PostToolUse hook here. It can review
+    // the just-written dirty tree, but it runs before later shell verification
+    // and is not a completion/Stop gate. Keep the MCP server unmarked so the
+    // saved plan still offers one final post_edit_review after verification.
+    await upsertCodexConfig(configPath, { ...configOptions, hooksFeature: true });
   } else {
     const removal = await planCodexaManagedHooksRemoval(hooksPath, hookOptions);
-    await upsertCodexConfig(configPath, { ...configOptions, hooksFeature: removal.keepHooksFeature, managedPostEditHook: false });
+    await upsertCodexConfig(configPath, { ...configOptions, hooksFeature: removal.keepHooksFeature });
     await applyCodexaManagedHooksRemoval(hooksPath, removal);
   }
 
@@ -242,7 +241,7 @@ export async function sessionStartSummary(repoInput: string | undefined, include
   }
 
   lines.push("Codexa MCP is ready.");
-  lines.push(`Selective-use contract: ${PRIMARY_CODEX_LOOP}. Normal agent budget: zero calls for exact local work and usually no more than two; only an ambiguous materially risky edit on a hookless host needs search -> change_plan -> post_edit_review.`);
+  lines.push(`Selective-use contract: ${PRIMARY_CODEX_LOOP}. Normal agent budget: zero calls for exact local work and usually no more than two; only an ambiguous materially risky edit without a completion/Stop gate needs search -> change_plan -> post_edit_review.`);
   return lines.join("\n");
 }
 
@@ -425,7 +424,6 @@ async function upsertCodexConfig(
     repoRoot: string;
     serverName: string;
     hooksFeature: boolean;
-    managedPostEditHook: boolean;
     toolProfile: InitToolProfile;
   }
 ): Promise<void> {
@@ -448,7 +446,7 @@ async function upsertCodexConfig(
   await writeFile(configPath, `${next}\n`, "utf8");
 }
 
-function renderMcpServerBlock(options: { autoRefresh: boolean; launch: LaunchSpec; repoRoot: string; serverName: string; hooksFeature: boolean; managedPostEditHook: boolean; toolProfile: InitToolProfile }): string {
+function renderMcpServerBlock(options: { autoRefresh: boolean; launch: LaunchSpec; repoRoot: string; serverName: string; hooksFeature: boolean; toolProfile: InitToolProfile }): string {
   const args = [...options.launch.args, "serve", options.repoRoot];
   args.push(options.autoRefresh ? "--auto-refresh" : "--no-auto-refresh");
   // Keep every generated profile explicit so checked-in config records the
@@ -469,7 +467,6 @@ function renderMcpServerBlock(options: { autoRefresh: boolean; launch: LaunchSpe
     `[mcp_servers.${options.serverName}]`,
     `command = ${tomlString(options.launch.command)}`,
     `args = [${args.map(tomlString).join(", ")}]`,
-    ...(options.managedPostEditHook ? ['env = { CODEXA_MANAGED_POST_EDIT = "1" }'] : []),
     "startup_timeout_sec = 20",
     "tool_timeout_sec = 60",
     ...toolProfileLines,
@@ -558,8 +555,8 @@ async function upsertManagedDoc(repoRoot: string, fileName: string, serverName: 
     "- Exact file/symbol/error, read-only check, or small local edit: use source tools and tests directly with zero Codexa calls.",
     "- Ambiguous target: call `search` once; when raw evidence is sufficient, stop Codexa and read the exact hits.",
     "- Non-trivial multi-file or high-risk edit: call `change_plan` with `saveSnapshot=true`, then edit and run its planned verification.",
-    "- Call `post_edit_review` once only when no deterministic host hook/completion gate already owns review, or for an explicitly requested formal review.",
-    "- Do not stack `session_context`, `search`, and `task_brief`; normal agentic work usually needs no more than two Codexa calls. The only three-call safety exception is an ambiguous materially risky edit on a hookless host.",
+    "- After planned verification, call `post_edit_review` once unless a true completion/Stop gate already owns final review, or when the user explicitly requests a formal review.",
+    "- Do not stack `session_context`, `search`, and `task_brief`; normal agentic work usually needs no more than two Codexa calls. The only three-call safety exception is an ambiguous materially risky edit without a completion/Stop gate.",
     "- Call `test_plan` only when verification guidance remains unresolved; call `proof_card` only for policy, formal audit, release, or artifact handoff proof.",
     "- Inspect: use `capabilities` only for a concretely triggered non-core operation; full mode exposes every operation directly.",
     "",

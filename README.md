@@ -301,10 +301,10 @@ provider such as OpenAI — see [Optional Lanes](#optional-lanes).)
 | Managed cloud agents | Self-hosted sandbox with Codexa on loopback | Local proof layer without exposing a public Codexa server | Public remote HTTP is intentionally not shipped. |
 
 The Codex plugin bundle under `plugins/codexa/` ships an MCP wrapper and skill,
-not a post-edit hook. Treat it as hookless unless the repository was separately
-initialized with `codexa init` hooks. By contrast, `codexa init` owns the Codex
-post-edit gate it writes, and the Claude plugin ships and marks its own Stop
-gate.
+not a post-edit hook. `codexa init` adds edit-scoped Codex hooks, but those run
+before later shell verification and do not claim final completion ownership.
+The Claude plugin ships a true Stop hook and marks that completion gate in its
+MCP launcher.
 
 Result-size discipline is built in: every tool description states its typical
 output size, and structured results are budget-compacted with truncation
@@ -361,7 +361,7 @@ shipped insecure.
 Use Codexa selectively as a guardrail around code changes. A normal bounded
 agent task should usually use no more than two Codexa calls. Exact local work
 may use zero. The narrow three-call safety exception is an ambiguous,
-materially risky edit in a host with no managed post-edit gate:
+materially risky edit in a host with no completion/Stop gate:
 `search -> change_plan -> post_edit_review`.
 
 1. Start with source tools when the target is exact and local.
@@ -387,11 +387,11 @@ materially risky edit in a host with no managed post-edit gate:
    Call `test_plan` only when that guidance remains unresolved or a dedicated
    verification plan is explicitly requested.
 
-5. Let a deterministic host gate review after editing when one is installed.
-   Repositories initialized with `codexa init` hooks and the Claude plugin
-   already own post-edit review; do not duplicate it with a manual tool call.
-   The Codex plugin itself is hookless unless the repository was separately
-   initialized. In a hookless host, an exact materially risky task may use
+5. Let a true completion/Stop gate review after verification when one is
+   installed. The Claude plugin owns final review through its Stop hook, so do
+   not duplicate it with a manual tool call. Codex's `codexa init` hooks are
+   edit-scoped and run before later shell verification; they retain one final
+   review route. Without a completion/Stop gate, an exact materially risky task may use
    `change_plan -> post_edit_review`. If the target was also ambiguous, the
    safety-preserving sequence is the narrow three-call exception
    `search -> change_plan -> post_edit_review`. `post_edit_review` /
@@ -451,14 +451,14 @@ Selective MCP call budget:
 ```text
 exact/local/source-sufficient -> source tools, zero Codexa calls
 ambiguous/raw-sufficient -> search, then stop
-exact materially risky + managed gate -> change_plan(saveSnapshot)
-ambiguous materially risky + managed gate -> search -> change_plan(saveSnapshot)
-exact materially risky + no managed gate -> change_plan(saveSnapshot) -> post_edit_review
-ambiguous materially risky + no managed gate -> search -> change_plan(saveSnapshot) -> post_edit_review
+exact materially risky + completion/Stop gate -> change_plan(saveSnapshot)
+ambiguous materially risky + completion/Stop gate -> search -> change_plan(saveSnapshot)
+exact materially risky + no completion gate -> change_plan(saveSnapshot) -> post_edit_review
+ambiguous materially risky + no completion gate -> search -> change_plan(saveSnapshot) -> post_edit_review
 ```
 
 These are ceilings, not an automatic chain. Every additional call must be
-justified by unresolved ambiguity, material edit risk, or a missing managed
+justified by unresolved ambiguity, material edit risk, or a missing completion
 review gate; a returned tool name alone is not a reason to keep calling Codexa.
 
 ## What Codexa Builds
@@ -815,7 +815,9 @@ scrubbed environments and write reports under `.codex/static-analysis/`.
 - `hook-pre-edit` also blocks when a task's repeated-loop budget has latched a
   mandatory replan. Lifecycle read or validation failures fail closed with an
   actionable diagnostic instead of silently disabling the guard.
-- `hook-post-edit` runs a bounded post-edit review after edits.
+- `hook-post-edit` runs a bounded review after edit tools. Because it runs
+  before later shell verification, it does not replace one final
+  `post_edit_review` with the actual verification evidence.
 
 With read-only autonomy, the post-edit hook performs one review, persists that
 outcome once, and skips AutoVerify candidate derivation entirely. With

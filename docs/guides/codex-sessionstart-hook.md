@@ -53,6 +53,13 @@ validated package-local `node_modules/.bin` entry or a safe system path. The
 hook records policy/dirty-tree metadata and treats source/test/Codexa-provenance
 mutations detected after a run as non-covering evidence. It is not a sandbox;
 repo test code still executes locally.
+
+Because the Codex `PostToolUse` matcher covers edit tools, this hook runs before
+shell verification that follows the final edit. It is an edit-time guardrail,
+not a completion/Stop gate: a saved plan still offers one final
+`post_edit_review` after verification so the actual command evidence can be
+recorded. A true completion hook, such as the Claude plugin's Stop hook, may own
+that final review and suppress the duplicate route.
 Those local outcomes can later produce bounded, visible ranking/test boosts, but
 they do not override freshness, explicit targets, or authoritative graph
 evidence.

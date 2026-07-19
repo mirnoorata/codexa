@@ -31,8 +31,8 @@
     "defaultPrompt": [
       "Use Codexa only if this task needs repository context beyond exact source inspection; normal bounded work usually needs no more than two calls.",
       "If the target is unclear, use one Codexa search and stop discovery when raw results are sufficient; do not automatically chain context calls.",
-      "For a materially risky edit, save a Codexa change plan and request one manual post-edit review only when no deterministic host gate owns that review.",
-      "This Codex plugin is hookless unless the repository was separately initialized with Codexa hooks; only an ambiguous, materially risky, hookless task warrants the three-call search, plan, review exception."
+      "For a materially risky edit, save a Codexa change plan and request one final post-edit review unless a true completion/Stop gate owns that review.",
+      "This Codex plugin ships no completion hook; edit-only hooks from a separate Codexa init do not suppress final review. Only an ambiguous, materially risky task without a completion/Stop gate warrants the three-call search, plan, review exception."
     ],
     "brandColor": "#2563EB"
   }

@@ -272,7 +272,7 @@ export async function changePlanQuery(
       snapshotLoad: followBase?.snapshotLoad
     });
   }
-  const managedReview = editReadiness.editable && managedPostEditReviewAvailable();
+  const completionReview = editReadiness.editable && managedCompletionReviewAvailable();
   const planSteps = editReadiness.editable
     ? [
         editReadiness.source === "dirty-worktree"
@@ -289,13 +289,13 @@ export async function changePlanQuery(
           ? `3. Keep these tests in scope: ${plannedTests.slice(0, 5).map((test) => test.path).join(", ")}.`
           : "3. No targeted tests were proven; inspect repo test metadata before inventing a command.",
         plannedRecipes.length > 0 ? `4. Verification: ${plannedRecipes.slice(0, 3).join(" ")}` : "4. Run the narrowest verified test or type check that covers the touched files.",
-        managedReview
-          ? "5. Run the planned verification; the managed host completion gate owns post-edit review, so do not call post_edit_review manually."
+        completionReview
+          ? "5. Run the planned verification; the managed host completion/Stop gate owns final post-edit review, so do not call post_edit_review manually."
           : !effectiveInput.saveSnapshot
             ? "5. Run the planned verification; saveSnapshot=false means no drift-review follow-up is available from this plan."
           : editReadiness.source === "dirty-worktree"
-            ? "5. On a hookless host, run post_edit_review once after edits; the snapshot dirty baseline separates pre-existing dirty files from new changes."
-            : "5. On a hookless host, run post_edit_review once after edits with the saved task id and verification evidence."
+            ? "5. After planned verification, run post_edit_review once; the snapshot dirty baseline separates pre-existing dirty files from new changes."
+            : "5. After planned verification, run post_edit_review once with the saved task id and verification evidence."
       ]
     : [
         `1. Do not edit yet: ${editReadiness.reason}.`,
@@ -309,10 +309,10 @@ export async function changePlanQuery(
   const finalTaskId = effectiveInput.saveSnapshot && editReadiness.editable ? allocateTaskSnapshotId(repoRoot, effectiveInput) : effectiveInput.taskId;
   const recoveryQuery = [...new Set([effectiveInput.task, effectiveInput.query, ...(effectiveInput.files ?? []), ...(effectiveInput.symbols ?? [])].filter((value): value is string => Boolean(value?.trim())))].join(" ");
   const structuredNextTools = editReadiness.editable
-    ? managedReview || !effectiveInput.saveSnapshot || !finalTaskId
+    ? completionReview || !effectiveInput.saveSnapshot || !finalTaskId
       ? []
       : [
-          nextTool("post_edit_review", "on this hookless host, review drift and verification once after completing the planned edit", { taskId: finalTaskId }, false, [".codex/cache/codexa-task-lifecycle", ".codex/cache/codexa-outcomes"])
+          nextTool("post_edit_review", "after planned verification, run one final drift review because no completion/Stop gate owns it", { taskId: finalTaskId }, false, [".codex/cache/codexa-task-lifecycle", ".codex/cache/codexa-outcomes"])
         ].filter((tool): tool is ReturnType<typeof nextTool> => Boolean(tool))
     : targetCandidates.length > 0
       ? []
@@ -455,9 +455,9 @@ export async function changePlanQuery(
       requiredWorkflowChecks: editReadiness.editable ? requiredWorkflowChecks : [],
 	      requiredDependencyChecks: editReadiness.editable ? requiredDependencyChecks : [],
 	      complexityReview,
-	      reviewOwner: managedReview ? "managed-host-gate" : "agent-on-hookless-host",
+	      reviewOwner: completionReview ? "managed-completion-gate" : "agent-final-review",
 	      nextTools: structuredNextTools,
-	      systemMessage: managedReview
+	      systemMessage: completionReview
           ? "Run the planned verification, then stop; the managed host completion gate owns post-edit review."
           : structuredNextTools[0]?.reason,
 	      snapshot: savedSnapshot?.snapshot,
@@ -472,7 +472,10 @@ export async function changePlanQuery(
   };
 }
 
-function managedPostEditReviewAvailable(): boolean {
+function managedCompletionReviewAvailable(): boolean {
+  // Only a host integration with a true completion/Stop hook may set this.
+  // Edit-scoped PostToolUse hooks run before later shell verification and must
+  // leave the final post_edit_review route available.
   return process.env.CODEXA_MANAGED_POST_EDIT === "1";
 }
 function changePlanFreshnessBlockedResult(input: {
