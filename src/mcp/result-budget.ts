@@ -59,6 +59,7 @@ function budgetReceipt(result: McpToolResultShape, originalBytes: number, maxByt
     effectiveFormat: "concise"
   };
   const resultUri = detailedResultUri(sourceDelivery.resultUri);
+  const terminalDetailRequired = compactedKernel.detailsRequired === true;
   // Freshness is itself an orientation summary: stale/reason/count authority
   // remains complete after its unbounded path/hash lists are removed. It has
   // no narrower MCP form, so direct users to source control for exact paths.
@@ -68,8 +69,13 @@ function budgetReceipt(result: McpToolResultShape, originalBytes: number, maxByt
     ? "Freshness detail was compacted; stale state, reason, and dirty count remain authoritative. Use git status --short for exact paths; no further Codexa call is required."
     : detailUnavailable
       ? "Result detail was omitted to enforce the MCP transport budget; do not act on missing evidence. Retry with a narrower request."
-      : optionalBounded(sourceData.systemMessage ?? envelope.systemMessage, 240);
-  const actionability = detailUnavailable ? "blocked" : originalActionability;
+      : terminalDetailRequired
+        ? optionalBounded(compactedKernel.systemMessage, 240) ?? "Required detailed evidence is omitted from this bounded receipt; read the linked detailed result before acting."
+        : optionalBounded(sourceData.systemMessage ?? envelope.systemMessage, 240);
+  // The terminal kernel is the authority after transport compaction. Exact
+  // lifecycle modes intentionally fail closed until their linked detail is
+  // read, so the envelope must not retain the pre-compaction edit authority.
+  const actionability = detailUnavailable ? "blocked" : validActionability(sourceAuthority.actionability);
   const authority = detailUnavailable
     ? defined({ ...sourceAuthority, actionability, originalActionability })
     : sourceAuthority;
@@ -83,8 +89,8 @@ function budgetReceipt(result: McpToolResultShape, originalBytes: number, maxByt
     resultUri,
     effectiveFormat: "concise",
     detailAvailable: resultUri ? true : false,
-    detailRequired: detailUnavailable || sourceDelivery.detailRequired === true,
-    requiredDetailReason: sourceDelivery.requiredDetailReason ?? (detailUnavailable ? "tool-result-budget" : undefined),
+    detailRequired: terminalDetailRequired || detailUnavailable || sourceDelivery.detailRequired === true,
+    requiredDetailReason: sourceDelivery.requiredDetailReason ?? (terminalDetailRequired || detailUnavailable ? "tool-result-budget" : undefined),
     escalationReason: sourceDelivery.escalationReason ?? "tool-result-budget"
   });
   const truncation = { "__mcp.toolResultBudget": { total: originalBytes, returned: maxBytes } };
@@ -112,7 +118,17 @@ function budgetReceipt(result: McpToolResultShape, originalBytes: number, maxByt
     data,
     freshness: minimalFreshness(envelope.freshness),
     refresh: compactRefresh(envelope.refresh),
-    lifecycle: compactLifecycle(envelope.lifecycle, nextTools, detailUnavailable),
+    lifecycle: compactLifecycle(
+      envelope.lifecycle,
+      nextTools,
+      terminalDetailRequired
+        ? resultUri
+          ? "Read the linked detailed result before acting"
+          : "MCP transport budget omitted required detail"
+        : detailUnavailable
+          ? "MCP transport budget omitted required detail"
+          : undefined
+    ),
     worktree: compactWorktree(envelope.worktree),
     verificationProvenance: CURRENT_VERIFICATION_PROVENANCE,
     truncation,
@@ -232,14 +248,14 @@ function compactRefresh(value: unknown): Record<string, unknown> {
   return defined({ refreshed: source.refreshed === true, reason: optionalBounded(source.reason, 160), indexedAt: optionalBounded(source.indexedAt, 80) });
 }
 
-function compactLifecycle(value: unknown, nextTools: string[], detailOmitted = false): Record<string, unknown> {
+function compactLifecycle(value: unknown, nextTools: string[], detailBlockReason?: string): Record<string, unknown> {
   const source = isRecord(value) ? value : {};
   return {
     phase: PHASES.has(String(source.phase)) ? source.phase : "inspect",
     preconditions: strings(source.preconditions, 2, 160),
     blockingReasons: [
-      ...strings(source.blockingReasons, detailOmitted ? 2 : 3, 180),
-      ...(detailOmitted ? ["MCP transport budget omitted required detail"] : [])
+      ...strings(source.blockingReasons, detailBlockReason ? 2 : 3, 180),
+      ...(detailBlockReason ? [detailBlockReason] : [])
     ],
     nextTools
   };

@@ -127,6 +127,54 @@ describe("MCP serialized ToolResult budget", () => {
     expect(() => z.object(createMcpOutputSchema("full")).parse(result.structuredContent)).not.toThrow();
   });
 
+  it("keeps oversized change-plan authority blocked until linked detail is read", () => {
+    const uri = `codexa://repo/mcp-results/rr_${"c".repeat(32)}/mr_${"d".repeat(64)}`;
+    const result = toToolResult(
+      {
+        text: "edit-ready plan\n".repeat(20_000),
+        data: {
+          mode: "change_plan",
+          actionability: "edit_ready",
+          editReadiness: { editable: true, status: "edit-ready" },
+          plannedEditTargets: ["src/target.ts"],
+          hugeDetailedEvidence: "x".repeat(MCP_TOOL_RESULT_MAX_BYTES * 8),
+          delivery: {
+            schemaVersion: 1,
+            requestedFormat: "auto",
+            effectiveFormat: "concise",
+            resultUri: uri
+          }
+        },
+        freshness: freshness()
+      },
+      "change_plan",
+      POLICY
+    );
+
+    expect(bytes(result)).toBeLessThanOrEqual(MCP_TOOL_RESULT_MAX_BYTES);
+    const envelope = result.structuredContent as {
+      actionability: string;
+      data: {
+        actionability: string;
+        delivery: { resultUri: string; detailRequired: boolean; requiredDetailReason: string };
+        decisionKernel: { authority: { actionability: string; originalActionability: string }; detailsRequired: boolean };
+      };
+      lifecycle: { blockingReasons: string[] };
+      systemMessage: string;
+    };
+    expect(envelope.actionability).toBe("blocked");
+    expect(envelope.data.actionability).toBe(envelope.actionability);
+    expect(envelope.data.decisionKernel).toMatchObject({
+      authority: { actionability: "blocked", originalActionability: "edit_ready" },
+      detailsRequired: true
+    });
+    expect(envelope.data.delivery.resultUri).toBe(uri);
+    expect(envelope.data.delivery).toMatchObject({ detailRequired: true, requiredDetailReason: "tool-result-budget" });
+    expect(envelope.lifecycle.blockingReasons).toContain("Read the linked detailed result before acting");
+    expect(envelope.systemMessage).toContain("read the linked detailed result before acting");
+    expect(result.content).toContainEqual(expect.objectContaining({ type: "resource_link", uri }));
+  });
+
   it("keeps an auto request within the ordinary cap when detailed artifact persistence failed", () => {
     const result = toToolResult(
       {
