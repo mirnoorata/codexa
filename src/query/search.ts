@@ -9,10 +9,11 @@ import { freshnessBanner } from "./runtime.js";
 import { ensureQuerySession, type QuerySessionInput } from "./session.js";
 import { formatTestRecommendations, recommendTests } from "./tests.js";
 import { findFile, newTargetPathIsContained } from "./targets.js";
-import { retrieveForTask, type RetrievalAnchor, type RetrievalMatch, type RetrievalResult } from "../retrieval.js";
+import { retrieveForTask, retrieveIntentOnly, type RetrievalAnchor, type RetrievalMatch, type RetrievalResult } from "../retrieval.js";
 import { semanticOptionsFromQueryOptions, type SemanticRetrievalSummary } from "../semantic-retrieval.js";
 import type { CodexaIndex, FileFact, QueryOptions, QueryResult, SymbolFact, UsageSiteFact } from "../types.js";
 import { limitText, uniqueSorted } from "../util.js";
+import { terminalSearchResult } from "./context/terminal.js";
 
 interface RankedSearchResult {
   files: FileFact[];
@@ -94,6 +95,20 @@ export async function searchQuery(
   const session = await ensureQuerySession(input, options);
   const { index, freshness, refresh, repoRoot } = session;
   const limit = clampInt(queryInput.limit ?? 12, 1, session.maxResults);
+  const intentOnly = retrieveIntentOnly(queryInput.query);
+  const repositoryFiles = index.files.map((file) => file.path);
+  const targetQuery = normalizeTaskRepositoryPaths(queryInput.query, repoRoot);
+  const explicitPathTargets = focusFilesInTaskOrder(targetQuery, repositoryFiles, repositoryFiles);
+  const detectedPlannedNewTargets = (await Promise.all(plannedNewFocusPathTargets(targetQuery, repositoryFiles).map(async (filePath) => (await newTargetPathIsContained(filePath, repoRoot)) ? filePath : undefined))).filter((filePath): filePath is string => Boolean(filePath));
+  const tentativePlanTargets = focusFilesAndSymbolsInTaskOrder(targetQuery, [...repositoryFiles, ...detectedPlannedNewTargets], [...repositoryFiles, ...detectedPlannedNewTargets], index.symbols);
+  const plannedNewTargets = isStructuralEditTask(targetQuery) && !tentativePlanTargets.some((filePath) => repositoryFiles.includes(filePath)) ? [] : detectedPlannedNewTargets;
+  const explicitPlanTargets = plannedNewTargets === detectedPlannedNewTargets ? tentativePlanTargets : focusFilesAndSymbolsInTaskOrder(targetQuery, repositoryFiles, repositoryFiles, index.symbols);
+  const targetCandidates = [...new Set([...ambiguousFocusTargetCandidates(targetQuery, repositoryFiles), ...ambiguousFocusSymbolTargetCandidates(targetQuery, index.symbols, explicitPathTargets)])];
+  const unresolvedTargets = unresolvedFocusPathTargets(targetQuery, repositoryFiles, plannedNewTargets);
+  const pureNamedNewTarget = intentOnly.intentConfidence.mode === "edit" && explicitPlanTargets.length > 0 && explicitPlanTargets.every((filePath) => !repositoryFiles.includes(filePath))
+    && targetCandidates.length === 0 && unresolvedTargets.length === 0
+    && !classifyChangePlanNeed({ mode: "edit", task: queryInput.query, explicitTargetCount: explicitPlanTargets.length, targetFiles: explicitPlanTargets, repositoryFiles });
+  if (pureNamedNewTarget) return terminalSearchResult({ freshness, refresh, query: queryInput.query, intent: intentOnly.intentConfidence, targetPaths: explicitPlanTargets, reason: "named new target has no indexed source dependency" });
   const rawPatterns = rawSearchPatternsForQuery(queryInput.query, queryInput.patterns);
   const raw = await rawSearch(repoRoot, rawPatterns, Math.max(limit * 4, 20));
   const interpreted = rankedSearch(index, queryInput.query, limit);
@@ -109,18 +124,7 @@ export async function searchQuery(
     existing.push(`${formatRetrievalLaneSummary(match.lanes)} ${match.matchedTerms.slice(0, 5).join(", ") || "intent"}`);
     interpreted.reasons.set(match.file.path, existing);
   }
-  const repositoryFiles = index.files.map((file) => file.path);
-  const targetQuery = normalizeTaskRepositoryPaths(queryInput.query, repoRoot);
-  const explicitPathTargets = focusFilesInTaskOrder(targetQuery, repositoryFiles, repositoryFiles);
-  const detectedPlannedNewTargets = (await Promise.all(plannedNewFocusPathTargets(targetQuery, repositoryFiles).map(async (filePath) => (await newTargetPathIsContained(filePath, repoRoot)) ? filePath : undefined))).filter((filePath): filePath is string => Boolean(filePath));
-  const tentativePlanTargets = focusFilesAndSymbolsInTaskOrder(targetQuery, [...repositoryFiles, ...detectedPlannedNewTargets], [...repositoryFiles, ...detectedPlannedNewTargets], index.symbols);
-  const plannedNewTargets = isStructuralEditTask(targetQuery) && !tentativePlanTargets.some((filePath) => repositoryFiles.includes(filePath)) ? [] : detectedPlannedNewTargets;
-  const explicitPlanTargets = plannedNewTargets === detectedPlannedNewTargets
-    ? tentativePlanTargets
-    : focusFilesAndSymbolsInTaskOrder(targetQuery, repositoryFiles, repositoryFiles, index.symbols);
   const explicitTargetFiles = explicitPlanTargets.map((filePath) => findFile(index, filePath)).filter((file): file is FileFact => Boolean(file));
-  const targetCandidates = [...new Set([...ambiguousFocusTargetCandidates(targetQuery, repositoryFiles), ...ambiguousFocusSymbolTargetCandidates(targetQuery, index.symbols, explicitPathTargets)])];
-  const unresolvedTargets = unresolvedFocusPathTargets(targetQuery, repositoryFiles, plannedNewTargets);
   const candidateFiles = targetCandidates.map((filePath) => findFile(index, filePath)).filter((file): file is FileFact => Boolean(file));
   const rankedSearchFiles = uniqueFiles(
     raw.sufficient

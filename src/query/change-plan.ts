@@ -233,7 +233,7 @@ export async function changePlanQuery(
         taskId: blockedSnapshot?.taskId ?? effectiveInput.taskId,
         index: session.index,
         repoRoot,
-        focusFiles: invalidExplicitTarget
+        focusFiles: explicitResolutionCandidateFiles.length > 0
           ? uniqueSorted(explicitResolutionCandidateFiles.map((file) => file.path)).map((filePath) => ({ file: findFile(session.index, filePath)!, reasons: ["explicit target ambiguity candidate"], tier: "authoritative" as const }))
           : focusFiles,
         workflows: session.index.workflows,

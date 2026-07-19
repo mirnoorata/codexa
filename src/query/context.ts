@@ -60,6 +60,7 @@ import {
 } from "./context/focus.js";
 import { readContextSnippet } from "./context/snippets.js";
 import { structuredNewTargetAuthority } from "./context/target-authority.js";
+import { terminalContextPackResult, terminalFocusBriefResult } from "./context/terminal.js";
 
 export async function contextPackQuery(input: QuerySessionInput, contextInput: ContextPackInput = {}, options: QueryOptions = {}): Promise<QueryResult> {
   const session = await ensureQuerySession(input, options);
@@ -132,6 +133,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
   const explicitTargetProvided = requestedFiles.length > 0 || requestedSymbols.length > 0;
   const explicitConfigTarget = requestedResolvedPaths.some(isConfigExpansionPath);
   const taskIntents = contextInput.task ? classifyTaskIntent(contextInput.task) : [];
+  const intentOnly = contextInput.task ? retrieveIntentOnly(contextInput.task) : undefined;
   const dirtyContextHint = Boolean(contextInput.task && taskReferencesDirtyContext(contextInput.task) && !explicitTargetProvided && !explicitQuery);
   const includeDiff = contextInput.diff ?? true;
   const worktree = includeDiff ? await getWorktreeState(session) : undefined;
@@ -139,6 +141,11 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
   const changed = worktree?.files ?? [];
   const changedSymbols = worktree?.symbols ?? [];
   const dirtyContextTask = dirtyContextHint && includeDiff && !worktree?.degraded;
+  const preliminaryNewTargets = [...new Set([...naturalPlanTargets, ...requestedNewPaths])];
+  const pureNamedNewTarget = !dirtyContextTask && !explicitQuery && structuredNewTargetMode.allowed && intentOnly?.intentConfidence.mode === "edit"
+    && !unresolvedExplicitTarget && preliminaryNewTargets.length > 0 && preliminaryNewTargets.every((filePath) => !repositoryPathSet.has(filePath))
+    && unresolvedFocusPathTargets(targetTask, repositoryFiles, naturalNewTargets).length === 0
+    && !classifyChangePlanNeed({ mode: "edit", task: contextInput.task, explicitTargetCount: preliminaryNewTargets.length, changeType, targetFiles: preliminaryNewTargets, repositoryFiles });
   const dirtyTargetRepositoryFiles = [...new Set([...repositoryFiles, ...changed.filter((filePath) => !isCodexaControlPath(filePath))])];
   const directDirtyTaskTargets = dirtyContextTask
     ? focusFilesAndSymbolsInTaskOrder(targetTask, dirtyTargetRepositoryFiles, dirtyTargetRepositoryFiles, index.symbols)
@@ -164,10 +171,10 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       impactSeeds.set(filePath, "natural task target");
     }
   }
-  const derivedTaskQuery = explicitQuery || explicitTargetProvided || dirtyContextTask ? "" : codeLikeQueryFromTask(contextInput.task);
+  const derivedTaskQuery = explicitQuery || explicitTargetProvided || dirtyContextTask || pureNamedNewTarget ? "" : codeLikeQueryFromTask(contextInput.task);
   const queryText = explicitQuery || derivedTaskQuery;
   const naturalRetrieval =
-    contextInput.task && !dirtyContextTask && shouldRunNaturalRetrieval(explicitTargetProvided, explicitConfigTarget, taskIntents)
+    contextInput.task && !dirtyContextTask && !pureNamedNewTarget && shouldRunNaturalRetrieval(explicitTargetProvided, explicitConfigTarget, taskIntents)
       ? await retrieveForTask(index, contextInput.task, Math.max(limit * 2, 12), semanticOptionsFromQueryOptions(repoRoot, options))
       : undefined;
   const naturalExpansionAllowed = Boolean(
@@ -226,7 +233,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     }
   }
 
-  if (focus.size === 0 && !dirtyContextTask) {
+  if (focus.size === 0 && !dirtyContextTask && !pureNamedNewTarget) {
     for (const file of index.files.slice(0, limit)) {
       addFocus(file.path, "top-ranked fallback", 1, "fallback", "rank_fallback");
     }
@@ -262,6 +269,9 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
         focusEntries
       })
     : undefined;
+  const cleanDirtyScope = dirtyContextTask && !dirtyQualifierMentioned && dirtyScopedChanged.length === 0;
+  if (pureNamedNewTarget && intentOnly) return terminalContextPackResult({ freshness, refresh, task: contextInput.task, intent: intentOnly.intentConfidence, targetPaths: preliminaryNewTargets, reason: "named new target has no indexed source dependency" });
+  if (cleanDirtyScope && intentOnly) return terminalContextPackResult({ freshness, refresh, task: contextInput.task, intent: intentOnly.intentConfidence, targetPaths: [], reason: "requested dirty-worktree scope is clean", dirtyScope });
   const packetIntent = naturalRetrieval
     ? packetIntentConfidence(naturalRetrieval.intentConfidence, focusEntries, {
         explicitTargetProvided,
@@ -584,7 +594,7 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
   const includeDiff = focusInput.diff ?? true;
   const worktree = includeDiff ? await getWorktreeState(session) : undefined;
   const dirtyScopeRequested = includeDiff && Boolean(worktree) && taskReferencesDirtyContext(task) && !worktree?.degraded;
-  const retrieval = dirtyScopeRequested ? retrieveIntentOnly(task) : await retrieveForTask(index, task, limit, semanticOptionsFromQueryOptions(repoRoot, options));
+  const intentOnly = retrieveIntentOnly(task);
   const changedEntries = worktree?.entries ?? [];
   const changed = worktree?.files ?? [];
   const indexedPaths = new Set(index.files.map((file) => file.path));
@@ -625,6 +635,12 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
   const qualifiedDirtyTargets = dirtyQualifierMentioned ? taskPlanTargets.filter((filePath) => changedPlanFileSet.has(filePath)) : [];
   const dirtyQualifierNoMatch = dirtyQualifierMentioned && ((taskPlanTargets.length > 0 && qualifiedDirtyTargets.length === 0) || narrowedDirtyCandidates.unmatched);
   const dirtyScopeEmpty = dirtyScopeRequested && !dirtyQualifierMentioned && changedPlanFiles.length === 0;
+  const pureNamedNewTarget = !dirtyScopeRequested && intentOnly.intentConfidence.mode === "edit" && taskPlanTargets.length > 0
+    && taskPlanTargets.every((filePath) => !repositoryFiles.includes(filePath)) && !ambiguousExplicitTarget && !unresolvedNaturalTarget
+    && !classifyChangePlanNeed({ mode: "edit", task, explicitTargetCount: taskPlanTargets.length, targetFiles: taskPlanTargets, repositoryFiles });
+  const retrieval = dirtyScopeRequested || pureNamedNewTarget ? intentOnly : await retrieveForTask(index, task, limit, semanticOptionsFromQueryOptions(repoRoot, options));
+  if (pureNamedNewTarget) return terminalFocusBriefResult({ freshness, refresh, task, intent: intentOnly.intentConfidence, targetPaths: taskPlanTargets, reason: "named new target has no indexed source dependency" });
+  if (dirtyScopeEmpty) return terminalFocusBriefResult({ freshness, refresh, task, intent: intentOnly.intentConfidence, targetPaths: [], reason: "requested dirty-worktree scope is clean" });
   const workflowMatches = workflowFocusEntries(index, retrieval.workflows, task, limit);
   const workflowTestMatches: FocusSelectionEntry[] =
     workflowMatches.length > 0 && taskAsksForTests(task)

@@ -333,6 +333,16 @@ describe("query routing boundaries", () => {
         retrieval: { semantic: { status: "disabled" } }
       });
       expect(focus.text, task).toContain("the worktree is clean");
+      const pack = await contextPackQuery(repo, { task, diff: true, includeSnippets: false }, { autoRefresh: false });
+      expect((pack.data as { actionability: string; focusFiles: unknown[]; nextReads: unknown[]; nextTools: unknown[]; quality: { level: string }; systemMessage: string }), task).toMatchObject({
+        actionability: "orientation",
+        focusFiles: [],
+        nextReads: [],
+        nextTools: [],
+        quality: { level: "high" }
+      });
+      expect(pack.text, task).toContain("the worktree is clean");
+      expect(pack.text, task).not.toContain("Workspace guidance:");
     }
 
     await writeFile(path.join(repo, "src/util.ts"), "export function helper() { return 7 }\n", "utf8");
@@ -664,14 +674,40 @@ describe("query routing boundaries", () => {
     expect((lowRiskNewFocus.data as { actionability: string; unresolvedTargets?: string[]; nextCall: { tool: string } })).toMatchObject({
       actionability: "edit_ready",
       unresolvedTargets: [],
-      nextCall: { tool: "source" }
+      nextCall: { tool: "none" },
+      focusFiles: []
     });
     const lowRiskNewSearch = await searchQuery(repo, { query: lowRiskNewTask, limit: 6 }, { autoRefresh: false });
-    expect((lowRiskNewSearch.data as { actionability: string; nextTools?: unknown[]; unresolvedTargets?: string[] })).toMatchObject({
+    expect((lowRiskNewSearch.data as { actionability: string; files?: unknown[]; nextTools?: unknown[]; unresolvedTargets?: string[]; systemMessage?: string })).toMatchObject({
       actionability: "edit_ready",
+      files: [],
       nextTools: [],
       unresolvedTargets: []
     });
+    expect((lowRiskNewSearch.data as { systemMessage: string }).systemMessage).toContain("No indexed source read");
+    const lowRiskNewPack = await contextPackQuery(repo, { task: lowRiskNewTask, diff: false, includeSnippets: false }, { autoRefresh: false });
+    expect((lowRiskNewPack.data as { actionability: string; focusFiles: unknown[]; nextReads: unknown[]; nextTools: unknown[]; boundedPlanTargets: string[] })).toMatchObject({
+      actionability: "edit_ready",
+      focusFiles: [],
+      nextReads: [],
+      nextTools: [],
+      boundedPlanTargets: ["src/routes.ts"]
+    });
+
+    for (const [task, target] of [
+      ["Create ./brand-new-xyz.ts", "brand-new-xyz.ts"],
+      ["Create .github/workflows/ci.yml", ".github/workflows/ci.yml"],
+      ["Create src/new.ts that imports react/jsx-runtime.js", "src/new.ts"],
+      ["Create a report in docs/report.md", "docs/report.md"]
+    ] as const) {
+      const semanticOptions = { autoRefresh: false, semantic: true, semanticProvider: "local-command" as const, semanticCommand: "/definitely/not/invoked-for-new-target" };
+      const terminalFocus = await focusBriefQuery(repo, { task, diff: false }, semanticOptions);
+      expect((terminalFocus.data as { actionability: string; focusFiles: unknown[]; nextCall: { tool: string } }), task).toMatchObject({ actionability: "edit_ready", focusFiles: [], nextCall: { tool: "none" } });
+      const terminalSearch = await searchQuery(repo, { query: task }, semanticOptions);
+      expect((terminalSearch.data as { actionability: string; files: unknown[]; nextTools: unknown[] }), task).toMatchObject({ actionability: "edit_ready", files: [], nextTools: [] });
+      const terminalPack = await contextPackQuery(repo, { task, diff: false, includeSnippets: false }, semanticOptions);
+      expect((terminalPack.data as { actionability: string; focusFiles: unknown[]; nextReads: unknown[]; boundedPlanTargets: string[] }), task).toMatchObject({ actionability: "edit_ready", focusFiles: [], nextReads: [], boundedPlanTargets: [target] });
+    }
 
     const explicitRootCreation = await focusBriefQuery(repo, { task: "Create ./util.ts", diff: false, limit: 6, tokenBudget: 1000 }, { autoRefresh: false });
     expect((explicitRootCreation.data as { actionability: string; unresolvedTargets?: string[]; nextCall: { tool: string } })).toMatchObject({
