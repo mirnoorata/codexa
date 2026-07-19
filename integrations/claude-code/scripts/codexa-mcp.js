@@ -22,13 +22,16 @@ if (!repoRoot) {
 }
 
 const launch = resolveCodexaLaunch(repoRoot, autoRefresh);
+// The Stop hook remains an advisory drift gate, but it cannot recover trusted
+// command reports or invariant reviews from the Claude transcript. Do not let
+// an inherited internal flag make it suppress the agent's evidence-bearing
+// final post_edit_review route.
+const childEnv = { ...process.env };
+delete childEnv.CODEXA_MANAGED_POST_EDIT;
 const child = spawn(launch.command, launch.args, {
   cwd: repoRoot,
   stdio: ["inherit", "inherit", "inherit"],
-  env: {
-    ...process.env,
-    CODEXA_MANAGED_POST_EDIT: "1"
-  }
+  env: childEnv
 });
 
 child.on("exit", (code, signal) => {

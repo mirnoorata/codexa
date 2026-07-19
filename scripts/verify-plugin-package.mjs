@@ -117,6 +117,16 @@ if (claudeMcpConfig) {
   );
 }
 
+const claudeWrapperText = readFileSync(path.join(claudePluginRoot, "scripts/codexa-mcp.js"), "utf8");
+requireField(
+  claudeWrapperText.includes("delete childEnv.CODEXA_MANAGED_POST_EDIT"),
+  "claude plugin MCP wrapper must remove unsupported post-edit completion ownership"
+);
+requireField(
+  !claudeWrapperText.includes('CODEXA_MANAGED_POST_EDIT: "1"'),
+  "claude plugin MCP wrapper must not claim evidence-bearing final review"
+);
+
 const claudeMarketplacePath = path.join(root, "integrations", ".claude-plugin", "marketplace.json");
 const claudeMarketplace = parseJson(claudeMarketplacePath, "claude plugin marketplace");
 if (claudeMarketplace) {

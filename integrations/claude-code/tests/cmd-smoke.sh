@@ -111,13 +111,13 @@ import sys
 with open(sys.argv[1], encoding="utf-8") as handle:
     capture = json.load(handle)
 assert capture["argv"] == ["serve", sys.argv[2], "--auto-refresh", "--tools", "core"]
-assert capture["managedPostEdit"] == "1"
+assert "managedPostEdit" not in capture
 assert capture["sentinel"] == "preserved"
 PY
 then
-  pass "MCP launcher preserves the environment, defaults core, and marks managed review"
+  pass "MCP launcher preserves ordinary environment, defaults core, and removes unsupported completion ownership"
 else
-  fail "MCP launcher preserves the environment, defaults core, and marks managed review" "capture='$(cat "$MCP_CAPTURE" 2>/dev/null)'"
+  fail "MCP launcher preserves ordinary environment, defaults core, and removes unsupported completion ownership" "capture='$(cat "$MCP_CAPTURE" 2>/dev/null)'"
 fi
 
 # ---------- status ----------
