@@ -61,7 +61,9 @@ describe("retrieval prompt intent", () => {
     "Use the index to build a dependency map of src/api.ts",
     "Making sense of the API",
     "Building a dependency map",
-    "Writing up a security review"
+    "Writing up a security review",
+    "Patch review for API changes in src/api.ts",
+    "Change review for the API in src/api.ts"
   ])("keeps %s read-only", (task) => {
     expect(promptModeForTask(task)).toBe("orientation");
     expect(classifyTaskIntent(task)).not.toContain("implementation");
@@ -96,6 +98,8 @@ describe("retrieval prompt intent", () => {
     "Set API permissions in src/api.ts",
     "Extract API permissions from src/api.ts",
     "Patch API auth in src/api.ts",
+    "Patch src/api.ts",
+    "Change the API in src/api.ts",
     "Adjust API auth in src/api.ts",
     "Revise API auth in src/api.ts",
     "Enable API auth in src/api.ts",
