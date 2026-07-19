@@ -66,6 +66,7 @@ it("core-profile envelopes steer only to directly registered or dispatcher-calla
       expect(callersEnvelope.data?.decisionKernel?.scope?.nextCall).toMatchObject({ tool: "capabilities", arguments: expectedCallersDispatch });
       const callersText = callersFocus.content.find((entry) => entry.type === "text")?.text ?? "";
       expect(callersText).toContain("capabilities");
+      expect(callersText).toContain('"arguments":{"file":"src/alpha.ts"}');
       expect(callersText).not.toMatch(/(?:call|invoke|use)\s+`?callers`?/iu);
 
       const dispatchedCallers = await client.callTool({
@@ -73,7 +74,7 @@ it("core-profile envelopes steer only to directly registered or dispatcher-calla
         arguments: { action: "invoke", operation: "callers", arguments: { file: "src/alpha.ts" } }
       });
       const callersPolicy = (dispatchedCallers.structuredContent as { toolPolicy?: { avoidWhen?: string } }).toolPolicy;
-      expect(callersPolicy?.avoidWhen).toContain("capabilities(action=invoke, operation=callees)");
+      expect(callersPolicy?.avoidWhen).toContain("direct source inspection");
       expect(callersPolicy?.avoidWhen).not.toMatch(/(?:call|invoke|run|use)\s+`?callees`?/iu);
 
       const exactSearch = await client.callTool({ name: "search", arguments: { query: "alphaSymbol", patterns: ["alphaSymbol"] } });
@@ -107,6 +108,7 @@ it("core-profile envelopes steer only to directly registered or dispatcher-calla
       ]);
       expect(planEnvelope.lifecycle?.nextTools).toEqual(["capabilities"]);
       expect(JSON.stringify(planEnvelope.data?.steps)).not.toMatch(/(?:call|run|use)\s+`?(?:post_edit_review|workflow_path|callers|callees|dependency_path)`?/iu);
+      expect(JSON.stringify(planEnvelope.data?.steps)).not.toContain("capabilities(action=invoke");
       const planText = hooklessPlan.content.find((entry) => entry.type === "text")?.text ?? "";
       expect(planText).toContain("Next: capabilities");
       expect(planText).not.toContain("Next: post_edit_review");
@@ -122,6 +124,7 @@ it("core-profile envelopes steer only to directly registered or dispatcher-calla
       const reviewEnvelope = hooklessReview.structuredContent as { data?: { nextActions?: string[] }; systemMessage?: string };
       const reviewGuidance = JSON.stringify({ nextActions: reviewEnvelope.data?.nextActions, systemMessage: reviewEnvelope.systemMessage });
       expect(reviewGuidance).not.toMatch(/(?:call|invoke|run|use)\s+`?(?:workflow_path|callers|callees|dependency_path|post_edit_review)`?/iu);
+      expect(reviewGuidance).not.toContain("capabilities(action=invoke");
 
       const prompts = await client.listPrompts();
       const dirtyDiff = prompts.prompts.find((prompt) => prompt.name === "dirty_diff_review");
@@ -141,10 +144,20 @@ it("core-profile envelopes steer only to directly registered or dispatcher-calla
       expect(snapshotText).toContain('`arguments: {\\"taskId\\":\\"<saved taskId>\\"}`');
       expect(snapshotText).not.toMatch(/(?:call|invoke|run|use)\s+`?post_edit_review`?/iu);
 
-      const impactPrompt = await client.getPrompt({ name: "impact_before_edit", arguments: { target: "src/alpha.ts" } });
+      const impactPrompt = await client.getPrompt({ name: "impact_before_edit", arguments: { target: "src/alpha.ts", targetKind: "file" } });
       const impactText = JSON.stringify(impactPrompt);
       expect(impactText).toContain('`operation: \\"impact\\"`');
       expect(impactText).toContain('`arguments: {\\"file\\":\\"src/alpha.ts\\"}`');
+
+      const extensionlessImpactPrompt = await client.getPrompt({ name: "impact_before_edit", arguments: { target: "Makefile" } });
+      const extensionlessImpactText = JSON.stringify(extensionlessImpactPrompt);
+      expect(extensionlessImpactText).toContain('`arguments: {\\"file\\":\\"Makefile\\"}`');
+      expect(extensionlessImpactText).toContain('`arguments: {\\"symbol\\":\\"Makefile\\"}`');
+
+      const dottedImpactPrompt = await client.getPrompt({ name: "impact_before_edit", arguments: { target: "Alpha.run" } });
+      const dottedImpactText = JSON.stringify(dottedImpactPrompt);
+      expect(dottedImpactText).toContain('`arguments: {\\"file\\":\\"Alpha.run\\"}`');
+      expect(dottedImpactText).toContain('`arguments: {\\"symbol\\":\\"Alpha.run\\"}`');
     } finally {
       await client.close();
     }

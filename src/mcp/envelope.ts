@@ -241,21 +241,25 @@ function routeMcpGuidanceForProfile(record: Record<string, unknown>, enabledTool
   const sourceKernel = isRecord(record.decisionKernel) ? record.decisionKernel : undefined;
   const routedKernel = sourceKernel
     ? routeNextToolsForProfile(sourceKernel.nextTools, enabledTools)
-    : { nextTools: [], dispatchedOperations: [] };
+    : { nextTools: [], dispatches: [] };
   const authoritativeKernelNextTools = Array.isArray(record.nextTools) ? routed : routedKernel;
   const sourceAuthority = sourceKernel && isRecord(sourceKernel.authority) ? sourceKernel.authority : undefined;
   const sourceScope = sourceKernel && isRecord(sourceKernel.scope) ? sourceKernel.scope : undefined;
   const routedKernelNextCall = routeNextCallForProfile(sourceScope?.nextCall, enabledTools);
   const authoritativeKernelNextCall = Object.hasOwn(record, "nextCall") ? routedNextCall : routedKernelNextCall;
   const dispatches = [
-    ...routed.dispatchedOperations.map((operation) => ({ action: "invoke" as const, operation })),
-    ...authoritativeKernelNextTools.dispatchedOperations.map((operation) => ({ action: "invoke" as const, operation })),
+    ...routed.dispatches,
+    ...authoritativeKernelNextTools.dispatches,
     ...(routedNextCall.dispatch ? [routedNextCall.dispatch] : []),
     ...(authoritativeKernelNextCall.dispatch ? [authoritativeKernelNextCall.dispatch] : [])
   ];
   const primaryDispatch = dispatches[0];
   const systemMessage = primaryDispatch
-    ? `Use capabilities once with action=${primaryDispatch.action} and operation=${primaryDispatch.operation}; ${primaryDispatch.operation} is not registered directly in the core profile.`
+    ? `Use capabilities once with ${JSON.stringify({
+        action: primaryDispatch.action,
+        operation: primaryDispatch.operation,
+        ...(primaryDispatch.action === "invoke" ? { arguments: primaryDispatch.arguments ?? {} } : {})
+      })}; ${primaryDispatch.operation} is not registered directly in the core profile.`
     : routeGuidanceTextForProfile(record.systemMessage, enabledTools);
   const decisionKernel = sourceKernel
     ? {
@@ -283,7 +287,7 @@ function routeMcpGuidanceForProfile(record: Record<string, unknown>, enabledTool
 function routeNextCallForProfile(
   value: unknown,
   enabledTools: ReadonlySet<string>
-): { nextCall: unknown; dispatch?: { action: "invoke" | "describe"; operation: string } } {
+): { nextCall: unknown; dispatch?: { action: "invoke" | "describe"; operation: string; arguments?: Record<string, unknown> } } {
   if (!isRecord(value) || typeof value.tool !== "string") return { nextCall: value };
   const name = value.tool;
   if (name === "source" || enabledTools.has(name)) return { nextCall: value };
@@ -301,7 +305,7 @@ function routeNextCallForProfile(
         ? { action, operation: name, arguments: operationArguments }
         : { action, operation: name }
     },
-    dispatch: { action, operation: name }
+    dispatch: { action, operation: name, ...(operationArguments ? { arguments: operationArguments } : {}) }
   };
 }
 
@@ -321,26 +325,33 @@ function routeGuidanceStringsForProfile(value: unknown[], enabledTools: Readonly
 
 function routeGuidanceTextForProfile(value: unknown, enabledTools: ReadonlySet<string>): string | undefined {
   if (typeof value !== "string") return undefined;
-  let routed = value;
-  for (const name of DISPATCHABLE_MCP_TOOL_NAMES) {
-    if (enabledTools.has(name)) continue;
-    routed = routed.replace(new RegExp(`\\b${name}\\b`, "gu"), `capabilities(action=invoke, operation=${name})`);
+  const unavailableNames = DISPATCHABLE_MCP_TOOL_NAMES.filter((name) => !enabledTools.has(name) && new RegExp(`\\b${name}\\b`, "u").test(value));
+  if (unavailableNames.length === 0) return value;
+  if (/\bcodexa index\b/u.test(value)) {
+    let routed = value;
+    for (const name of unavailableNames) {
+      routed = routed.replace(new RegExp(`\\bretry\\s+${name}\\b`, "gu"), "retry the same operation through capabilities with its original arguments");
+    }
+    return routed;
   }
-  return routed;
+  return "Use direct source inspection for this conditional follow-up. Invoke capabilities only when the operation and all required arguments are concrete.";
 }
 
-function routeNextToolsForProfile(value: unknown, enabledTools: ReadonlySet<string>): { nextTools: unknown[]; dispatchedOperations: string[] } {
-  if (!Array.isArray(value)) return { nextTools: [], dispatchedOperations: [] };
+function routeNextToolsForProfile(
+  value: unknown,
+  enabledTools: ReadonlySet<string>
+): { nextTools: unknown[]; dispatches: Array<{ action: "invoke"; operation: string; arguments: Record<string, unknown> }> } {
+  if (!Array.isArray(value)) return { nextTools: [], dispatches: [] };
   const dispatchable = new Set<string>(DISPATCHABLE_MCP_TOOL_NAMES);
   const canDispatch = enabledTools.has("capabilities");
-  const dispatchedOperations: string[] = [];
+  const dispatches: Array<{ action: "invoke"; operation: string; arguments: Record<string, unknown> }> = [];
   const nextTools = value.flatMap((entry) => {
     const name = typeof entry === "string" ? entry : isRecord(entry) && typeof entry.tool === "string" ? entry.tool : undefined;
     if (!name) return [];
     if (enabledTools.has(name)) return [entry];
     if (!canDispatch || !dispatchable.has(name)) return [];
-    dispatchedOperations.push(name);
     const requiredInputs = isRecord(entry) && isRecord(entry.requiredInputs) ? entry.requiredInputs : {};
+    dispatches.push({ action: "invoke", operation: name, arguments: requiredInputs });
     const reason = isRecord(entry) && typeof entry.reason === "string" ? entry.reason : `invoke the ${name} operation`;
     return [{
       schemaVersion: 1,
@@ -351,7 +362,7 @@ function routeNextToolsForProfile(value: unknown, enabledTools: ReadonlySet<stri
       writes: isRecord(entry) && Array.isArray(entry.writes) ? entry.writes : []
     }];
   });
-  return { nextTools, dispatchedOperations };
+  return { nextTools, dispatches };
 }
 
 function guidanceForMcpEnvelope(

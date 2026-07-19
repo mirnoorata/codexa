@@ -9,6 +9,13 @@ export function registerWorkflowPrompts(server: McpServer, enabledTools?: Readon
     toolAvailable(name)
       ? `Call \`${name}\` ${purpose}.`
       : `Call \`capabilities\` with \`action: "invoke"\`, \`operation: "${name}"\`, and \`arguments: ${JSON.stringify(operationArguments)}\` ${purpose}.`;
+  const impactCall = (target: string, targetKind?: "file" | "symbol"): string => {
+    if (targetKind) return call("impact", "for this exact target", { [targetKind]: target });
+    if (toolAvailable("impact")) {
+      return `Call \`impact\` with \`file: ${JSON.stringify(target)}\` when this is a file path, or \`symbol: ${JSON.stringify(target)}\` when it is a symbol or id.`;
+    }
+    return `Call \`capabilities\` with \`action: "invoke"\`, \`operation: "impact"\`, and either \`arguments: ${JSON.stringify({ file: target })}\` for a file path or \`arguments: ${JSON.stringify({ symbol: target })}\` for a symbol or id.`;
+  };
   server.registerPrompt(
     "impact_before_edit",
     {
@@ -16,10 +23,11 @@ export function registerWorkflowPrompts(server: McpServer, enabledTools?: Readon
       description: "Use Codexa to gather blast-radius context before changing a file or symbol.",
       argsSchema: {
         target: z.string().describe("File path, symbol name, or symbol id to inspect before editing."),
+        targetKind: z.enum(["file", "symbol"]).optional().describe("Disambiguates extensionless file paths from symbols."),
         task: z.string().optional().describe("Short task description.")
       }
     },
-    async ({ target, task }) => ({
+    async ({ target, targetKind, task }) => ({
       messages: [
         {
           role: "user",
@@ -28,7 +36,7 @@ export function registerWorkflowPrompts(server: McpServer, enabledTools?: Readon
             text: [
               `Use one bounded Codexa impact packet before editing ${target}.`,
               task ? `Task: ${task}` : undefined,
-              call("impact", "for this exact target", /[\\/]|\.[a-z0-9]+$/iu.test(target) ? { file: target } : { symbol: target }),
+              impactCall(target, targetKind),
               "Do not also call `change_plan` unless the impact packet proves a material cross-boundary risk that needs a saved plan.",
               "After editing, rely on the managed host completion gate. On a hookless host only:",
               call("post_edit_review", "once when drift accountability is still needed"),
