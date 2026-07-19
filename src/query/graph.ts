@@ -208,11 +208,11 @@ export function unresolvedFocusPathTargets(task: string, repositoryFiles: string
   ])];
 }
 
-function unsupportedExternalPathTargets(task: string): string[] {
 export function unknownFocusPathTargets(task: string, repositoryFiles: string[]): string[] {
   return [...new Set(unknownFocusPathMentions(task, repositoryFiles).map((entry) => entry.candidate))];
 }
 
+function unsupportedExternalPathTargets(task: string): string[] {
   const targets: string[] = [];
   for (const match of task.matchAll(/(?:^|[\s("'`\[<{,:;=>])((?:~\/|\$[A-Za-z_][A-Za-z0-9_]*\/|file:\/\/|[A-Za-z]:[\\/]|\\\\|\/|\.\.\/)[A-Za-z0-9_@.$~\\/-]+)(?=$|[\s,;:!?)}\]'"`])/giu)) {
     const target = match[1];
@@ -287,6 +287,7 @@ function isExplicitSymbolOccurrence(task: string, label: string, index: number):
   if (isStrongExplicitSymbolOccurrence(task, label, index)) return true;
   const before = task.slice(Math.max(0, index - 48), index);
   return hasMutationVerbBefore(before)
+    || hasSymbolDependencyCueBefore(before)
     || /\b(?:in|inside|within)\s+(?:the\s+)?$/iu.test(before)
     || /\b(?:callers?|callees?|dependencies|uses)\s+(?:of\s+)?$/iu.test(before);
 }
@@ -301,9 +302,14 @@ function isAmbiguousExplicitSymbolOccurrence(task: string, label: string, index:
   if (index < 0) return false;
   const before = task.slice(Math.max(0, index - 48), index);
   const after = task.slice(index + label.length, index + label.length + 32);
-  return /\b(?:in|inside|within)\s+(?:the\s+)?$/iu.test(before)
+  return hasSymbolDependencyCueBefore(before)
+    || /\b(?:in|inside|within)\s+(?:the\s+)?$/iu.test(before)
     || /\b(?:callers?|callees?|dependencies|uses)\s+(?:of\s+)?$/iu.test(before)
     || (hasMutationVerbBefore(before) && /^\s*(?:$|[.,;]|(?:and|plus|with)\b|(?:api\s+)?contract\b)/iu.test(after));
+}
+
+function hasSymbolDependencyCueBefore(before: string): boolean {
+  return /\b(?:using|call(?:s|ing)?|invok(?:e|es|ing)|import(?:s|ing)?)\s+(?:the\s+)?$/iu.test(before);
 }
 
 function hasMutationVerbBefore(before: string): boolean {
