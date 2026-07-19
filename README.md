@@ -1005,10 +1005,34 @@ archived in
 [`reports/benchmarks/v0.10.0-agent-ab-pilot-v7.json`](reports/benchmarks/v0.10.0-agent-ab-pilot-v7.json).
 
 That v0.10 treatment used the 13-call workflow recorded above. The current
-selective policy intentionally avoids that mandatory call chain, but the
-historical run has not been rerun against the new policy. It therefore remains
-evidence about the archived treatment, not a measured efficiency claim for the
-current release.
+selective policy intentionally avoids that mandatory call chain. A full
+registered, held-out experiment has not yet been rerun against the new policy,
+so the archived result remains evidence about the v0.10 treatment rather than
+a general efficiency or efficacy claim for the current release.
+
+One authenticated paired smoke on the same checked-in task provides a narrower
+regression check for the original 5.94x failure. It used Codex CLI 0.144.6,
+GPT-5.6 Sol at high reasoning effort, an ephemeral clean Codex home, identical
+prompts and fresh fixture checkouts, and the locally built core-profile server
+from candidate commit `97b84c9` as the treatment's only configured difference:
+
+| One-pair smoke | Control | Current Codexa treatment | Treatment / control |
+| --- | ---: | ---: | ---: |
+| Input tokens | 108,683 | 127,190 | 1.17x |
+| Cached input tokens | 76,032 | 109,568 | 1.44x |
+| Output tokens | 3,065 | 3,551 | 1.16x |
+| Codexa tool calls | 0 | 0 | no difference |
+| Public tests | pass | pass | no difference |
+| Committed hidden-behavior smoke | fail | pass | descriptive only |
+
+The exact-path treatment correctly took the zero-call route, so the historical
+5.94x input-token regression did not reproduce; observed input overhead was
+1.17x. The treatment also passed all committed behavior cases plus 40 generated
+cases, while this single control run stripped leading/trailing C1 controls
+before validation. This is a non-confirmatory one-pair smoke, not a product
+effect estimate: it is not task-clustered, the runner differs by one patch
+version from the archived experiment, and the ChatGPT-authenticated run emitted
+no comparable provider-cost metric.
 
 The task now specifies Unicode General Category `Cc` explicitly. The separate
 verifier covers embedded plus leading/trailing C0, DEL, and C1 cases, including
