@@ -352,6 +352,67 @@ describe("task lifecycle governance", () => {
     }
   });
 
+  it("retains the prior governed revision when same-task persistence is interrupted", async () => {
+    const repo = await createHookFixtureRepo();
+    const index = await buildIndex({ repoRoot: repo });
+    const taskId = "same-task-persist-crash";
+    const snapshot = (task: string) => ({
+      task,
+      changeType: "unknown" as const,
+      snapshotFreshness: index.freshness,
+      plannedEditTargets: ["src/main.ts"],
+      plannedFiles: ["src/main.ts"],
+      focusFiles: [],
+      plannedTests: [],
+      requiredWorkflowChecks: [],
+      requiredDependencyChecks: [],
+      recipes: [],
+      dirtyBaseline: {
+        changedEntries: [],
+        dirtyFiles: [],
+        dirtyFileHashes: {},
+        headCommit: index.freshness.headCommit,
+        indexedAt: index.freshness.indexedAt
+      },
+      gaps: [],
+      warnings: []
+    });
+    const prior = await saveTaskSnapshot({
+      repoRoot: repo,
+      input: { task: "Prior governed plan", taskId, files: ["src/main.ts"], saveSnapshot: true },
+      snapshot: snapshot("Prior governed plan")
+    });
+    await expect(saveTaskSnapshot({
+      repoRoot: repo,
+      input: { task: "Interrupted replan", taskId, files: ["src/main.ts"], saveSnapshot: true },
+      snapshot: snapshot("Interrupted replan"),
+      afterPersistBeforeBlockedCleanup: async () => {
+        throw new Error("simulated crash before lifecycle persistence");
+      }
+    })).rejects.toThrow("simulated crash before lifecycle persistence");
+
+    for (const loaded of [await loadTaskSnapshot(repo), await loadTaskSnapshot(repo, taskId)]) {
+      expect(loaded).toMatchObject({
+        recoveredLatest: true,
+        latestTaskId: taskId,
+        snapshot: {
+          task: "Prior governed plan",
+          planRevision: prior.snapshot.planRevision,
+          publicationSequence: prior.snapshot.publicationSequence
+        }
+      });
+      expect(loaded.missingReason).toBeUndefined();
+    }
+
+    const retried = await saveTaskSnapshot({
+      repoRoot: repo,
+      input: { task: "Retried replan", taskId, files: ["src/main.ts"], saveSnapshot: true },
+      snapshot: snapshot("Retried replan")
+    });
+    expect((await loadTaskSnapshot(repo, taskId)).snapshot?.publicationSequence).toBe(retried.snapshot.publicationSequence);
+    await expect(readFile(path.join(repo, `.codex/cache/codexa-tasks/${taskId}.previous.json`), "utf8")).rejects.toThrow();
+  });
+
   it("uses one authority order for delayed same-time publications and recovery", async () => {
     const repo = await createHookFixtureRepo();
     const index = await buildIndex({ repoRoot: repo });

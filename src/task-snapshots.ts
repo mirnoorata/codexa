@@ -11,6 +11,7 @@ const SNAPSHOT_DIR = ".codex/cache/codexa-tasks";
 const LEGACY_SNAPSHOT_DIR = ".codex/cache/codexa-task-snapshots";
 const LATEST_FILE = "latest.json";
 const PUBLICATION_SEQUENCE_FILE = ".latest-publication-sequence";
+const PREVIOUS_SNAPSHOT_SUFFIX = ".previous.json";
 const CHANGE_TYPES = new Set<ChangeType>(["style", "api", "behavior", "rename", "delete", "unknown"]);
 
 export interface SaveTaskSnapshotInput {
@@ -58,6 +59,7 @@ export async function saveTaskSnapshot({ repoRoot, input, snapshot, beforePersis
     const dir = snapshotDir(repo);
     await fs.mkdir(dir, { recursive: true });
     const snapshotPath = path.join(dir, `${taskId}.json`);
+    const previousSnapshotPath = path.join(dir, `${taskId}${PREVIOUS_SNAPSHOT_SUFFIX}`);
     const priorRead = await readJson<TaskSnapshot>(snapshotPath);
     const priorSnapshot = priorRead.ok && isTaskSnapshot(priorRead.value) ? priorRead.value : undefined;
     const lifecycle = await loadTaskLifecycleState(repo, taskId);
@@ -79,6 +81,9 @@ export async function saveTaskSnapshot({ repoRoot, input, snapshot, beforePersis
       repo
     ) as TaskSnapshot;
     await beforePersist?.();
+    if (priorSnapshot && !await governedSnapshotLifecycleError(repo, priorSnapshot)) {
+      await atomicJsonWrite(previousSnapshotPath, priorSnapshot);
+    }
     await atomicJsonWrite(snapshotPath, saved);
     await afterPersistBeforeBlockedCleanup?.();
     await fs.rm(path.join(dir, `${taskId}.blocked.json`), { force: true });
@@ -91,6 +96,7 @@ export async function saveTaskSnapshot({ repoRoot, input, snapshot, beforePersis
       publicationSequence,
       origin: saved.origin
     });
+    await fs.rm(previousSnapshotPath, { force: true });
     if (published) await removeImplicitSiblingSnapshots(dir, taskId);
     else if (saved.origin === "hook-implicit") await fs.rm(snapshotPath, { force: true });
     return { snapshot: saved, path: snapshotPath };
@@ -225,8 +231,10 @@ export async function loadTaskSnapshot(repoRoot: string, taskId?: string): Promi
       return recovered ?? { missingReason: "missing-latest", error: "latest snapshot pointer does not contain a valid taskId" };
     }
     if (!await validatedLatestPointerAuthority(repo, latest.dir, latest.value)) {
-      const recovered = await recoverLatestSnapshot(repo, dirs, snapshotDir(repo));
       const latestTaskId = normalizeTaskId(latest.value.taskId);
+      const previous = latestTaskId ? await recoverPreviousTaskSnapshot(repo, latest.dir, latestTaskId, latest.value) : undefined;
+      if (previous) return previous;
+      const recovered = await recoverLatestSnapshot(repo, dirs, snapshotDir(repo));
       const latestArtifact = latestTaskId ? await readJson<TaskSnapshot>(path.join(latest.dir, `${latestTaskId}.json`)) : undefined;
       const lifecycleError = latestArtifact?.ok && isTaskSnapshot(latestArtifact.value) && latestArtifact.value.taskId === latestTaskId
         ? await governedSnapshotLifecycleError(repo, latestArtifact.value)
@@ -276,6 +284,8 @@ export async function loadTaskSnapshot(repoRoot: string, taskId?: string): Promi
   }
   const lifecycleError = await governedSnapshotLifecycleError(repo, parsed.value);
   if (lifecycleError) {
+    const previous = await recoverPreviousTaskSnapshot(repo, dir, parsed.value.taskId);
+    if (previous) return previous;
     return { latestTaskId: resolvedTaskId, missingReason: "invalid-json", error: lifecycleError, path: snapshotPath };
   }
   return { snapshot: parsed.value, latestTaskId: resolvedTaskId, path: snapshotPath };
@@ -481,6 +491,44 @@ async function governedSnapshotLifecycleError(repoRoot: string, snapshot: TaskSn
       return expected?.id === invariant.id && expected.statement === invariant.statement;
     });
   return sameInvariants ? undefined : `task lifecycle invariants do not match governed snapshot ${snapshot.taskId}`;
+}
+
+async function recoverPreviousTaskSnapshot(
+  repoRoot: string,
+  dir: string,
+  taskId: string,
+  latestPointer?: LatestSnapshotPointer
+): Promise<TaskSnapshotLoadResult | undefined> {
+  const previousPath = path.join(dir, `${taskId}${PREVIOUS_SNAPSHOT_SUFFIX}`);
+  const currentPath = path.join(dir, `${taskId}.json`);
+  const [previous, current] = await Promise.all([
+    readJson<TaskSnapshot>(previousPath),
+    readJson<TaskSnapshot>(currentPath)
+  ]);
+  if (!previous.ok || !current.ok || !isTaskSnapshot(previous.value) || !isTaskSnapshot(current.value)) return undefined;
+  if (previous.value.taskId !== taskId || current.value.taskId !== taskId) return undefined;
+  if (await governedSnapshotLifecycleError(repoRoot, previous.value)) return undefined;
+  if (!await governedSnapshotLifecycleError(repoRoot, current.value)) return undefined;
+  const previousRevision = previous.value.planRevision;
+  const currentRevision = current.value.planRevision;
+  const previousSequence = validPublicationSequence(previous.value.publicationSequence);
+  const currentSequence = validPublicationSequence(current.value.publicationSequence);
+  if (
+    previousRevision === undefined
+    || currentRevision !== previousRevision + 1
+    || previousSequence === undefined
+    || currentSequence === undefined
+    || currentSequence <= previousSequence
+  ) return undefined;
+  if (latestPointer) {
+    if (
+      latestPointer.taskId !== taskId
+      || latestPointer.path !== `${taskId}.json`
+      || latestPointer.blocked === true
+      || validPublicationSequence(latestPointer.publicationSequence) !== previousSequence
+    ) return undefined;
+  }
+  return { snapshot: previous.value, latestTaskId: taskId, path: previousPath, recoveredLatest: true };
 }
 
 function validPublicationSequence(value: unknown): number | undefined {
