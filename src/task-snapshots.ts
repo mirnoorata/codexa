@@ -11,7 +11,7 @@ const SNAPSHOT_DIR = ".codex/cache/codexa-tasks";
 const LEGACY_SNAPSHOT_DIR = ".codex/cache/codexa-task-snapshots";
 const LATEST_FILE = "latest.json";
 const PUBLICATION_SEQUENCE_FILE = ".latest-publication-sequence";
-const PREVIOUS_SNAPSHOT_SUFFIX = ".previous.json";
+const PREVIOUS_SNAPSHOT_DIR = ".previous";
 const CHANGE_TYPES = new Set<ChangeType>(["style", "api", "behavior", "rename", "delete", "unknown"]);
 
 export interface SaveTaskSnapshotInput {
@@ -59,7 +59,7 @@ export async function saveTaskSnapshot({ repoRoot, input, snapshot, beforePersis
     const dir = snapshotDir(repo);
     await fs.mkdir(dir, { recursive: true });
     const snapshotPath = path.join(dir, `${taskId}.json`);
-    const previousSnapshotPath = path.join(dir, `${taskId}${PREVIOUS_SNAPSHOT_SUFFIX}`);
+    const previousSnapshotPath = previousTaskSnapshotPath(dir, taskId);
     const priorRead = await readJson<TaskSnapshot>(snapshotPath);
     const priorSnapshot = priorRead.ok && isTaskSnapshot(priorRead.value) ? priorRead.value : undefined;
     const lifecycle = await loadTaskLifecycleState(repo, taskId);
@@ -82,6 +82,7 @@ export async function saveTaskSnapshot({ repoRoot, input, snapshot, beforePersis
     ) as TaskSnapshot;
     await beforePersist?.();
     if (priorSnapshot && !await governedSnapshotLifecycleError(repo, priorSnapshot)) {
+      await fs.mkdir(path.dirname(previousSnapshotPath), { recursive: true });
       await atomicJsonWrite(previousSnapshotPath, priorSnapshot);
     }
     await atomicJsonWrite(snapshotPath, saved);
@@ -499,7 +500,7 @@ async function recoverPreviousTaskSnapshot(
   taskId: string,
   latestPointer?: LatestSnapshotPointer
 ): Promise<TaskSnapshotLoadResult | undefined> {
-  const previousPath = path.join(dir, `${taskId}${PREVIOUS_SNAPSHOT_SUFFIX}`);
+  const previousPath = previousTaskSnapshotPath(dir, taskId);
   const currentPath = path.join(dir, `${taskId}.json`);
   const [previous, current] = await Promise.all([
     readJson<TaskSnapshot>(previousPath),
@@ -866,6 +867,10 @@ export function taskSnapshotCacheDir(repoRoot: string): string {
 
 function snapshotDir(repoRoot: string): string {
   return path.join(repoRoot, SNAPSHOT_DIR);
+}
+
+function previousTaskSnapshotPath(dir: string, taskId: string): string {
+  return path.join(dir, PREVIOUS_SNAPSHOT_DIR, `${taskId}.json`);
 }
 
 function snapshotReadDirs(repoRoot: string): string[] {
