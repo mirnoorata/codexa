@@ -18,6 +18,7 @@ export interface SaveTaskSnapshotInput {
   input: ChangePlanInput;
   snapshot: Omit<TaskSnapshot, "schemaVersion" | "taskId" | "repoRoot" | "createdAt" | "publicationSequence" | "input">;
   beforePersist?: () => Promise<void>;
+  afterPersistBeforeBlockedCleanup?: () => Promise<void>;
 }
 
 export interface SaveBlockedTaskSnapshotInput {
@@ -49,7 +50,7 @@ export interface BlockedTaskSnapshotMarker {
   details?: unknown;
 }
 
-export async function saveTaskSnapshot({ repoRoot, input, snapshot, beforePersist }: SaveTaskSnapshotInput): Promise<{ snapshot: TaskSnapshot; path: string }> {
+export async function saveTaskSnapshot({ repoRoot, input, snapshot, beforePersist, afterPersistBeforeBlockedCleanup }: SaveTaskSnapshotInput): Promise<{ snapshot: TaskSnapshot; path: string }> {
   const repo = path.resolve(repoRoot);
   const createdAt = new Date().toISOString();
   const taskId = allocateTaskSnapshotId(repo, input, createdAt);
@@ -79,6 +80,7 @@ export async function saveTaskSnapshot({ repoRoot, input, snapshot, beforePersis
     ) as TaskSnapshot;
     await beforePersist?.();
     await atomicJsonWrite(snapshotPath, saved);
+    await afterPersistBeforeBlockedCleanup?.();
     await fs.rm(path.join(dir, `${taskId}.blocked.json`), { force: true });
     await recordTaskPlanRevision(repo, taskId, planRevision, invariants);
     const published = await publishLatestSnapshot(repo, dir, {
@@ -493,6 +495,8 @@ async function readBlockedSnapshotMarker(
       }
       continue;
     }
+    const newerSnapshot = await newerSameTaskSnapshot(dir, parsed.value);
+    if (newerSnapshot) return newerSnapshot;
     return blockedSnapshotLoadResult(parsed.value, markerPath);
   }
   return undefined;
@@ -517,7 +521,32 @@ async function readExactBlockedLatestPointer(dir: string, pointer: LatestSnapsho
   const parsed = await readJson<BlockedTaskSnapshotMarker>(markerPath);
   if (!parsed.ok || !isBlockedSnapshotMarker(parsed.value, taskId) || parsed.value.taskId !== taskId) return undefined;
   if (validPublicationSequence(parsed.value.publicationSequence) !== pointerSequence) return undefined;
+  const newerSnapshot = await newerSameTaskSnapshot(dir, parsed.value);
+  if (newerSnapshot) return newerSnapshot;
   return blockedSnapshotLoadResult(parsed.value, markerPath);
+}
+
+async function newerSameTaskSnapshot(dir: string, marker: BlockedTaskSnapshotMarker): Promise<TaskSnapshotLoadResult | undefined> {
+  const taskId = normalizeTaskId(marker.taskId);
+  if (!taskId || marker.taskId !== taskId) return undefined;
+  const snapshotPath = path.join(dir, `${taskId}.json`);
+  const parsed = await readJson<TaskSnapshot>(snapshotPath);
+  if (!parsed.ok || !isTaskSnapshot(parsed.value) || parsed.value.taskId !== taskId) return undefined;
+  const blockedAuthority = pointerAuthority({
+    taskId,
+    path: `${taskId}.blocked.json`,
+    blocked: true,
+    createdAt: marker.createdAt,
+    publicationSequence: marker.publicationSequence
+  }, false);
+  const snapshotAuthority = pointerAuthority({
+    taskId,
+    path: `${taskId}.json`,
+    createdAt: parsed.value.createdAt,
+    publicationSequence: parsed.value.publicationSequence
+  }, parsed.value.origin === "hook-implicit");
+  if (compareSnapshotAuthority(snapshotAuthority, blockedAuthority) <= 0) return undefined;
+  return { snapshot: parsed.value, latestTaskId: taskId, path: snapshotPath, recoveredLatest: true };
 }
 
 function isBlockedSnapshotMarker(value: unknown, taskId?: string): value is BlockedTaskSnapshotMarker {
