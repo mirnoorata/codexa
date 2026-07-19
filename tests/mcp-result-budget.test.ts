@@ -4,6 +4,7 @@ import { createMcpOutputSchema, toToolResult } from "../src/mcp/envelope.js";
 import { MCP_TOOL_RESULT_DETAILED_MAX_BYTES, MCP_TOOL_RESULT_MAX_BYTES } from "../src/mcp/result-budget.js";
 import { compactMcpResult, compactNextTools } from "../src/mcp/compaction.js";
 import { withMcpDelivery } from "../src/mcp/decision-kernel.js";
+import { CORE_PROFILE_TOOL_NAMES } from "../src/mcp/tool-registry.js";
 
 const POLICY = { autoRefresh: true, sessionMemoryMode: "auto" };
 
@@ -279,6 +280,132 @@ describe("MCP serialized ToolResult budget", () => {
     expect(envelope.data.decisionKernel.detailsRequired ?? false).toBe(false);
     expect(envelope.data.delivery.detailRequired).toBe(false);
     expect(JSON.stringify(result).match(/review the current outcomes/gu)).toHaveLength(1);
+  });
+
+  it("preserves one complete oversized core nextCall without duplicating its arguments", () => {
+    const uri = `codexa://repo/mcp-results/rr_${"7".repeat(32)}/mr_${"8".repeat(64)}`;
+    const files = Array.from({ length: 64 }, (_, index) => `src/${String(index).padStart(2, "0")}-${"bounded-segment-".repeat(7)}target.ts`);
+    const task = "Refactor every explicitly bounded target";
+    const result = toToolResult(
+      {
+        text: "oversized focus\n".repeat(20_000),
+        data: {
+          mode: "focus_brief",
+          actionability: "edit_ready",
+          packetVerdict: "edit-ready",
+          nextCall: { tool: "change_plan", reason: "the bounded target set needs one saved plan", arguments: { task, files, saveSnapshot: true } },
+          systemMessage: "Use the complete data.nextCall contract for the saved plan.",
+          hugeEvidence: "e".repeat(MCP_TOOL_RESULT_MAX_BYTES * 4),
+          delivery: { schemaVersion: 1, requestedFormat: "auto", effectiveFormat: "concise", resultUri: uri }
+        },
+        freshness: freshness()
+      },
+      "focus_brief",
+      { ...POLICY, enabledTools: new Set(CORE_PROFILE_TOOL_NAMES) }
+    );
+    const expectedArguments = { task, files, saveSnapshot: true };
+    const envelope = result.structuredContent as {
+      actionability: string;
+      data: {
+        nextCall?: { tool: string; arguments: Record<string, unknown> };
+        systemMessage?: string;
+        decisionKernel: { scope?: { nextCall?: { tool?: string; status?: string; arguments?: unknown } }; systemMessage?: string };
+      };
+      lifecycle: { nextTools: string[] };
+      nextTools: unknown[];
+      systemMessage?: string;
+    };
+
+    expect(bytes(result)).toBeLessThanOrEqual(MCP_TOOL_RESULT_MAX_BYTES);
+    expect(envelope.actionability).toBe("edit_ready");
+    expect(envelope.nextTools).toEqual([]);
+    expect(envelope.data.nextCall).toEqual({
+      tool: "change_plan",
+      reason: "the bounded target set needs one saved plan",
+      arguments: expectedArguments
+    });
+    expect(envelope.data.decisionKernel.scope?.nextCall).toEqual({ tool: "change_plan", status: "executable" });
+    expect(envelope.data.decisionKernel.scope?.nextCall?.arguments).toBeUndefined();
+    expect(envelope.lifecycle.nextTools).toEqual(["change_plan"]);
+    expect(envelope.data.systemMessage).toBeUndefined();
+    expect(envelope.data.decisionKernel.systemMessage).toBeUndefined();
+    expect(envelope.systemMessage).toBe("Use the complete data.nextCall contract for the saved plan.");
+    expect(JSON.stringify(result).split(JSON.stringify(files)).length).toBe(2);
+    expect(result.content).toContainEqual(expect.objectContaining({ type: "resource_link", uri }));
+  });
+
+  it("fails closed with linked detail when a complete nextCall cannot fit", () => {
+    const uri = `codexa://repo/mcp-results/rr_${"9".repeat(32)}/mr_${"a".repeat(64)}`;
+    const result = toToolResult(
+      {
+        text: "oversized focus",
+        data: {
+          mode: "focus_brief",
+          actionability: "edit_ready",
+          packetVerdict: "edit-ready",
+          nextCall: { tool: "change_plan", reason: "use the exact arguments", arguments: { task: "t".repeat(MCP_TOOL_RESULT_MAX_BYTES * 2), files: ["src/a.ts"], saveSnapshot: true } },
+          delivery: { schemaVersion: 1, requestedFormat: "auto", effectiveFormat: "concise", resultUri: uri }
+        },
+        freshness: freshness()
+      },
+      "focus_brief",
+      { ...POLICY, enabledTools: new Set(CORE_PROFILE_TOOL_NAMES) }
+    );
+    const envelope = result.structuredContent as {
+      actionability: string;
+      data: { nextCall?: unknown; decisionKernel: { scope?: { nextCall?: unknown }; detailsRequired?: boolean } };
+      lifecycle: { nextTools: string[] };
+      nextTools: unknown[];
+      systemMessage: string;
+    };
+
+    expect(bytes(result)).toBeLessThanOrEqual(MCP_TOOL_RESULT_MAX_BYTES);
+    expect(envelope.actionability).toBe("blocked");
+    expect(envelope.nextTools).toEqual([]);
+    expect(envelope.data.nextCall).toBeUndefined();
+    expect(envelope.data.decisionKernel.scope?.nextCall).toBeUndefined();
+    expect(envelope.data.decisionKernel.detailsRequired).toBe(true);
+    expect(envelope.lifecycle.nextTools).toEqual([]);
+    expect(envelope.systemMessage).toContain("next-call arguments were omitted");
+    expect(result.content).toContainEqual(expect.objectContaining({ type: "resource_link", uri }));
+  });
+
+  it("removes nextCall authority when exact lifecycle detail is required", () => {
+    const uri = `codexa://repo/mcp-results/rr_${"b".repeat(32)}/mr_${"c".repeat(64)}`;
+    const result = toToolResult(
+      {
+        text: "review\n".repeat(20_000),
+        data: {
+          mode: "post_edit_review",
+          actionability: "review",
+          completionAuthority: "replan_required",
+          nextCall: { tool: "change_plan", reason: "replan", arguments: { taskId: "task-1" } },
+          decisionKernel: {
+            schemaVersion: 1,
+            mode: "post_edit_review",
+            authority: { actionability: "review", completionAuthority: "replan_required" },
+            scope: { nextCall: { tool: "change_plan", arguments: { taskId: "task-1" } } },
+            detailsRequired: true
+          },
+          hugeEvidence: "e".repeat(MCP_TOOL_RESULT_MAX_BYTES * 4),
+          delivery: { schemaVersion: 1, requestedFormat: "auto", effectiveFormat: "concise", resultUri: uri }
+        },
+        freshness: freshness()
+      },
+      "post_edit_review",
+      { ...POLICY, enabledTools: new Set(CORE_PROFILE_TOOL_NAMES) }
+    );
+    const envelope = result.structuredContent as {
+      data: { nextCall?: unknown; decisionKernel: { scope?: { nextCall?: unknown }; detailsRequired?: boolean } };
+      lifecycle: { nextTools: string[] };
+      nextTools: unknown[];
+    };
+
+    expect(envelope.nextTools).toEqual([]);
+    expect(envelope.data.nextCall).toBeUndefined();
+    expect(envelope.data.decisionKernel.scope?.nextCall).toBeUndefined();
+    expect(envelope.data.decisionKernel.detailsRequired).toBe(true);
+    expect(envelope.lifecycle.nextTools).toEqual([]);
   });
 
   it.each([

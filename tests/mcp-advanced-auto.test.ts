@@ -81,7 +81,8 @@ describe("advanced MCP auto/concise projections", () => {
     expect(data.nextTools).toBeUndefined();
     expect(envelope.nextTools).toEqual([]);
     expect(kernel.nextTools).toEqual([]);
-    expect(data.systemMessage).toContain('responseFormat "detailed"');
+    expect(data.systemMessage).toBeUndefined();
+    expect(envelope.systemMessage).toContain('responseFormat "detailed"');
   });
 
   it("labels external session-memory summaries as untrusted and strips control characters", () => {

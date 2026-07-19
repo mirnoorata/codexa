@@ -277,6 +277,7 @@ function enforceMcpStructuredBudget(
       packetVerdict: dataWithoutMetrics.packetVerdict,
       complexityReview: compactComplexityReview(dataWithoutMetrics.complexityReview, 4),
       verificationProvenance: boundedVerificationProvenance(dataWithoutMetrics.verificationProvenance),
+      nextCall: dataWithoutMetrics.nextCall,
       nextTools: compactNextTools(dataWithoutMetrics.nextTools, fallbackTruncation),
       systemMessage: stringValue(dataWithoutMetrics.systemMessage),
       runtime: compactSession(dataWithoutMetrics.runtime),
@@ -296,7 +297,6 @@ function enforceMcpStructuredBudget(
   if (structuredByteLength(fallbackResult) <= targetBytes) {
     return fallbackResult;
   }
-
   // Last-resort tier: evidence-bearing fields are dropped entirely so the
   // verdict and routing guidance always fit the host's hard result limit.
   const minimalTruncation = mergeTruncation(fallbackTruncation, {
@@ -310,6 +310,7 @@ function enforceMcpStructuredBudget(
       editReadiness: dataWithoutMetrics.editReadiness,
       packetVerdict: dataWithoutMetrics.packetVerdict,
       verificationProvenance: boundedVerificationProvenance(dataWithoutMetrics.verificationProvenance),
+      nextCall: dataWithoutMetrics.nextCall,
       nextTools: compactNextTools(dataWithoutMetrics.nextTools, minimalTruncation),
       systemMessage: stringValue(dataWithoutMetrics.systemMessage),
       runtime: compactSession(dataWithoutMetrics.runtime),
@@ -376,6 +377,7 @@ function buildMcpBudgetSummaryData(data: Record<string, unknown>, mode: string, 
     targetCandidates: compactSummaryArray("targetCandidates", data.targetCandidates, 8, truncation, compactTargetCandidate),
     packetVerdict: data.packetVerdict,
     complexityReview: compactComplexityReview(data.complexityReview, 4),
+    nextCall: data.nextCall,
     nextTools: compactNextTools(data.nextTools, truncation),
     systemMessage: stringValue(data.systemMessage),
     files: compactSummaryArray("files", data.files, 12, truncation),
@@ -400,6 +402,7 @@ function reattachGuidanceFields(record: Record<string, unknown>, source: Record<
   const nextTools = compactNextTools(source.nextTools, truncation);
   return {
     ...record,
+    ...(isRecord(source.nextCall) ? { nextCall: source.nextCall } : {}),
     ...(nextTools === undefined ? {} : { nextTools }),
     ...(typeof source.systemMessage === "string" ? { systemMessage: source.systemMessage } : {})
   };

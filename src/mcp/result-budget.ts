@@ -59,14 +59,24 @@ function budgetReceipt(result: McpToolResultShape, originalBytes: number, maxByt
   };
   const resultUri = detailedResultUri(sourceDelivery.resultUri);
   const terminalDetailRequired = compactedKernel.detailsRequired === true;
-  const sourceNextTools = authoritativeNextTools(envelope, sourceData, sourceKernel);
+  const sourceNextTools = authoritativeNextTools(envelope, sourceData);
   const sourceNextTool = sourceNextTools[0];
   const completeNextTool = completeNextToolContract(sourceNextTool);
   const sourceNextToolIncomplete = isRecord(sourceNextTool) && !completeNextTool;
   const sourceNextToolTruncated = hasFirstNextToolContractTruncation(sourceNextTool, envelope.truncation, sourceData.truncation, sourceKernel.truncation);
+  const sourceNextCall = isRecord(sourceData.nextCall) ? sourceData.nextCall : undefined;
+  const completeNextCall = completeNextCallContract(sourceNextCall);
+  const sourceNextCallIncomplete = sourceNextCall !== undefined && !completeNextCall;
+  const sourceNextCallTruncated = hasFirstNextCallContractTruncation(envelope.truncation, sourceData.truncation, sourceKernel.truncation);
 
-  const buildReceipt = (nextToolContractOmitted: boolean, projectedNextTools: unknown[]): McpToolResultShape => {
-    const effectiveDetailRequired = terminalDetailRequired || nextToolContractOmitted;
+  const buildReceipt = (
+    nextToolContractOmitted: boolean,
+    projectedNextTools: unknown[],
+    nextCallContractOmitted: boolean,
+    projectedNextCall?: Record<string, unknown>
+  ): McpToolResultShape => {
+    const followUpContractOmitted = nextToolContractOmitted || nextCallContractOmitted;
+    const effectiveDetailRequired = terminalDetailRequired || followUpContractOmitted;
     // Freshness is itself an orientation summary: stale/reason/count authority
     // remains complete after its unbounded path/hash lists are removed. It has
     // no narrower MCP form, so direct users to source control for exact paths.
@@ -76,27 +86,31 @@ function budgetReceipt(result: McpToolResultShape, originalBytes: number, maxByt
       ? "Freshness detail was compacted; stale state, reason, and dirty count remain authoritative. Use git status --short for exact paths; no further Codexa call is required."
       : detailUnavailable
         ? "Result detail was omitted to enforce the MCP transport budget; do not act on missing evidence. Retry with a narrower request."
-        : nextToolContractOmitted
-          ? "Executable next-tool arguments were omitted to enforce the MCP transport budget; read the linked detailed result before acting."
+        : followUpContractOmitted
+          ? nextToolContractOmitted
+            ? "Executable next-tool arguments were omitted to enforce the MCP transport budget; read the linked detailed result before acting."
+            : "Executable next-call arguments were omitted to enforce the MCP transport budget; read the linked detailed result before acting."
         : terminalDetailRequired
           ? optionalBounded(compactedKernel.systemMessage, 240) ?? "Required detailed evidence is omitted from this bounded receipt; read the linked detailed result before acting."
           : optionalBounded(sourceData.systemMessage ?? envelope.systemMessage, 240);
     // The terminal kernel is the authority after transport compaction. Exact
     // lifecycle modes intentionally fail closed until their linked detail is
     // read, so the envelope must not retain the pre-compaction edit authority.
-    const authorityBlocked = detailUnavailable || nextToolContractOmitted;
+    const authorityBlocked = detailUnavailable || followUpContractOmitted;
     const actionability = authorityBlocked ? "blocked" : validActionability(sourceAuthority.actionability);
     const authority = authorityBlocked
       ? defined({ ...sourceAuthority, actionability, originalActionability })
       : sourceAuthority;
     const projectedNextToolNames = toolNames(projectedNextTools, 1, 80);
+    const authorizedNextCall = authorityBlocked || terminalDetailRequired ? undefined : projectedNextCall;
+    const canonicalKernel = receiptDecisionKernel(compactedKernel, projectedNextToolNames, authorizedNextCall);
     const kernel = authorityBlocked
-      ? defined({ ...compactedKernel, authority, nextTools: [], systemMessage, detailsRequired: true })
+      ? defined({ ...canonicalKernel, authority, nextTools: [], detailsRequired: true })
       : compactSummarySufficient
-        ? defined({ ...compactedKernel, authority, nextTools: [], systemMessage, detailsRequired: undefined })
+        ? defined({ ...canonicalKernel, authority, nextTools: [], detailsRequired: undefined })
         : projectedNextToolNames.length > 0
-          ? defined({ ...compactedKernel, nextTools: projectedNextToolNames })
-          : compactedKernel;
+          ? defined({ ...canonicalKernel, nextTools: projectedNextToolNames })
+          : canonicalKernel;
     const delivery = defined({
       ...sourceDelivery,
       resultUri,
@@ -116,12 +130,17 @@ function budgetReceipt(result: McpToolResultShape, originalBytes: number, maxByt
       inspectMode: optionalBounded(authority.inspectMode ?? sourceData.inspectMode, 80),
       delivery,
       decisionKernel: kernel,
-      systemMessage,
+      ...(authorizedNextCall ? { nextCall: authorizedNextCall } : {}),
       truncation,
       mcp: { compacted: true, targetBytes: maxBytes, hardBudgetEnforced: true, budgetCompaction: "tool-result" }
     });
     const nextTools = authorityBlocked || terminalDetailRequired ? [] : projectedNextTools;
-    const lifecycleNextTools = toolNames(nextTools, 1, 80);
+    const nextCallTool = executableNextCallTool(authorizedNextCall);
+    const lifecycleNextTools = toolNames(nextTools, 1, 80).length > 0
+      ? toolNames(nextTools, 1, 80)
+      : nextCallTool
+        ? [nextCallTool]
+        : [];
     const relatedResources = resultUri
       ? [{ uri: resultUri, name: "Codexa detailed MCP result", mimeType: "application/json", description: "Content-addressed detailed packet" }]
       : [];
@@ -166,12 +185,18 @@ function budgetReceipt(result: McpToolResultShape, originalBytes: number, maxByt
   };
 
   if (completeNextTool && !sourceNextToolTruncated) {
-    const contractReceipt = withActualReturnedBytes(buildReceipt(false, [completeNextTool]));
+    const contractReceipt = withActualReturnedBytes(buildReceipt(false, [completeNextTool], false));
     if (byteLength(contractReceipt) <= maxBytes) return contractReceipt;
-    return buildReceipt(true, []);
+    return buildReceipt(true, [], false);
   }
-  if (sourceNextToolTruncated || sourceNextToolIncomplete) return buildReceipt(true, []);
-  return buildReceipt(false, toolNames(compactedKernel.nextTools, 1, 80));
+  if (sourceNextToolTruncated || sourceNextToolIncomplete) return buildReceipt(true, [], false);
+  if (completeNextCall && !sourceNextCallTruncated) {
+    const contractReceipt = withActualReturnedBytes(buildReceipt(false, [], false, completeNextCall));
+    if (byteLength(contractReceipt) <= maxBytes) return contractReceipt;
+    return buildReceipt(false, [], true);
+  }
+  if (sourceNextCallTruncated || sourceNextCallIncomplete) return buildReceipt(false, [], true);
+  return buildReceipt(false, [], false);
 }
 
 /** Fixed-shape fail-closed receipt for any future field-growth regression. */
@@ -305,10 +330,10 @@ function compactDelivery(value: unknown): Record<string, unknown> | undefined {
   });
 }
 
-function authoritativeNextTools(envelope: Record<string, unknown>, data: Record<string, unknown>, kernel: Record<string, unknown>): unknown[] {
+function authoritativeNextTools(envelope: Record<string, unknown>, data: Record<string, unknown>): unknown[] {
   if (Array.isArray(envelope.nextTools)) return envelope.nextTools;
   if (Array.isArray(data.nextTools)) return data.nextTools;
-  return Array.isArray(kernel.nextTools) ? kernel.nextTools : [];
+  return [];
 }
 
 function completeNextToolContract(value: unknown): Record<string, unknown> | undefined {
@@ -323,8 +348,59 @@ function completeNextToolContract(value: unknown): Record<string, unknown> | und
   return value;
 }
 
+function completeNextCallContract(value: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(value) || !stringValue(value.tool)) return undefined;
+  if (value.tool === "none" || value.tool === "source") return value;
+  return isRecord(value.arguments) ? value : undefined;
+}
+
+function receiptDecisionKernel(
+  value: Record<string, unknown>,
+  nextTools: string[],
+  nextCall: Record<string, unknown> | undefined
+): Record<string, unknown> {
+  const { systemMessage: _duplicatedSystemMessage, ...kernel } = value;
+  const sourceScope = isRecord(kernel.scope) ? kernel.scope : undefined;
+  const scope = sourceScope
+    ? (() => {
+        const { nextCall: _duplicatedNextCall, ...summary } = sourceScope;
+        return defined({ ...summary, nextCall: nextCallKernelSummary(nextCall) });
+      })()
+    : nextCall
+      ? { nextCall: nextCallKernelSummary(nextCall) }
+      : undefined;
+  return defined({
+    ...kernel,
+    ...(scope ? { scope } : {}),
+    ...(Object.hasOwn(kernel, "nextTools") || nextTools.length > 0 ? { nextTools } : {})
+  });
+}
+
+function nextCallKernelSummary(value: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(value) || typeof value.tool !== "string") return undefined;
+  return {
+    tool: value.tool,
+    status: value.tool === "none"
+      ? "terminal"
+      : value.tool === "source"
+        ? "source-ready"
+        : isRecord(value.arguments)
+          ? "executable"
+          : "descriptive"
+  };
+}
+
+function executableNextCallTool(value: unknown): string | undefined {
+  if (!isRecord(value) || typeof value.tool !== "string" || value.tool === "none" || value.tool === "source") return undefined;
+  return value.tool;
+}
+
 function hasFirstNextToolContractTruncation(...values: unknown[]): boolean {
   return values.some((value) => hasTruncationPath(value, "", 0));
+}
+
+function hasFirstNextCallContractTruncation(...values: unknown[]): boolean {
+  return values.some((value) => hasNextCallTruncationPath(value, "", 0));
 }
 
 function hasTruncationPath(value: unknown, pathName: string, depth: number): boolean {
@@ -333,6 +409,15 @@ function hasTruncationPath(value: unknown, pathName: string, depth: number): boo
     const entryPath = pathName ? `${pathName}.${key}` : key;
     if (/(?:^|\.)nextTools\.(?:0|entry)\.(?:requiredInputs|writes)(?:\.|$)/u.test(entryPath)) return true;
     return isRecord(entry) && hasTruncationPath(entry, entryPath, depth + 1);
+  });
+}
+
+function hasNextCallTruncationPath(value: unknown, pathName: string, depth: number): boolean {
+  if (depth > 8 || !isRecord(value)) return false;
+  return Object.entries(value).some(([key, entry]) => {
+    const entryPath = pathName ? `${pathName}.${key}` : key;
+    if (/(?:^|\.)nextCall\.arguments(?:\.|$)/u.test(entryPath)) return true;
+    return isRecord(entry) && hasNextCallTruncationPath(entry, entryPath, depth + 1);
   });
 }
 
