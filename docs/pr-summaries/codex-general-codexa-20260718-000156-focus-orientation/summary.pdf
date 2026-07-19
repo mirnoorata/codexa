@@ -12,7 +12,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
 endobj
 5 0 obj
-<< /Length 2664 >>
+<< /Length 2670 >>
 stream
 BT
 /F1 10 Tf
@@ -23,7 +23,7 @@ BT
 (- Project: codexa) Tj T*
 (- Branch: codex/general/codexa-20260718-000156-focus-orientation) Tj T*
 (- Base: main) Tj T*
-(- Source head before summary refresh: 81ef637f913e) Tj T*
+(- Source head before final summary refresh: a893db57af1d) Tj T*
 (- Subject: perf\(mcp\): reduce agentic Codexa overhead) Tj T*
 () Tj T*
 (Goal and Outcome) Tj T*
@@ -77,7 +77,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 7 0 R >>
 endobj
 7 0 obj
-<< /Length 2846 >>
+<< /Length 2895 >>
 stream
 BT
 /F1 10 Tf
@@ -112,6 +112,7 @@ BT
 (| Package hygiene | Generated npm and plugin contents passed |) Tj T*
 (| Installed-package smoke | 31 checks passed against the packed 0.15.0 tarball |) Tj T*
 (| Source hygiene | Passed; task-snapshots.ts is 994 lines |) Tj T*
+(| CI regression cases | Raw-search fallback 4/4; exhaustive routing scope 1/1 |) Tj T*
 (| Adversarial review | Latest strict pass: NO ACTIONABLE FINDINGS |) Tj T*
 (| Bloat audit | No high-confidence removable production bloat found |) Tj T*
 () Tj T*
@@ -134,7 +135,6 @@ BT
 (Against the pinned v0.12.0 source build, startup plus advertisement and) Tj T*
 (discovery fell from 60,409 B to 26,622 B \(55.9%\), the first task result fell) Tj T*
 (from 55,285 B to 13,852 B \(74.9%\), and the repeated-result median fell from) Tj T*
-(55,285 B to 6,117 B \(88.9%\).) Tj T*
 ET
 endstream
 endobj
@@ -142,12 +142,13 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 9 0 R >>
 endobj
 9 0 obj
-<< /Length 922 >>
+<< /Length 961 >>
 stream
 BT
 /F1 10 Tf
 14 TL
 50 760 Td
+(55,285 B to 6,117 B \(88.9%\).) Tj T*
 () Tj T*
 (The hot-path benchmark also passed every threshold. Representative p95 values) Tj T*
 (were 4,707 ms for indexing, 496 ms for status, 223 ms for MCP freshness, 30 ms) Tj T*
@@ -174,12 +175,12 @@ xref
 0000000127 00000 n 
 0000000197 00000 n 
 0000000323 00000 n 
-0000003038 00000 n 
-0000003164 00000 n 
-0000006061 00000 n 
-0000006187 00000 n 
+0000003044 00000 n 
+0000003170 00000 n 
+0000006116 00000 n 
+0000006242 00000 n 
 trailer
 << /Size 10 /Root 1 0 R >>
 startxref
-7159
+7253
 %%EOF
