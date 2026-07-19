@@ -35,7 +35,7 @@ it("core-profile envelopes steer only to directly registered or dispatcher-calla
           ? { name: call.toolName, arguments: call.arguments }
           : { name: "capabilities", arguments: { action: "invoke", operation: call.toolName, arguments: call.arguments } });
         const structured = result.structuredContent as { data?: { nextTools?: unknown[]; nextCall?: { tool?: string } }; nextTools?: unknown[]; systemMessage?: string } | undefined;
-        expect(structured?.data?.nextTools?.length ?? 0, `${call.toolName} nested too many follow-up tools`).toBeLessThanOrEqual(1);
+        expect(structured?.data?.nextTools, `${call.toolName} duplicated the top-level follow-up contract`).toBeUndefined();
         expect(["task_brief", "context_pack", "session_context"]).not.toContain(structured?.data?.nextCall?.tool);
         for (const entry of structured?.nextTools ?? []) {
           const name = typeof entry === "string" ? entry : (entry as { tool?: string })?.tool;
@@ -66,7 +66,8 @@ it("core-profile envelopes steer only to directly registered or dispatcher-calla
       expect(callersEnvelope.data?.decisionKernel?.scope?.nextCall).toMatchObject({ tool: "capabilities", arguments: expectedCallersDispatch });
       const callersText = callersFocus.content.find((entry) => entry.type === "text")?.text ?? "";
       expect(callersText).toContain("capabilities");
-      expect(callersText).toContain('"arguments":{"file":"src/alpha.ts"}');
+      expect(callersText).toContain("data.nextCall");
+      expect(callersText).not.toContain('"arguments":{"file":"src/alpha.ts"}');
       expect(callersText).not.toMatch(/(?:call|invoke|use)\s+`?callers`?/iu);
 
       const dispatchedCallers = await client.callTool({
@@ -82,14 +83,37 @@ it("core-profile envelopes steer only to directly registered or dispatcher-calla
       expect(exactSearchEnvelope.nextTools).toEqual([]);
       expect(JSON.stringify(exactSearch)).toContain("Stop Codexa");
 
+      const cleanDirtyScope = await client.callTool({
+        name: "capabilities",
+        arguments: {
+          action: "invoke",
+          operation: "focus_brief",
+          arguments: { task: "Fix current changes", diff: true, limit: 6, tokenBudget: 1000, responseFormat: "detailed" }
+        }
+      });
+      const cleanDirtyScopeEnvelope = cleanDirtyScope.structuredContent as {
+        data?: {
+          nextCall?: { tool?: string };
+          retrieval?: { intentConfidence?: { recommendedNextTool?: string } };
+          decisionKernel?: { scope?: { nextCall?: { tool?: string } } };
+        };
+        systemMessage?: string;
+      };
+      expect(cleanDirtyScopeEnvelope.data?.nextCall).toMatchObject({ tool: "none" });
+      expect(cleanDirtyScopeEnvelope.data?.retrieval?.intentConfidence?.recommendedNextTool).toBe("none");
+      expect(cleanDirtyScopeEnvelope.data?.decisionKernel?.scope?.nextCall).toMatchObject({ tool: "none" });
+      expect(cleanDirtyScopeEnvelope.systemMessage).toContain("worktree is clean");
+      expect(JSON.stringify(cleanDirtyScope)).not.toContain('"operation":"none"');
+
       const hooklessPlan = await client.callTool({
         name: "change_plan",
         arguments: { task: "change alphaSymbol API", files: ["src/alpha.ts"], saveSnapshot: true, taskId: "core-dispatch-plan" }
       });
       const planEnvelope = hooklessPlan.structuredContent as {
-        data?: { nextTools?: Array<{ tool?: string; requiredInputs?: Record<string, unknown> }>; decisionKernel?: { nextTools?: Array<{ tool?: string }> }; steps?: string[] };
+        data?: { nextTools?: unknown[]; decisionKernel?: { nextTools?: string[] }; steps?: string[] };
         lifecycle?: { nextTools?: string[] };
         nextTools?: Array<{ tool?: string; requiredInputs?: Record<string, unknown> }>;
+        systemMessage?: string;
       };
       const expectedDispatch = {
         action: "invoke",
@@ -99,14 +123,13 @@ it("core-profile envelopes steer only to directly registered or dispatcher-calla
       expect(planEnvelope.nextTools).toEqual([
         expect.objectContaining({ tool: "capabilities", requiredInputs: expectedDispatch })
       ]);
-      expect(planEnvelope.data?.nextTools).toEqual([
-        expect.objectContaining({ tool: "capabilities", requiredInputs: expectedDispatch })
-      ]);
-      expect(planEnvelope.data?.decisionKernel?.nextTools).toEqual(planEnvelope.data?.nextTools);
-      expect(planEnvelope.data?.decisionKernel?.nextTools).toEqual([
-        expect.objectContaining({ tool: "capabilities", requiredInputs: expectedDispatch })
-      ]);
+      expect(planEnvelope.data?.nextTools).toBeUndefined();
+      expect(planEnvelope.data?.decisionKernel?.nextTools).toEqual(["capabilities"]);
       expect(planEnvelope.lifecycle?.nextTools).toEqual(["capabilities"]);
+      expect(planEnvelope.systemMessage).toContain("top-level nextTools contract");
+      const serializedPlanEnvelope = JSON.stringify(planEnvelope);
+      const serializedRequiredInputs = `"requiredInputs":${JSON.stringify(expectedDispatch)}`;
+      expect(serializedPlanEnvelope.split(serializedRequiredInputs)).toHaveLength(2);
       expect(JSON.stringify(planEnvelope.data?.steps)).not.toMatch(/(?:call|run|use)\s+`?(?:post_edit_review|workflow_path|callers|callees|dependency_path)`?/iu);
       expect(JSON.stringify(planEnvelope.data?.steps)).not.toContain("capabilities(action=invoke");
       const planText = hooklessPlan.content.find((entry) => entry.type === "text")?.text ?? "";
