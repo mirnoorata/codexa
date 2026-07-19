@@ -25,6 +25,18 @@ describe("raw search fallback", () => {
     expect(result.hits.map((hit) => hit.pattern)).toEqual(expect.arrayContaining(["CodexaMultiLiteral", "codexa_multi_snake_literal"]));
   });
 
+  it("does not call a result sufficient when the bounded hit list overflowed", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-raw-search-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdir(path.join(repo, "src"), { recursive: true });
+    await writeFile(path.join(repo, "src/overflow.ts"), Array.from({ length: 21 }, (_, index) => `export const marker${index} = "codexa_overflow_literal"`).join("\n"), "utf8");
+
+    const result = await rawSearch(repo, "codexa_overflow_literal", 20);
+    expect(result.hits).toHaveLength(20);
+    expect(result.files).toEqual(["src/overflow.ts"]);
+    expect(result.sufficient).toBe(false);
+  });
+
   it("rejects raw searches that exceed the shared pattern cap", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-raw-search-"));
     execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
