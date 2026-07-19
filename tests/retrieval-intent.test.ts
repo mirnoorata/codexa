@@ -174,7 +174,9 @@ describe("retrieval prompt intent", () => {
     "Create graph.ts",
     "Create review.ts",
     "I need a fix for src/util.ts",
-    "src/util.ts needs a fix"
+    "src/util.ts needs a fix",
+    "Auth needs a fix in src/api.ts",
+    "The endpoint requires a change in src/api.ts"
   ])("keeps %s edit-directed", (task) => {
     expect(promptModeForTask(task)).toBe("edit");
     expect(classifyTaskIntent(task)).toContain("implementation");
