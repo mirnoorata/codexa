@@ -31,9 +31,11 @@ node <codexa-checkout>/dist/cli.js hook-pre-edit <repo>
 node <codexa-checkout>/dist/cli.js hook-post-edit <repo>
 ```
 
-`hook-pre-edit` is a cheap reminder when no CLI
-`change-plan --save-snapshot` baseline exists, using the same planning engine as
-the MCP `change_plan` tool with `saveSnapshot=true`. `hook-post-edit` runs a
+`hook-pre-edit` silently saves a cheap implicit baseline when no CLI
+`change-plan --save-snapshot` baseline exists. If blocked/invalid snapshot
+state, a degraded worktree, or another active writer prevents a reliable
+baseline, it emits one bounded warning to save an explicit MCP `change_plan`
+with `saveSnapshot=true` before a non-trivial edit. `hook-post-edit` runs a
 bounded CLI `post-edit-review`, using the same review engine as MCP
 `post_edit_review`, after edit tools. It evaluates the saved planned-test
 provenance, degrades stale or scope-mismatched snapshot tests, and stores the

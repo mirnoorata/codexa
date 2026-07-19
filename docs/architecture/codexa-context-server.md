@@ -711,9 +711,11 @@ launcher so `change_plan` does not recommend a duplicate manual review.
 
 When Codex edit hooks are available, init also writes `hook-pre-edit` and
 `hook-post-edit` entries for edit tools. The pre-edit helper is intentionally a
-cheap guardrail: it reminds Codex to call MCP `change_plan` with
-`saveSnapshot=true`, or CLI `change-plan --save-snapshot`, before a non-trivial
-edit if no task snapshot exists. The post-edit helper runs a bounded
+cheap guardrail: it silently saves an implicit baseline when no task snapshot
+exists. If blocked/invalid snapshot state, a degraded worktree, or another
+active writer prevents a reliable baseline, it emits one bounded warning to
+call MCP `change_plan` with `saveSnapshot=true`, or CLI `change-plan
+--save-snapshot`, before a non-trivial edit. The post-edit helper runs a bounded
 `post-edit-review`, returns the clear `continue` / `run_tests` / `inspect` /
 `replan` verdict, respects planned-test provenance and degraded snapshot
 evidence, and records compact outcome data in

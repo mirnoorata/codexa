@@ -69,6 +69,9 @@ export async function runPreEditHook(repo: string): Promise<void> {
     if (baseline.status === "saved") {
       return { status: "ok", reason: "implicit-baseline-saved", taskId: baseline.taskId };
     }
+    console.log(
+      "Codexa: pre-edit baseline unavailable; the edit may continue, but post-edit review cannot compare against a reliable pre-edit tree. Run change_plan with saveSnapshot=true before a non-trivial edit."
+    );
     return { status: "skipped", reason: baseline.reason ?? "missing-change-plan-snapshot", taskId: baseline.latestTaskId };
   });
 }
