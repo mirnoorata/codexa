@@ -8,6 +8,7 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 
 const repoRoot = process.cwd();
 const keep = process.argv.includes("--keep");
+const CORE_MCP_TOOL_NAMES = ["capabilities", "change_plan", "search"];
 const tempRoot = mkdtempSync(path.join(os.tmpdir(), "codexa-package-smoke-"));
 const checks = [];
 
@@ -170,7 +171,6 @@ try {
   await smokeMcp(process.execPath, targetRepo, {
     args: [installedClaudeLauncher],
     env: { ...process.env, CODEXA_REPO: targetRepo, CODEXA_PLUGIN_AUTO_REFRESH: "0" },
-    requiredTools: ["search", "change_plan", "capabilities"],
     label: "installed Claude Code plugin launcher MCP startup (core profile)"
   });
   createWorkspaceFocusedRepo(workspaceRoot, focusedRepo);
@@ -277,11 +277,10 @@ async function smokeMcp(command, mcpRoot, options = {}) {
   try {
     await withTimeout(client.connect(transport), 15_000, "MCP connect timed out");
     const tools = await withTimeout(client.listTools(), 15_000, "MCP listTools timed out");
-    const names = tools.tools.map((tool) => tool.name);
-    for (const name of options.requiredTools ?? ["search", "change_plan", "capabilities"]) {
-      if (!names.includes(name)) {
-        throw new Error(`installed MCP server did not expose ${name}`);
-      }
+    const names = tools.tools.map((tool) => tool.name).sort();
+    const expectedTools = [...(options.expectedTools ?? CORE_MCP_TOOL_NAMES)].sort();
+    if (JSON.stringify(names) !== JSON.stringify(expectedTools)) {
+      throw new Error(`installed MCP server exposed ${JSON.stringify(names)}; expected exactly ${JSON.stringify(expectedTools)}`);
     }
     const freshness = await withTimeout(
       names.includes("freshness")
