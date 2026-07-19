@@ -12,6 +12,8 @@ const iterations = args.runs ?? 5;
 const warmups = args.warmups ?? 1;
 const outputPath = args.output ? path.resolve(args.output) : undefined;
 const summaryPath = args.summary ? path.resolve(args.summary) : process.env.GITHUB_STEP_SUMMARY;
+const mcpToolProfile = "full";
+const requiredMcpTools = ["freshness", "repo_map", "task_brief"];
 
 if (!existsSync(cli)) {
   throw new Error("dist/cli.js is missing. Run `npm run build` before benchmark-hot-paths.");
@@ -25,6 +27,11 @@ const benchmark = {
   platform: `${process.platform}-${process.arch}`,
   iterations,
   warmups,
+  mcp: {
+    toolProfile: mcpToolProfile,
+    requiredDirectTools: requiredMcpTools,
+    directToolNames: []
+  },
   metrics: [],
   artifacts: []
 };
@@ -82,7 +89,7 @@ function runCliBenchmark(name, cliArgs, thresholdMs) {
 async function runMcpBenchmarks() {
   const transport = new StdioClientTransport({
     command: process.execPath,
-    args: [cli, "serve", repoRoot, "--no-auto-refresh"],
+    args: [cli, "serve", repoRoot, "--no-auto-refresh", "--tools", mcpToolProfile],
     stderr: "pipe"
   });
   const client = new Client({ name: "codexa-hot-path-benchmark", version: "0.1.0" });
@@ -92,7 +99,13 @@ async function runMcpBenchmarks() {
     await withTimeout(client.connect(transport), 15_000, "MCP connect timed out");
     const startupMs = elapsedMs(startupStarted);
     metrics.push(singleMetric("mcp.startup", startupMs, 5_000, "mcp"));
-    await withTimeout(client.listTools(), 15_000, "MCP listTools timed out");
+    const listed = await withTimeout(client.listTools(), 15_000, "MCP listTools timed out");
+    const directToolNames = listed.tools.map((tool) => tool.name).sort();
+    benchmark.mcp.directToolNames = directToolNames;
+    const missingTools = requiredMcpTools.filter((tool) => !directToolNames.includes(tool));
+    if (missingTools.length > 0) {
+      throw new Error(`MCP ${mcpToolProfile} profile omitted benchmark tool(s): ${missingTools.join(", ")}`);
+    }
     metrics.push(
       await runMcpToolBenchmark(client, "mcp.freshness", "freshness", {}, 500),
       await runMcpToolBenchmark(client, "mcp.repo_map", "repo_map", { limit: 10, tokenBudget: 1200 }, 1_500),
@@ -120,12 +133,22 @@ async function runMcpToolBenchmark(client, metricName, toolName, toolArgs, thres
   const measurements = [];
   for (let i = 0; i < warmups + iterations; i += 1) {
     const startedAt = process.hrtime.bigint();
-    await withTimeout(client.callTool({ name: toolName, arguments: toolArgs }), Math.max(15_000, thresholdMs * 4), `${metricName} timed out`);
+    const result = await withTimeout(client.callTool({ name: toolName, arguments: toolArgs }), Math.max(15_000, thresholdMs * 4), `${metricName} timed out`);
+    assertSuccessfulMcpToolResult(result, metricName);
     if (i >= warmups) {
       measurements.push(elapsedMs(startedAt));
     }
   }
   return measurementMetric(metricName, "mcp", measurements, thresholdMs);
+}
+
+function assertSuccessfulMcpToolResult(result, label) {
+  if (!result || typeof result !== "object" || result.isError === true) {
+    throw new Error(`${label} returned an MCP error result`);
+  }
+  if (!result.structuredContent || typeof result.structuredContent !== "object" || Array.isArray(result.structuredContent)) {
+    throw new Error(`${label} returned no structured MCP payload`);
+  }
 }
 
 function timeCommand(label, commandLine, options = {}) {
