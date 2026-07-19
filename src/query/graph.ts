@@ -208,18 +208,20 @@ export function unresolvedFocusPathTargets(task: string, repositoryFiles: string
 
 function unsupportedExternalPathTargets(task: string): string[] {
   const targets: string[] = [];
-  for (const match of task.matchAll(/(?:^|[\s("'`\[<{,:;=>])((?:~\/|\$[A-Za-z_][A-Za-z0-9_]*\/|file:\/\/|[A-Za-z]:[\\/]|\\\\|\/|\.\.\/)[A-Za-z0-9_@.$~\\/-]+)(?=$|[\s,;:!?])/giu)) {
+  for (const match of task.matchAll(/(?:^|[\s("'`\[<{,:;=>])((?:~\/|\$[A-Za-z_][A-Za-z0-9_]*\/|file:\/\/|[A-Za-z]:[\\/]|\\\\|\/|\.\.\/)[A-Za-z0-9_@.$~\\/-]+)(?=$|[\s,;:!?)}\]'"`])/giu)) {
     const target = match[1];
     const index = (match.index ?? 0) + match[0].indexOf(target);
     const before = task.slice(Math.max(0, index - 240), index);
-    if (hasMutationVerbBefore(before) || /\b(?:add|build|copy|create|edit|extract|fix|harden|implement|migrate|move|relocate|rename|split|update|write)\b[\s\S]{0,200}(?:\b(?:as|at|in|into|to|under)\s*|->)$/iu.test(before)) {
+    const authorityBefore = before.replace(/[`'"([{<]\s*$/u, "");
+    if (hasMutationVerbBefore(authorityBefore) || /\b(?:add|build|copy|create|edit|extract|fix|harden|implement|migrate|move|relocate|rename|split|update|write)\b[\s\S]{0,200}(?:\b(?:as|at|in|into|to|under)\s*|->)$/iu.test(authorityBefore)) {
       targets.push(target.replace(/[.,;:!?]+$/u, ""));
     }
   }
-  for (const match of task.matchAll(/https?:\/\/[^\s"'`]+/giu)) {
+  for (const match of task.matchAll(/https?:\/\/[^\s"'`()\[\]{}]+/giu)) {
     const index = match.index ?? 0;
     const before = task.slice(Math.max(0, index - 240), index);
-    if (/\b(?:convert|copy|extract|migrate|move|relocate|rename|split|transform)\b[\s\S]{0,200}(?:\b(?:as|into|to|under)\s*|->)$/iu.test(before)) {
+    const authorityBefore = before.replace(/[`'"([{<]\s*$/u, "");
+    if (/\b(?:convert|copy|extract|migrate|move|relocate|rename|split|transform)\b[\s\S]{0,200}(?:\b(?:as|into|to|under)\s*|->)$/iu.test(authorityBefore)) {
       targets.push(match[0].replace(/[.,;:!?]+$/u, ""));
     }
   }
@@ -378,7 +380,7 @@ function unknownFocusPathMentions(task: string, repositoryFiles: string[]): Focu
       if (repositoryTopLevels.has(firstSegment)) return true;
       const before = normalizedTask.slice(Math.max(0, entry.index - 48), entry.index);
       const after = normalizedTask.slice(entry.end, entry.end + 64);
-      if (entry.candidate.includes("/") && firstSegment.includes(".")) return false;
+      if (entry.candidate.includes("/") && firstSegment.includes(".") && !firstSegment.startsWith(".")) return false;
       if (/\b(?:for|from|import|link|url)\s*$/iu.test(before)) return false;
       if (/\b(?:compatibility|support(?:ing)?)\s+(?:(?:for|with)\s+)?$/iu.test(before)) return false;
       if (/\bcompatibility\s+(?:with\s+)?$/iu.test(before) && /(?:^|\/)v?\d+\.\d+/iu.test(entry.candidate)) return false;
@@ -402,15 +404,16 @@ function isDependencySpecifierMention(entry: FocusPathMention, task: string, rep
   if (repositoryTopLevels.has(firstSegment)) return false;
   const before = task.slice(Math.max(0, entry.index - 160), entry.index);
   const after = task.slice(entry.end, entry.end + 96);
+  const dependencyContext = /\b(?:dependencies?|from|imports?|importing|packages?)\s*$/iu.test(before)
+    || /^\s+(?:dependency|import|package|specifier|usage)\b/iu.test(after);
+  if (dependencyContext) return true;
   const creationOrDestination = /\b(?:add|build|copy|create|document|extract|generate|implement|move|relocate|rename|save|scaffold|split|transform|write)\b[\s\S]{0,120}(?:\b(?:as|at|in|into|to|under)\s*|->)?$/iu.test(before);
   const escapedRoot = firstSegment.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&");
   const dependencyMigration = new RegExp(`\\bmigrat(?:e|ing)\\s+from\\s+${escapedRoot}\\/[^\\s]+\\s+to\\s+${escapedRoot}\\/`, "iu").test(task);
   if (dependencyMigration) return true;
   if (creationOrDestination) return false;
-  return /\b(?:dependency|from|import|package)\s*$/iu.test(before)
-    || /^\s+(?:dependency|import|package|specifier|usage)\b/iu.test(after)
-    || (/\b(?:bump|downgrade|pin|update|upgrade)\b[^.!?]{0,80}$/iu.test(before)
-      && /^\s+(?:in\s+)?(?:package\.json|pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lockb?)\b/iu.test(after));
+  return /\b(?:bump|downgrade|pin|update|upgrade)\b[^.!?]{0,80}$/iu.test(before)
+    && /^\s+(?:in\s+)?(?:package\.json|pnpm-lock\.yaml|package-lock\.json|yarn\.lock|bun\.lockb?)\b/iu.test(after);
 }
 
 export function isLikelyPathTypo(candidate: string, repositoryFiles: string[]): boolean {

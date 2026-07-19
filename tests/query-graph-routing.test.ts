@@ -93,15 +93,21 @@ describe("query graph routing", () => {
       expect(unresolvedFocusPathTargets(task, repositoryFiles), task).toEqual([]);
     }
     expect(plannedNewFocusPathTargets("Create lib/new.ts and update package.json", repositoryFiles)).toEqual(["lib/new.ts"]);
+    expect(plannedNewFocusPathTargets("Create src/new.ts that imports react/jsx-runtime.js", repositoryFiles)).toEqual(["src/new.ts"]);
+    expect(unresolvedFocusPathTargets("Create src/new.ts that imports react/jsx-runtime.js", repositoryFiles)).toEqual([]);
     expect(plannedNewFocusPathTargets("Move src/util.ts to lib/util.ts and update package.json", repositoryFiles)).toEqual(["lib/util.ts"]);
     for (const [task, target] of [
       ["Move src/util.ts to /tmp/lib", "/tmp/lib"],
+      ["Move src/util.ts to `/tmp/lib`.", "/tmp/lib"],
+      ["Move src/util.ts to (../outside.ts).", "../outside.ts"],
       ["Rename src/util.ts to ../outside/Dockerfile", "../outside/Dockerfile"],
       ["Move src/util.ts to https://example.com/new.ts", "https://example.com/new.ts"]
     ] as const) {
       expect(unresolvedFocusPathTargets(task, repositoryFiles), task).toContain(target);
     }
     expect(unresolvedFocusPathTargets("Add a link to https://example.com/docs in src/util.ts", repositoryFiles)).toEqual([]);
+    expect(plannedNewFocusPathTargets("Create .github/workflows/ci.yml", repositoryFiles)).toEqual([".github/workflows/ci.yml"]);
+    expect(unresolvedFocusPathTargets("Create .github/workflows/ci.yml", repositoryFiles)).toEqual([]);
   });
 
   it("requires a concrete structural destination construction", () => {
