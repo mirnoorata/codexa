@@ -143,6 +143,38 @@ describe("query routing boundaries", () => {
       expect((plan.data as { editReadiness: { editable: boolean }; plannedEditTargets: string[] }), task).toMatchObject({ editReadiness: { editable: true }, plannedEditTargets: [expectedCanonical] });
     }
 
+    for (const task of ["Fix alias/util.ts", "Inspect alias/util.ts"]) {
+      const focus = await focusBriefQuery(repo, { task, diff: false }, { autoRefresh: false });
+      expect((focus.data as { nextCall: { tool: string }; focusFiles: Array<{ path: string }>; unresolvedTargets: string[] })).toMatchObject({
+        nextCall: { tool: "source" },
+        unresolvedTargets: []
+      });
+      expect((focus.data as { focusFiles: Array<{ path: string }> }).focusFiles.map((file) => file.path), task).toContain("src/util.ts");
+      const search = await searchQuery(repo, { query: task }, { autoRefresh: false });
+      expect((search.data as { files: Array<{ path: string }>; unresolvedTargets: string[] }).unresolvedTargets, task).toEqual([]);
+      expect((search.data as { files: Array<{ path: string }> }).files.map((file) => file.path), task).toContain("src/util.ts");
+      const pack = await contextPackQuery(repo, { task, diff: false, includeSnippets: false }, { autoRefresh: false });
+      expect((pack.data as { boundedPlanTargets: string[]; unresolvedTargets: string[] }), task).toMatchObject({ boundedPlanTargets: ["src/util.ts"], unresolvedTargets: [] });
+    }
+
+    const blockedReplay = await changePlanQuery(repo, {
+      task: "Fix alias/util.ts and config.ts",
+      taskId: "symlink-candidate-replay",
+      files: ["alias/util.ts", "config.ts"],
+      saveSnapshot: true
+    }, { autoRefresh: false });
+    const blockedReplayData = blockedReplay.data as {
+      snapshotBlock: { taskId: string };
+      targetCandidates: Array<{ candidateId: string; path: string; validationStatus: string; nextChangePlanArgs: { files?: string[] } }>;
+    };
+    const replayCandidate = blockedReplayData.targetCandidates.find((candidate) => candidate.path === "src/a/config.ts")!;
+    expect(replayCandidate).toMatchObject({ validationStatus: "edit-ready", nextChangePlanArgs: { files: ["src/util.ts", "src/a/config.ts"] } });
+    const followedReplay = await changePlanQuery(repo, { taskId: blockedReplayData.snapshotBlock.taskId, followCandidate: replayCandidate.candidateId, saveSnapshot: true }, { autoRefresh: false });
+    expect((followedReplay.data as { followCandidate: { status: string; plannedEditTargets: string[] } }).followCandidate).toMatchObject({
+      status: "accepted",
+      plannedEditTargets: ["src/a/config.ts", "src/util.ts"]
+    });
+
     for (const task of ["Create .env", "Create alias/new.ts"]) {
       const focus = await focusBriefQuery(repo, { task, diff: false }, { autoRefresh: false });
       expect((focus.data as { nextCall: { tool: string }; unresolvedTargets: string[] }).nextCall.tool, task).not.toBe("none");
@@ -735,6 +767,23 @@ describe("query routing boundaries", () => {
       nextTools: [],
       boundedPlanTargets: ["src/routes.ts"]
     });
+
+    for (const task of [
+      "Create src/new.ts using helper",
+      "Create src/new.ts that calls helper",
+      "Create src/new.ts that invokes helper",
+      "Create src/new.ts importing helper"
+    ]) {
+      const focus = await focusBriefQuery(repo, { task, diff: false }, { autoRefresh: false });
+      const focusData = focus.data as { focusFiles: Array<{ path: string }>; nextCall: { tool: string; arguments?: { files?: string[] } } };
+      expect(focusData.nextCall.tool, task).toBe("change_plan");
+      expect(focusData.focusFiles.map((file) => file.path), task).toContain("src/util.ts");
+      expect(focusData.nextCall.arguments?.files, task).toEqual(expect.arrayContaining(["src/new.ts", "src/util.ts"]));
+      const search = await searchQuery(repo, { query: task }, { autoRefresh: false });
+      expect((search.data as { nextTools?: Array<{ requiredInputs?: { files?: string[] } }> }).nextTools?.[0]?.requiredInputs?.files, task).toEqual(expect.arrayContaining(["src/new.ts", "src/util.ts"]));
+      const pack = await contextPackQuery(repo, { task, diff: false, includeSnippets: false }, { autoRefresh: false });
+      expect((pack.data as { boundedPlanTargets: string[] }).boundedPlanTargets, task).toEqual(expect.arrayContaining(["src/new.ts", "src/util.ts"]));
+    }
 
     for (const [task, target] of [
       ["Create ./brand-new-xyz.ts", "brand-new-xyz.ts"],
