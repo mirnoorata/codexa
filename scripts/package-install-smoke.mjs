@@ -139,7 +139,7 @@ try {
     cwd: consumerRoot,
     label: "installed hook-pre-edit"
   });
-  assertIncludes(hookPre.stdout, "Codexa:", "pre-edit hook should stay advisory and printable");
+  assertEmpty(hookPre.stdout, "successful pre-edit hook should not inject model-visible output");
 
   writeFileSync(path.join(targetRepo, "src", "index.ts"), "export function greeting() { return 'hello smoke v2' }\n", "utf8");
   const hookPost = run(codexa, ["hook-post-edit", targetRepo], {
@@ -147,7 +147,7 @@ try {
     label: "installed hook-post-edit",
     timeoutMs: 60_000
   });
-  assertIncludes(hookPost.stdout, "Codexa", "post-edit hook should stay advisory and printable");
+  assertIncludes(hookPost.stdout, "Verdict: run_tests", "incomplete post-edit review should remain visible and actionable");
 
   await smokeMcp(codexa, targetRepo);
   const installedPackageRoot = path.join(consumerRoot, "node_modules", "@mirnoorata", "codexa");
@@ -162,7 +162,7 @@ try {
   });
   // The Claude Code plugin launcher must resolve the bundled CLI through its
   // walk-up (integrations/claude-code/scripts -> package root/dist) from the
-  // installed layout, and its core default must register the primary loop.
+  // installed layout, and its core default must register the bounded surface.
   const installedClaudeLauncher = path.join(installedPackageRoot, "integrations", "claude-code", "scripts", "codexa-mcp.js");
   if (!existsSync(installedClaudeLauncher)) {
     throw new Error("installed package is missing the Claude Code plugin MCP launcher");
@@ -170,7 +170,7 @@ try {
   await smokeMcp(process.execPath, targetRepo, {
     args: [installedClaudeLauncher],
     env: { ...process.env, CODEXA_REPO: targetRepo, CODEXA_PLUGIN_AUTO_REFRESH: "0" },
-    requiredTools: ["freshness", "task_brief", "change_plan", "post_edit_review"],
+    requiredTools: ["search", "change_plan", "capabilities"],
     label: "installed Claude Code plugin launcher MCP startup (core profile)"
   });
   createWorkspaceFocusedRepo(workspaceRoot, focusedRepo);
@@ -278,12 +278,18 @@ async function smokeMcp(command, mcpRoot, options = {}) {
     await withTimeout(client.connect(transport), 15_000, "MCP connect timed out");
     const tools = await withTimeout(client.listTools(), 15_000, "MCP listTools timed out");
     const names = tools.tools.map((tool) => tool.name);
-    for (const name of options.requiredTools ?? ["freshness", "repo_map", "task_brief"]) {
+    for (const name of options.requiredTools ?? ["search", "change_plan", "capabilities"]) {
       if (!names.includes(name)) {
         throw new Error(`installed MCP server did not expose ${name}`);
       }
     }
-    const freshness = await withTimeout(client.callTool({ name: "freshness", arguments: {} }), 15_000, "MCP freshness timed out");
+    const freshness = await withTimeout(
+      names.includes("freshness")
+        ? client.callTool({ name: "freshness", arguments: {} })
+        : client.callTool({ name: "capabilities", arguments: { action: "invoke", operation: "freshness", arguments: {} } }),
+      15_000,
+      "MCP freshness timed out"
+    );
     const text = JSON.stringify(freshness);
     if (!text.includes("fresh") && !text.includes("stale")) {
       throw new Error(`MCP freshness returned an unexpected payload: ${bound(text)}`);
@@ -322,6 +328,12 @@ function rejectPackedPrefix(files, prefix) {
 function assertIncludes(text, expected, message) {
   if (!text.includes(expected)) {
     throw new Error(`${message}; expected ${JSON.stringify(expected)} in:\n${bound(text)}`);
+  }
+}
+
+function assertEmpty(text, message) {
+  if (text.trim().length > 0) {
+    throw new Error(`${message}; received:\n${bound(text)}`);
   }
 }
 
