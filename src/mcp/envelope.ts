@@ -172,7 +172,7 @@ export function toToolResult(result: { text: string; data: unknown; freshness: u
   const envelopeData = isRecord(envelope.data) ? envelope.data : {};
   const delivery = isRecord(envelopeData.delivery) ? envelopeData.delivery : undefined;
   const text = delivery?.effectiveFormat === "concise" || policyOptions.enabledTools
-    ? renderMcpConciseText({ text: result.text, data: envelopeData, freshness: envelope.freshness as FreshnessInfo, refresh: envelope.refresh as RefreshInfo })
+    ? renderMcpConciseEnvelopeText(result.text, envelopeData, envelope)
     : result.text;
   return boundMcpToolResult({
     content: [
@@ -186,6 +186,19 @@ export function toToolResult(result: { text: string; data: unknown; freshness: u
   });
 }
 
+function renderMcpConciseEnvelopeText(text: string, data: Record<string, unknown>, envelope: Record<string, unknown>): string {
+  const rendered = renderMcpConciseText({
+    text,
+    data,
+    freshness: envelope.freshness as FreshnessInfo,
+    refresh: envelope.refresh as RefreshInfo
+  });
+  const systemMessage = stringValue(envelope.systemMessage);
+  return systemMessage && !rendered.includes(systemMessage)
+    ? `${rendered}\nNext: ${systemMessage}`
+    : rendered;
+}
+
 function buildMcpEnvelope(result: { data: unknown; freshness: unknown; refresh?: unknown }, toolName: string, policyOptions: McpToolPolicyOptions): Record<string, unknown> & {
   schemaVersion: 1;
   mode: string;
@@ -196,7 +209,7 @@ function buildMcpEnvelope(result: { data: unknown; freshness: unknown; refresh?:
   relatedResources: Array<{ uri: string; name: string; mimeType?: string; description?: string }>;
 } {
   const normalizedData = ensureMcpDataMode(result.data);
-  const sourceRecord = isRecord(normalizedData) ? normalizedData : {};
+  const sourceRecord = canonicalMcpFollowUpSource(isRecord(normalizedData) ? normalizedData : {});
   const record = routeMcpGuidanceForProfile(sourceRecord, policyOptions.enabledTools);
   const mode = typeof record.mode === "string" ? record.mode : "unknown";
   const lifecycle = lifecycleForMcpData(mode, record);
@@ -240,26 +253,14 @@ function routeMcpGuidanceForProfile(record: Record<string, unknown>, enabledTool
     : record.retrieval;
   const routedEditReadiness = routeRecommendedToolForProfile(record.editReadiness, enabledTools);
   const sourceKernel = isRecord(record.decisionKernel) ? record.decisionKernel : undefined;
-  const routedKernel = sourceKernel
-    ? routeNextToolsForProfile(sourceKernel.nextTools, enabledTools)
-    : { nextTools: [], dispatches: [] };
-  const authoritativeKernelNextTools = Array.isArray(record.nextTools) ? routed : routedKernel;
   const sourceAuthority = sourceKernel && isRecord(sourceKernel.authority) ? sourceKernel.authority : undefined;
   const sourceScope = sourceKernel && isRecord(sourceKernel.scope) ? sourceKernel.scope : undefined;
-  const routedKernelNextCall = routeNextCallForProfile(sourceScope?.nextCall, enabledTools);
-  const authoritativeKernelNextCall = Object.hasOwn(record, "nextCall") ? routedNextCall : routedKernelNextCall;
-  const routedRecordNextTools = Array.isArray(record.nextTools)
-    ? routed.nextTools
-    : Array.isArray(sourceKernel?.nextTools)
-      ? authoritativeKernelNextTools.nextTools
-      : undefined;
   const dispatches = [
-    ...authoritativeKernelNextTools.dispatches,
-    ...(routedNextCall.dispatch ? [routedNextCall.dispatch] : []),
-    ...(authoritativeKernelNextCall.dispatch ? [authoritativeKernelNextCall.dispatch] : [])
+    ...routed.dispatches,
+    ...(routedNextCall.dispatch ? [routedNextCall.dispatch] : [])
   ];
   const primaryDispatch = dispatches[0];
-  const dispatchContractLocation = authoritativeKernelNextTools.dispatches.length > 0
+  const dispatchContractLocation = routed.dispatches.length > 0
     ? "top-level nextTools contract"
     : "data.nextCall contract";
   const systemMessage = primaryDispatch
@@ -269,20 +270,50 @@ function routeMcpGuidanceForProfile(record: Record<string, unknown>, enabledTool
     ? {
         ...sourceKernel,
         ...(sourceAuthority ? { authority: { ...sourceAuthority, editReadiness: routeRecommendedToolForProfile(sourceAuthority.editReadiness, enabledTools) } } : {}),
-        ...(sourceScope ? { scope: { ...sourceScope, nextCall: authoritativeKernelNextCall.nextCall } } : {}),
-        ...(Array.isArray(sourceKernel.nextTools) ? { nextTools: authoritativeKernelNextTools.nextTools } : {}),
-        ...(systemMessage ? { systemMessage } : {})
+        ...(sourceScope ? { scope: { ...sourceScope, nextCall: nextCallKernelSummary(routedNextCall.nextCall) } } : {}),
+        ...(Array.isArray(sourceKernel.nextTools) ? { nextTools: nextToolNames(routed.nextTools) } : {})
       }
     : record.decisionKernel;
   return {
     ...record,
-    ...(routedRecordNextTools === undefined ? {} : { nextTools: routedRecordNextTools }),
+    ...(Array.isArray(record.nextTools) ? { nextTools: routed.nextTools } : {}),
     ...(Object.hasOwn(record, "nextCall") ? { nextCall: routedNextCall.nextCall } : {}),
     ...(Object.hasOwn(record, "intentConfidence") ? { intentConfidence: routedIntentConfidence } : {}),
     ...(Object.hasOwn(record, "retrieval") ? { retrieval: routedRetrieval } : {}),
     ...(Object.hasOwn(record, "editReadiness") ? { editReadiness: routedEditReadiness } : {}),
     ...(Array.isArray(record.steps) ? { steps: routeGuidanceStringsForProfile(record.steps, enabledTools) } : {}),
     ...(Array.isArray(record.nextActions) ? { nextActions: routeGuidanceStringsForProfile(record.nextActions, enabledTools) } : {}),
+    ...(systemMessage ? { systemMessage } : {}),
+    ...(decisionKernel === undefined ? {} : { decisionKernel })
+  };
+}
+
+function canonicalMcpFollowUpSource(record: Record<string, unknown>): Record<string, unknown> {
+  const sourceKernel = isRecord(record.decisionKernel) ? record.decisionKernel : undefined;
+  const sourceScope = sourceKernel && isRecord(sourceKernel.scope) ? sourceKernel.scope : undefined;
+  // Only the query result's structured contract can authorize an invocation.
+  // Kernel entries are deliberately lossy tool/status summaries and must
+  // never be promoted back into an executable top-level contract.
+  const sourceNextTools = Array.isArray(record.nextTools) ? record.nextTools : undefined;
+  const selectedNextTools = sourceNextTools?.slice(0, 1) ?? [];
+  const sourceNextCall = selectedNextTools.length > 0
+    ? undefined
+    : Object.hasOwn(record, "nextCall")
+      ? record.nextCall
+      : undefined;
+  const { nextCall: _duplicatedNextCall, ...recordWithoutNextCall } = record;
+  const systemMessage = stringValue(record.systemMessage) ?? stringValue(sourceKernel?.systemMessage);
+  const decisionKernel = sourceKernel
+    ? {
+        ...sourceKernel,
+        ...(Array.isArray(sourceKernel.nextTools) || selectedNextTools.length > 0 ? { nextTools: nextToolNames(selectedNextTools) } : {}),
+        ...(sourceScope ? { scope: { ...sourceScope, nextCall: nextCallKernelSummary(sourceNextCall) } } : {})
+      }
+    : record.decisionKernel;
+  return {
+    ...recordWithoutNextCall,
+    ...(sourceNextTools ? { nextTools: selectedNextTools } : {}),
+    ...(sourceNextCall === undefined ? {} : { nextCall: sourceNextCall }),
     ...(systemMessage ? { systemMessage } : {}),
     ...(decisionKernel === undefined ? {} : { decisionKernel })
   };
@@ -389,17 +420,34 @@ function guidanceForMcpEnvelope(
 }
 
 function canonicalMcpGuidanceData(record: Record<string, unknown>, routedNextTools: unknown[]): Record<string, unknown> {
-  const { nextTools: _duplicatedNextTools, ...data } = record;
+  const { nextTools: _duplicatedNextTools, systemMessage: _duplicatedSystemMessage, ...data } = record;
   const decisionKernel = isRecord(record.decisionKernel) ? record.decisionKernel : undefined;
   if (!decisionKernel) return data;
   const names = nextToolNames(routedNextTools);
+  const { systemMessage: _kernelSystemMessage, ...kernel } = decisionKernel;
+  const scope = isRecord(kernel.scope) ? kernel.scope : undefined;
   return {
     ...data,
     decisionKernel: {
-      ...decisionKernel,
+      ...kernel,
+      ...(scope ? { scope: { ...scope, nextCall: nextCallKernelSummary(record.nextCall) } } : {}),
       ...(Object.hasOwn(decisionKernel, "nextTools") || names.length > 0 ? { nextTools: names } : {})
     }
   };
+}
+
+function nextCallKernelSummary(value: unknown): Record<string, unknown> | undefined {
+  if (!isRecord(value) || typeof value.tool !== "string") return undefined;
+  const status = typeof value.status === "string"
+    ? value.status
+    : value.tool === "none"
+      ? "terminal"
+      : value.tool === "source"
+        ? "source-ready"
+        : isRecord(value.arguments)
+          ? "executable"
+          : "descriptive";
+  return { tool: value.tool, status };
 }
 
 function mcpToolPolicyForTool(toolName: string, options: McpToolPolicyOptions): McpToolPolicy | undefined {
@@ -543,13 +591,16 @@ function lifecycleForMcpData(mode: string, data: Record<string, unknown>): {
   ].filter((entry): entry is string => Boolean(entry));
   const snapshotStatus = snapshotBlock ? "blocked" : snapshot ? "saved" : snapshotLoad ? "loaded" : mode === "post_edit_review" ? "missing-or-ambiguous" : undefined;
   const nextTools = nextToolNames(data.nextTools);
+  const nextCall = isRecord(data.nextCall) ? stringValue(data.nextCall.tool) : undefined;
   return {
     phase: lifecyclePhaseForMode(mode),
     taskId,
     snapshotStatus,
     preconditions: preconditionsForMode(mode, snapshotStatus),
     blockingReasons,
-    nextTools
+    nextTools: nextTools.length > 0 || !nextCall || nextCall === "none" || nextCall === "source"
+      ? nextTools
+      : [nextCall]
   };
 }
 

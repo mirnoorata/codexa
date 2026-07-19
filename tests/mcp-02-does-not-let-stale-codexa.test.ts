@@ -618,7 +618,8 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
     expect(unverifiedEnvelope.data.testsNotRun?.length).toBeGreaterThan(0);
     expect(unverifiedEnvelope.data.nextTools?.some((tool) => tool.tool === "test_plan") ?? false).toBe(false);
     expect(unverifiedEnvelope.nextTools?.some((tool) => typeof tool === "object" && tool !== null && "tool" in tool && tool.tool === "test_plan") ?? false).toBe(false);
-    expect(unverifiedEnvelope.systemMessage).toBe(unverifiedEnvelope.data.systemMessage);
+    expect(unverifiedEnvelope.data.systemMessage).toBeUndefined();
+    expect(unverifiedEnvelope.systemMessage).toContain("read the linked detailed result");
 
     const outsideCwd = path.join(os.tmpdir(), "codexa-secret-outside");
     const longSummary = `outside path ${outsideCwd} ${"x".repeat(900)}`;

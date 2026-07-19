@@ -1,10 +1,12 @@
-import { mkdtemp } from "node:fs/promises";
+import { mkdtemp, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { describe, expect, it } from "vitest";
 import { conciseText } from "../src/mcp/compaction.js";
+import { buildIndex } from "../src/indexer.js";
+import { MCP_TOOL_RESULT_MAX_BYTES } from "../src/mcp/result-budget.js";
 import { CORE_PROFILE_TOOL_NAMES, DISPATCHABLE_MCP_TOOL_NAMES } from "../src/mcp/tool-registry.js";
 import { createIndexedMcpRepo } from "./mcp-fixtures.js";
 describe("core profile guidance discipline", () => {
@@ -57,13 +59,14 @@ it("core-profile envelopes steer only to directly registered or dispatcher-calla
         data?: {
           nextCall?: { tool?: string; arguments?: Record<string, unknown> };
           retrieval?: { intentConfidence?: { recommendedNextTool?: string; recommendedOperation?: string } };
-          decisionKernel?: { scope?: { nextCall?: { tool?: string; arguments?: Record<string, unknown> } } };
+          decisionKernel?: { scope?: { nextCall?: { tool?: string; status?: string; arguments?: Record<string, unknown> } } };
         };
       };
       const expectedCallersDispatch = { action: "invoke", operation: "callers", arguments: { file: "src/alpha.ts" } };
       expect(callersEnvelope.data?.nextCall).toMatchObject({ tool: "capabilities", arguments: expectedCallersDispatch });
       expect(callersEnvelope.data?.retrieval?.intentConfidence).toMatchObject({ recommendedNextTool: "capabilities", recommendedOperation: "callers" });
-      expect(callersEnvelope.data?.decisionKernel?.scope?.nextCall).toMatchObject({ tool: "capabilities", arguments: expectedCallersDispatch });
+      expect(callersEnvelope.data?.decisionKernel?.scope?.nextCall).toEqual({ tool: "capabilities", status: "executable" });
+      expect(callersEnvelope.data?.decisionKernel?.scope?.nextCall?.arguments).toBeUndefined();
       const callersText = callersFocus.content.find((entry) => entry.type === "text")?.text ?? "";
       expect(callersText).toContain("capabilities");
       expect(callersText).toContain("data.nextCall");
@@ -186,6 +189,49 @@ it("core-profile envelopes steer only to directly registered or dispatcher-calla
       const dottedImpactText = JSON.stringify(dottedImpactPrompt);
       expect(dottedImpactText).toContain('`arguments: {\\"file\\":\\"Alpha.run\\"}`');
       expect(dottedImpactText).toContain('`arguments: {\\"symbol\\":\\"Alpha.run\\"}`');
+
+      await Promise.all(Array.from({ length: 180 }, async (_, index) => {
+        const suffix = String(index).padStart(3, "0");
+        await writeFile(
+          path.join(repo, "src", `caller-${suffix}-${"bounded-".repeat(8)}.ts`),
+          `import { alphaSymbol } from "./alpha.js";\nexport const caller${suffix} = () => alphaSymbol();\n`,
+          "utf8"
+        );
+      }));
+      // Index the dirty caller graph in-place. Matching indexed dirty hashes
+      // keep authority fresh while the large freshness payload exercises the
+      // serialized ToolResult budget through a real core stdio call.
+      await buildIndex({ repoRoot: repo });
+      const oversizedCallers = await client.callTool({
+        name: "capabilities",
+        arguments: {
+          action: "invoke",
+          operation: "focus_brief",
+          arguments: { task: "Callers for src/alpha.ts", diff: false, limit: 30, tokenBudget: 8000 }
+        }
+      });
+      const oversizedEnvelope = oversizedCallers.structuredContent as {
+        data?: {
+          nextCall?: { tool?: string; arguments?: Record<string, unknown> };
+          systemMessage?: string;
+          decisionKernel?: { scope?: { nextCall?: { tool?: string; status?: string; arguments?: unknown } }; systemMessage?: string };
+        };
+        lifecycle?: { nextTools?: string[] };
+        nextTools?: unknown[];
+        systemMessage?: string;
+        truncation?: { "__mcp.toolResultBudget"?: { total?: number; returned?: number } };
+      };
+      expect(Buffer.byteLength(JSON.stringify(oversizedCallers), "utf8")).toBeLessThanOrEqual(MCP_TOOL_RESULT_MAX_BYTES);
+      expect(oversizedEnvelope.truncation?.["__mcp.toolResultBudget"]?.total).toBeGreaterThan(MCP_TOOL_RESULT_MAX_BYTES);
+      expect(oversizedEnvelope.data?.nextCall).toMatchObject({ tool: "capabilities", arguments: expectedCallersDispatch });
+      expect(oversizedEnvelope.data?.decisionKernel?.scope?.nextCall).toEqual({ tool: "capabilities", status: "executable" });
+      expect(oversizedEnvelope.data?.decisionKernel?.scope?.nextCall?.arguments).toBeUndefined();
+      expect(oversizedEnvelope.lifecycle?.nextTools).toEqual(["capabilities"]);
+      expect(oversizedEnvelope.nextTools).toEqual([]);
+      expect(oversizedEnvelope.data?.systemMessage).toBeUndefined();
+      expect(oversizedEnvelope.data?.decisionKernel?.systemMessage).toBeUndefined();
+      expect(oversizedEnvelope.systemMessage).toContain("data.nextCall contract");
+      expect(JSON.stringify(oversizedCallers).split(JSON.stringify(expectedCallersDispatch))).toHaveLength(2);
     } finally {
       await client.close();
     }
