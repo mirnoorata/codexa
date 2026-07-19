@@ -78,7 +78,8 @@ describe("advanced MCP auto/concise projections", () => {
 
     expect(envelope.actionability).toBe("blocked");
     expect(authority).toMatchObject({ actionability: "blocked", originalActionability: "orientation" });
-    expect(data.nextTools).toEqual([]);
+    expect(data.nextTools).toBeUndefined();
+    expect(envelope.nextTools).toEqual([]);
     expect(kernel.nextTools).toEqual([]);
     expect(data.systemMessage).toContain('responseFormat "detailed"');
   });
