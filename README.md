@@ -807,9 +807,11 @@ scrubbed environments and write reports under `.codex/static-analysis/`.
 
 `codexa init` writes advisory hooks when Codex hooks are available:
 
-- `hook-pre-edit` saves an implicit pre-edit baseline when no change-plan
-  snapshot exists (and reminds the agent that an explicit `change_plan`
-  upgrades it with planned scope and tests).
+- `hook-pre-edit` silently saves an implicit pre-edit baseline when no
+  change-plan snapshot exists. If an invalid/blocked snapshot, degraded
+  worktree, or active writer prevents a reliable baseline, it emits one bounded
+  warning to run explicit `change_plan` with `saveSnapshot=true` before a
+  non-trivial edit.
 - `hook-pre-edit` also blocks when a task's repeated-loop budget has latched a
   mandatory replan. Lifecycle read or validation failures fail closed with an
   actionable diagnostic instead of silently disabling the guard.

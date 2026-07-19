@@ -59,7 +59,8 @@ it("leaves a blocked change-plan marker in place instead of replacing it", async
 
     const result = spawnSync(process.execPath, [cli, "hook-pre-edit", repo], { cwd: repo, encoding: "utf8", env: testEnv() });
     expect(result.status).toBe(0);
-    expect(result.stdout).toBe("");
+    expect(result.stdout).toContain("pre-edit baseline unavailable");
+    expect(result.stdout).toContain("Run change_plan with saveSnapshot=true");
     expect(await readFile(path.join(tasksDir, "latest.json"), "utf8")).toBe(latestContent);
   });
 
