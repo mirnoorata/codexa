@@ -4,7 +4,7 @@ import { buildPlanComplexityReview, formatComplexityReview } from "./complexity.
 import { nextTool } from "./next-tools.js";
 import { contextPackQuery } from "./context.js";
 import { inspectPlannedTargetAuthority, structuredNewTargetAuthority } from "./context/target-authority.js";
-import { focusFilesAndSymbolsInTaskOrder, focusFilesInTaskOrder, isLikelyPathTypo, normalizeTaskRepositoryPaths, plannedNewFocusPathTargets } from "./graph.js";
+import { focusFilesAndSymbolsInTaskOrder, focusFilesInTaskOrder, isLikelyPathTypo, normalizeTaskRepositoryPaths, plannedNewFocusPathTargets, unknownFocusPathTargets } from "./graph.js";
 import { formatContextQuality, type ContextQuality } from "./quality.js";
 import {
   assertFreshnessAuthorityCurrent,
@@ -45,7 +45,7 @@ import { formatRequiredChecks, requiredDependencyChecksForPlan, requiredWorkflow
 import { getDiffFootprint } from "./worktree.js";
 import { formatTaskInvariants, nextTaskPlanLifecycle } from "../task-lifecycle.js";
 import { changePlanEditReadiness, normalizeTargetCandidateSelector, resolveChangePlanFollowBaseInput } from "./change-plan/readiness.js";
-import { candidateSymbols, dedupeTargetCandidates, followedReplaySnapshotTargets, formatTargetCandidates, meaningfulTaskTokens, rawSearchQueries, uniqueInOrder, withTargetCandidateId } from "./change-plan/candidate-helpers.js";
+import { candidateSymbols, canonicalCandidateReplayFiles, dedupeTargetCandidates, followedReplaySnapshotTargets, formatTargetCandidates, meaningfulTaskTokens, rawSearchQueries, uniqueInOrder, withTargetCandidateId } from "./change-plan/candidate-helpers.js";
 import { validateChangePlanTargetCandidate } from "./change-plan/candidate-validation.js";
 export { validateChangePlanTargetCandidate } from "./change-plan/candidate-validation.js";
 export async function changePlanQuery(
@@ -120,7 +120,7 @@ export async function changePlanQuery(
     .filter((entry) => entry.status === "indexed" || entry.status === "missing")
     .flatMap((entry) => entry.path ? [entry.path] : []);
   const targetTask = normalizeTaskRepositoryPaths(effectiveInput.task ?? "", repoRoot);
-  const naturalTargetAuthority = await inspectPlannedTargetAuthority(plannedNewFocusPathTargets(targetTask, repositoryFiles), repoRoot, repositoryFiles);
+  const naturalTargetAuthority = await inspectPlannedTargetAuthority(plannedNewFocusPathTargets(targetTask, repositoryFiles), repoRoot, repositoryFiles, unknownFocusPathTargets(targetTask, repositoryFiles));
   const detectedNaturalNewTargets = naturalTargetAuthority.newTargets;
   const tentativeNaturalPlanTargets = [...new Set([
     ...focusFilesAndSymbolsInTaskOrder(targetTask, [...repositoryFiles, ...detectedNaturalNewTargets], [...repositoryFiles, ...detectedNaturalNewTargets], session.index.symbols),
@@ -231,6 +231,7 @@ export async function changePlanQuery(
   const plannedTests = editReadiness.editable ? uniqueTests([...tests, ...dirtyScopeTests]).slice(0, 12) : [];
   const plannedRecipes = editReadiness.editable ? recipes : [];
   const replayInput = { ...effectiveInput, invariants: invariants.map((invariant) => invariant.statement) };
+  const candidateReplayInput = { ...replayInput, files: canonicalCandidateReplayFiles(replayInput.files, requestedFileAuthorities) };
   const blockedSnapshotInput = priorSnapshotLoad?.snapshot ? { ...replayInput, taskId: undefined } : replayInput;
   const blockedSnapshot = effectiveInput.saveSnapshot && !editReadiness.editable && !requestedFollowCandidate && !options.preserveBlockedSnapshotOnFailure
     ? await saveBlockedTaskSnapshot({
@@ -243,7 +244,7 @@ export async function changePlanQuery(
   const candidateOptions = editReadiness.editable
     ? []
     : changePlanTargetCandidates({
-        input: replayInput,
+        input: candidateReplayInput,
         taskId: blockedSnapshot?.taskId ?? effectiveInput.taskId,
         index: session.index,
         repoRoot,
