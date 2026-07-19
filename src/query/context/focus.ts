@@ -35,6 +35,7 @@ export type DirtyScopeSummary = {
   changedFileCount: number;
   representativeCount: number;
   plannedEditTargets: string[];
+  rejectedTargets: Array<{ path: string; reason: string }>;
   reason: string;
 };
 
@@ -467,6 +468,7 @@ export function dirtyScopeSummary(input: {
   worktree: WorktreeState | undefined;
   broadDirty: boolean;
   focusEntries: PacketFocusEntry[];
+  rejectedTargets?: Array<{ path: string; reason: string }>;
 }): DirtyScopeSummary {
   const mode = dirtyScopeMode(input.taskIntents, input.task);
   const changedPlanFiles = uniqueSorted(input.changed.filter((filePath) => !isCodexaControlPath(filePath)));
@@ -475,7 +477,9 @@ export function dirtyScopeSummary(input: {
   const reason = degraded
     ? `worktree state unavailable: ${input.worktree?.degradedReasons.join("; ") || "unknown"}`
     : changedPlanFiles.length === 0
-      ? "no dirty files available for the requested dirty-worktree scope"
+      ? input.rejectedTargets?.length
+        ? "no safe regular-file targets are available in the requested dirty-worktree scope"
+        : "no dirty files available for the requested dirty-worktree scope"
       : mode === "edit"
         ? "current dirty worktree is the explicit edit scope"
         : "current dirty worktree is the explicit inspection scope";
@@ -487,6 +491,7 @@ export function dirtyScopeSummary(input: {
     changedFileCount: changedPlanFiles.length,
     representativeCount: input.focusEntries.filter((entry) => entry.provenance.some((item) => item.source === "dirty_worktree")).length,
     plannedEditTargets: changedPlanFiles,
+    rejectedTargets: input.rejectedTargets ?? [],
     reason
   };
 }

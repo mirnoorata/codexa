@@ -40,7 +40,9 @@ export function terminalFocusBriefResult(input: {
   const quality = terminalNoReadQuality(input.reason);
   const handoff = input.targetPaths.length > 0
     ? "No indexed source read is required; proceed with the named new target and stop Codexa."
-    : "Codexa handoff: the worktree is clean; stop Codexa.";
+    : /\b(?:scope is clean|no dirty files)\b/iu.test(input.reason)
+      ? "Codexa handoff: the worktree is clean; stop Codexa."
+      : `Codexa handoff: ${input.reason}; no edit authority was granted.`;
   return {
     freshness: input.freshness,
     refresh: input.refresh,
@@ -75,7 +77,9 @@ export function terminalContextPackResult(input: {
   const quality = terminalNoReadQuality(input.reason);
   const handoff = input.targetPaths.length > 0
     ? "No indexed source read is required; proceed with the named new target and stop Codexa."
-    : "Codexa handoff: the worktree is clean; stop Codexa.";
+    : /\b(?:scope is clean|no dirty files)\b/iu.test(input.reason)
+      ? "Codexa handoff: the worktree is clean; stop Codexa."
+      : `Codexa handoff: ${input.reason}; no edit authority was granted.`;
   return {
     freshness: input.freshness,
     refresh: input.refresh,
