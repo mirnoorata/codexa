@@ -1,7 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { freshnessBanner, ambiguityResult } from "./runtime.js";
-import type { CodexaIndex, FileFact, QueryResult, SymbolFact } from "../types.js";
+import type { ChangedFileEntry, CodexaIndex, FileFact, QueryResult, SymbolFact } from "../types.js";
 import { isSubpath, normalizePath } from "../util.js";
 
 export type ResolvedGraphTarget = {
@@ -54,7 +54,9 @@ export function normalizeInputPath(filePath: string, repoRoot: string): string |
   const absoluteTarget = path.resolve(absoluteRoot, portablePath);
   const relative = path.relative(absoluteRoot, absoluteTarget);
   if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return undefined;
-  return relative.split(path.sep).join("/");
+  const normalized = relative.split(path.sep).join("/");
+  if (normalized.split("/", 1)[0]?.toLowerCase() === ".git") return undefined;
+  return normalized;
 }
 
 export function normalizeInputPaths(filePaths: string[], repoRoot: string): string[] {
@@ -131,6 +133,64 @@ export async function repositoryTargetPathAuthority(
 
 export async function newTargetPathIsContained(filePath: string, repoRoot: string): Promise<boolean> {
   return (await repositoryTargetPathAuthority(filePath, repoRoot, [])).status === "missing";
+}
+
+export type DirtyTargetPathAuthority = {
+  entry: ChangedFileEntry;
+  path?: string;
+  accepted: boolean;
+  reason?: string;
+};
+
+/**
+ * Git status supplies dirty-scope candidates, but it does not make their
+ * filesystem shape safe to edit. Validate the exact worktree object before
+ * promoting it into edit authority. Tracked deletions are the one intentional
+ * missing-file case; every present target must be a contained regular file and
+ * must not traverse a symlink alias.
+ */
+export async function dirtyTargetPathAuthority(
+  entry: ChangedFileEntry,
+  repoRoot: string,
+  repositoryFiles: Iterable<string>
+): Promise<DirtyTargetPathAuthority> {
+  const normalized = normalizeInputPath(entry.path, repoRoot);
+  const authority = await repositoryTargetPathAuthority(entry.path, repoRoot, repositoryFiles);
+  if (!normalized || authority.status === "invalid") {
+    return { entry, path: normalized, accepted: false, reason: authority.reason ?? "dirty target is not a safe repository-relative path" };
+  }
+  if (authority.viaSymlink) {
+    return { entry, path: normalized, accepted: false, reason: "dirty target traverses a symbolic link" };
+  }
+  if (authority.status === "missing") {
+    const trackedDeletion = entry.kind === "deleted" && entry.status.includes("D");
+    return trackedDeletion
+      ? { entry, path: normalized, accepted: true }
+      : { entry, path: normalized, accepted: false, reason: "dirty target is missing but is not a tracked deletion" };
+  }
+
+  const absolute = path.resolve(repoRoot, normalized);
+  const stat = await fs.lstat(absolute).catch(() => undefined);
+  if (!stat || stat.isSymbolicLink() || !stat.isFile()) {
+    return { entry, path: normalized, accepted: false, reason: "dirty target is not a regular non-symlink file" };
+  }
+  const [repoReal, targetReal] = await Promise.all([
+    fs.realpath(path.resolve(repoRoot)).catch(() => ""),
+    fs.realpath(absolute).catch(() => "")
+  ]);
+  if (!repoReal || !targetReal || !isSubpath(targetReal, repoReal)) {
+    return { entry, path: normalized, accepted: false, reason: "dirty target resolves outside the repository" };
+  }
+  return { entry, path: normalized, accepted: true };
+}
+
+export async function inspectDirtyTargetAuthorities(
+  entries: ChangedFileEntry[],
+  repoRoot: string,
+  repositoryFiles: Iterable<string>
+): Promise<DirtyTargetPathAuthority[]> {
+  const indexed = [...repositoryFiles];
+  return Promise.all(entries.map((entry) => dirtyTargetPathAuthority(entry, repoRoot, indexed)));
 }
 
 function errorCode(error: unknown): string {

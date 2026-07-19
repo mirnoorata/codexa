@@ -3,8 +3,8 @@ import { formatGaps } from "./diff.js";
 import { buildPlanComplexityReview, formatComplexityReview } from "./complexity.js";
 import { nextTool } from "./next-tools.js";
 import { contextPackQuery } from "./context.js";
-import { inspectPlannedTargetAuthority, structuredNewTargetAuthority } from "./context/target-authority.js";
-import { focusFilesAndSymbolsInTaskOrder, focusFilesInTaskOrder, isLikelyPathTypo, normalizeTaskRepositoryPaths, plannedNewFocusPathTargets, unknownFocusPathTargets } from "./graph.js";
+import { completeTaskTargetRoles, editableTargetsWithDefault, inspectPlannedTargetAuthority, mergeTaskTargetRoles, structuredNewTargetAuthority } from "./context/target-authority.js";
+import { classifyTaskTargetRoles, focusFilesAndSymbolsInTaskOrder, focusFilesInTaskOrder, isLikelyPathTypo, normalizeTaskRepositoryPaths, plannedNewFocusPathTargets, type TaskTargetRoles, unknownFocusPathTargets } from "./graph.js";
 import { formatContextQuality, type ContextQuality } from "./quality.js";
 import {
   assertFreshnessAuthorityCurrent,
@@ -15,7 +15,7 @@ import {
 import { ensureQuerySession, type QuerySession, type QuerySessionInput } from "./session.js";
 import { normalizeSearchText } from "./search.js";
 import { formatTestRecommendations, recommendTests, uniqueTests } from "./tests.js";
-import { findFile, normalizeInputPaths, repositoryTargetPathAuthority, resolveFileTarget, resolveSymbolTarget } from "./targets.js";
+import { findFile, inspectDirtyTargetAuthorities, normalizeInputPaths, repositoryTargetPathAuthority, resolveFileTarget, resolveSymbolTarget } from "./targets.js";
 import { getWorktreeState } from "./worktree-state.js";
 import { taskReferencesDirtyContext } from "./context/focus.js";
 import { compactSnapshotTests, snapshotRiskBaseline, snapshotSymbolBaseline } from "./post-edit/snapshot-contract.js";
@@ -104,6 +104,7 @@ export async function changePlanQuery(
     gaps?: string[];
     warnings?: string[];
     boundedPlanTargets?: string[];
+    targetRoles?: Partial<TaskTargetRoles>;
     targetCandidates?: unknown[];
     unresolvedTargets?: string[];
   };
@@ -114,10 +115,15 @@ export async function changePlanQuery(
   const files = focusFiles.map((entry) => entry.file.path);
   const structuredNewTargetMode = structuredNewTargetAuthority(effectiveInput.task, effectiveInput.changeType);
   const repositoryFiles = session.index.files.map((file) => file.path);
+  const dirtyWorktree = taskReferencesDirtyContext(effectiveInput.task ?? "") && (effectiveInput.diff ?? true)
+    ? await getWorktreeState(session)
+    : undefined;
+  const dirtyTargetAuthorities = dirtyWorktree ? await inspectDirtyTargetAuthorities(dirtyWorktree.entries, repoRoot, repositoryFiles) : [];
+  const dirtyExplicitPaths = new Set(dirtyTargetAuthorities.filter((entry) => entry.accepted && entry.path).flatMap((entry) => entry.path ? [entry.path] : []));
   const requestedFileAuthorities = await Promise.all((effectiveInput.files ?? []).map((filePath) => repositoryTargetPathAuthority(filePath, repoRoot, repositoryFiles)));
   const packetTargetAuthority = await Promise.all((packData.boundedPlanTargets ?? []).map((filePath) => repositoryTargetPathAuthority(filePath, repoRoot, repositoryFiles)));
   const packetPlanTargets = packetTargetAuthority
-    .filter((entry) => entry.status === "indexed" || entry.status === "missing")
+    .filter((entry) => entry.status === "indexed" || entry.status === "missing" || Boolean(entry.path && dirtyExplicitPaths.has(entry.path)))
     .flatMap((entry) => entry.path ? [entry.path] : []);
   const targetTask = normalizeTaskRepositoryPaths(effectiveInput.task ?? "", repoRoot);
   const naturalTargetAuthority = await inspectPlannedTargetAuthority(plannedNewFocusPathTargets(targetTask, repositoryFiles), repoRoot, repositoryFiles, unknownFocusPathTargets(targetTask, repositoryFiles));
@@ -126,21 +132,21 @@ export async function changePlanQuery(
     ...focusFilesAndSymbolsInTaskOrder(targetTask, [...repositoryFiles, ...detectedNaturalNewTargets], [...repositoryFiles, ...detectedNaturalNewTargets], session.index.symbols),
     ...naturalTargetAuthority.indexedTargets
   ])];
-  const naturalStructuralSourcePresent = [...tentativeNaturalPlanTargets, ...packetPlanTargets].some((filePath) => repositoryFiles.includes(filePath));
+  const tentativeNaturalTargetRoles = classifyTaskTargetRoles(targetTask, tentativeNaturalPlanTargets, [...repositoryFiles, ...detectedNaturalNewTargets], session.index.symbols);
+  const naturalStructuralSourcePresent = [...tentativeNaturalTargetRoles.editableTargets, ...packetPlanTargets].some((filePath) => repositoryFiles.includes(filePath));
   const naturalNewTargets = structuredNewTargetMode.structural && !naturalStructuralSourcePresent ? [] : detectedNaturalNewTargets;
-  const naturalPathPlanTargets = [...new Set([
+  const naturalPathRoleCandidates = [...new Set([
     ...focusFilesInTaskOrder(targetTask, [...repositoryFiles, ...naturalNewTargets], [...repositoryFiles, ...naturalNewTargets]),
     ...naturalTargetAuthority.indexedTargets
   ])];
+  const naturalPathTargetRoles = classifyTaskTargetRoles(targetTask, naturalPathRoleCandidates, [...repositoryFiles, ...naturalNewTargets], session.index.symbols);
+  const naturalPathPlanTargets = naturalPathTargetRoles.editableTargets;
   const explicitScopeTargets = packetPlanTargets.length > 0 ? packetPlanTargets : naturalPathPlanTargets;
   const explicitRootNewPaths = new Set(requestedFileAuthorities.flatMap((entry) => entry.status === "missing" && entry.requestedPath.replaceAll("\\", "/").startsWith("./") && entry.path ? [entry.path] : []));
   const existingRequestedFileCount = requestedFileAuthorities.filter((entry) => entry.status === "indexed" || Boolean(resolveFileTarget(session.index, entry.requestedPath, repoRoot).file)).length;
   const validatedExplicitFiles: string[] = [];
   const explicitResolutionCandidateFiles: FileFact[] = [];
-  const dirtyExplicitPaths = taskReferencesDirtyContext(effectiveInput.task ?? "")
-    ? new Set((await getWorktreeState(session)).files.filter((filePath) => !filePath.startsWith(".codex/")))
-    : new Set<string>();
-  let invalidExplicitTarget = requestedFileAuthorities.some((entry) => !entry.path || entry.status === "invalid" || entry.status === "existing-unindexed")
+  let invalidExplicitTarget = requestedFileAuthorities.some((entry) => !entry.path || entry.status === "invalid" || (entry.status === "existing-unindexed" && !dirtyExplicitPaths.has(entry.path)))
     || (packData.targetCandidates?.length ?? 0) > 0 || (packData.unresolvedTargets?.length ?? 0) > 0
     || (packData.packetVerdict === "needs-target" && packetPlanTargets.length === 0);
   let ambiguousExplicitFile = false;
@@ -184,12 +190,16 @@ export async function changePlanQuery(
       explicitResolutionCandidateFiles.push(...resolved.ambiguous.map((candidate) => findFile(session.index, candidate.path)).filter((file): file is FileFact => Boolean(file)));
     }
   }
-  const validatedExplicitTargets = [...validatedExplicitFiles, ...validatedSymbolFiles];
+  const rawValidatedExplicitTargets = [...new Set([...validatedExplicitFiles, ...validatedSymbolFiles])];
+  const { roles: requestedTargetRoles, editableTargets: validatedExplicitTargets } = editableTargetsWithDefault(targetTask, rawValidatedExplicitTargets, [...repositoryFiles, ...naturalNewTargets, ...dirtyExplicitPaths], session.index.symbols);
+  const editableRequestedPathSet = new Set(validatedExplicitTargets);
+  validatedExplicitFiles.splice(0, validatedExplicitFiles.length, ...validatedExplicitFiles.filter((filePath) => editableRequestedPathSet.has(filePath)));
+  validatedSymbolFiles.splice(0, validatedSymbolFiles.length, ...validatedSymbolFiles.filter((filePath) => editableRequestedPathSet.has(filePath)));
   const structuredTargetMismatch = validatedExplicitTargets.length > 0
     && explicitScopeTargets.length > 0
     && !validatedExplicitTargets.some((filePath) => explicitScopeTargets.includes(filePath));
   if (structuredTargetMismatch) invalidExplicitTarget = true;
-  if (!invalidExplicitTarget && validatedExplicitTargets.length > 0) {
+  if (!invalidExplicitTarget && rawValidatedExplicitTargets.length > 0 && explicitScopeTargets.length > 0) {
     for (const filePath of explicitScopeTargets) if (!validatedExplicitFiles.includes(filePath) && !validatedSymbolFiles.includes(filePath)) validatedExplicitFiles.push(filePath);
   }
   const explicitTargetProvided = !invalidExplicitTarget && validatedExplicitFiles.length + validatedSymbolFiles.length > 0;
@@ -203,10 +213,7 @@ export async function changePlanQuery(
     packetVerdict: packData.packetVerdict,
     intentConfidence: packData.intentConfidence
   });
-  const dirtyScopeTargets =
-    editReadiness.source === "dirty-worktree"
-      ? uniqueSorted(packData.dirtyScope?.plannedEditTargets ?? [])
-      : [];
+  const dirtyScopeTargets = editReadiness.source === "dirty-worktree" ? uniqueSorted(packData.dirtyScope?.plannedEditTargets ?? []) : [];
   const plannedEditTargets = editReadiness.editable
     ? uniqueSorted(
         dirtyScopeTargets.length > 0
@@ -216,6 +223,7 @@ export async function changePlanQuery(
             : files.slice(0, 6)
       )
     : [];
+  const targetRoles = mergeTaskTargetRoles(plannedEditTargets, completeTaskTargetRoles(packData.targetRoles), requestedTargetRoles);
   const focusPathSet = new Set(files);
   const explicitWorkflowPaths = new Set(normalizeInputPaths(effectiveInput.files ?? [], repoRoot));
   const workflowMatchPaths = explicitWorkflowPaths.size > 0 ? explicitWorkflowPaths : focusPathSet;
@@ -448,6 +456,7 @@ export async function changePlanQuery(
       context: pack.data,
       files,
       plannedEditTargets,
+      targetRoles,
       tests: plannedTests,
       recipes: plannedRecipes,
       targetCandidates,

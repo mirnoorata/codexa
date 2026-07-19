@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, symlink, writeFile } from "node:fs/promises";
+import { mkdir, symlink, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildIndex } from "../src/indexer.js";
 import { changePlanQuery, contextPackQuery, focusBriefQuery, searchQuery } from "../src/queries.js";
+import { dirtyTargetPathAuthority } from "../src/query/targets.js";
 import { createFixtureRepo } from "./indexer-fixtures.js";
 
 describe("query routing boundaries", () => {
@@ -92,7 +93,11 @@ describe("query routing boundaries", () => {
       "Change the endpoint response in src/api.ts",
       "Update access control in src/api.ts",
       "Fix credential handling in src/api.ts",
-      "Update the route response in src/api.ts"
+      "Update the route response in src/api.ts",
+      "src/api.ts should enforce auth",
+      "The API in src/api.ts must enforce auth",
+      "src/api.ts needs to enforce auth",
+      "The route in src/api.ts has to enforce auth"
     ]) {
       const result = await focusBriefQuery(repo, { task, diff: false, limit: 6, tokenBudget: 1000 }, { autoRefresh: false });
       expect((result.data as { nextCall: { tool: string } }).nextCall.tool, task).toBe("change_plan");
@@ -219,9 +224,68 @@ describe("query routing boundaries", () => {
     expect(pack.text).not.toContain("No indexed source read is required");
 
     const dirtyFocus = await focusBriefQuery(repo, { task: "Fix current changes in src/untracked.ts", diff: true }, { autoRefresh: false });
-    expect((dirtyFocus.data as { actionability: string; nextCall: { tool: string; arguments?: { files?: string[] } } })).toMatchObject({
+    expect((dirtyFocus.data as { actionability: string; nextCall: { tool: string; arguments?: { diff?: boolean; files?: string[] } } })).toMatchObject({
       actionability: "edit_ready",
-      nextCall: { tool: "change_plan", arguments: { files: ["src/untracked.ts"] } }
+      nextCall: { tool: "change_plan", arguments: { diff: true } }
+    });
+    expect((dirtyFocus.data as { nextCall: { arguments?: { files?: string[] } } }).nextCall.arguments?.files).toBeUndefined();
+    const replayedDirtyPlan = await changePlanQuery(repo, { task: "Fix current changes in src/untracked.ts", diff: true, saveSnapshot: false }, { autoRefresh: false });
+    expect((replayedDirtyPlan.data as { editReadiness: { editable: boolean }; plannedEditTargets: string[] })).toMatchObject({
+      editReadiness: { editable: true },
+      plannedEditTargets: ["src/untracked.ts"]
+    });
+  });
+
+  it("rejects repository metadata as an edit target on every planning surface", async () => {
+    const repo = await createFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+    const task = "Create ./.git/hooks/codexa-test-hook";
+    const focus = await focusBriefQuery(repo, { task, diff: false }, { autoRefresh: false });
+    expect((focus.data as { actionability: string; nextCall: { tool: string } })).toMatchObject({ actionability: "needs_target", nextCall: { tool: "search" } });
+    const search = await searchQuery(repo, { query: task }, { autoRefresh: false });
+    expect((search.data as { actionability: string }).actionability).not.toBe("edit_ready");
+    const pack = await contextPackQuery(repo, { task, files: ["./.git/hooks/codexa-test-hook"], diff: false, includeSnippets: false }, { autoRefresh: false });
+    expect((pack.data as { actionability: string }).actionability).toBe("needs_target");
+    const plan = await changePlanQuery(repo, { task, files: ["./.git/hooks/codexa-test-hook"], diff: false, saveSnapshot: false }, { autoRefresh: false });
+    expect((plan.data as { editReadiness: { editable: boolean }; plannedEditTargets: string[] })).toMatchObject({ editReadiness: { editable: false }, plannedEditTargets: [] });
+  });
+
+  it("accepts only contained regular dirty files and tracked deletions", async () => {
+    const repo = await createFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+    const outside = `${repo}-dirty-authority-outside.ts`;
+    await writeFile(outside, "export const outside = true\n", "utf8");
+    await symlink(outside, path.join(repo, "outside.ts"));
+    await symlink("src/util.ts", path.join(repo, "inside-link.ts"));
+    execFileSync("mkfifo", [path.join(repo, "non-regular.pipe")]);
+    await expect(dirtyTargetPathAuthority({ path: "non-regular.pipe", status: "??", kind: "untracked", staged: false, worktree: true }, repo, [])).resolves.toMatchObject({
+      path: "non-regular.pipe",
+      accepted: false,
+      reason: "dirty target is not a regular non-symlink file"
+    });
+
+    const unsafeTask = "Fix current changes";
+    const unsafeFocus = await focusBriefQuery(repo, { task: unsafeTask, diff: true }, { autoRefresh: false });
+    expect((unsafeFocus.data as { actionability: string }).actionability).not.toBe("edit_ready");
+    const unsafePack = await contextPackQuery(repo, { task: unsafeTask, diff: true, includeSnippets: false }, { autoRefresh: false });
+    const unsafePackData = unsafePack.data as { actionability: string; dirtyScope?: { plannedEditTargets?: string[]; rejectedTargets?: Array<{ path: string }> } };
+    expect(unsafePackData.actionability).not.toBe("edit_ready");
+    expect(unsafePackData.dirtyScope?.plannedEditTargets).toEqual([]);
+    expect(unsafePackData.dirtyScope?.rejectedTargets?.map((entry) => entry.path)).toEqual(expect.arrayContaining(["inside-link.ts", "outside.ts"]));
+    const unsafePlan = await changePlanQuery(repo, { task: unsafeTask, diff: true, saveSnapshot: false }, { autoRefresh: false });
+    expect((unsafePlan.data as { editReadiness: { editable: boolean }; plannedEditTargets: string[] })).toMatchObject({ editReadiness: { editable: false }, plannedEditTargets: [] });
+
+    await Promise.all([unlink(outside), unlink(path.join(repo, "outside.ts")), unlink(path.join(repo, "inside-link.ts")), unlink(path.join(repo, "non-regular.pipe"))]);
+    await unlink(path.join(repo, "src/util.ts"));
+    const deletionFocus = await focusBriefQuery(repo, { task: unsafeTask, diff: true }, { autoRefresh: false });
+    expect((deletionFocus.data as { actionability: string; nextCall: { tool: string; arguments?: { diff?: boolean } } })).toMatchObject({
+      actionability: "edit_ready",
+      nextCall: { tool: "change_plan", arguments: { diff: true } }
+    });
+    const deletionPlan = await changePlanQuery(repo, { task: unsafeTask, diff: true, saveSnapshot: false }, { autoRefresh: false });
+    expect((deletionPlan.data as { editReadiness: { editable: boolean }; plannedEditTargets: string[] })).toMatchObject({
+      editReadiness: { editable: true },
+      plannedEditTargets: ["src/util.ts"]
     });
   });
 
@@ -381,8 +445,11 @@ describe("query routing boundaries", () => {
       const narrowed = await focusBriefQuery(repo, { task, diff: true, limit: 6, tokenBudget: 1000 }, { autoRefresh: false });
       expect((narrowed.data as { nextCall: { tool: string; arguments?: { diff?: boolean; files?: string[] } } }).nextCall, task).toMatchObject({
         tool: "change_plan",
-        arguments: { diff: false, files: [expectedFile] }
+        arguments: { diff: true }
       });
+      expect((narrowed.data as { nextCall: { arguments?: { files?: string[] } } }).nextCall.arguments?.files, task).toBeUndefined();
+      const replayed = await changePlanQuery(repo, { task, diff: true, saveSnapshot: false }, { autoRefresh: false });
+      expect((replayed.data as { editReadiness: { editable: boolean }; plannedEditTargets: string[] }), task).toMatchObject({ editReadiness: { editable: true }, plannedEditTargets: [expectedFile] });
     }
 
     for (const task of ["Fix the API regression caused by recent changes", "Harden authentication after upstream changes", "Repair runtime behavior that changed last release"]) {
@@ -475,8 +542,9 @@ describe("query routing boundaries", () => {
     expect((focus.data as { actionability: string; targetCandidates?: string[]; nextCall: { tool: string; arguments?: { files?: string[] } } })).toMatchObject({
       actionability: "edit_ready",
       targetCandidates: [],
-      nextCall: { tool: "change_plan", arguments: { files: ["src/a/config.ts", "src/b/index.ts"] } }
+      nextCall: { tool: "change_plan", arguments: { diff: true } }
     });
+    expect((focus.data as { nextCall: { arguments?: { files?: string[] } } }).nextCall.arguments?.files).toBeUndefined();
     const plan = await changePlanQuery(repo, { task, diff: true, saveSnapshot: false }, { autoRefresh: false });
     expect((plan.data as { editReadiness: { editable: boolean }; plannedEditTargets?: string[] })).toMatchObject({
       editReadiness: { editable: true },
@@ -807,24 +875,83 @@ describe("query routing boundaries", () => {
 
     for (const task of [
       "Create src/new.ts using helper",
+      "Create src/new.ts using helper from src/util.ts",
       "Create src/new.ts that calls helper",
       "Create src/new.ts that invokes helper",
       "Create src/new.ts importing helper",
       "Create src/new.ts modeled after helper",
       "Create src/new.ts with the same behavior as helper",
+      "Create src/new.ts similar to helper",
       "Create src/new.ts analogous to helper",
       "Create src/new.ts based on helper"
     ]) {
       const focus = await focusBriefQuery(repo, { task, diff: false }, { autoRefresh: false });
-      const focusData = focus.data as { focusFiles: Array<{ path: string }>; nextCall: { tool: string; arguments?: { files?: string[] } } };
-      expect(focusData.nextCall.tool, task).toBe("change_plan");
+      const focusData = focus.data as { focusFiles: Array<{ path: string }>; nextCall: { tool: string; arguments?: { files?: string[] } }; targetRoles: { editableTargets: string[]; readDependencies: string[] } };
+      expect(focusData.nextCall.tool, task).toBe("source");
       expect(focusData.focusFiles.map((file) => file.path), task).toContain("src/util.ts");
-      expect(focusData.nextCall.arguments?.files, task).toEqual(expect.arrayContaining(["src/new.ts", "src/util.ts"]));
+      expect(focusData.targetRoles, task).toMatchObject({ editableTargets: ["src/new.ts"], readDependencies: ["src/util.ts"] });
       const search = await searchQuery(repo, { query: task }, { autoRefresh: false });
-      expect((search.data as { nextTools?: Array<{ requiredInputs?: { files?: string[] } }> }).nextTools?.[0]?.requiredInputs?.files, task).toEqual(expect.arrayContaining(["src/new.ts", "src/util.ts"]));
+      expect((search.data as { targetRoles: { editableTargets: string[]; readDependencies: string[] } }).targetRoles, task).toMatchObject({ editableTargets: ["src/new.ts"], readDependencies: ["src/util.ts"] });
       const pack = await contextPackQuery(repo, { task, diff: false, includeSnippets: false }, { autoRefresh: false });
-      expect((pack.data as { boundedPlanTargets: string[] }).boundedPlanTargets, task).toEqual(expect.arrayContaining(["src/new.ts", "src/util.ts"]));
+      expect((pack.data as { boundedPlanTargets: string[]; targetRoles: { editableTargets: string[]; readDependencies: string[] } }), task).toMatchObject({
+        boundedPlanTargets: ["src/new.ts"],
+        targetRoles: { editableTargets: ["src/new.ts"], readDependencies: ["src/util.ts"] }
+      });
+      const plan = await changePlanQuery(repo, { task, files: ["src/new.ts", "src/util.ts"], diff: false, saveSnapshot: false }, { autoRefresh: false });
+      expect((plan.data as { editReadiness: { editable: boolean }; plannedEditTargets: string[]; targetRoles: { readDependencies: string[] } }), task).toMatchObject({
+        editReadiness: { editable: true },
+        plannedEditTargets: ["src/new.ts"],
+        targetRoles: { readDependencies: ["src/util.ts"] }
+      });
     }
+
+    const comparisonTask = "Create src/new.ts after comparing src/api.ts with src/util.ts";
+    const comparisonFocus = await focusBriefQuery(repo, { task: comparisonTask, diff: false }, { autoRefresh: false });
+    expect((comparisonFocus.data as { targetRoles: { editableTargets: string[]; readDependencies: string[]; hasReferenceCue: boolean } }).targetRoles).toMatchObject({
+      editableTargets: ["src/new.ts"],
+      readDependencies: ["src/api.ts", "src/util.ts"],
+      hasReferenceCue: true
+    });
+    const comparisonSearch = await searchQuery(repo, { query: comparisonTask }, { autoRefresh: false });
+    expect((comparisonSearch.data as { targetRoles: { editableTargets: string[]; readDependencies: string[] } }).targetRoles).toMatchObject({
+      editableTargets: ["src/new.ts"],
+      readDependencies: ["src/api.ts", "src/util.ts"]
+    });
+    const comparisonPack = await contextPackQuery(repo, { task: comparisonTask, diff: false, includeSnippets: false }, { autoRefresh: false });
+    expect((comparisonPack.data as { boundedPlanTargets: string[]; targetRoles: { readDependencies: string[] } })).toMatchObject({
+      boundedPlanTargets: ["src/new.ts"],
+      targetRoles: { readDependencies: ["src/api.ts", "src/util.ts"] }
+    });
+    const comparisonPlan = await changePlanQuery(repo, { task: comparisonTask, files: ["src/new.ts", "src/api.ts", "src/util.ts"], diff: false, saveSnapshot: false }, { autoRefresh: false });
+    expect((comparisonPlan.data as { plannedEditTargets: string[]; targetRoles: { readDependencies: string[] } })).toMatchObject({
+      plannedEditTargets: ["src/new.ts"],
+      targetRoles: { readDependencies: ["src/api.ts", "src/util.ts"] }
+    });
+
+    const excludedSourceTask = "Create src/new.ts using helper, but do not modify src/util.ts";
+    const excludedPlan = await changePlanQuery(repo, { task: excludedSourceTask, files: ["src/new.ts", "src/util.ts"], diff: false, saveSnapshot: false }, { autoRefresh: false });
+    expect((excludedPlan.data as { plannedEditTargets: string[]; targetRoles: { readDependencies: string[]; excludedTargets: string[] } })).toMatchObject({
+      plannedEditTargets: ["src/new.ts"],
+      targetRoles: { readDependencies: ["src/util.ts"], excludedTargets: ["src/util.ts"] }
+    });
+
+    const onlyEditTask = "Only edit src/util.ts using VALUE";
+    const onlyEditPlan = await changePlanQuery(repo, { task: onlyEditTask, files: ["src/util.ts", "src/constants.ts"], diff: false, saveSnapshot: false }, { autoRefresh: false });
+    expect((onlyEditPlan.data as { plannedEditTargets: string[]; targetRoles: { readDependencies: string[] } })).toMatchObject({
+      plannedEditTargets: ["src/util.ts"],
+      targetRoles: { readDependencies: ["src/constants.ts"] }
+    });
+
+    const directedSourcePlan = await changePlanQuery(repo, { task: "Use src/api.ts to fix src/util.ts", files: ["src/api.ts", "src/util.ts"], diff: false, saveSnapshot: false }, { autoRefresh: false });
+    expect((directedSourcePlan.data as { plannedEditTargets: string[]; targetRoles: { readDependencies: string[] } })).toMatchObject({
+      plannedEditTargets: ["src/util.ts"],
+      targetRoles: { readDependencies: ["src/api.ts"] }
+    });
+
+    const unresolvedReference = await focusBriefQuery(repo, { task: "Create src/new.ts similar to missingHelper", diff: false }, { autoRefresh: false });
+    expect((unresolvedReference.data as { nextCall: { tool: string }; targetRoles: { unresolvedReferenceCue: boolean } }).nextCall.tool).not.toBe("none");
+    expect((unresolvedReference.data as { targetRoles: { unresolvedReferenceCue: boolean } }).targetRoles.unresolvedReferenceCue).toBe(true);
+    expect(unresolvedReference.text).not.toContain("No indexed source read is required");
 
     for (const [task, target] of [
       ["Create ./brand-new-xyz.ts", "brand-new-xyz.ts"],

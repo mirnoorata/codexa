@@ -142,6 +142,127 @@ export function focusFilesAndSymbolsInTaskOrder(task: string, focusFiles: string
   return [...new Set(ordered.map((entry) => entry.path))];
 }
 
+export type TaskTargetRoles = {
+  editableTargets: string[];
+  readDependencies: string[];
+  excludedTargets: string[];
+  hasReferenceCue: boolean;
+  unresolvedReferenceCue: boolean;
+};
+
+/**
+ * Natural-language mentions do not all carry write authority. A comparison or
+ * implementation reference is source to read, while an explicit negative
+ * clause removes edit authority even when the same path is otherwise named.
+ */
+export function classifyTaskTargetRoles(
+  task: string,
+  candidatePaths: string[],
+  repositoryFiles: string[],
+  symbols: SymbolFact[]
+): TaskTargetRoles {
+  const candidates = new Set(candidatePaths);
+  const mentions: Array<{ path: string; label: string; index: number; role: "editable" | "read" | "excluded" | "only-edit" }> = [];
+  const fileEntries = focusFileEntriesInTaskOrder(task, candidatePaths, repositoryFiles);
+  const pathMentions = focusPathMentions(task);
+  const basenameCounts = new Map<string, number>();
+  for (const filePath of repositoryFiles) {
+    const basename = filePath.replaceAll("\\", "/").split("/").at(-1)?.toLowerCase() ?? "";
+    basenameCounts.set(basename, (basenameCounts.get(basename) ?? 0) + 1);
+  }
+  for (const entry of fileEntries) {
+    mentions.push({ path: entry.path, label: entry.path, index: entry.index, role: targetMentionRole(task, entry.path, entry.index) });
+    const normalizedPath = entry.path.replaceAll("\\", "/");
+    const basename = normalizedPath.split("/").at(-1)?.toLowerCase() ?? "";
+    for (const mention of pathMentions) {
+      const samePath = mention.candidate.toLowerCase() === normalizedPath.toLowerCase();
+      const uniqueBasename = !mention.candidate.includes("/") && mention.candidate.toLowerCase() === basename && basenameCounts.get(basename) === 1;
+      if ((!samePath && !uniqueBasename) || mention.index === entry.index) continue;
+      mentions.push({ path: entry.path, label: task.slice(mention.index, mention.end), index: mention.index, role: targetMentionRole(task, task.slice(mention.index, mention.end), mention.index) });
+    }
+  }
+  for (const { label, paths, index } of symbolLabelEntriesForTask(task, symbols)) {
+    if (paths.size !== 1 || !naturalSymbolEntryAllowed(task, label, paths) || !isExplicitSymbolOccurrence(task, label, index)) continue;
+    const [symbolPath] = paths;
+    if (!symbolPath || !candidates.has(symbolPath)) continue;
+    mentions.push({ path: symbolPath, label, index, role: targetMentionRole(task, label, index) });
+  }
+
+  const onlyEditable = new Set(mentions.filter((mention) => mention.role === "only-edit").map((mention) => mention.path));
+  const editable = new Set(mentions.filter((mention) => mention.role === "editable" || mention.role === "only-edit").map((mention) => mention.path));
+  const read = new Set(mentions.filter((mention) => mention.role === "read").map((mention) => mention.path));
+  const excluded = new Set(mentions.filter((mention) => mention.role === "excluded").map((mention) => mention.path));
+  const mentionedPaths = new Set(mentions.map((mention) => mention.path));
+  for (const filePath of candidatePaths) {
+    if (!mentionedPaths.has(filePath)) editable.add(filePath);
+  }
+  if (onlyEditable.size > 0) {
+    for (const filePath of editable) {
+      if (!onlyEditable.has(filePath)) excluded.add(filePath);
+    }
+  }
+  for (const filePath of excluded) editable.delete(filePath);
+  for (const filePath of editable) read.delete(filePath);
+
+  const referenceCues = taskReferenceCueMentions(task).filter((cue) => !isExternalDependencyReference(cue.label, repositoryFiles));
+  const resolvedReferenceIndexes = mentions.filter((mention) => mention.role === "read").map((mention) => mention.index);
+  const unresolvedReferenceCue = referenceCues.some((cue) => !resolvedReferenceIndexes.some((index) => index >= cue.labelStart && index < cue.labelEnd));
+  return {
+    editableTargets: orderedRolePaths(editable, mentions),
+    readDependencies: orderedRolePaths(read, mentions),
+    excludedTargets: orderedRolePaths(excluded, mentions),
+    hasReferenceCue: referenceCues.length > 0 || read.size > 0,
+    unresolvedReferenceCue
+  };
+}
+
+function orderedRolePaths(paths: Set<string>, mentions: Array<{ path: string; index: number }>): string[] {
+  return [...paths].sort((left, right) => {
+    const leftIndex = Math.min(...mentions.filter((mention) => mention.path === left).map((mention) => mention.index));
+    const rightIndex = Math.min(...mentions.filter((mention) => mention.path === right).map((mention) => mention.index));
+    return leftIndex - rightIndex || left.localeCompare(right);
+  });
+}
+
+function targetMentionRole(task: string, label: string, index: number): "editable" | "read" | "excluded" | "only-edit" {
+  const before = task.slice(Math.max(0, index - 120), index);
+  const after = task.slice(index + label.length, index + label.length + 48);
+  if (
+    /\b(?:(?:do\s+not|don't|never)\s+(?:change|edit|modify|rewrite|touch|update)|without\s+(?:changing|editing|modifying|rewriting|touching|updating))\s+(?:the\s+)?$/iu.test(before)
+    || (/\bleave\s+(?:the\s+)?$/iu.test(before) && /^\s+(?:alone|unchanged)\b/iu.test(after))
+  ) {
+    return "excluded";
+  }
+  if (/\b(?:(?:only|solely|just)\s+(?:change|edit|modify|rewrite|touch|update)|(?:change|edit|modify|rewrite|touch|update)\s+(?:only|solely|just))\s+(?:the\s+)?$/iu.test(before)) {
+    return "only-edit";
+  }
+  return hasTargetReferenceCueBefore(before) ? "read" : "editable";
+}
+
+function hasTargetReferenceCueBefore(before: string): boolean {
+  return /\b(?:use|using|call(?:s|ing)?|invok(?:e|es|ing)|import(?:s|ing)?|model(?:ed|led)\s+after|same\s+behaviou?r\s+as|similar\s+to|analogous\s+to|based\s+on|compar(?:e|ed|ing)\s+(?:against|to|with)|pattern\s+(?:from|in)|according\s+to|referenc(?:e|ed|ing)(?:\s+implementation)?|like)\s+(?:the\s+)?$/iu.test(before)
+    || /\b(?:use|using)\b[^.!?;\n]{1,80}\b(?:from|via)\s+(?:the\s+)?$/iu.test(before)
+    || /\bcompar(?:e|ed|ing)\b(?:(?:(?![.!?;]\s)[^\n]){0,100}\b(?:against|to|with|and))?\s+(?:the\s+)?$/iu.test(before);
+}
+
+function taskReferenceCueMentions(task: string): Array<{ label: string; labelStart: number; labelEnd: number }> {
+  const pattern = /\b(?:use|using|call(?:s|ing)?|invok(?:e|es|ing)|import(?:s|ing)?|model(?:ed|led)\s+after|same\s+behaviou?r\s+as|similar\s+to|analogous\s+to|based\s+on|compar(?:e|ed|ing)\s+(?:against|to|with)|pattern\s+(?:from|in)|according\s+to|referenc(?:e|ed|ing)(?:\s+implementation)?|like)\s+(?:the\s+)?[`'"]?((?:\.\/)?(?:[A-Za-z0-9_@.$-]+\/)*[A-Za-z_$][A-Za-z0-9_@.$:-]*)/giu;
+  return [...task.matchAll(pattern)].flatMap((match) => {
+    const label = match[1]?.replace(/[.,;:!?]+$/u, "");
+    if (!label) return [];
+    const labelStart = (match.index ?? 0) + match[0].lastIndexOf(match[1]);
+    return [{ label, labelStart, labelEnd: labelStart + label.length }];
+  });
+}
+
+function isExternalDependencyReference(label: string, repositoryFiles: string[]): boolean {
+  const normalized = label.replace(/^\.\//u, "");
+  if (!normalized.includes("/") || label.startsWith("./")) return false;
+  const first = normalized.split("/")[0]?.toLowerCase();
+  const topLevels = new Set(repositoryFiles.map((filePath) => filePath.replaceAll("\\", "/").split("/")[0]?.toLowerCase()));
+  return Boolean(first && !first.startsWith(".") && !topLevels.has(first));
+}
+
 export function ambiguousFocusSymbolTargetCandidates(task: string, symbols: SymbolFact[], explicitPaths: string[] = []): string[] {
   return uniqueSorted(ambiguousFocusSymbolTargetCandidateGroups(task, symbols, explicitPaths).flat());
 }
@@ -313,7 +434,7 @@ function isAmbiguousExplicitSymbolOccurrence(task: string, label: string, index:
 }
 
 function hasSymbolDependencyCueBefore(before: string): boolean {
-  return /\b(?:using|call(?:s|ing)?|invok(?:e|es|ing)|import(?:s|ing)?|model(?:ed|led)\s+after|same\s+behaviou?r\s+as|analogous\s+to|based\s+on)\s+(?:the\s+)?$/iu.test(before);
+  return hasTargetReferenceCueBefore(before);
 }
 
 function hasMutationVerbBefore(before: string): boolean {

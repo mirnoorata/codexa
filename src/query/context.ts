@@ -1,22 +1,22 @@
 import path from "node:path";
 import { isTestPath, moduleNameForPath } from "../language.js";
-import type { ChangedSymbol, CodexaIndex, ContextPackInput, DiffImpactGroup, EvidenceTier, FileFact, FocusBriefInput, QueryOptions, QueryResult } from "../types.js";
+import type { ContextPackInput, EvidenceTier, FileFact, FocusBriefInput, QueryOptions, QueryResult } from "../types.js";
 import { limitText, uniqueSorted } from "../util.js";
 import { formatDiffGroups, formatGaps, groupDiffImpact, indexGaps } from "./diff.js";
 import { addContextPackImpactExpansion, verificationRecipes } from "./impact.js";
 import { lspAssistForFiles, lspOptionsFromQueryOptions } from "../lsp/assist.js";
 import { betterTier, clampInt, confidenceTier, fitLinesToTokenBudget, focusTierCounts, formatReasons, formatRecipes, limitTextToTokens, tierScore } from "./formatting.js";
-import { ambiguousFocusSymbolTargetCandidateGroups, ambiguousFocusSymbolTargetCandidates, ambiguousFocusTargetCandidateGroups, ambiguousFocusTargetCandidates, classifyChangePlanNeed, focusFilesAndSymbolsInTaskOrder, focusFilesInTaskOrder, formatWorkflowSummary, isLikelyPathTypo, isStructuralEditTask, narrowAmbiguousTargetGroupsToScope, normalizeTaskRepositoryPaths, plannedNewFocusPathTargets, recommendNextCodexaCall, unknownFocusPathTargets, unresolvedFocusPathTargets } from "./graph.js";
+import { ambiguousFocusSymbolTargetCandidateGroups, ambiguousFocusSymbolTargetCandidates, ambiguousFocusTargetCandidateGroups, ambiguousFocusTargetCandidates, classifyChangePlanNeed, classifyTaskTargetRoles, focusFilesAndSymbolsInTaskOrder, focusFilesInTaskOrder, formatWorkflowSummary, isLikelyPathTypo, isStructuralEditTask, narrowAmbiguousTargetGroupsToScope, normalizeTaskRepositoryPaths, plannedNewFocusPathTargets, recommendNextCodexaCall, unknownFocusPathTargets, unresolvedFocusPathTargets } from "./graph.js";
 import { nextTool } from "./next-tools.js";
 import { assessContextQuality, formatContextQuality, formatValueEstimate, type ContextQuality, valueEstimate } from "./quality.js";
 import { baselineSearchSummary } from "./raw-search.js";
-import { codeLikeQueryFromTask, fileStemQueryTerms, matchReason, matchScore, uniqueFiles } from "./search.js";
+import { codeLikeQueryFromTask, fileStemQueryTerms, uniqueFiles } from "./search.js";
 import { freshnessBanner } from "./runtime.js";
 import { ensureQuerySession, type QuerySessionInput } from "./session.js";
 import { compactWorktreeState, getWorktreeState, worktreeStateGaps, worktreeStateText } from "./worktree-state.js";
 import { isCodexaControlPath } from "./worktree.js";
 import { formatTestRecommendations, recommendTests } from "./tests.js";
-import { findFile, repositoryTargetPathAuthority, resolveFileTarget, resolveSymbolTarget } from "./targets.js";
+import { findFile, inspectDirtyTargetAuthorities, repositoryTargetPathAuthority, resolveFileTarget, resolveSymbolTarget } from "./targets.js";
 import {
   asVerificationCoveragePreview,
   formatVerificationCoverage,
@@ -24,11 +24,10 @@ import {
   verificationCommandsForContext,
   verificationCoverageForCommands
 } from "./verification.js";
-import { classifyTaskIntent, retrieveForTask, retrieveIntentOnly, type IntentConfidence, type RetrievalMatch, type RetrievalResult, type TaskIntent } from "../retrieval.js";
+import { classifyTaskIntent, retrieveForTask, retrieveIntentOnly } from "../retrieval.js";
 import { semanticOptionsFromQueryOptions } from "../semantic-retrieval.js";
 import { compactChangedSymbol, compactDiffGroup, compactFileFact, compactRetrievalResult, compactWorkflowTrace } from "./compact-data.js";
 import { pruneMissingFiles, prunedFilesGap } from "./prune-missing.js";
-import { summarizeSessionMemory } from "../session-memory.js";
 import { workspaceGuidancePreview } from "./workspace-guidance.js";
 import { applicableSkillHints, loadSkillHints, targetPlaybookHints } from "../skill-hints.js";
 import {
@@ -58,8 +57,8 @@ import {
   type FocusSelectionEntry,
   type PacketFocusEntry
 } from "./context/focus.js";
-import { readContextSnippet } from "./context/snippets.js";
-import { inspectPlannedTargetAuthority, structuredNewTargetAuthority } from "./context/target-authority.js";
+import { contextSnippets, sessionMemoryPreview } from "./context/previews.js";
+import { editableTargetsWithDefault, inspectPlannedTargetAuthority, mergeTaskTargetRoles, structuredNewTargetAuthority } from "./context/target-authority.js";
 import { terminalContextPackResult, terminalFocusBriefResult } from "./context/terminal.js";
 
 export async function contextPackQuery(input: QuerySessionInput, contextInput: ContextPackInput = {}, options: QueryOptions = {}): Promise<QueryResult> {
@@ -94,10 +93,15 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
   const detectedNaturalNewTargets = naturalTargetAuthority.newTargets;
   const matchedNaturalPlanTargets = contextInput.task ? focusFilesAndSymbolsInTaskOrder(targetTask, [...repositoryFiles, ...detectedNaturalNewTargets], [...repositoryFiles, ...detectedNaturalNewTargets], index.symbols) : [];
   const tentativeNaturalPlanTargets = contextInput.task ? [...new Set([...matchedNaturalPlanTargets, ...naturalTargetAuthority.indexedTargets])] : [];
-  const naturalStructuralSourcePresent = tentativeNaturalPlanTargets.some((filePath) => repositoryPathSet.has(filePath)) || explicitDisambiguatesNaturalTarget;
+  const tentativeNaturalTargetRoles = classifyTaskTargetRoles(targetTask, tentativeNaturalPlanTargets, [...repositoryFiles, ...detectedNaturalNewTargets], index.symbols);
+  const naturalStructuralSourcePresent = tentativeNaturalTargetRoles.editableTargets.some((filePath) => repositoryPathSet.has(filePath)) || explicitDisambiguatesNaturalTarget;
   const naturalNewTargets = structuredNewTargetMode.structural && !naturalStructuralSourcePresent ? [] : detectedNaturalNewTargets;
-  const naturalPlanTargets = naturalNewTargets === detectedNaturalNewTargets ? tentativeNaturalPlanTargets : contextInput.task ? [...new Set([...focusFilesAndSymbolsInTaskOrder(targetTask, repositoryFiles, repositoryFiles, index.symbols), ...naturalTargetAuthority.indexedTargets])] : [];
-  const naturalPathPlanTargets = contextInput.task ? [...new Set([...focusFilesInTaskOrder(targetTask, [...repositoryFiles, ...naturalNewTargets], [...repositoryFiles, ...naturalNewTargets]), ...naturalTargetAuthority.indexedTargets])] : [];
+  const naturalRoleCandidates = naturalNewTargets === detectedNaturalNewTargets ? tentativeNaturalPlanTargets : contextInput.task ? [...new Set([...focusFilesAndSymbolsInTaskOrder(targetTask, repositoryFiles, repositoryFiles, index.symbols), ...naturalTargetAuthority.indexedTargets])] : [];
+  const naturalTargetRoles = classifyTaskTargetRoles(targetTask, naturalRoleCandidates, [...repositoryFiles, ...naturalNewTargets], index.symbols);
+  const naturalPlanTargets = naturalTargetRoles.editableTargets;
+  const naturalReadDependencies = naturalTargetRoles.readDependencies;
+  const naturalPathRoleCandidates = contextInput.task ? [...new Set([...focusFilesInTaskOrder(targetTask, [...repositoryFiles, ...naturalNewTargets], [...repositoryFiles, ...naturalNewTargets]), ...naturalTargetAuthority.indexedTargets])] : [];
+  const naturalPathPlanTargets = classifyTaskTargetRoles(targetTask, naturalPathRoleCandidates, [...repositoryFiles, ...naturalNewTargets], index.symbols).editableTargets;
   const explicitRootNewPaths = new Set(requestedFileAuthorities.flatMap((entry) => entry.status === "missing" && entry.requestedPath.replaceAll("\\", "/").startsWith("./") && entry.path ? [entry.path] : []));
   const requestedNewPaths: string[] = [];
   for (const authority of requestedFileAuthorities) {
@@ -123,7 +127,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     if (!isLikelyPathTypo(filePath, repositoryFiles)) requestedNewPaths.push(filePath);
   }
   const requestedTargetCount = requestedFiles.length + requestedSymbols.length;
-  const unresolvedExplicitTarget = requestedResolvedPaths.length + requestedNewPaths.length < requestedTargetCount;
+  let unresolvedExplicitTarget = requestedResolvedPaths.length + requestedNewPaths.length < requestedTargetCount;
 
   const explicitQuery = contextInput.query?.trim() ?? "";
   const explicitTargetProvided = requestedFiles.length > 0 || requestedSymbols.length > 0;
@@ -132,7 +136,24 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
   const intentOnly = contextInput.task ? retrieveIntentOnly(contextInput.task) : undefined;
   const dirtyContextHint = Boolean(contextInput.task && taskReferencesDirtyContext(contextInput.task) && !explicitTargetProvided && !explicitQuery);
   const includeDiff = contextInput.diff ?? true;
-  const worktree = includeDiff ? await getWorktreeState(session) : undefined;
+  const rawWorktree = includeDiff ? await getWorktreeState(session) : undefined;
+  const dirtyTargetAuthorities = rawWorktree ? await inspectDirtyTargetAuthorities(rawWorktree.entries, repoRoot, repositoryFiles) : [];
+  const acceptedDirtyPaths = new Set(dirtyTargetAuthorities.filter((entry) => entry.accepted && entry.path).flatMap((entry) => entry.path ? [entry.path] : []));
+  const rejectedDirtyTargets = dirtyTargetAuthorities.filter((entry) => !entry.accepted).map((entry) => ({ path: entry.path ?? entry.entry.path, reason: entry.reason ?? "unsafe dirty target" }));
+  for (const rejected of rejectedDirtyTargets) warnings.push(`unsafe dirty target excluded: ${rejected.path} (${rejected.reason})`);
+  const worktree = rawWorktree
+    ? {
+        ...rawWorktree,
+        entries: rawWorktree.entries.filter((entry) => acceptedDirtyPaths.has(entry.path)),
+        files: rawWorktree.files.filter((filePath) => acceptedDirtyPaths.has(filePath)),
+        symbols: rawWorktree.symbols.filter((entry) => acceptedDirtyPaths.has(entry.symbol.path)),
+        knownClean: rawWorktree.knownClean && rejectedDirtyTargets.length === 0
+      }
+    : undefined;
+  const requestedDirtyPaths = new Set(requestedFileAuthorities.flatMap((entry) => entry.path && acceptedDirtyPaths.has(entry.path) ? [entry.path] : []));
+  if (includeDiff && contextInput.task && taskReferencesDirtyContext(contextInput.task)) {
+    unresolvedExplicitTarget = requestedResolvedPaths.length + requestedNewPaths.length + requestedDirtyPaths.size < requestedTargetCount;
+  }
   const changedEntries = worktree?.entries ?? [];
   const changed = worktree?.files ?? [];
   const changedSymbols = worktree?.symbols ?? [];
@@ -140,6 +161,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
   const preliminaryNewTargets = [...new Set([...naturalPlanTargets, ...requestedNewPaths])];
   const pureNamedNewTarget = !dirtyContextTask && !explicitQuery && structuredNewTargetMode.allowed && intentOnly?.intentConfidence.mode === "edit"
     && !unresolvedExplicitTarget && preliminaryNewTargets.length > 0 && preliminaryNewTargets.every((filePath) => !repositoryPathSet.has(filePath))
+    && !naturalTargetRoles.hasReferenceCue && !naturalTargetRoles.unresolvedReferenceCue
     && unresolvedFocusPathTargets(targetTask, repositoryFiles, [...naturalNewTargets, ...naturalTargetAuthority.indexedTargetMentions]).length === 0
     && !classifyChangePlanNeed({ mode: "edit", task: contextInput.task, explicitTargetCount: preliminaryNewTargets.length, changeType, targetFiles: preliminaryNewTargets, repositoryFiles });
   const dirtyTargetRepositoryFiles = [...new Set([...repositoryFiles, ...changed.filter((filePath) => !isCodexaControlPath(filePath))])];
@@ -164,6 +186,9 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     for (const filePath of naturalPlanTargets.filter((candidate) => repositoryPathSet.has(candidate))) {
       addFocus(filePath, "natural task target", 100, "authoritative", "explicit_target");
       impactSeeds.set(filePath, "natural task target");
+    }
+    for (const filePath of naturalReadDependencies) {
+      addFocus(filePath, "natural task read dependency", 96, "authoritative", "explicit_target");
     }
   }
   const derivedTaskQuery = explicitQuery || explicitTargetProvided || dirtyContextTask || pureNamedNewTarget ? "" : codeLikeQueryFromTask(contextInput.task);
@@ -261,12 +286,21 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
         changed: dirtyScopedChanged,
         worktree,
         broadDirty,
-        focusEntries
+        focusEntries,
+        rejectedTargets: rejectedDirtyTargets
       })
     : undefined;
   const cleanDirtyScope = dirtyContextTask && !dirtyQualifierMentioned && dirtyScopedChanged.length === 0;
   if (pureNamedNewTarget && intentOnly) return terminalContextPackResult({ freshness, refresh, task: contextInput.task, intent: intentOnly.intentConfidence, targetPaths: preliminaryNewTargets, reason: "named new target has no indexed source dependency" });
-  if (cleanDirtyScope && intentOnly) return terminalContextPackResult({ freshness, refresh, task: contextInput.task, intent: intentOnly.intentConfidence, targetPaths: [], reason: "requested dirty-worktree scope is clean", dirtyScope });
+  if (cleanDirtyScope && intentOnly) return terminalContextPackResult({
+    freshness,
+    refresh,
+    task: contextInput.task,
+    intent: intentOnly.intentConfidence,
+    targetPaths: [],
+    reason: rejectedDirtyTargets.length > 0 ? "requested dirty-worktree scope has no safe regular-file targets" : "requested dirty-worktree scope is clean",
+    dirtyScope
+  });
   const packetIntent = naturalRetrieval
     ? packetIntentConfidence(naturalRetrieval.intentConfidence, focusEntries, {
         explicitTargetProvided,
@@ -352,7 +386,8 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
   const contextSources = summarizeContextSources(focusEntries);
   const dirtyScopeChangePlan = dirtyScope?.mode === "edit" && dirtyScope.canPlan && packetIntent?.verdict === "edit-ready";
   const qualifiedDirtyScopePlan = dirtyScopeChangePlan && dirtyQualifierMentioned;
-  const explicitPlanPaths = [...new Set([...requestedResolvedPaths, ...requestedNewPaths])];
+  const rawExplicitPlanPaths = [...new Set([...requestedResolvedPaths, ...requestedNewPaths, ...requestedDirtyPaths])];
+  const { roles: explicitTargetRoles, editableTargets: explicitPlanPaths } = editableTargetsWithDefault(targetTask, rawExplicitPlanPaths, [...repositoryFiles, ...naturalNewTargets, ...requestedDirtyPaths], index.symbols);
   const materialChangeType = changeType === "api" || changeType === "rename" || changeType === "delete";
   const fallbackPlanMode = materialChangeType ? "edit" : contextInput.task ? dirtyScopeMode(taskIntents, contextInput.task) : "orientation";
   const structuredTargetMismatch = explicitTargetProvided
@@ -361,6 +396,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     && !explicitPlanPaths.some((filePath) => naturalPathPlanTargets.includes(filePath))
     && !explicitDisambiguatesNaturalTarget;
   const planPaths = explicitTargetProvided ? [...new Set([...naturalPathPlanTargets, ...explicitPlanPaths])] : qualifiedDirtyScopePlan ? qualifiedDirtyTargets : naturalPlanTargets;
+  const targetRoles = mergeTaskTargetRoles(planPaths, naturalTargetRoles, explicitTargetRoles);
   const naturalTargetCandidates = contextInput.task
     ? dirtyContextTask
       ? dirtyTargetCandidates
@@ -376,7 +412,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     targetFiles: planPaths,
     repositoryFiles
   });
-  const changePlanInputs = dirtyScopeChangePlan && !qualifiedDirtyScopePlan
+  const changePlanInputs = dirtyScopeChangePlan
     ? { task: contextInput.task, diff: true, changeType, saveSnapshot: true }
     : { task: contextInput.task, files: planPaths.slice(0, 64), changeType, saveSnapshot: true };
   const editIntentWithoutTarget = !explicitTargetProvided && !dirtyContextTask && !dirtyScopeChangePlan && planPaths.length === 0 && (materialChangeType || packetIntent?.mode === "edit");
@@ -406,7 +442,9 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     && boundedEditTarget
     && planPaths.length > 0
     && planPaths.every((filePath) => !repositoryPathSet.has(filePath))
-    && focusPaths.length === 0;
+    && focusPaths.length === 0
+    && !targetRoles.hasReferenceCue
+    && !targetRoles.unresolvedReferenceCue;
   const actionability = unresolvedTarget ? "needs_target" : riskyEditNeedsPlan || boundedEditTarget ? "edit_ready" : baseActionability;
   const packetVerdict = unresolvedTarget ? "needs-target" : riskyEditNeedsPlan || boundedEditTarget ? "edit-ready" : packetIntent?.verdict;
   const effectivePacketIntent = packetIntent
@@ -511,6 +549,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       unindexedChanged: unindexedChanged.slice(0, 80),
       worktree: worktree ? compactWorktreeState(worktree) : undefined,
       worktreeDegradationReasons: worktree?.degradedReasons ?? [],
+      rejectedDirtyTargets,
       dirtyScope,
       groups: groups.slice(0, 20).map(compactDiffGroup),
       tests: displayedTests.slice(0, 30),
@@ -520,6 +559,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       targetCandidates: naturalTargetCandidates,
       unresolvedTargets: unresolvedNaturalTargets,
       boundedPlanTargets,
+      targetRoles,
       nextReads,
       baseline,
       retrieval: naturalRetrieval
@@ -587,7 +627,20 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
   const limit = clampInt(focusInput.limit ?? 10, 3, session.maxResults);
   const tokenBudget = clampInt(focusInput.tokenBudget ?? 2400, 600, 8000);
   const includeDiff = focusInput.diff ?? true;
-  const worktree = includeDiff ? await getWorktreeState(session) : undefined;
+  const repositoryFiles = index.files.map((file) => file.path);
+  const rawWorktree = includeDiff ? await getWorktreeState(session) : undefined;
+  const dirtyTargetAuthorities = rawWorktree ? await inspectDirtyTargetAuthorities(rawWorktree.entries, repoRoot, repositoryFiles) : [];
+  const acceptedDirtyPaths = new Set(dirtyTargetAuthorities.filter((entry) => entry.accepted && entry.path).flatMap((entry) => entry.path ? [entry.path] : []));
+  const rejectedDirtyTargets = dirtyTargetAuthorities.filter((entry) => !entry.accepted).map((entry) => ({ path: entry.path ?? entry.entry.path, reason: entry.reason ?? "unsafe dirty target" }));
+  const worktree = rawWorktree
+    ? {
+        ...rawWorktree,
+        entries: rawWorktree.entries.filter((entry) => acceptedDirtyPaths.has(entry.path)),
+        files: rawWorktree.files.filter((filePath) => acceptedDirtyPaths.has(filePath)),
+        symbols: rawWorktree.symbols.filter((entry) => acceptedDirtyPaths.has(entry.symbol.path)),
+        knownClean: rawWorktree.knownClean && rejectedDirtyTargets.length === 0
+      }
+    : undefined;
   const dirtyScopeRequested = includeDiff && Boolean(worktree) && taskReferencesDirtyContext(task) && !worktree?.degraded;
   const intentOnly = retrieveIntentOnly(task);
   const changedEntries = worktree?.entries ?? [];
@@ -602,7 +655,6 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
     matchedTerms: [file.path],
     tier: "derived" as EvidenceTier
   }));
-  const repositoryFiles = index.files.map((file) => file.path);
   const changedPlanFiles = changed.filter((filePath) => !isCodexaControlPath(filePath));
   const changedPlanFileSet = new Set(changedPlanFiles);
   const targetRepositoryFiles = dirtyScopeRequested ? [...new Set([...repositoryFiles, ...changedPlanFiles])] : repositoryFiles;
@@ -611,19 +663,24 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
   const detectedPlannedNewTargets = taskTargetAuthority.newTargets;
   const matchedTaskPlanTargets = focusFilesAndSymbolsInTaskOrder(targetTask, [...targetRepositoryFiles, ...detectedPlannedNewTargets], [...targetRepositoryFiles, ...detectedPlannedNewTargets], index.symbols);
   const tentativeTaskPlanTargets = [...new Set([...matchedTaskPlanTargets, ...taskTargetAuthority.indexedTargets])];
-  const plannedNewTargets = isStructuralEditTask(targetTask) && !tentativeTaskPlanTargets.some((filePath) => repositoryFiles.includes(filePath)) ? [] : detectedPlannedNewTargets;
-  const directTaskPlanTargets = plannedNewTargets === detectedPlannedNewTargets
+  const tentativeTaskTargetRoles = classifyTaskTargetRoles(targetTask, tentativeTaskPlanTargets, [...targetRepositoryFiles, ...detectedPlannedNewTargets], index.symbols);
+  const plannedNewTargets = isStructuralEditTask(targetTask) && !tentativeTaskTargetRoles.editableTargets.some((filePath) => repositoryFiles.includes(filePath)) ? [] : detectedPlannedNewTargets;
+  const taskRoleCandidates = plannedNewTargets === detectedPlannedNewTargets
     ? tentativeTaskPlanTargets
     : [...new Set([...focusFilesAndSymbolsInTaskOrder(targetTask, targetRepositoryFiles, targetRepositoryFiles, index.symbols), ...taskTargetAuthority.indexedTargets])];
+  const taskTargetRoles = classifyTaskTargetRoles(targetTask, taskRoleCandidates, [...targetRepositoryFiles, ...plannedNewTargets], index.symbols);
+  const directTaskPlanTargets = taskTargetRoles.editableTargets;
+  const taskReadDependencies = taskTargetRoles.readDependencies;
   const ambiguityRepositoryFiles = dirtyScopeRequested ? targetRepositoryFiles : repositoryFiles;
   const targetCandidateGroups = [...ambiguousFocusTargetCandidateGroups(targetTask, ambiguityRepositoryFiles), ...ambiguousFocusSymbolTargetCandidateGroups(targetTask, index.symbols, exactTaskPaths)];
   const rawTargetCandidates = [...new Set(targetCandidateGroups.flat())];
   const narrowedDirtyCandidates = narrowAmbiguousTargetGroupsToScope(targetCandidateGroups, changedPlanFileSet);
   const taskPlanTargets = [...new Set([...directTaskPlanTargets, ...(dirtyScopeRequested ? narrowedDirtyCandidates.resolved : [])])];
   const confirmedMissingPlanTargets = new Set(taskTargetAuthority.inspections.flatMap((entry) => entry.status === "missing" && entry.path ? [entry.path] : []));
-  const taskTargetMatches: FocusSelectionEntry[] = taskPlanTargets.flatMap((filePath) => {
+  const taskTargetMatches: FocusSelectionEntry[] = [...new Set([...taskPlanTargets, ...taskReadDependencies])].flatMap((filePath) => {
     const file = index.files.find((candidate) => candidate.path === filePath);
-    return file ? [{ file, score: file.rank + 90, reasons: ["named task target"], matchedTerms: [filePath], tier: "authoritative" as EvidenceTier }] : [];
+    const readOnly = taskReadDependencies.includes(filePath) && !taskPlanTargets.includes(filePath);
+    return file ? [{ file, score: file.rank + 90, reasons: [readOnly ? "named task read dependency" : "named task target"], matchedTerms: [filePath], tier: "authoritative" as EvidenceTier }] : [];
   });
   const targetCandidates = dirtyScopeRequested ? narrowedDirtyCandidates.ambiguous : rawTargetCandidates;
   const unresolvedTargets = unresolvedFocusPathTargets(targetTask, targetRepositoryFiles, [...plannedNewTargets, ...taskTargetAuthority.indexedTargetMentions]);
@@ -635,10 +692,18 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
   const dirtyScopeEmpty = dirtyScopeRequested && !dirtyQualifierMentioned && changedPlanFiles.length === 0;
   const pureNamedNewTarget = !dirtyScopeRequested && intentOnly.intentConfidence.mode === "edit" && taskPlanTargets.length > 0
     && taskPlanTargets.every((filePath) => confirmedMissingPlanTargets.has(filePath) && !repositoryFiles.includes(filePath)) && !ambiguousExplicitTarget && !unresolvedNaturalTarget
+    && !taskTargetRoles.hasReferenceCue && !taskTargetRoles.unresolvedReferenceCue
     && !classifyChangePlanNeed({ mode: "edit", task, explicitTargetCount: taskPlanTargets.length, targetFiles: taskPlanTargets, repositoryFiles });
   const retrieval = dirtyScopeRequested || pureNamedNewTarget ? intentOnly : await retrieveForTask(index, task, limit, semanticOptionsFromQueryOptions(repoRoot, options));
   if (pureNamedNewTarget) return terminalFocusBriefResult({ freshness, refresh, task, intent: intentOnly.intentConfidence, targetPaths: taskPlanTargets, reason: "named new target has no indexed source dependency" });
-  if (dirtyScopeEmpty) return terminalFocusBriefResult({ freshness, refresh, task, intent: intentOnly.intentConfidence, targetPaths: [], reason: "requested dirty-worktree scope is clean" });
+  if (dirtyScopeEmpty) return terminalFocusBriefResult({
+    freshness,
+    refresh,
+    task,
+    intent: intentOnly.intentConfidence,
+    targetPaths: [],
+    reason: rejectedDirtyTargets.length > 0 ? "requested dirty-worktree scope has no safe regular-file targets" : "requested dirty-worktree scope is clean"
+  });
   const workflowMatches = workflowFocusEntries(index, retrieval.workflows, task, limit);
   const workflowTestMatches: FocusSelectionEntry[] =
     workflowMatches.length > 0 && taskAsksForTests(task)
@@ -683,8 +748,16 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
   const focusFiles = uniqueFiles(selected.map((entry) => entry.file)).slice(0, limit);
   const tiersByPath = new Map(selected.map((entry) => [entry.file.path, entry.tier]));
   const tests = recommendTests(index, focusFiles.map((file) => file.path), repoRoot).slice(0, 10);
-  const dirtyScopeFileCount = dirtyScopeRequested && !dirtyQualifierMentioned ? changedPlanFiles.length : 0;
   const routedPlanTargets = dirtyScopeRequested && dirtyQualifierMentioned ? qualifiedDirtyTargets : taskPlanTargets;
+  const dirtyScopePlanTargets = dirtyScopeRequested ? (dirtyQualifierMentioned ? qualifiedDirtyTargets : changedPlanFiles) : [];
+  const dirtyScopeFileCount = dirtyScopePlanTargets.length;
+  const targetRoles = {
+    editableTargets: dirtyScopeRequested ? dirtyScopePlanTargets : routedPlanTargets,
+    readDependencies: taskReadDependencies.filter((filePath) => !(dirtyScopeRequested ? dirtyScopePlanTargets : routedPlanTargets).includes(filePath)),
+    excludedTargets: taskTargetRoles.excludedTargets,
+    hasReferenceCue: taskTargetRoles.hasReferenceCue,
+    unresolvedReferenceCue: taskTargetRoles.unresolvedReferenceCue
+  };
   const routingMode = dirtyQualifierNoMatch || dirtyScopeEmpty ? "orientation" as const : retrieval.intentConfidence.mode;
   const recommendedNextCall = recommendNextCodexaCall(
     retrieval.intents,
@@ -706,7 +779,9 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
     && routedPlanTargets.length > 0
     && routedPlanTargets.every((filePath) => !repositoryFiles.includes(filePath))
     && focusFiles.length === 0
-    && recommendedNextCall.tool === "source";
+    && recommendedNextCall.tool === "source"
+    && !taskTargetRoles.hasReferenceCue
+    && !taskTargetRoles.unresolvedReferenceCue;
   const proposedNextCall = dirtyScopeEmpty && focusFiles.length === 0 && recommendedNextCall.tool === "source"
     ? { tool: "none", reason: "the requested dirty-worktree scope is clean; stop Codexa" }
     : newTargetNeedsNoRead
@@ -721,7 +796,7 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
         ...retrieval.intentConfidence,
         mode: "edit" as const,
         confidence: Math.max(0.7, retrieval.intentConfidence.confidence),
-        anchors: dirtyScopePlan ? changedPlanFiles.slice(0, 8) : routedPlanTargets.slice(0, 8),
+        anchors: dirtyScopePlan ? dirtyScopePlanTargets.slice(0, 8) : routedPlanTargets.slice(0, 8),
         selectedAnchorCount: dirtyScopePlan ? dirtyScopeFileCount : routedPlanTargets.length,
         missingAnchors: [],
         editReady: true,
@@ -869,9 +944,11 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
       groups: groups.slice(0, 12).map(compactDiffGroup),
       worktree: worktree ? compactWorktreeState(worktree) : undefined,
       worktreeDegradationReasons: worktree?.degradedReasons ?? [],
+      rejectedDirtyTargets,
       tests: tests.slice(0, 30),
       targetCandidates,
       unresolvedTargets,
+      targetRoles,
       nextCall,
       sessionMemory: sessionMemory.data,
       workspaceGuidance: workspaceGuidance.data,
@@ -879,119 +956,4 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
       gaps
     }
   };
-}
-
-async function contextSnippets(
-  repoRoot: string,
-  index: CodexaIndex,
-  focusPaths: string[],
-  changedSymbols: ChangedSymbol[],
-  queryText: string,
-  limit: number
-): Promise<string[]> {
-  const snippets: string[] = [];
-  const used = new Set<string>();
-  const unreadableFiles = new Set<string>();
-  const add = async (filePath: string, line: number, reason: string) => {
-    if (snippets.length >= Math.min(10, limit)) {
-      return;
-    }
-    const key = `${filePath}:${line}`;
-    if (used.has(key)) {
-      return;
-    }
-    used.add(key);
-    const snippet = await readContextSnippet(repoRoot, filePath, line, 3);
-    if ("unreadable" in snippet) {
-      if (!unreadableFiles.has(filePath)) {
-        unreadableFiles.add(filePath);
-        snippets.push(`- ${filePath}:${line} ${reason}\n  <snippet unavailable: ${snippet.unreadable}>`);
-      }
-      return;
-    }
-    if (snippet.text) {
-      snippets.push(`- ${filePath}:${line} ${reason}\n${snippet.text}`);
-    }
-  };
-
-  for (const entry of changedSymbols.slice(0, limit)) {
-    await add(entry.symbol.path, entry.symbol.range?.startLine ?? 1, `changed ${entry.symbol.qualifiedName}`);
-  }
-
-  const focusSet = new Set(focusPaths);
-  const hasQuery = Boolean(queryText.trim());
-  const symbols = index.symbols
-    .filter((symbol) => focusSet.has(symbol.path))
-    .sort((a, b) => {
-      const fileA = findFile(index, a.path)?.rank ?? 0;
-      const fileB = findFile(index, b.path)?.rank ?? 0;
-      return fileB - fileA || (a.range?.startLine ?? 0) - (b.range?.startLine ?? 0) || a.qualifiedName.localeCompare(b.qualifiedName);
-    });
-  if (hasQuery) {
-    const usages = index.usageSites
-      .map((usage) => ({
-        usage,
-        score: focusSet.has(usage.path) ? Math.max(matchScore(queryText, usage.name), matchScore(queryText, usage.text), matchScore(queryText, usage.path)) : 0
-      }))
-      .filter((entry) => entry.score > 0)
-      .sort(
-        (a, b) =>
-          b.score - a.score ||
-          Number(a.usage.kind === "import") - Number(b.usage.kind === "import") ||
-          a.usage.path.localeCompare(b.usage.path) ||
-          (a.usage.range?.startLine ?? 0) - (b.usage.range?.startLine ?? 0)
-      )
-      .slice(0, limit);
-    for (const { usage } of usages) {
-      await add(usage.path, usage.range?.startLine ?? 1, `usage ${usage.name} ${usage.confidence}`);
-    }
-  }
-
-  const symbolCandidates = hasQuery
-    ? symbols.filter((symbol) => Math.max(matchScore(queryText, symbol.name), matchScore(queryText, symbol.qualifiedName), matchScore(queryText, symbol.path)) > 0)
-    : symbols;
-  for (const symbol of symbolCandidates.slice(0, limit)) {
-    await add(symbol.path, symbol.range?.startLine ?? 1, `${symbol.kind} ${symbol.qualifiedName}`);
-  }
-  return snippets;
-}
-
-async function sessionMemoryPreview(input: {
-  repoRoot: string;
-  freshness: import("../types.js").FreshnessInfo;
-  files?: string[];
-  symbols?: string[];
-  topics?: string[];
-  taskId?: string;
-  limit: number;
-}): Promise<{ lines: string[]; data?: unknown }> {
-  try {
-    const result = await summarizeSessionMemory({
-      repoRoot: input.repoRoot,
-      taskId: input.taskId,
-      files: input.files,
-      symbols: input.symbols,
-      topics: input.topics,
-      freshness: input.freshness,
-      limit: input.limit,
-      includeStale: true
-    });
-    if (result.memory.entries.length === 0) {
-      return { lines: [] };
-    }
-    return {
-      lines: (result.memory.markdown ?? "").split(/\r?\n/u).slice(0, 12),
-      data: {
-        sessionId: result.sessionId,
-        revision: result.revision,
-        entries: result.memory.entries.slice(0, input.limit),
-        warnings: result.warnings
-      }
-    };
-  } catch (error) {
-    return {
-      lines: [`- unavailable: ${error instanceof Error ? error.message : String(error)}`],
-      data: { warning: error instanceof Error ? error.message : String(error) }
-    };
-  }
 }

@@ -72,7 +72,10 @@ describe("retrieval prompt intent", () => {
     "Review whether src/util.ts needs changes",
     "Does auth have to be fixed in src/api.ts?",
     "Can you review whether auth has to be fixed in src/api.ts?",
-    "Could you explain whether src/util.ts has to be fixed?"
+    "Could you explain whether src/util.ts has to be fixed?",
+    "Should src/api.ts enforce auth?",
+    "Does src/api.ts need to enforce auth?",
+    "Explain whether the route in src/api.ts has to enforce auth"
   ])("keeps %s read-only", (task) => {
     expect(promptModeForTask(task)).toBe("orientation");
     expect(classifyTaskIntent(task)).not.toContain("implementation");
@@ -190,7 +193,11 @@ describe("retrieval prompt intent", () => {
     "We require updates to src/api.ts",
     "Can auth be fixed in src/api.ts?",
     "Could src/util.ts be fixed?",
-    "Auth has to be fixed in src/api.ts"
+    "Auth has to be fixed in src/api.ts",
+    "src/api.ts should enforce auth",
+    "The API in src/api.ts must enforce auth",
+    "src/api.ts needs to enforce auth",
+    "The route in src/api.ts has to enforce auth"
   ])("keeps %s edit-directed", (task) => {
     expect(promptModeForTask(task)).toBe("edit");
     expect(classifyTaskIntent(task)).toContain("implementation");

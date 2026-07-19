@@ -1,7 +1,7 @@
 import path from "node:path";
 import { indexGaps, formatGaps } from "./diff.js";
 import { confidenceTier, tierScore, clampInt, fitLinesToTokenBudget } from "./formatting.js";
-import { ambiguousFocusSymbolTargetCandidates, ambiguousFocusTargetCandidates, classifyChangePlanNeed, focusFilesAndSymbolsInTaskOrder, focusFilesInTaskOrder, isStructuralEditTask, normalizeTaskRepositoryPaths, plannedNewFocusPathTargets, unknownFocusPathTargets, unresolvedFocusPathTargets } from "./graph.js";
+import { ambiguousFocusSymbolTargetCandidates, ambiguousFocusTargetCandidates, classifyChangePlanNeed, classifyTaskTargetRoles, focusFilesAndSymbolsInTaskOrder, focusFilesInTaskOrder, isStructuralEditTask, normalizeTaskRepositoryPaths, plannedNewFocusPathTargets, unknownFocusPathTargets, unresolvedFocusPathTargets } from "./graph.js";
 import { nextTool } from "./next-tools.js";
 import { assessContextQuality, formatContextQuality, formatValueEstimate, valueEstimate } from "./quality.js";
 import { assertRawSearchPatternLimit, normalizeRawSearchPatterns, RAW_SEARCH_PATTERN_LIMIT, rawSearch, type RawSearchHit, type RawSearchResult } from "./raw-search.js";
@@ -106,12 +106,16 @@ export async function searchQuery(
     ...focusFilesAndSymbolsInTaskOrder(targetQuery, [...repositoryFiles, ...detectedPlannedNewTargets], [...repositoryFiles, ...detectedPlannedNewTargets], index.symbols),
     ...plannedAuthority.indexedTargets
   ])];
-  const plannedNewTargets = isStructuralEditTask(targetQuery) && !tentativePlanTargets.some((filePath) => repositoryFiles.includes(filePath)) ? [] : detectedPlannedNewTargets;
-  const explicitPlanTargets = plannedNewTargets === detectedPlannedNewTargets ? tentativePlanTargets : [...new Set([...focusFilesAndSymbolsInTaskOrder(targetQuery, repositoryFiles, repositoryFiles, index.symbols), ...plannedAuthority.indexedTargets])];
+  const tentativeTargetRoles = classifyTaskTargetRoles(targetQuery, tentativePlanTargets, [...repositoryFiles, ...detectedPlannedNewTargets], index.symbols);
+  const plannedNewTargets = isStructuralEditTask(targetQuery) && !tentativeTargetRoles.editableTargets.some((filePath) => repositoryFiles.includes(filePath)) ? [] : detectedPlannedNewTargets;
+  const roleCandidates = plannedNewTargets === detectedPlannedNewTargets ? tentativePlanTargets : [...new Set([...focusFilesAndSymbolsInTaskOrder(targetQuery, repositoryFiles, repositoryFiles, index.symbols), ...plannedAuthority.indexedTargets])];
+  const targetRoles = classifyTaskTargetRoles(targetQuery, roleCandidates, [...repositoryFiles, ...plannedNewTargets], index.symbols);
+  const explicitPlanTargets = targetRoles.editableTargets;
   const targetCandidates = [...new Set([...ambiguousFocusTargetCandidates(targetQuery, repositoryFiles), ...ambiguousFocusSymbolTargetCandidates(targetQuery, index.symbols, explicitPathTargets)])];
   const unresolvedTargets = unresolvedFocusPathTargets(targetQuery, repositoryFiles, [...plannedNewTargets, ...plannedAuthority.indexedTargetMentions]);
   const pureNamedNewTarget = intentOnly.intentConfidence.mode === "edit" && explicitPlanTargets.length > 0 && explicitPlanTargets.every((filePath) => !repositoryFiles.includes(filePath))
     && targetCandidates.length === 0 && unresolvedTargets.length === 0
+    && !targetRoles.hasReferenceCue && !targetRoles.unresolvedReferenceCue
     && !classifyChangePlanNeed({ mode: "edit", task: queryInput.query, explicitTargetCount: explicitPlanTargets.length, targetFiles: explicitPlanTargets, repositoryFiles });
   if (pureNamedNewTarget) return terminalSearchResult({ freshness, refresh, query: queryInput.query, intent: intentOnly.intentConfidence, targetPaths: explicitPlanTargets, reason: "named new target has no indexed source dependency" });
   const rawPatterns = rawSearchPatternsForQuery(queryInput.query, queryInput.patterns);
@@ -129,7 +133,7 @@ export async function searchQuery(
     existing.push(`${formatRetrievalLaneSummary(match.lanes)} ${match.matchedTerms.slice(0, 5).join(", ") || "intent"}`);
     interpreted.reasons.set(match.file.path, existing);
   }
-  const explicitTargetFiles = explicitPlanTargets.map((filePath) => findFile(index, filePath)).filter((file): file is FileFact => Boolean(file));
+  const explicitTargetFiles = [...new Set([...explicitPlanTargets, ...targetRoles.readDependencies])].map((filePath) => findFile(index, filePath)).filter((file): file is FileFact => Boolean(file));
   const candidateFiles = targetCandidates.map((filePath) => findFile(index, filePath)).filter((file): file is FileFact => Boolean(file));
   const rankedSearchFiles = uniqueFiles(
     raw.sufficient
@@ -229,7 +233,7 @@ export async function searchQuery(
     ? ambiguousExplicitTarget
       ? "Choose one path from targetCandidates and inspect it directly; do not repeat search."
       : "Correct one path from unresolvedTargets before edit planning; do not repeat broad discovery."
-    : boundedTargetReady && searchFiles.length === 0
+    : boundedTargetReady && searchFiles.length === 0 && !targetRoles.hasReferenceCue && !targetRoles.unresolvedReferenceCue
       ? "Stop Codexa discovery; no indexed source read is required. Proceed with the named new target."
     : raw.sufficient
       ? "Stop Codexa discovery and read the exact source hits."
@@ -298,6 +302,7 @@ export async function searchQuery(
       diagnostics: effectiveDiagnostics,
       targetCandidates: targetCandidates.slice(0, 40),
       unresolvedTargets: unresolvedTargets.slice(0, 40),
+      targetRoles,
       tests,
       value,
       quality,
