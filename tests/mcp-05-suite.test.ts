@@ -197,6 +197,59 @@ it("returns an unchanged receipt for an identical repeated automatic result", as
     }
   }, 60_000);
 
+it("preserves one executable focus_brief follow-up in an unchanged core receipt", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-unchanged-guidance-"));
+    const repo = await createIndexedMcpAutoVerifyRepo(workspace);
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", repo, "--tools", "core", "--no-auto-refresh", "--session-memory", "off"],
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-unchanged-guidance-test", version: "0.1.0" });
+    await client.connect(transport);
+    try {
+      const task = "Modify package.json and src/main.js together to change the package contract";
+      const request = {
+        name: "capabilities",
+        arguments: { action: "invoke", operation: "focus_brief", arguments: { task } }
+      } as const;
+      const first = await client.callTool(request);
+      const second = await client.callTool(request);
+      type Receipt = {
+        actionability?: string;
+        nextTools?: unknown[];
+        data?: {
+          nextCall?: { tool?: string; arguments?: Record<string, unknown> };
+          decisionKernel?: { scope?: { nextCall?: Record<string, unknown> } };
+          delivery?: { unchangedReceipt?: boolean };
+        };
+        lifecycle?: { nextTools?: string[] };
+      };
+      const firstReceipt = first.structuredContent as Receipt;
+      const secondReceipt = second.structuredContent as Receipt;
+      const expectedArguments = firstReceipt.data?.nextCall?.arguments;
+
+      expect(firstReceipt.data?.nextCall).toMatchObject({ tool: "change_plan", arguments: { task, saveSnapshot: true } });
+      expect(expectedArguments).toBeDefined();
+      expect(secondReceipt).toMatchObject({
+        actionability: "edit_ready",
+        nextTools: [],
+        data: {
+          nextCall: { tool: "change_plan", arguments: expectedArguments },
+          decisionKernel: { scope: { nextCall: { tool: "change_plan", status: "executable" } } },
+          delivery: { unchangedReceipt: true }
+        },
+        lifecycle: { nextTools: ["change_plan"] }
+      });
+      expect(secondReceipt.data?.decisionKernel?.scope?.nextCall?.arguments).toBeUndefined();
+      const serializedArguments = JSON.stringify(expectedArguments);
+      expect(JSON.stringify(second).split(serializedArguments)).toHaveLength(2);
+      expect(JSON.stringify(second)).toContain("unchanged from the prior receipt");
+    } finally {
+      await client.close();
+    }
+  }, 60_000);
+
 it("returns an unchanged task_brief receipt with default session-memory recording enabled", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-unchanged-memory-"));
     const repo = await createIndexedMcpRepo(workspace, "repo", "alpha", "alphaSymbol");

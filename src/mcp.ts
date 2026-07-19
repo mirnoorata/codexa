@@ -736,6 +736,8 @@ function unchangedMcpReceipt(result: QueryResult): QueryResult {
   if (!isRecord(result.data)) return result;
   const kernel = isRecord(result.data.decisionKernel) ? result.data.decisionKernel : undefined;
   const authority = kernel && isRecord(kernel.authority) ? kernel.authority : {};
+  const nextTools = Array.isArray(result.data.nextTools) ? result.data.nextTools.slice(0, 1) : [];
+  const nextCall = nextTools.length === 0 && isRecord(result.data.nextCall) ? result.data.nextCall : undefined;
   return {
     ...result,
     data: {
@@ -745,8 +747,11 @@ function unchangedMcpReceipt(result: QueryResult): QueryResult {
       packetVerdict: authority.packetVerdict,
       completionAuthority: authority.completionAuthority,
       inspectMode: authority.inspectMode,
+      ...(nextTools.length > 0 ? { nextTools } : {}),
+      ...(nextCall ? { nextCall } : {}),
       decisionKernel: kernel,
       delivery: result.data.delivery,
+      truncation: result.data.truncation,
       mcp: result.data.mcp
     }
   };
