@@ -190,6 +190,41 @@ describe("query routing boundaries", () => {
     expect((unindexedPlan.data as { editReadiness: { editable: boolean }; plannedEditTargets: string[] })).toMatchObject({ editReadiness: { editable: false }, plannedEditTargets: [] });
   });
 
+  it("never treats an existing untracked source file as a terminal new target", async () => {
+    const repo = await createFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+    await writeFile(path.join(repo, "src/untracked.ts"), "export const existingUntracked = true\n", "utf8");
+    const task = "Fix src/untracked.ts";
+
+    const focus = await focusBriefQuery(repo, { task, diff: true }, { autoRefresh: false });
+    expect((focus.data as { actionability: string; nextCall: { tool: string }; unresolvedTargets: string[] })).toMatchObject({
+      actionability: "needs_target",
+      nextCall: { tool: "search" },
+      unresolvedTargets: ["src/untracked.ts"]
+    });
+    expect(focus.text).not.toContain("No indexed source read is required");
+
+    const search = await searchQuery(repo, { query: task }, { autoRefresh: false });
+    expect((search.data as { actionability: string; unresolvedTargets: string[] })).toMatchObject({
+      actionability: "needs_target",
+      unresolvedTargets: ["src/untracked.ts"]
+    });
+
+    const pack = await contextPackQuery(repo, { task, diff: true, includeSnippets: false }, { autoRefresh: false });
+    expect((pack.data as { actionability: string; nextTools: Array<{ tool: string }>; unresolvedTargets: string[] })).toMatchObject({
+      actionability: "needs_target",
+      nextTools: [expect.objectContaining({ tool: "search" })],
+      unresolvedTargets: ["src/untracked.ts"]
+    });
+    expect(pack.text).not.toContain("No indexed source read is required");
+
+    const dirtyFocus = await focusBriefQuery(repo, { task: "Fix current changes in src/untracked.ts", diff: true }, { autoRefresh: false });
+    expect((dirtyFocus.data as { actionability: string; nextCall: { tool: string; arguments?: { files?: string[] } } })).toMatchObject({
+      actionability: "edit_ready",
+      nextCall: { tool: "change_plan", arguments: { files: ["src/untracked.ts"] } }
+    });
+  });
+
   it("disambiguates colliding doc basenames without planning docs-only risk wording", async () => {
     const repo = await createFixtureRepo();
     await mkdir(path.join(repo, "docs"), { recursive: true });
