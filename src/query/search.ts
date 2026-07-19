@@ -1,7 +1,7 @@
 import path from "node:path";
 import { indexGaps, formatGaps } from "./diff.js";
 import { confidenceTier, tierScore, clampInt, fitLinesToTokenBudget } from "./formatting.js";
-import { ambiguousFocusSymbolTargetCandidates, ambiguousFocusTargetCandidates, classifyChangePlanNeed, focusFilesAndSymbolsInTaskOrder, focusFilesInTaskOrder, isStructuralEditTask, normalizeTaskRepositoryPaths, plannedNewFocusPathTargets, unresolvedFocusPathTargets } from "./graph.js";
+import { ambiguousFocusSymbolTargetCandidates, ambiguousFocusTargetCandidates, classifyChangePlanNeed, focusFilesAndSymbolsInTaskOrder, focusFilesInTaskOrder, isStructuralEditTask, normalizeTaskRepositoryPaths, plannedNewFocusPathTargets, unknownFocusPathTargets, unresolvedFocusPathTargets } from "./graph.js";
 import { nextTool } from "./next-tools.js";
 import { assessContextQuality, formatContextQuality, formatValueEstimate, valueEstimate } from "./quality.js";
 import { assertRawSearchPatternLimit, normalizeRawSearchPatterns, RAW_SEARCH_PATTERN_LIMIT, rawSearch, type RawSearchHit, type RawSearchResult } from "./raw-search.js";
@@ -100,7 +100,7 @@ export async function searchQuery(
   const repositoryFiles = index.files.map((file) => file.path);
   const targetQuery = normalizeTaskRepositoryPaths(queryInput.query, repoRoot);
   const explicitPathTargets = focusFilesInTaskOrder(targetQuery, repositoryFiles, repositoryFiles);
-  const plannedAuthority = await inspectPlannedTargetAuthority(plannedNewFocusPathTargets(targetQuery, repositoryFiles), repoRoot, repositoryFiles);
+  const plannedAuthority = await inspectPlannedTargetAuthority(plannedNewFocusPathTargets(targetQuery, repositoryFiles), repoRoot, repositoryFiles, unknownFocusPathTargets(targetQuery, repositoryFiles));
   const detectedPlannedNewTargets = plannedAuthority.newTargets;
   const tentativePlanTargets = [...new Set([
     ...focusFilesAndSymbolsInTaskOrder(targetQuery, [...repositoryFiles, ...detectedPlannedNewTargets], [...repositoryFiles, ...detectedPlannedNewTargets], index.symbols),

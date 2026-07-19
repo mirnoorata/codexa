@@ -6,7 +6,7 @@ import { formatDiffGroups, formatGaps, groupDiffImpact, indexGaps } from "./diff
 import { addContextPackImpactExpansion, verificationRecipes } from "./impact.js";
 import { lspAssistForFiles, lspOptionsFromQueryOptions } from "../lsp/assist.js";
 import { betterTier, clampInt, confidenceTier, fitLinesToTokenBudget, focusTierCounts, formatReasons, formatRecipes, limitTextToTokens, tierScore } from "./formatting.js";
-import { ambiguousFocusSymbolTargetCandidateGroups, ambiguousFocusSymbolTargetCandidates, ambiguousFocusTargetCandidateGroups, ambiguousFocusTargetCandidates, classifyChangePlanNeed, focusFilesAndSymbolsInTaskOrder, focusFilesInTaskOrder, formatWorkflowSummary, isLikelyPathTypo, isStructuralEditTask, narrowAmbiguousTargetGroupsToScope, normalizeTaskRepositoryPaths, plannedNewFocusPathTargets, recommendNextCodexaCall, unresolvedFocusPathTargets } from "./graph.js";
+import { ambiguousFocusSymbolTargetCandidateGroups, ambiguousFocusSymbolTargetCandidates, ambiguousFocusTargetCandidateGroups, ambiguousFocusTargetCandidates, classifyChangePlanNeed, focusFilesAndSymbolsInTaskOrder, focusFilesInTaskOrder, formatWorkflowSummary, isLikelyPathTypo, isStructuralEditTask, narrowAmbiguousTargetGroupsToScope, normalizeTaskRepositoryPaths, plannedNewFocusPathTargets, recommendNextCodexaCall, unknownFocusPathTargets, unresolvedFocusPathTargets } from "./graph.js";
 import { nextTool } from "./next-tools.js";
 import { assessContextQuality, formatContextQuality, formatValueEstimate, type ContextQuality, valueEstimate } from "./quality.js";
 import { baselineSearchSummary } from "./raw-search.js";
@@ -90,7 +90,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
   }
   const explicitDisambiguatesNaturalTarget = [...ambiguousFocusTargetCandidateGroups(targetTask, repositoryFiles), ...ambiguousFocusSymbolTargetCandidateGroups(targetTask, index.symbols)]
     .some((group) => group.some((filePath) => requestedResolvedPaths.includes(filePath)));
-  const naturalTargetAuthority = await inspectPlannedTargetAuthority(targetTask ? plannedNewFocusPathTargets(targetTask, repositoryFiles) : [], repoRoot, repositoryFiles);
+  const naturalTargetAuthority = await inspectPlannedTargetAuthority(targetTask ? plannedNewFocusPathTargets(targetTask, repositoryFiles) : [], repoRoot, repositoryFiles, targetTask ? unknownFocusPathTargets(targetTask, repositoryFiles) : []);
   const detectedNaturalNewTargets = naturalTargetAuthority.newTargets;
   const matchedNaturalPlanTargets = contextInput.task ? focusFilesAndSymbolsInTaskOrder(targetTask, [...repositoryFiles, ...detectedNaturalNewTargets], [...repositoryFiles, ...detectedNaturalNewTargets], index.symbols) : [];
   const tentativeNaturalPlanTargets = contextInput.task ? [...new Set([...matchedNaturalPlanTargets, ...naturalTargetAuthority.indexedTargets])] : [];
@@ -153,7 +153,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
   const narrowedDirtyCandidates = narrowAmbiguousTargetGroupsToScope(dirtyCandidateGroups, changedPathSet);
   const dirtyTaskTargets = [...new Set([...directDirtyTaskTargets, ...narrowedDirtyCandidates.resolved])];
   const dirtyTargetCandidates = narrowedDirtyCandidates.ambiguous;
-  const dirtyTargetAuthority = await inspectPlannedTargetAuthority(dirtyContextTask ? plannedNewFocusPathTargets(targetTask, dirtyTargetRepositoryFiles) : [], repoRoot, dirtyTargetRepositoryFiles);
+  const dirtyTargetAuthority = await inspectPlannedTargetAuthority(dirtyContextTask ? plannedNewFocusPathTargets(targetTask, dirtyTargetRepositoryFiles) : [], repoRoot, dirtyTargetRepositoryFiles, dirtyContextTask ? unknownFocusPathTargets(targetTask, dirtyTargetRepositoryFiles) : []);
   const dirtyPlannedNewTargets = dirtyTargetAuthority.newTargets;
   const dirtyUnresolvedTargets = dirtyContextTask ? unresolvedFocusPathTargets(targetTask, dirtyTargetRepositoryFiles, [...dirtyPlannedNewTargets, ...dirtyTargetAuthority.indexedTargetMentions]) : [];
   const dirtyQualifierMentioned = dirtyTaskTargets.length > 0 || dirtyCandidateGroups.length > 0 || dirtyUnresolvedTargets.length > 0;
@@ -607,7 +607,7 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
   const changedPlanFileSet = new Set(changedPlanFiles);
   const targetRepositoryFiles = [...new Set([...repositoryFiles, ...changedPlanFiles])];
   const exactTaskPaths = exactMatches.map((entry) => entry.file.path);
-  const taskTargetAuthority = await inspectPlannedTargetAuthority(plannedNewFocusPathTargets(targetTask, targetRepositoryFiles), repoRoot, targetRepositoryFiles);
+  const taskTargetAuthority = await inspectPlannedTargetAuthority(plannedNewFocusPathTargets(targetTask, targetRepositoryFiles), repoRoot, targetRepositoryFiles, unknownFocusPathTargets(targetTask, targetRepositoryFiles));
   const detectedPlannedNewTargets = taskTargetAuthority.newTargets;
   const matchedTaskPlanTargets = focusFilesAndSymbolsInTaskOrder(targetTask, [...targetRepositoryFiles, ...detectedPlannedNewTargets], [...targetRepositoryFiles, ...detectedPlannedNewTargets], index.symbols);
   const tentativeTaskPlanTargets = [...new Set([...matchedTaskPlanTargets, ...taskTargetAuthority.indexedTargets])];

@@ -203,12 +203,16 @@ export function narrowAmbiguousTargetGroupsToScope(groups: string[][], scopedPat
 export function unresolvedFocusPathTargets(task: string, repositoryFiles: string[], authorizedPlannedTargets?: string[]): string[] {
   const planned = new Set(authorizedPlannedTargets ?? plannedNewFocusPathTargets(task, repositoryFiles));
   return [...new Set([
-    ...unknownFocusPathMentions(task, repositoryFiles).filter((entry) => !planned.has(entry.candidate)).map((entry) => entry.candidate),
+    ...unknownFocusPathTargets(task, repositoryFiles).filter((candidate) => !planned.has(candidate)),
     ...unsupportedExternalPathTargets(task)
   ])];
 }
 
 function unsupportedExternalPathTargets(task: string): string[] {
+export function unknownFocusPathTargets(task: string, repositoryFiles: string[]): string[] {
+  return [...new Set(unknownFocusPathMentions(task, repositoryFiles).map((entry) => entry.candidate))];
+}
+
   const targets: string[] = [];
   for (const match of task.matchAll(/(?:^|[\s("'`\[<{,:;=>])((?:~\/|\$[A-Za-z_][A-Za-z0-9_]*\/|file:\/\/|[A-Za-z]:[\\/]|\\\\|\/|\.\.\/)[A-Za-z0-9_@.$~\\/-]+)(?=$|[\s,;:!?)}\]'"`])/giu)) {
     const target = match[1];
