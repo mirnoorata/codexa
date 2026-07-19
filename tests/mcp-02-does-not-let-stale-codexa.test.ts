@@ -484,14 +484,17 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
     });
     expect(JSON.stringify(changePlan)).toContain("Codexa change plan");
     expect(JSON.stringify(changePlan)).toContain("Task snapshot: mcp-changed-symbol");
-    const changePlanData = (changePlan.structuredContent as {
+    const changePlanEnvelope = changePlan.structuredContent as {
       data?: {
         nextTools?: Array<{ tool?: string }>;
         snapshot?: { planRevision?: number; invariants?: Array<{ id?: string; statement?: string }> };
       };
-    }).data;
+      nextTools?: Array<{ tool?: string }>;
+    };
+    const changePlanData = changePlanEnvelope.data;
     const invariant = changePlanData?.snapshot?.invariants?.[0];
-    expect(changePlanData?.nextTools?.map((entry) => entry.tool)).toEqual(["post_edit_review"]);
+    expect(changePlanData?.nextTools).toBeUndefined();
+    expect(changePlanEnvelope.nextTools?.map((entry) => entry.tool)).toEqual(["post_edit_review"]);
     expect(changePlanData?.snapshot?.planRevision).toBe(1);
     expect(invariant).toMatchObject({ statement: "Keep the exported function signature stable." });
     expect(invariant?.id).toEqual(expect.any(String));
