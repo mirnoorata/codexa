@@ -77,7 +77,7 @@ export const MCP_TOOL_REGISTRY = [
     name: "post_edit_review",
     title: "Codexa post-edit review",
     description:
-      "Review code changes for final drift after planned verification when no true completion/Stop gate already owns review: compares the dirty tree against a change_plan snapshot, accounts for declared invariants and selected verification artifacts, and persists a sanitized task outcome used by the replan budget. An edit-only hook is not a completion gate. Pass the snapshot task id plus evidence that actually ran. Large output, budget-compacted.",
+      "Review code changes for drift after planned verification when no true completion/Stop gate already owns review: compares the dirty tree against a change_plan snapshot, accounts for declared invariants and selected verification artifacts, and persists a sanitized task outcome used by the replan budget. An edit-only hook is not a completion gate. Pass the snapshot task id plus evidence that actually ran. Large output, budget-compacted.",
     tier: "primary",
     phase: "review",
     cost: "large",
