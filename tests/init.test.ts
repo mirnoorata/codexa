@@ -1,5 +1,5 @@
-import { execFileSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, realpath, writeFile } from "node:fs/promises";
+import { execFileSync, spawnSync } from "node:child_process";
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -171,6 +171,98 @@ describe("Codexa project init", () => {
       else process.env.CODEXA_MANAGED_POST_EDIT = priorOwnership;
     }
   });
+
+  it("preserves a completed evidence-bearing review at Stop and reviews again after a later edit", async () => {
+    const repo = await createInitRepo();
+    await mkdir(path.join(repo, "tests"), { recursive: true });
+    await writeFile(
+      path.join(repo, "package.json"),
+      `${JSON.stringify({ type: "module", scripts: { test: "node --test tests/main.test.js" } }, null, 2)}\n`,
+      "utf8"
+    );
+    await writeFile(
+      path.join(repo, "tests/main.test.js"),
+      "import assert from 'node:assert/strict';\nimport test from 'node:test';\nimport { main } from '../src/main.ts';\ntest('fixture smoke', () => { assert.equal(main.length, 0); assert.equal(typeof main(), 'number'); });\n",
+      "utf8"
+    );
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "add verification fixture"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+
+    const cli = path.resolve(process.cwd(), "dist/cli.js");
+    const pluginRoot = path.resolve(process.cwd(), "integrations/claude-code");
+    await initializeProject(repo, { cliPath: cli });
+    const plan = await changePlanQuery(
+      repo,
+      {
+        task: "Change the main runtime behavior safely",
+        taskId: "claude-stop-final-review",
+        files: ["src/main.ts"],
+        changeType: "behavior",
+        invariants: ["The main export remains a zero-argument function."],
+        saveSnapshot: true
+      },
+      { autoRefresh: false }
+    );
+    const invariant = (plan.data as { snapshot?: { invariants?: Array<{ id: string }> } }).snapshot?.invariants?.[0];
+    expect(invariant?.id).toBeTruthy();
+
+    await writeFile(path.join(repo, "src/main.ts"), "export function main() { return 2 }\n", "utf8");
+    await runPostEditHook(repo);
+    execFileSync("npm", ["test"], { cwd: repo, stdio: "ignore" });
+    const finalReview = await postEditReviewQuery(
+      repo,
+      {
+        taskId: "claude-stop-final-review",
+        ranCommands: ["npm test"],
+        invariantReviews: [{ invariantId: invariant!.id, status: "satisfied", evidence: ["Reviewed the final export signature."] }],
+        persistOutcome: true
+      },
+      { autoRefresh: false }
+    );
+    expect(finalReview.data).toMatchObject({ verdict: "continue", completionAuthority: "complete" });
+
+    const outcomeDir = path.join(repo, ".codex/cache/codexa-outcomes");
+    const pointerPath = path.join(outcomeDir, "latest.json");
+    const pointerBeforeStop = await readFile(pointerPath, "utf8");
+    const outcomesBeforeStop = (await readdir(outcomeDir)).filter((entry) => entry.endsWith(".json")).sort();
+    const pluginData = await mkdtemp(path.join(os.tmpdir(), "codexa-stop-state-"));
+    const stopEnv = {
+      ...process.env,
+      CLAUDE_PLUGIN_ROOT: pluginRoot,
+      CLAUDE_PLUGIN_DATA: pluginData,
+      CODEXA_CLI: cli,
+      CLAUDIO_NODE_BIN: process.execPath
+    };
+    delete stopEnv.CODEXA_MANAGED_POST_EDIT;
+    const stopPayload = `${JSON.stringify({ session_id: "state-bound-review", cwd: repo })}\n`;
+    const runStop = () =>
+      spawnSync("bash", [path.join(pluginRoot, "scripts/stop.sh")], {
+        cwd: repo,
+        env: stopEnv,
+        input: stopPayload,
+        encoding: "utf8",
+        timeout: 40_000
+      });
+
+    const duplicateStop = runStop();
+    expect(duplicateStop.error).toBeUndefined();
+    expect(duplicateStop.status).toBe(0);
+    expect(duplicateStop.stdout).toBe("");
+    expect(duplicateStop.stderr).toBe("");
+    expect(await readFile(pointerPath, "utf8")).toBe(pointerBeforeStop);
+    expect((await readdir(outcomeDir)).filter((entry) => entry.endsWith(".json")).sort()).toEqual(outcomesBeforeStop);
+
+    await writeFile(path.join(repo, "src/main.ts"), "export function main() { return 3 }\n", "utf8");
+    const laterEditStop = runStop();
+    expect(laterEditStop.error).toBeUndefined();
+    expect(laterEditStop.status).toBe(0);
+    expect(laterEditStop.stderr).toContain("[codexa] Post-edit review for");
+    expect(await readFile(pointerPath, "utf8")).not.toBe(pointerBeforeStop);
+    expect((await readdir(outcomeDir)).filter((entry) => entry.endsWith(".json")).length).toBeGreaterThan(outcomesBeforeStop.length);
+  }, 60_000);
 
   it("can create the local policy pack during init without overwriting existing policy files", async () => {
     const repo = await createInitRepo();

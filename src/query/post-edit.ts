@@ -414,6 +414,8 @@ async function postEditReviewQueryInternal(
     task,
     taskId: effectiveTaskId,
     snapshotPath: loadedSnapshot.path ? path.relative(repoRoot, loadedSnapshot.path).split(path.sep).join("/") : undefined,
+    snapshotCreatedAt: snapshot?.createdAt,
+    snapshotPublicationSequence: snapshot?.publicationSequence,
     verdict: previewVerdict,
     inspectMode: previewInspectMode,
     inspectReasons: previewInspectReasons,
