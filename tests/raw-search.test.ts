@@ -30,6 +30,11 @@ describe("raw search fallback", () => {
     execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
     await mkdir(path.join(repo, "src"), { recursive: true });
     await writeFile(path.join(repo, "src/overflow.ts"), Array.from({ length: 21 }, (_, index) => `export const marker${index} = "codexa_overflow_literal"`).join("\n"), "utf8");
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
 
     const result = await rawSearch(repo, "codexa_overflow_literal", 20);
     expect(result.hits).toHaveLength(20);

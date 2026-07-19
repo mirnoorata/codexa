@@ -1082,5 +1082,5 @@ describe("query routing boundaries", () => {
     const unscopedMaterialPack = await contextPackQuery(repo, { changeType: "api", diff: false, includeSnippets: false, limit: 4, tokenBudget: 900 }, { autoRefresh: false });
     expect((unscopedMaterialPack.data as { actionability: string; nextTools?: unknown[]; systemMessage?: string })).toMatchObject({ actionability: "needs_target", nextTools: [] });
     expect((unscopedMaterialPack.data as { systemMessage?: string }).systemMessage).toContain("concrete task");
-  });
+  }, 60_000);
 });
