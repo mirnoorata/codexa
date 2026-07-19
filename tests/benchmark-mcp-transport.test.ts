@@ -1,11 +1,39 @@
 import { execFileSync } from "node:child_process";
 import os from "node:os";
 import path from "node:path";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { createIndexedMcpRepo } from "./mcp-fixtures.js";
 
 describe("reproducible MCP transport comparison", () => {
+  it("runs hot-path MCP metrics against the explicit full profile and successful tool results", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-hot-path-benchmark-"));
+    const repo = await createIndexedMcpRepo(workspace, "repo", "alpha", "alphaSymbol");
+    await writeFile(path.join(repo, ".git", "info", "exclude"), ".codex/\n", "utf8");
+    await mkdir(path.join(repo, "dist"), { recursive: true });
+    await symlink(path.join(process.cwd(), "dist/cli.js"), path.join(repo, "dist/cli.js"));
+    const output = path.join(workspace, "hot-path.json");
+    execFileSync(
+      process.execPath,
+      [
+        path.join(process.cwd(), "scripts/benchmark-hot-paths.mjs"),
+        "--repo", repo,
+        "--runs", "1",
+        "--warmups", "1",
+        "--output", output
+      ],
+      { cwd: process.cwd(), encoding: "utf8", timeout: 60_000, maxBuffer: 4 * 1024 * 1024 }
+    );
+    const report = JSON.parse(await readFile(output, "utf8")) as {
+      mcp: { toolProfile: string; requiredDirectTools: string[]; directToolNames: string[] };
+      metrics: Array<{ name: string; passed: boolean }>;
+    };
+    expect(report.mcp.toolProfile).toBe("full");
+    expect(report.mcp.requiredDirectTools).toEqual(["freshness", "repo_map", "task_brief"]);
+    expect(report.mcp.requiredDirectTools.every((tool) => report.mcp.directToolNames.includes(tool))).toBe(true);
+    expect(report.metrics.filter((metric) => metric.name.startsWith("mcp.")).every((metric) => metric.passed)).toBe(true);
+  }, 60_000);
+
   it("compares full and core exposure without making an agent-quality claim", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-transport-benchmark-"));
     const repo = await createIndexedMcpRepo(workspace, "repo", "alpha", "alphaSymbol");
