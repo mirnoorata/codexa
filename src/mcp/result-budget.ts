@@ -62,7 +62,7 @@ function budgetReceipt(result: McpToolResultShape, originalBytes: number, maxByt
   const sourceNextTools = authoritativeNextTools(envelope, sourceData);
   const sourceNextTool = sourceNextTools[0];
   const completeNextTool = completeNextToolContract(sourceNextTool);
-  const sourceNextToolIncomplete = isRecord(sourceNextTool) && !completeNextTool;
+  const sourceNextToolIncomplete = sourceNextTool !== undefined && !completeNextTool;
   const sourceNextToolTruncated = hasFirstNextToolContractTruncation(sourceNextTool, envelope.truncation, sourceData.truncation, sourceKernel.truncation);
   const sourceNextCall = isRecord(sourceData.nextCall) ? sourceData.nextCall : undefined;
   const completeNextCall = completeNextCallContract(sourceNextCall);

@@ -494,6 +494,40 @@ describe("MCP serialized ToolResult budget", () => {
     expect(envelope.systemMessage).toContain("next-tool arguments were omitted");
   });
 
+  it("fails closed when an oversized receipt carries string-only next-tool guidance", () => {
+    const uri = `codexa://repo/mcp-results/rr_${"9".repeat(32)}/mr_${"a".repeat(64)}`;
+    const result = toToolResult(
+      {
+        text: "bounded context",
+        data: {
+          mode: "context_pack",
+          actionability: "edit_ready",
+          nextTools: ["change_plan"],
+          hugeEvidence: "e".repeat(MCP_TOOL_RESULT_MAX_BYTES * 4),
+          delivery: { schemaVersion: 1, requestedFormat: "auto", effectiveFormat: "concise", resultUri: uri }
+        },
+        freshness: freshness()
+      },
+      "context_pack",
+      POLICY
+    );
+
+    const envelope = result.structuredContent as {
+      actionability: string;
+      nextTools: unknown[];
+      lifecycle: { nextTools: string[] };
+      systemMessage: string;
+      data: { decisionKernel: { detailsRequired: boolean; nextTools: unknown[] }; delivery: { detailRequired: boolean } };
+    };
+    expect(bytes(result)).toBeLessThanOrEqual(MCP_TOOL_RESULT_MAX_BYTES);
+    expect(envelope.actionability).toBe("blocked");
+    expect(envelope.nextTools).toEqual([]);
+    expect(envelope.lifecycle.nextTools).toEqual([]);
+    expect(envelope.data.decisionKernel).toMatchObject({ detailsRequired: true, nextTools: [] });
+    expect(envelope.data.delivery.detailRequired).toBe(true);
+    expect(envelope.systemMessage).toContain("next-tool arguments were omitted");
+  });
+
   it("fails closed when a complete next-tool contract itself cannot fit the transport budget", () => {
     const uri = `codexa://repo/mcp-results/rr_${"5".repeat(32)}/mr_${"6".repeat(64)}`;
     const result = toToolResult(
