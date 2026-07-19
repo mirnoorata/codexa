@@ -75,7 +75,7 @@ describe("Codexa plugin package", () => {
         env: {
           ...process.env,
           CODEXA_REPO: repo,
-          CODEXA_MANAGED_POST_EDIT: "0",
+          CODEXA_MANAGED_POST_EDIT: "1",
           CODEXA_PLUGIN_AUTO_REFRESH: "0",
           CODEXA_PLUGIN_CAPTURE: capturePath,
           CODEXA_PLUGIN_SENTINEL: "preserved"
@@ -87,12 +87,12 @@ describe("Codexa plugin package", () => {
         argv: string[];
         cwd: string;
         execPath: string;
-        managedPostEdit: string;
+        managedPostEdit?: string;
         sentinel: string;
       };
       expect(capture.cwd).toBe(repo);
       expect(capture.execPath).toBe(process.execPath);
-      expect(capture.managedPostEdit).toBe("0");
+      expect(capture.managedPostEdit).toBeUndefined();
       expect(capture.sentinel).toBe("preserved");
       expect(capture.argv).toEqual(["serve", repo, "--no-auto-refresh", "--tools", "core"]);
 

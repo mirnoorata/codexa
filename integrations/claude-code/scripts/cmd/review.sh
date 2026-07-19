@@ -23,7 +23,8 @@ fi
 # the post-edit-relevant ones and refuse anything else so a stray argument
 # can't slip a shell metachar or an unknown subcommand.
 allowed_flags=(--change-type --ran-test --ran-command --ran-command-report \
-               --waive-check --waiver --file --symbol --budget --limit \
+               --waive-check --waiver --invariant-review --artifact-id \
+               --file --symbol --budget --limit \
                --snippets --no-snippets --auto-refresh --no-auto-refresh \
                --task-id)
 is_allowed() {

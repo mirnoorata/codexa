@@ -58,7 +58,14 @@ requireField(
   codexWrapperText.includes('"--tools", toolProfile'),
   "plugin MCP wrapper must pass its tool profile to codexa serve"
 );
-requireField(!codexWrapperText.includes("CODEXA_MANAGED_POST_EDIT"), "plugin MCP wrapper must not claim a post-edit gate it does not ship");
+requireField(
+  codexWrapperText.includes("delete childEnv.CODEXA_MANAGED_POST_EDIT"),
+  "plugin MCP wrapper must remove unsupported post-edit completion ownership"
+);
+requireField(
+  !codexWrapperText.includes('CODEXA_MANAGED_POST_EDIT: "1"'),
+  "plugin MCP wrapper must not claim evidence-bearing final review"
+);
 
 const marketplace = parseJson(marketplacePath, "plugin marketplace");
 if (marketplace) {
@@ -80,6 +87,7 @@ const claudeRequiredFiles = [
   "scripts/pre-edit.sh",
   "scripts/stop.sh",
   "scripts/lib/codexa-repo.sh",
+  "scripts/cmd/review.sh",
   "commands/codexa-plan.md",
   "commands/codexa-review.md"
 ];
@@ -126,6 +134,21 @@ requireField(
   !claudeWrapperText.includes('CODEXA_MANAGED_POST_EDIT: "1"'),
   "claude plugin MCP wrapper must not claim evidence-bearing final review"
 );
+const claudeReadmeText = readFileSync(path.join(claudePluginRoot, "README.md"), "utf8");
+requireField(
+  !claudeReadmeText.includes("marks this managed gate internally"),
+  "claude plugin README must not claim unsupported completion ownership"
+);
+requireField(
+  claudeReadmeText.includes("Any later edit changes the identity and re-enables the drift review"),
+  "claude plugin README must document state-bound completed-review skipping"
+);
+const claudeReviewScriptText = readFileSync(path.join(claudePluginRoot, "scripts", "cmd", "review.sh"), "utf8");
+const claudeReviewCommandText = readFileSync(path.join(claudePluginRoot, "commands", "codexa-review.md"), "utf8");
+for (const flag of ["--invariant-review", "--artifact-id"]) {
+  requireField(claudeReviewScriptText.includes(flag), `claude /codexa-review wrapper must allow ${flag}`);
+  requireField(claudeReviewCommandText.includes(flag), `claude /codexa-review command must document ${flag}`);
+}
 
 const claudeMarketplacePath = path.join(root, "integrations", ".claude-plugin", "marketplace.json");
 const claudeMarketplace = parseJson(claudeMarketplacePath, "claude plugin marketplace");
