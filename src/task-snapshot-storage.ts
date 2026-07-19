@@ -8,6 +8,30 @@ export function taskSnapshotRollbackPath(snapshotDir: string, taskId: string): s
   return path.join(snapshotDir, ROLLBACK_DIR, `${taskId}.json`);
 }
 
+export async function ensureTaskSnapshotRollbackDirectory(snapshotDir: string, repoRoot: string): Promise<void> {
+  const repoReal = await fs.realpath(repoRoot);
+  const snapshotStat = await fs.lstat(snapshotDir);
+  const snapshotReal = await fs.realpath(snapshotDir);
+  if (!snapshotStat.isDirectory() || !isContainedPath(repoReal, snapshotReal)) {
+    throw new Error("task snapshot directory escapes the repository");
+  }
+
+  const rollbackDir = path.join(snapshotDir, ROLLBACK_DIR);
+  await fs.mkdir(rollbackDir, { mode: 0o700 }).catch((error: unknown) => {
+    if (errorCode(error) !== "EEXIST") throw error;
+  });
+  const rollbackStat = await fs.lstat(rollbackDir);
+  const rollbackReal = await fs.realpath(rollbackDir);
+  if (
+    !rollbackStat.isDirectory()
+    || rollbackStat.isSymbolicLink()
+    || path.relative(snapshotReal, rollbackReal) !== ROLLBACK_DIR
+    || !isContainedPath(repoReal, rollbackReal)
+  ) {
+    throw new Error("task snapshot rollback directory escapes the repository or traverses a symbolic link");
+  }
+}
+
 export async function atomicJsonWrite(filePath: string, value: unknown): Promise<void> {
   const tmp = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
   try {
@@ -53,4 +77,13 @@ export async function readJson<T>(filePath: string): Promise<{ ok: true; value: 
       error: error instanceof Error ? error.message : String(error)
     };
   }
+}
+
+function isContainedPath(parent: string, candidate: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative !== ".." && !relative.startsWith(`..${path.sep}`) && !path.isAbsolute(relative);
+}
+
+function errorCode(error: unknown): string {
+  return error && typeof error === "object" && "code" in error ? String((error as { code?: unknown }).code) : "";
 }

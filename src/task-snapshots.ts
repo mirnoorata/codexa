@@ -1,7 +1,7 @@
 import { existsSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { atomicJsonWrite, atomicTextWrite, readJson, redactRepoPath, taskSnapshotRollbackPath } from "./task-snapshot-storage.js";
+import { atomicJsonWrite, atomicTextWrite, ensureTaskSnapshotRollbackDirectory, readJson, redactRepoPath, taskSnapshotRollbackPath } from "./task-snapshot-storage.js";
 import type { ChangePlanInput, ChangeType, TaskSnapshot } from "./types.js";
 import { loadTaskLifecycleState, normalizeTaskInvariants, recordTaskPlanRevision, taskInvariantId, withTaskLifecycleLock } from "./task-lifecycle.js";
 import { MAX_TASK_INVARIANTS, taskInvariantStatementSchema } from "./lifecycle-contract.js";
@@ -62,6 +62,8 @@ export async function saveTaskSnapshot({ repoRoot, input, snapshot, beforePersis
     const priorRead = await readJson<TaskSnapshot>(snapshotPath);
     const priorSnapshot = priorRead.ok && isTaskSnapshot(priorRead.value) ? priorRead.value : undefined;
     const lifecycle = await loadTaskLifecycleState(repo, taskId);
+    const preservePriorSnapshot = Boolean(priorSnapshot && !await governedSnapshotLifecycleError(repo, priorSnapshot));
+    if (preservePriorSnapshot) await ensureTaskSnapshotRollbackDirectory(dir, repo);
     const planRevision = Math.max(priorSnapshot?.planRevision ?? (priorSnapshot ? 1 : 0), lifecycle?.planRevision ?? 0) + 1;
     const invariants = normalizeTaskInvariants(lifecycle?.invariants ?? priorSnapshot?.invariants, input.invariants ?? snapshot.invariants?.map((entry) => entry.statement));
     const publicationSequence = await reservePublicationSequence(repo, dir);
@@ -80,8 +82,7 @@ export async function saveTaskSnapshot({ repoRoot, input, snapshot, beforePersis
       repo
     ) as TaskSnapshot;
     await beforePersist?.();
-    if (priorSnapshot && !await governedSnapshotLifecycleError(repo, priorSnapshot)) {
-      await fs.mkdir(path.dirname(previousSnapshotPath), { recursive: true });
+    if (preservePriorSnapshot && priorSnapshot) {
       await atomicJsonWrite(previousSnapshotPath, priorSnapshot);
     }
     await atomicJsonWrite(snapshotPath, saved);

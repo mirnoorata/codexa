@@ -1,4 +1,4 @@
-import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -458,6 +458,35 @@ describe("task lifecycle governance", () => {
       taskId: "collision.previous"
     });
     await expect(readFile(path.join(repo, ".codex/cache/codexa-tasks/.previous/collision.json"), "utf8")).rejects.toThrow();
+  });
+
+  it("refuses a symlinked rollback directory without writing outside the repository", async () => {
+    const repo = await createHookFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+    const taskId = "rollback-symlink";
+    await changePlanQuery(
+      repo,
+      { task: "Plan the first governed revision", taskId, files: ["src/main.ts"], saveSnapshot: true },
+      { autoRefresh: false }
+    );
+    const snapshotDir = path.join(repo, ".codex/cache/codexa-tasks");
+    const rollbackDir = path.join(snapshotDir, ".previous");
+    const outside = path.join(path.dirname(repo), `${path.basename(repo)}-rollback-outside`);
+    await mkdir(outside);
+    await symlink(outside, rollbackDir, "dir");
+
+    try {
+      await expect(changePlanQuery(
+        repo,
+        { task: "Attempt a second governed revision", taskId, files: ["src/main.ts"], saveSnapshot: true },
+        { autoRefresh: false }
+      )).rejects.toThrow(/rollback directory.*symbolic link/u);
+      await expect(readFile(path.join(outside, `${taskId}.json`), "utf8")).rejects.toThrow();
+      expect(await loadTaskSnapshot(repo, taskId)).toMatchObject({ snapshot: { taskId, planRevision: 1 } });
+    } finally {
+      await rm(rollbackDir, { force: true });
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 
   it("uses one authority order for delayed same-time publications and recovery", async () => {
