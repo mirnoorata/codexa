@@ -10,14 +10,26 @@ export function recommendNextCodexaCall(
   focusFiles: string[] = []
 ): { tool: string; reason: string; arguments?: Record<string, unknown> } {
   const lowerTask = task.toLowerCase();
+  const explicitFocusFiles = focusFilesInTaskOrder(lowerTask, focusFiles);
+  const singleFocusFile = explicitFocusFiles[0] ?? (focusFiles.length === 1 ? focusFiles[0] : undefined);
   if (/\b(callers?|importers?)\b/.test(lowerTask)) {
-    return { tool: "callers", reason: "the task asks who uses a symbol or file" };
+    return singleFocusFile
+      ? { tool: "callers", reason: "the task asks who uses a symbol or file", arguments: { file: singleFocusFile } }
+      : { tool: "source", reason: "the packet needs an exact file or symbol before caller traversal is useful" };
   }
   if (/\b(callees?|dependencies|uses)\b/.test(lowerTask)) {
-    return { tool: "callees", reason: "the task asks what a symbol or file depends on" };
+    return singleFocusFile
+      ? { tool: "callees", reason: "the task asks what a symbol or file depends on", arguments: { file: singleFocusFile } }
+      : { tool: "source", reason: "the packet needs an exact file or symbol before dependency traversal is useful" };
   }
   if (/\b(path|between|connects?)\b/.test(lowerTask) && /\b(dependency|workflow|call)\b/.test(lowerTask)) {
-    return { tool: "dependency_path", reason: "the task asks for a path between code elements" };
+    return explicitFocusFiles.length >= 2
+      ? {
+          tool: "dependency_path",
+          reason: "the task asks for a path between code elements",
+          arguments: { fromFile: explicitFocusFiles[0], toFile: explicitFocusFiles[1] }
+        }
+      : { tool: "source", reason: "the packet needs two exact endpoints before dependency-path traversal is useful" };
   }
   if (intents.includes("workflow") && workflows.length > 0 && /\b(workflow|flow|route|job|process|end-to-end)\b/u.test(lowerTask)) {
     return { tool: "workflow_path", reason: "the task maps to route/job/process flow evidence", arguments: { query: task } };
@@ -30,6 +42,15 @@ export function recommendNextCodexaCall(
     };
   }
   return { tool: "source", reason: "the packet already identifies the sources and tests; read them and stop Codexa" };
+}
+
+function focusFilesInTaskOrder(task: string, focusFiles: string[]): string[] {
+  const normalizedTask = task.replaceAll("\\", "/");
+  return focusFiles
+    .map((file) => ({ file, index: normalizedTask.indexOf(file.toLowerCase().replaceAll("\\", "/")) }))
+    .filter((entry) => entry.index >= 0)
+    .sort((left, right) => left.index - right.index || left.file.localeCompare(right.file))
+    .map((entry) => entry.file);
 }
 
 function materiallyRiskyEditTask(task: string): boolean {

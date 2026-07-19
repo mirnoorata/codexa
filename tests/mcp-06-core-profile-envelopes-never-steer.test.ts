@@ -45,6 +45,37 @@ it("core-profile envelopes steer only to directly registered or dispatcher-calla
         }
       }
 
+      const callersFocus = await client.callTool({
+        name: "capabilities",
+        arguments: {
+          action: "invoke",
+          operation: "focus_brief",
+          arguments: { task: "callers for src/alpha.ts", diff: false, limit: 4, tokenBudget: 900, responseFormat: "detailed" }
+        }
+      });
+      const callersEnvelope = callersFocus.structuredContent as {
+        data?: {
+          nextCall?: { tool?: string; arguments?: Record<string, unknown> };
+          retrieval?: { intentConfidence?: { recommendedNextTool?: string; recommendedOperation?: string } };
+          decisionKernel?: { scope?: { nextCall?: { tool?: string; arguments?: Record<string, unknown> } } };
+        };
+      };
+      const expectedCallersDispatch = { action: "invoke", operation: "callers", arguments: { file: "src/alpha.ts" } };
+      expect(callersEnvelope.data?.nextCall).toMatchObject({ tool: "capabilities", arguments: expectedCallersDispatch });
+      expect(callersEnvelope.data?.retrieval?.intentConfidence).toMatchObject({ recommendedNextTool: "capabilities", recommendedOperation: "callers" });
+      expect(callersEnvelope.data?.decisionKernel?.scope?.nextCall).toMatchObject({ tool: "capabilities", arguments: expectedCallersDispatch });
+      const callersText = callersFocus.content.find((entry) => entry.type === "text")?.text ?? "";
+      expect(callersText).toContain("capabilities");
+      expect(callersText).not.toMatch(/(?:call|invoke|use)\s+`?callers`?/iu);
+
+      const dispatchedCallers = await client.callTool({
+        name: "capabilities",
+        arguments: { action: "invoke", operation: "callers", arguments: { file: "src/alpha.ts" } }
+      });
+      const callersPolicy = (dispatchedCallers.structuredContent as { toolPolicy?: { avoidWhen?: string } }).toolPolicy;
+      expect(callersPolicy?.avoidWhen).toContain("capabilities(action=invoke, operation=callees)");
+      expect(callersPolicy?.avoidWhen).not.toMatch(/(?:call|invoke|run|use)\s+`?callees`?/iu);
+
       const exactSearch = await client.callTool({ name: "search", arguments: { query: "alphaSymbol", patterns: ["alphaSymbol"] } });
       const exactSearchEnvelope = exactSearch.structuredContent as { nextTools?: unknown[]; systemMessage?: string };
       expect(exactSearchEnvelope.nextTools).toEqual([]);
@@ -55,7 +86,7 @@ it("core-profile envelopes steer only to directly registered or dispatcher-calla
         arguments: { task: "change alphaSymbol API", files: ["src/alpha.ts"], saveSnapshot: true, taskId: "core-dispatch-plan" }
       });
       const planEnvelope = hooklessPlan.structuredContent as {
-        data?: { nextTools?: Array<{ tool?: string; requiredInputs?: Record<string, unknown> }>; decisionKernel?: { nextTools?: Array<{ tool?: string }> } };
+        data?: { nextTools?: Array<{ tool?: string; requiredInputs?: Record<string, unknown> }>; decisionKernel?: { nextTools?: Array<{ tool?: string }> }; steps?: string[] };
         lifecycle?: { nextTools?: string[] };
         nextTools?: Array<{ tool?: string; requiredInputs?: Record<string, unknown> }>;
       };
@@ -70,13 +101,27 @@ it("core-profile envelopes steer only to directly registered or dispatcher-calla
       expect(planEnvelope.data?.nextTools).toEqual([
         expect.objectContaining({ tool: "capabilities", requiredInputs: expectedDispatch })
       ]);
+      expect(planEnvelope.data?.decisionKernel?.nextTools).toEqual(planEnvelope.data?.nextTools);
       expect(planEnvelope.data?.decisionKernel?.nextTools).toEqual([
-        expect.objectContaining({ tool: "capabilities" })
+        expect.objectContaining({ tool: "capabilities", requiredInputs: expectedDispatch })
       ]);
       expect(planEnvelope.lifecycle?.nextTools).toEqual(["capabilities"]);
+      expect(JSON.stringify(planEnvelope.data?.steps)).not.toMatch(/(?:call|run|use)\s+`?(?:post_edit_review|workflow_path|callers|callees|dependency_path)`?/iu);
       const planText = hooklessPlan.content.find((entry) => entry.type === "text")?.text ?? "";
       expect(planText).toContain("Next: capabilities");
       expect(planText).not.toContain("Next: post_edit_review");
+
+      const hooklessReview = await client.callTool({
+        name: "capabilities",
+        arguments: {
+          action: "invoke",
+          operation: "post_edit_review",
+          arguments: { taskId: "core-dispatch-plan", responseFormat: "detailed" }
+        }
+      });
+      const reviewEnvelope = hooklessReview.structuredContent as { data?: { nextActions?: string[] }; systemMessage?: string };
+      const reviewGuidance = JSON.stringify({ nextActions: reviewEnvelope.data?.nextActions, systemMessage: reviewEnvelope.systemMessage });
+      expect(reviewGuidance).not.toMatch(/(?:call|invoke|run|use)\s+`?(?:workflow_path|callers|callees|dependency_path|post_edit_review)`?/iu);
 
       const prompts = await client.listPrompts();
       const dirtyDiff = prompts.prompts.find((prompt) => prompt.name === "dirty_diff_review");
@@ -85,6 +130,21 @@ it("core-profile envelopes steer only to directly registered or dispatcher-calla
       const promptText = JSON.stringify(rendered);
       expect(promptText).toContain("`capabilities`");
       expect(promptText).toContain('`operation: \\"post_edit_review\\"`');
+      expect(promptText).toContain('`operation: \\"diff_impact\\"`');
+      expect(promptText).toContain('`operation: \\"test_plan\\"`');
+      expect(promptText).toContain('`arguments: {\\"diff\\":true}`');
+      expect(promptText).not.toMatch(/(?:call|invoke|run|use)\s+`?(?:post_edit_review|diff_impact|test_plan)`?/iu);
+
+      const snapshotPrompt = await client.getPrompt({ name: "snapshot_edit_loop", arguments: { task: "change alpha", target: "src/alpha.ts" } });
+      const snapshotText = JSON.stringify(snapshotPrompt);
+      expect(snapshotText).toContain('`operation: \\"post_edit_review\\"`');
+      expect(snapshotText).toContain('`arguments: {\\"taskId\\":\\"<saved taskId>\\"}`');
+      expect(snapshotText).not.toMatch(/(?:call|invoke|run|use)\s+`?post_edit_review`?/iu);
+
+      const impactPrompt = await client.getPrompt({ name: "impact_before_edit", arguments: { target: "src/alpha.ts" } });
+      const impactText = JSON.stringify(impactPrompt);
+      expect(impactText).toContain('`operation: \\"impact\\"`');
+      expect(impactText).toContain('`arguments: {\\"file\\":\\"src/alpha.ts\\"}`');
     } finally {
       await client.close();
     }

@@ -171,7 +171,7 @@ export function toToolResult(result: { text: string; data: unknown; freshness: u
   const envelope = buildMcpEnvelope(result, toolName, policyOptions);
   const envelopeData = isRecord(envelope.data) ? envelope.data : {};
   const delivery = isRecord(envelopeData.delivery) ? envelopeData.delivery : undefined;
-  const text = delivery?.effectiveFormat === "concise"
+  const text = delivery?.effectiveFormat === "concise" || policyOptions.enabledTools
     ? renderMcpConciseText({ text: result.text, data: envelopeData, freshness: envelope.freshness as FreshnessInfo, refresh: envelope.refresh as RefreshInfo })
     : result.text;
   return boundMcpToolResult({
@@ -231,27 +231,102 @@ function buildMcpEnvelope(result: { data: unknown; freshness: unknown; refresh?:
 function routeMcpGuidanceForProfile(record: Record<string, unknown>, enabledTools?: ReadonlySet<string>): Record<string, unknown> {
   if (!enabledTools) return record;
   const routed = routeNextToolsForProfile(record.nextTools, enabledTools);
+  const routedNextCall = routeNextCallForProfile(record.nextCall, enabledTools);
+  const routedIntentConfidence = routeRecommendedToolForProfile(record.intentConfidence, enabledTools);
+  const sourceRetrieval = isRecord(record.retrieval) ? record.retrieval : undefined;
+  const routedRetrieval = sourceRetrieval
+    ? { ...sourceRetrieval, intentConfidence: routeRecommendedToolForProfile(sourceRetrieval.intentConfidence, enabledTools) }
+    : record.retrieval;
+  const routedEditReadiness = routeRecommendedToolForProfile(record.editReadiness, enabledTools);
   const sourceKernel = isRecord(record.decisionKernel) ? record.decisionKernel : undefined;
   const routedKernel = sourceKernel
     ? routeNextToolsForProfile(sourceKernel.nextTools, enabledTools)
     : { nextTools: [], dispatchedOperations: [] };
-  const dispatchedOperations = [...new Set([...routed.dispatchedOperations, ...routedKernel.dispatchedOperations])];
-  const systemMessage = dispatchedOperations.length > 0
-    ? `Use capabilities once with action=invoke and operation=${dispatchedOperations[0]}; do not call ${dispatchedOperations[0]} as a direct tool in the core profile.`
-    : record.systemMessage;
+  const authoritativeKernelNextTools = Array.isArray(record.nextTools) ? routed : routedKernel;
+  const sourceAuthority = sourceKernel && isRecord(sourceKernel.authority) ? sourceKernel.authority : undefined;
+  const sourceScope = sourceKernel && isRecord(sourceKernel.scope) ? sourceKernel.scope : undefined;
+  const routedKernelNextCall = routeNextCallForProfile(sourceScope?.nextCall, enabledTools);
+  const authoritativeKernelNextCall = Object.hasOwn(record, "nextCall") ? routedNextCall : routedKernelNextCall;
+  const dispatches = [
+    ...routed.dispatchedOperations.map((operation) => ({ action: "invoke" as const, operation })),
+    ...authoritativeKernelNextTools.dispatchedOperations.map((operation) => ({ action: "invoke" as const, operation })),
+    ...(routedNextCall.dispatch ? [routedNextCall.dispatch] : []),
+    ...(authoritativeKernelNextCall.dispatch ? [authoritativeKernelNextCall.dispatch] : [])
+  ];
+  const primaryDispatch = dispatches[0];
+  const systemMessage = primaryDispatch
+    ? `Use capabilities once with action=${primaryDispatch.action} and operation=${primaryDispatch.operation}; ${primaryDispatch.operation} is not registered directly in the core profile.`
+    : routeGuidanceTextForProfile(record.systemMessage, enabledTools);
   const decisionKernel = sourceKernel
     ? {
         ...sourceKernel,
-        ...(Array.isArray(sourceKernel.nextTools) ? { nextTools: routedKernel.nextTools } : {}),
-        ...(dispatchedOperations.length > 0 ? { systemMessage } : {})
+        ...(sourceAuthority ? { authority: { ...sourceAuthority, editReadiness: routeRecommendedToolForProfile(sourceAuthority.editReadiness, enabledTools) } } : {}),
+        ...(sourceScope ? { scope: { ...sourceScope, nextCall: authoritativeKernelNextCall.nextCall } } : {}),
+        ...(Array.isArray(sourceKernel.nextTools) ? { nextTools: authoritativeKernelNextTools.nextTools } : {}),
+        ...(systemMessage ? { systemMessage } : {})
       }
     : record.decisionKernel;
   return {
     ...record,
     ...(Array.isArray(record.nextTools) ? { nextTools: routed.nextTools } : {}),
-    ...(dispatchedOperations.length > 0 ? { systemMessage } : {}),
+    ...(Object.hasOwn(record, "nextCall") ? { nextCall: routedNextCall.nextCall } : {}),
+    ...(Object.hasOwn(record, "intentConfidence") ? { intentConfidence: routedIntentConfidence } : {}),
+    ...(Object.hasOwn(record, "retrieval") ? { retrieval: routedRetrieval } : {}),
+    ...(Object.hasOwn(record, "editReadiness") ? { editReadiness: routedEditReadiness } : {}),
+    ...(Array.isArray(record.steps) ? { steps: routeGuidanceStringsForProfile(record.steps, enabledTools) } : {}),
+    ...(Array.isArray(record.nextActions) ? { nextActions: routeGuidanceStringsForProfile(record.nextActions, enabledTools) } : {}),
+    ...(systemMessage ? { systemMessage } : {}),
     ...(decisionKernel === undefined ? {} : { decisionKernel })
   };
+}
+
+function routeNextCallForProfile(
+  value: unknown,
+  enabledTools: ReadonlySet<string>
+): { nextCall: unknown; dispatch?: { action: "invoke" | "describe"; operation: string } } {
+  if (!isRecord(value) || typeof value.tool !== "string") return { nextCall: value };
+  const name = value.tool;
+  if (name === "source" || enabledTools.has(name)) return { nextCall: value };
+  if (!enabledTools.has("capabilities") || !DISPATCHABLE_MCP_TOOL_NAMES.includes(name as (typeof DISPATCHABLE_MCP_TOOL_NAMES)[number])) {
+    return { nextCall: undefined };
+  }
+  const operationArguments = isRecord(value.arguments) ? value.arguments : undefined;
+  const action = operationArguments ? "invoke" : "describe";
+  return {
+    nextCall: {
+      ...value,
+      tool: "capabilities",
+      reason: `Use the core dispatcher for ${name}: ${typeof value.reason === "string" ? value.reason : `inspect the ${name} operation`}`,
+      arguments: action === "invoke"
+        ? { action, operation: name, arguments: operationArguments }
+        : { action, operation: name }
+    },
+    dispatch: { action, operation: name }
+  };
+}
+
+function routeRecommendedToolForProfile(value: unknown, enabledTools: ReadonlySet<string>): unknown {
+  if (!isRecord(value) || typeof value.recommendedNextTool !== "string") return value;
+  const name = value.recommendedNextTool;
+  if (name === "source" || enabledTools.has(name)) return value;
+  if (!enabledTools.has("capabilities") || !DISPATCHABLE_MCP_TOOL_NAMES.includes(name as (typeof DISPATCHABLE_MCP_TOOL_NAMES)[number])) {
+    return { ...value, recommendedNextTool: undefined };
+  }
+  return { ...value, recommendedNextTool: "capabilities", recommendedOperation: name };
+}
+
+function routeGuidanceStringsForProfile(value: unknown[], enabledTools: ReadonlySet<string>): unknown[] {
+  return value.map((entry) => typeof entry === "string" ? routeGuidanceTextForProfile(entry, enabledTools) : entry);
+}
+
+function routeGuidanceTextForProfile(value: unknown, enabledTools: ReadonlySet<string>): string | undefined {
+  if (typeof value !== "string") return undefined;
+  let routed = value;
+  for (const name of DISPATCHABLE_MCP_TOOL_NAMES) {
+    if (enabledTools.has(name)) continue;
+    routed = routed.replace(new RegExp(`\\b${name}\\b`, "gu"), `capabilities(action=invoke, operation=${name})`);
+  }
+  return routed;
 }
 
 function routeNextToolsForProfile(value: unknown, enabledTools: ReadonlySet<string>): { nextTools: unknown[]; dispatchedOperations: string[] } {
@@ -270,7 +345,7 @@ function routeNextToolsForProfile(value: unknown, enabledTools: ReadonlySet<stri
     return [{
       schemaVersion: 1,
       tool: "capabilities",
-      reason: `Invoke ${name} through the core dispatcher: ${reason}`,
+      reason: `Invoke the requested operation through the core dispatcher: ${reason}`,
       requiredInputs: { action: "invoke", operation: name, arguments: requiredInputs },
       readOnly: isRecord(entry) && typeof entry.readOnly === "boolean" ? entry.readOnly : false,
       writes: isRecord(entry) && Array.isArray(entry.writes) ? entry.writes : []
@@ -304,15 +379,20 @@ function mcpToolPolicyForTool(toolName: string, options: McpToolPolicyOptions): 
     return undefined;
   }
   const readOnly = effectiveMcpToolReadOnly(tool.name, options);
+  const useWhen = options.enabledTools ? routeGuidanceTextForProfile(tool.useWhen, options.enabledTools) ?? tool.useWhen : tool.useWhen;
+  const avoidWhen = options.enabledTools ? routeGuidanceTextForProfile(tool.avoidWhen, options.enabledTools) ?? tool.avoidWhen : tool.avoidWhen;
+  const nextToolUse = options.enabledTools
+    ? routeGuidanceStringsForProfile(tool.nextToolUse, options.enabledTools).filter((entry): entry is string => typeof entry === "string")
+    : [...tool.nextToolUse];
   return {
     name: tool.name,
     tier: tool.tier,
     phase: tool.phase,
     readOnly,
     writeEffects: effectiveMcpToolWriteEffects(tool.name, tool.writeEffects, options, readOnly),
-    useWhen: tool.useWhen,
-    avoidWhen: tool.avoidWhen,
-    nextToolUse: [...tool.nextToolUse]
+    useWhen,
+    avoidWhen,
+    nextToolUse
   };
 }
 
