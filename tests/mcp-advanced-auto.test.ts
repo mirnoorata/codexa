@@ -1,5 +1,6 @@
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
@@ -8,6 +9,7 @@ import { mcpAutoEscalationReason, mcpDecisionKernel, renderMcpConciseText, withM
 import { compactMcpResult } from "../src/mcp/compaction.js";
 import { toToolResult } from "../src/mcp/envelope.js";
 import { ADVANCED_MCP_TOOL_NAMES } from "../src/mcp/tool-registry.js";
+import { buildIndex } from "../src/indexer.js";
 import { changePlanQuery } from "../src/queries.js";
 import { createIndexedMcpRepo } from "./mcp-fixtures.js";
 
@@ -96,6 +98,13 @@ describe("advanced MCP auto/concise projections", () => {
     expect([...operations.map((entry) => entry.name), "freshness"].sort()).toEqual([...ADVANCED_MCP_TOOL_NAMES].sort());
     const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-advanced-auto-"));
     const repo = await createIndexedMcpRepo(workspace, "repo", "alpha", "alphaSymbol");
+    const bulkTargets = Array.from({ length: 9 }, (_, index) => `src/bulk-${index + 1}.ts`);
+    for (const [index, filePath] of bulkTargets.entries()) {
+      await writeFile(path.join(repo, filePath), `export const bulk${index + 1} = ${index + 1};\n`, "utf8");
+    }
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "bulk fixture"], { cwd: repo, stdio: "ignore" });
+    await buildIndex({ repoRoot: repo });
     const planResult = await changePlanQuery(
       repo,
       { task: "Portable MCP review", taskId: "portable-mcp-review", files: ["src/alpha.ts"], diff: false, saveSnapshot: true },
@@ -107,19 +116,25 @@ describe("advanced MCP auto/concise projections", () => {
     const direct = await connect(repo, "full");
     const core = await connect(repo, "core");
     try {
+      const bulkArguments = { task: "Refactor the bulk modules", files: bulkTargets, diff: false, includeSnippets: false, limit: 12, tokenBudget: 1600 };
+      const directBulk = await direct.client.callTool({ name: "context_pack", arguments: bulkArguments });
+      const coreBulk = await invokeCore(core.client, "context_pack", bulkArguments);
+      expect(directNextToolFiles(directBulk)).toEqual(bulkTargets);
+      expect(coreNextToolFiles(coreBulk)).toEqual(bulkTargets);
+
       for (const operation of operations) {
         const operationArguments = operation.name === "change_review"
           ? { ...operation.arguments, planSnapshot: ".codex/portable-mcp-review.json" }
           : operation.arguments;
         const directAuto = await direct.client.callTool({ name: operation.name, arguments: operationArguments });
         const coreAuto = await invokeCore(core.client, operation.name, operationArguments);
-        expect(normalize(coreAuto.structuredContent), `${operation.name} auto structured parity`).toEqual(normalize(directAuto.structuredContent));
+        expect(normalizeLogicalEnvelope(coreAuto.structuredContent), `${operation.name} auto structured parity`).toEqual(normalizeLogicalEnvelope(directAuto.structuredContent));
         expect(normalize(textContent(coreAuto)), `${operation.name} auto text parity`).toBe(normalize(textContent(directAuto)));
         assertAutoUseful(directAuto, operation.marker);
 
         const directConcise = await direct.client.callTool({ name: operation.name, arguments: { ...operationArguments, responseFormat: "concise" } });
         const coreConcise = await invokeCore(core.client, operation.name, operationArguments, "concise");
-        expect(normalize(coreConcise.structuredContent), `${operation.name} concise structured parity`).toEqual(normalize(directConcise.structuredContent));
+        expect(normalizeLogicalEnvelope(coreConcise.structuredContent), `${operation.name} concise structured parity`).toEqual(normalizeLogicalEnvelope(directConcise.structuredContent));
         expect(normalize(textContent(coreConcise)), `${operation.name} concise text parity`).toBe(normalize(textContent(directConcise)));
         assertConciseUseful(directConcise, operation.marker);
       }
@@ -127,11 +142,12 @@ describe("advanced MCP auto/concise projections", () => {
       const directFreshness = await direct.client.callTool({ name: "freshness", arguments: {} });
       const coreFreshness = await invokeCore(core.client, "freshness", {});
       const coreFreshnessConcise = await invokeCore(core.client, "freshness", {}, "concise");
-      expect(normalize(coreFreshness.structuredContent)).toEqual(normalize(directFreshness.structuredContent));
-      expect(normalize(coreFreshnessConcise.structuredContent)).toEqual(normalize(directFreshness.structuredContent));
-      expect(normalize(textContent(coreFreshness))).toBe(normalize(textContent(directFreshness)));
-      expect(normalize(textContent(coreFreshnessConcise))).toBe(normalize(textContent(directFreshness)));
-      expect(textContent(directFreshness)).toMatch(/fresh|index/iu);
+      expect(normalizeLogicalEnvelope(coreFreshness.structuredContent)).toEqual(normalizeLogicalEnvelope(directFreshness.structuredContent));
+      expect(normalizeLogicalEnvelope(coreFreshnessConcise.structuredContent)).toEqual(normalizeLogicalEnvelope(directFreshness.structuredContent));
+      expect(normalize(textContent(coreFreshnessConcise))).toBe(normalize(textContent(coreFreshness)));
+      for (const freshnessResult of [directFreshness, coreFreshness, coreFreshnessConcise]) {
+        expect(textContent(freshnessResult)).toMatch(/fresh|index/iu);
+      }
     } finally {
       await Promise.all([direct.close(), core.close()]);
     }
@@ -254,6 +270,19 @@ function queryData(result: ToolResult): Record<string, unknown> {
   return data;
 }
 
+function directNextToolFiles(result: ToolResult): unknown {
+  const envelope = record(result.structuredContent);
+  const nextTool = Array.isArray(envelope?.nextTools) ? record(envelope.nextTools[0]) : undefined;
+  return record(nextTool?.requiredInputs)?.files;
+}
+
+function coreNextToolFiles(result: ToolResult): unknown {
+  const envelope = record(result.structuredContent);
+  const nextTool = Array.isArray(envelope?.nextTools) ? record(envelope.nextTools[0]) : undefined;
+  const requiredInputs = record(nextTool?.requiredInputs);
+  return requiredInputs?.files ?? record(requiredInputs?.arguments)?.files;
+}
+
 function deliveryData(result: ToolResult): Record<string, unknown> {
   return record(queryData(result).delivery) ?? {};
 }
@@ -278,4 +307,13 @@ function normalize<T>(value: T): T {
     .replace(/"commandBudgetUsedMs":\d+/gu, '"commandBudgetUsedMs":"<timing>"')
     .replace(/command:([^"\s]+):\d+ms/gu, "command:$1:<timing>")
     .replace(/"indexedAt":"[^"]+"/gu, '"indexedAt":"<indexed>"')) as T;
+}
+
+function normalizeLogicalEnvelope(value: unknown): unknown {
+  const normalized = normalize(value);
+  const envelope = record(normalized);
+  const toolPolicy = record(envelope?.toolPolicy);
+  if (!envelope || !toolPolicy) return normalized;
+  const { useWhen: _useWhen, avoidWhen: _avoidWhen, ...logicalToolPolicy } = toolPolicy;
+  return { ...envelope, toolPolicy: logicalToolPolicy };
 }

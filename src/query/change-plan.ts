@@ -2,7 +2,8 @@ import path from "node:path";
 import { formatGaps } from "./diff.js";
 import { buildPlanComplexityReview, formatComplexityReview } from "./complexity.js";
 import { nextTool } from "./next-tools.js";
-import { contextPackQuery } from "./context.js";
+import { contextPackQuery, structuredNewTargetAuthority } from "./context.js";
+import { focusFilesAndSymbolsInTaskOrder, focusFilesInTaskOrder, isLikelyPathTypo, normalizeTaskRepositoryPaths, plannedNewFocusPathTargets } from "./graph.js";
 import { formatContextQuality, type ContextQuality } from "./quality.js";
 import {
   assertFreshnessAuthorityCurrent,
@@ -13,7 +14,9 @@ import {
 import { ensureQuerySession, type QuerySession, type QuerySessionInput } from "./session.js";
 import { normalizeSearchText } from "./search.js";
 import { formatTestRecommendations, recommendTests, uniqueTests } from "./tests.js";
-import { findFile, normalizeInputPaths, resolveFileTarget, resolveSymbolTarget } from "./targets.js";
+import { findFile, newTargetPathIsContained, normalizeInputPath, normalizeInputPaths, resolveFileTarget, resolveSymbolTarget } from "./targets.js";
+import { getWorktreeState } from "./worktree-state.js";
+import { taskReferencesDirtyContext } from "./context/focus.js";
 import { compactSnapshotTests, snapshotRiskBaseline, snapshotSymbolBaseline } from "./post-edit/snapshot-contract.js";
 import { pointerForSessionMemory } from "../session-memory.js";
 import { allocateTaskSnapshotId, loadTaskSnapshot, saveBlockedTaskSnapshot, saveTaskSnapshot, type TaskSnapshotLoadResult } from "../task-snapshots.js";
@@ -36,11 +39,12 @@ import type {
   WorkflowTraceFact,
   FreshnessInfo
 } from "../types.js";
-import { limitText, stableId, uniqueSorted } from "../util.js";
+import { limitText, uniqueSorted } from "../util.js";
 import { formatRequiredChecks, requiredDependencyChecksForPlan, requiredWorkflowChecksForPlan } from "./change-plan/checks.js";
 import { getDiffFootprint } from "./worktree.js";
 import { formatTaskInvariants, nextTaskPlanLifecycle } from "../task-lifecycle.js";
 import { changePlanEditReadiness, normalizeTargetCandidateSelector, resolveChangePlanFollowBaseInput } from "./change-plan/readiness.js";
+import { candidateSymbols, dedupeTargetCandidates, formatTargetCandidates, meaningfulTaskTokens, rawSearchQueries, uniqueInOrder, withTargetCandidateId } from "./change-plan/candidate-helpers.js";
 export async function changePlanQuery(
   sessionInput: QuerySessionInput,
   input: ChangePlanInput = {},
@@ -102,14 +106,83 @@ export async function changePlanQuery(
   const recipes = packData.recipes ?? [];
   const quality = packData.quality;
   const files = focusFiles.map((entry) => entry.file.path);
-  const explicitFiles = normalizeInputPaths(effectiveInput.files ?? [], repoRoot);
-  const explicitSymbolFiles = focusFiles
-    .filter((entry) => entry.reasons.some((reason) => reason.startsWith("requested symbol ")))
-    .map((entry) => entry.file.path);
+  const requestedExplicitFiles = normalizeInputPaths(effectiveInput.files ?? [], repoRoot);
+  const structuredNewTargetMode = structuredNewTargetAuthority(effectiveInput.task, effectiveInput.changeType);
+  const repositoryFiles = session.index.files.map((file) => file.path);
+  const targetTask = normalizeTaskRepositoryPaths(effectiveInput.task ?? "", repoRoot);
+  const detectedNaturalNewTargets = (await Promise.all(plannedNewFocusPathTargets(targetTask, repositoryFiles).map(async (filePath) => (await newTargetPathIsContained(filePath, repoRoot)) ? filePath : undefined))).filter((filePath): filePath is string => Boolean(filePath));
+  const tentativeNaturalPlanTargets = focusFilesAndSymbolsInTaskOrder(targetTask, [...repositoryFiles, ...detectedNaturalNewTargets], [...repositoryFiles, ...detectedNaturalNewTargets], session.index.symbols);
+  const naturalStructuralSourcePresent = tentativeNaturalPlanTargets.some((filePath) => repositoryFiles.includes(filePath));
+  const naturalNewTargets = structuredNewTargetMode.structural && !naturalStructuralSourcePresent ? [] : detectedNaturalNewTargets;
+  const naturalPlanTargets = naturalNewTargets === detectedNaturalNewTargets
+    ? tentativeNaturalPlanTargets
+    : focusFilesAndSymbolsInTaskOrder(targetTask, repositoryFiles, repositoryFiles, session.index.symbols);
+  const naturalPathPlanTargets = focusFilesInTaskOrder(
+    targetTask,
+    [...repositoryFiles, ...naturalNewTargets],
+    [...repositoryFiles, ...naturalNewTargets]
+  );
+  const explicitRootNewPaths = new Set((effectiveInput.files ?? []).flatMap((filePath) => {
+    if (!filePath.replaceAll("\\", "/").startsWith("./")) return [];
+    const normalized = normalizeInputPath(filePath, repoRoot);
+    return normalized && !repositoryFiles.includes(normalized) ? [normalized] : [];
+  }));
+  const existingRequestedFileCount = requestedExplicitFiles.filter((filePath) => Boolean(resolveFileTarget(session.index, filePath, repoRoot).file)).length;
+  const validatedExplicitFiles: string[] = [];
+  const explicitResolutionCandidateFiles: FileFact[] = [];
+  const dirtyExplicitPaths = taskReferencesDirtyContext(effectiveInput.task ?? "")
+    ? new Set((await getWorktreeState(session)).files.filter((filePath) => !filePath.startsWith(".codex/")))
+    : new Set<string>();
+  let invalidExplicitTarget = requestedExplicitFiles.length !== (effectiveInput.files ?? []).length;
+  let ambiguousExplicitFile = false;
+  for (const filePath of requestedExplicitFiles) {
+    const resolved = resolveFileTarget(session.index, filePath, repoRoot);
+    if (resolved.file) {
+      validatedExplicitFiles.push(resolved.file.path);
+    } else if (dirtyExplicitPaths.has(filePath) && await newTargetPathIsContained(filePath, repoRoot)) {
+      validatedExplicitFiles.push(filePath);
+    } else if (explicitRootNewPaths.has(filePath) && structuredNewTargetMode.allowed && (!structuredNewTargetMode.structural || naturalStructuralSourcePresent)) {
+      if (await newTargetPathIsContained(filePath, repoRoot)) validatedExplicitFiles.push(filePath);
+      else invalidExplicitTarget = true;
+    } else if (resolved.ambiguous.length > 0) {
+      invalidExplicitTarget = true;
+      ambiguousExplicitFile = true;
+      explicitResolutionCandidateFiles.push(...resolved.ambiguous);
+    } else if (
+      await newTargetPathIsContained(filePath, repoRoot) && ((naturalNewTargets.includes(filePath) && (!structuredNewTargetMode.structural || naturalStructuralSourcePresent))
+      || (structuredNewTargetMode.structural && !targetTask.includes(filePath) && existingRequestedFileCount > 0)
+      || (!structuredNewTargetMode.structural && structuredNewTargetMode.allowed && !isLikelyPathTypo(filePath, repositoryFiles)))
+    ) {
+      validatedExplicitFiles.push(filePath);
+    } else {
+      invalidExplicitTarget = true;
+    }
+  }
+  const validatedSymbolFiles: string[] = [];
+  for (const symbolName of effectiveInput.symbols ?? []) {
+    const resolved = resolveSymbolTarget(session.index, symbolName);
+    const selectedAmbiguous = resolved.ambiguous.filter((symbol) => validatedExplicitFiles.includes(symbol.path));
+    const symbol = resolved.symbol ?? (selectedAmbiguous.length === 1 ? selectedAmbiguous[0] : undefined);
+    if (symbol) validatedSymbolFiles.push(symbol.path);
+    else {
+      invalidExplicitTarget = true;
+      explicitResolutionCandidateFiles.push(...resolved.ambiguous.map((candidate) => findFile(session.index, candidate.path)).filter((file): file is FileFact => Boolean(file)));
+    }
+  }
+  const validatedExplicitTargets = [...validatedExplicitFiles, ...validatedSymbolFiles];
+  const structuredTargetMismatch = validatedExplicitTargets.length > 0
+    && naturalPathPlanTargets.length > 0
+    && !validatedExplicitTargets.some((filePath) => naturalPathPlanTargets.includes(filePath));
+  if (structuredTargetMismatch) invalidExplicitTarget = true;
+  if (!invalidExplicitTarget && validatedExplicitTargets.length > 0) {
+    for (const filePath of naturalPathPlanTargets) if (!validatedExplicitFiles.includes(filePath) && !validatedSymbolFiles.includes(filePath)) validatedExplicitFiles.push(filePath);
+  }
+  const explicitTargetProvided = !invalidExplicitTarget && validatedExplicitFiles.length + validatedSymbolFiles.length > 0;
   const editReadiness = changePlanEditReadiness({
     input: effectiveInput,
     focusFiles,
-    explicitTargetProvided: explicitFiles.length > 0 || explicitSymbolFiles.length > 0,
+    explicitTargetProvided,
+    explicitTargetInvalid: invalidExplicitTarget,
     dirtyScope: packData.dirtyScope,
     quality,
     packetVerdict: packData.packetVerdict,
@@ -123,8 +196,8 @@ export async function changePlanQuery(
     ? uniqueSorted(
         dirtyScopeTargets.length > 0
           ? dirtyScopeTargets
-          : explicitFiles.length > 0 || explicitSymbolFiles.length > 0
-            ? [...explicitFiles, ...explicitSymbolFiles]
+          : validatedExplicitFiles.length > 0 || validatedSymbolFiles.length > 0
+            ? [...validatedExplicitFiles, ...validatedSymbolFiles]
             : files.slice(0, 6)
       )
     : [];
@@ -142,27 +215,34 @@ export async function changePlanQuery(
       : [];
   const plannedTests = editReadiness.editable ? uniqueTests([...tests, ...dirtyScopeTests]).slice(0, 12) : [];
   const plannedRecipes = editReadiness.editable ? recipes : [];
+  const replayInput = { ...effectiveInput, invariants: invariants.map((invariant) => invariant.statement) };
+  const blockedSnapshotInput = priorSnapshotLoad?.snapshot ? { ...replayInput, taskId: undefined } : replayInput;
   const blockedSnapshot = effectiveInput.saveSnapshot && !editReadiness.editable && !requestedFollowCandidate
     ? await saveBlockedTaskSnapshot({
         repoRoot,
-        input: effectiveInput,
+        input: blockedSnapshotInput,
         reason: editReadiness.reason,
         details: editReadiness
       })
     : undefined;
-  const targetCandidates = editReadiness.editable
+  const candidateOptions = editReadiness.editable
     ? []
     : changePlanTargetCandidates({
-        input: effectiveInput,
+        input: replayInput,
         taskId: blockedSnapshot?.taskId ?? effectiveInput.taskId,
         index: session.index,
         repoRoot,
-        focusFiles,
+        focusFiles: invalidExplicitTarget
+          ? uniqueSorted(explicitResolutionCandidateFiles.map((file) => file.path)).map((filePath) => ({ file: findFile(session.index, filePath)!, reasons: ["explicit target ambiguity candidate"], tier: "authoritative" as const }))
+          : focusFiles,
         workflows: session.index.workflows,
         tests,
         changedEntries: packData.changedEntries ?? [],
         missingAnchors: editReadiness.missingAnchors
       });
+  const targetCandidates = ambiguousExplicitFile
+    ? candidateOptions.filter((candidate) => candidate.kind === "file")
+    : candidateOptions;
   if (requestedFollowCandidate) {
     return changePlanFollowCandidateResult({
       session,
@@ -195,6 +275,8 @@ export async function changePlanQuery(
         plannedRecipes.length > 0 ? `4. Verification: ${plannedRecipes.slice(0, 3).join(" ")}` : "4. Run the narrowest verified test or type check that covers the touched files.",
         managedReview
           ? "5. Run the planned verification; the managed host completion gate owns post-edit review, so do not call post_edit_review manually."
+          : !effectiveInput.saveSnapshot
+            ? "5. Run the planned verification; saveSnapshot=false means no drift-review follow-up is available from this plan."
           : editReadiness.source === "dirty-worktree"
             ? "5. On a hookless host, run post_edit_review once after edits; the snapshot dirty baseline separates pre-existing dirty files from new changes."
             : "5. On a hookless host, run post_edit_review once after edits with the saved task id and verification evidence."
@@ -209,15 +291,18 @@ export async function changePlanQuery(
         "5. Treat any tests below as deferred until the edit target is explicit."
       ];
   const finalTaskId = effectiveInput.saveSnapshot && editReadiness.editable ? allocateTaskSnapshotId(repoRoot, effectiveInput) : effectiveInput.taskId;
+  const recoveryQuery = [...new Set([effectiveInput.task, effectiveInput.query, ...(effectiveInput.files ?? []), ...(effectiveInput.symbols ?? [])].filter((value): value is string => Boolean(value?.trim())))].join(" ");
   const structuredNextTools = editReadiness.editable
-    ? managedReview
+    ? managedReview || !effectiveInput.saveSnapshot || !finalTaskId
       ? []
       : [
-          nextTool("post_edit_review", "on this hookless host, review drift and verification once after completing the planned edit", { taskId: finalTaskId }, true, [".codex/cache/codexa-outcomes"])
+          nextTool("post_edit_review", "on this hookless host, review drift and verification once after completing the planned edit", { taskId: finalTaskId }, false, [".codex/cache/codexa-task-lifecycle", ".codex/cache/codexa-outcomes"])
         ].filter((tool): tool is ReturnType<typeof nextTool> => Boolean(tool))
-    : targetCandidates[0]
-      ? [nextTool("change_plan", "follow the highest-confidence target candidate", { taskId: blockedSnapshot?.taskId ?? effectiveInput.taskId, followCandidate: targetCandidates[0].candidateId, saveSnapshot: true }, true, [".codex/cache/codexa-task-snapshots"])]
-      : [nextTool("search", "narrow the task to an explicit file or symbol target before editing", { task: effectiveInput.task })];
+    : targetCandidates.length > 0
+      ? []
+      : recoveryQuery
+        ? [nextTool("search", "narrow the task to an explicit file or symbol target before editing", { query: recoveryQuery })]
+        : [];
   const complexityReview = buildPlanComplexityReview({
     editReadiness,
     plannedEditTargets,
@@ -473,10 +558,25 @@ async function changePlanFollowCandidateResult(input: {
     taskId: input.originalInput.taskId ?? selected.nextChangePlanArgs.taskId ?? input.baseInput.taskId,
     changeType: allowRequestOverrides ? input.originalInput.changeType ?? selected.nextChangePlanArgs.changeType : selected.nextChangePlanArgs.changeType,
     diff: allowRequestOverrides ? input.originalInput.diff ?? selected.nextChangePlanArgs.diff : selected.nextChangePlanArgs.diff,
+    invariants: allowRequestOverrides
+      ? input.originalInput.invariants ?? selected.nextChangePlanArgs.invariants ?? input.baseInput.invariants
+      : selected.nextChangePlanArgs.invariants ?? input.baseInput.invariants,
     saveSnapshot: true
   };
   const result = await changePlanQuery(input.session, followedInput, { ...input.options, autoRefresh: false });
   const resultData = result.data && typeof result.data === "object" ? (result.data as Record<string, unknown>) : {};
+  const replayReadiness = resultData.editReadiness && typeof resultData.editReadiness === "object" ? resultData.editReadiness as Record<string, unknown> : undefined;
+  if (replayReadiness?.editable !== true || !resultData.snapshot || typeof resultData.snapshot !== "object") {
+    return changePlanFollowCandidateRejectedResult({
+      session: input.session,
+      requestedCandidate: input.requestedCandidate,
+      reason: "target candidate replay did not produce an editable saved snapshot",
+      targetCandidates: [revalidatedCandidate, ...input.targetCandidates.filter((candidate) => candidate.candidateId !== selected.candidateId)],
+      editReadiness: input.editReadiness,
+      quality: input.quality,
+      snapshotLoad: input.snapshotLoad
+    });
+  }
   return {
     ...result,
     text: limitText(`Follow candidate: accepted ${selected.candidateId}; revalidated edit-ready.\n\n${result.text}`, 7000),
@@ -604,6 +704,7 @@ export interface ChangePlanTargetCandidateBase {
     symbols?: string[];
     query?: string;
     taskId?: string;
+    invariants?: string[];
     changeType: ChangeType;
     diff?: boolean;
     saveSnapshot: true;
@@ -613,7 +714,7 @@ export interface ChangePlanTargetCandidateBase {
 
 export interface ChangePlanTargetCandidate extends ChangePlanTargetCandidateBase, ChangePlanTargetCandidateValidation {}
 
-type ChangePlanTargetCandidateDraft = Omit<ChangePlanTargetCandidateBase, "candidateId">;
+export type ChangePlanTargetCandidateDraft = Omit<ChangePlanTargetCandidateBase, "candidateId">;
 
 function changePlanTargetCandidates(input: {
   input: ChangePlanInput;
@@ -669,6 +770,7 @@ function changePlanTargetCandidates(input: {
         files: [file.path],
         query: input.input.query,
         taskId: input.taskId,
+        invariants: input.input.invariants,
         changeType: input.input.changeType ?? "unknown",
         diff: input.input.diff,
         saveSnapshot: true
@@ -705,6 +807,7 @@ function changePlanTargetCandidates(input: {
           symbols: [symbol.id],
           query: input.input.query,
           taskId: input.taskId,
+          invariants: input.input.invariants,
           changeType: input.input.changeType ?? "unknown",
           diff: input.input.diff,
           saveSnapshot: true
@@ -893,94 +996,4 @@ function candidateScore(file: FileFact, tier: EvidenceTier, evidence: string[], 
   const symbolScore = symbol ? (symbol.exported || ["route", "node"].includes(symbol.kind) ? 18 : 10) : 0;
   const sourceScore = file.test ? -12 : 12;
   return tierScore[tier] + file.rank * 2 + file.riskScore + evidence.length * 4 + symbolScore + sourceScore;
-}
-
-function candidateSymbols(symbols: SymbolFact[], taskTokens: string[]): SymbolFact[] {
-  return symbols
-    .slice()
-    .sort(
-      (left, right) =>
-        symbolTargetScore(right, taskTokens) - symbolTargetScore(left, taskTokens) ||
-        (left.range?.startLine ?? 0) - (right.range?.startLine ?? 0) ||
-        left.qualifiedName.localeCompare(right.qualifiedName)
-    );
-}
-
-function symbolTargetScore(symbol: SymbolFact, taskTokens: string[]): number {
-  const normalized = normalizeSearchText(`${symbol.name} ${symbol.qualifiedName}`);
-  const tokenScore = taskTokens.filter((token) => normalized.includes(token)).length * 20;
-  const kindScore = symbol.kind === "route" ? 18 : symbol.exported ? 14 : ["function", "method", "class"].includes(symbol.kind) ? 10 : 4;
-  return tokenScore + kindScore;
-}
-
-function dedupeTargetCandidates(candidates: ChangePlanTargetCandidateDraft[]): ChangePlanTargetCandidateDraft[] {
-  const seen = new Set<string>();
-  const result: ChangePlanTargetCandidateDraft[] = [];
-  for (const candidate of candidates) {
-    const key = targetCandidateStableTarget(candidate);
-    if (seen.has(key)) {
-      continue;
-    }
-    seen.add(key);
-    result.push(candidate);
-  }
-  return result;
-}
-
-function withTargetCandidateId(candidate: ChangePlanTargetCandidateDraft): ChangePlanTargetCandidateBase {
-  return {
-    ...candidate,
-    candidateId: targetCandidateStableId(candidate)
-  };
-}
-
-function targetCandidateStableId(candidate: ChangePlanTargetCandidateDraft): string {
-  return `candidate-${stableId("change-plan-target-candidate", targetCandidateStableTarget(candidate)).slice(0, 12)}`;
-}
-
-function targetCandidateStableTarget(candidate: ChangePlanTargetCandidateDraft): string {
-  const target = candidate.symbol
-    ? `${candidate.symbol.kind}:${candidate.symbol.qualifiedName || candidate.symbol.name || candidate.symbol.id}`
-    : candidate.nextChangePlanArgs.files?.join("\n") ?? candidate.path;
-  return `${candidate.kind}:${candidate.path}:${target}`;
-}
-
-function uniqueInOrder(values: Iterable<string>): string[] {
-  const seen = new Set<string>();
-  const result: string[] = [];
-  for (const value of values) {
-    if (seen.has(value)) {
-      continue;
-    }
-    seen.add(value);
-    result.push(value);
-  }
-  return result;
-}
-
-function meaningfulTaskTokens(value: string): string[] {
-  const stop = new Set(["a", "an", "and", "as", "for", "how", "in", "of", "on", "or", "safely", "the", "to", "with"]);
-  return uniqueSorted(
-    normalizeSearchText(value)
-      .split(/\s+/u)
-      .map((token) => token.trim())
-      .filter((token) => token.length >= 3 && !stop.has(token))
-  ).slice(0, 8);
-}
-
-function rawSearchQueries(task: string | undefined, target: string): string[] {
-  const taskPart = meaningfulTaskTokens(task ?? "").slice(0, 4).join(" ");
-  const targetPart = target.split(/[/.]/u).filter(Boolean).slice(-2).join(" ");
-  return uniqueSorted([taskPart, targetPart, `${taskPart} ${targetPart}`].map((entry) => entry.trim()).filter(Boolean)).slice(0, 3);
-}
-
-function formatTargetCandidates(candidates: ChangePlanTargetCandidate[]): string[] {
-  if (candidates.length === 0) {
-    return ["- none ranked from current packet; run search/raw search to find a file or symbol target."];
-  }
-  return candidates.slice(0, 6).map((candidate) => {
-    const target = candidate.kind === "symbol" && candidate.symbol ? `${candidate.symbol.qualifiedName} in ${candidate.path}` : candidate.path;
-    const nextArg = candidate.nextChangePlanArgs.files?.[0] ?? candidate.nextChangePlanArgs.symbols?.[0] ?? target;
-    return `- #${candidate.rank} ${candidate.candidateId} ${candidate.kind} ${target}: ${candidate.validationStatus}; score ${candidate.score.toFixed(1)}; risk ${candidate.candidateRisk.score.toFixed(1)}; followCandidate ${candidate.candidateId}; next change_plan target ${nextArg}; ${candidate.evidence.slice(0, 3).join("; ")}`;
-  });
 }

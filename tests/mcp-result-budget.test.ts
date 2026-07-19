@@ -175,6 +175,57 @@ describe("MCP serialized ToolResult budget", () => {
     expect(result.content).toContainEqual(expect.objectContaining({ type: "resource_link", uri }));
   });
 
+  it("revokes next-tool authority when transport compaction cannot prove required inputs complete", () => {
+    const uri = `codexa://repo/mcp-results/rr_${"e".repeat(32)}/mr_${"f".repeat(64)}`;
+    const files = Array.from({ length: 80 }, (_, index) => `src/${index}-${"nested-path-".repeat(20)}target.ts`);
+    const result = toToolResult(
+      {
+        text: "bounded context\n".repeat(20_000),
+        data: {
+          mode: "context_pack",
+          actionability: "edit_ready",
+          nextTools: [{
+            tool: "change_plan",
+            reason: "act on every bounded target",
+            requiredInputs: { task: "Refactor the bounded targets", files, saveSnapshot: true },
+            readOnly: false,
+            writes: [".codex/cache/codexa-tasks"]
+          }],
+          delivery: {
+            schemaVersion: 1,
+            requestedFormat: "auto",
+            effectiveFormat: "concise",
+            resultUri: uri
+          }
+        },
+        freshness: freshness()
+      },
+      "context_pack",
+      POLICY
+    );
+
+    expect(bytes(result)).toBeLessThanOrEqual(MCP_TOOL_RESULT_MAX_BYTES);
+    const envelope = result.structuredContent as {
+      actionability: string;
+      nextTools: unknown[];
+      data: {
+        delivery: { detailRequired: boolean; resultUri: string };
+        decisionKernel: { authority: { actionability: string; originalActionability: string }; nextTools: unknown[]; detailsRequired: boolean };
+      };
+      systemMessage: string;
+    };
+    expect(envelope.actionability).toBe("blocked");
+    expect(envelope.nextTools).toEqual([]);
+    expect(envelope.data.decisionKernel).toMatchObject({
+      authority: { actionability: "blocked", originalActionability: "edit_ready" },
+      nextTools: [],
+      detailsRequired: true
+    });
+    expect(envelope.data.delivery).toMatchObject({ detailRequired: true, resultUri: uri });
+    expect(envelope.systemMessage).toContain("next-tool arguments were omitted");
+    expect(result.content).toContainEqual(expect.objectContaining({ type: "resource_link", uri }));
+  });
+
   it("keeps an auto request within the ordinary cap when detailed artifact persistence failed", () => {
     const result = toToolResult(
       {

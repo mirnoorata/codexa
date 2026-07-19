@@ -317,6 +317,29 @@ it("answers broad focus, graph, workflow, dependency, and change-plan queries", 
     expect(terminalFocusData.retrieval.intentConfidence.recommendedNextTool).toBe("source");
     expect(terminalFocus.text).toContain("read the returned source files and tests, then stop");
 
+    const multiFileFocus = await focusBriefQuery(
+      repo,
+      { task: "Refactor src/util.ts and src/constants.ts to share helper logic", diff: false, limit: 6, tokenBudget: 1200 },
+      { autoRefresh: false }
+    );
+    expect((multiFileFocus.data as { nextCall: { tool: string; arguments?: { files?: string[] } } }).nextCall).toMatchObject({
+      tool: "change_plan",
+      arguments: { files: ["src/util.ts", "src/constants.ts"], diff: false }
+    });
+
+    const pluralRiskFocus = await focusBriefQuery(repo, { task: "Harden permissions in src/util.ts", diff: false, limit: 4, tokenBudget: 900 }, { autoRefresh: false });
+    expect((pluralRiskFocus.data as { nextCall: { tool: string } }).nextCall.tool).toBe("change_plan");
+
+    const readOnlyMultiFocus = await focusBriefQuery(
+      repo,
+      { task: "Inspect src/util.ts and src/constants.ts", diff: false, limit: 6, tokenBudget: 1200 },
+      { autoRefresh: false }
+    );
+    expect((readOnlyMultiFocus.data as { nextCall: { tool: string } }).nextCall.tool).toBe("source");
+
+    const lowRiskFocus = await focusBriefQuery(repo, { task: "Update src/util.ts helper return value", diff: false, limit: 4, tokenBudget: 900 }, { autoRefresh: false });
+    expect((lowRiskFocus.data as { nextCall: { tool: string } }).nextCall.tool).toBe("source");
+
     const terminalPack = await contextPackQuery(
       repo,
       { task: "Inspect handleThing", files: ["src/api.ts"], diff: false, includeSnippets: false, limit: 4, tokenBudget: 900 },
@@ -324,6 +347,30 @@ it("answers broad focus, graph, workflow, dependency, and change-plan queries", 
     );
     expect((terminalPack.data as { nextTools?: unknown[] }).nextTools).toEqual([]);
     expect(terminalPack.text).toContain("do not stack another context packet");
+
+    const multiFilePack = await contextPackQuery(
+      repo,
+      { task: "Refactor src/util.ts and src/constants.ts to share helper logic", files: ["src/util.ts", "src/constants.ts"], diff: false, includeSnippets: false, limit: 6, tokenBudget: 1200 },
+      { autoRefresh: false }
+    );
+    expect((multiFilePack.data as { nextTools?: Array<{ tool?: string; requiredInputs?: { files?: string[] } }> }).nextTools).toEqual([
+      expect.objectContaining({ tool: "change_plan", requiredInputs: expect.objectContaining({ files: ["src/util.ts", "src/constants.ts"] }) })
+    ]);
+
+    const readOnlyMultiPack = await contextPackQuery(
+      repo,
+      { task: "Inspect src/util.ts and src/constants.ts", files: ["src/util.ts", "src/constants.ts"], diff: false, includeSnippets: false, limit: 6, tokenBudget: 1200 },
+      { autoRefresh: false }
+    );
+    expect((readOnlyMultiPack.data as { nextTools?: unknown[] }).nextTools).toEqual([]);
+
+    const multiFileSearch = await searchQuery(repo, { query: "Refactor src/util.ts and src/constants.ts to share helper logic", limit: 6 }, { autoRefresh: false });
+    expect((multiFileSearch.data as { nextTools?: Array<{ tool?: string; requiredInputs?: { files?: string[] } }> }).nextTools).toEqual([
+      expect.objectContaining({ tool: "change_plan", requiredInputs: expect.objectContaining({ files: ["src/util.ts", "src/constants.ts"] }) })
+    ]);
+
+    const lowRiskSearch = await searchQuery(repo, { query: "Update src/util.ts helper return value", limit: 4 }, { autoRefresh: false });
+    expect((lowRiskSearch.data as { nextTools?: unknown[] }).nextTools).toEqual([]);
 
     const pathAliasFocus = await focusBriefQuery(repo, { task: "Fix TypeScript path alias configuration", diff: false, limit: 4, tokenBudget: 900 }, { autoRefresh: false });
     expect((pathAliasFocus.data as { retrieval: { intents: string[] }; nextCall: { tool: string } }).retrieval.intents).not.toContain("workflow");

@@ -1,11 +1,11 @@
-import { readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { execFileSync } from "node:child_process";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { runPreEditHook } from "../src/cli/hooks.js";
 import { buildIndex } from "../src/indexer.js";
 import { changePlanQuery, postEditReviewQuery } from "../src/queries.js";
-import { saveBlockedTaskSnapshot } from "../src/task-snapshots.js";
+import { loadTaskSnapshot, saveBlockedTaskSnapshot, saveTaskSnapshot } from "../src/task-snapshots.js";
 import { createQuerySession } from "../src/query/session.js";
 import { getDiffFootprint } from "../src/query/worktree.js";
 import {
@@ -20,6 +20,7 @@ import {
 } from "../src/task-lifecycle.js";
 import type { DiffFootprintV1, TaskLoopFailureSignal, TaskLoopReview, TaskSnapshot } from "../src/types.js";
 import { createHookFixtureRepo } from "./cli-hooks-fixtures.js";
+import { createFixtureRepo } from "./indexer-fixtures.js";
 
 describe("task lifecycle governance", () => {
   it("inherits exact task invariants across same-task plan revisions", async () => {
@@ -185,6 +186,25 @@ describe("task lifecycle governance", () => {
     expect(stored.invariants?.map((entry) => entry.statement).sort()).toEqual(["Preserve invariant A.", "Preserve invariant B."]);
   });
 
+  it("persists concurrent distinct-task plans without latest-pointer temp collisions", async () => {
+    const repo = await createHookFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+    const taskIds = Array.from({ length: 20 }, (_, index) => `parallel-plan-${index + 1}`);
+    const results = await Promise.all(taskIds.map((taskId) => changePlanQuery(
+      repo,
+      { task: `Concurrent plan ${taskId}`, taskId, files: ["src/main.ts"], saveSnapshot: true },
+      { autoRefresh: false }
+    )));
+    expect(results).toHaveLength(taskIds.length);
+    for (const taskId of taskIds) {
+      const snapshot = JSON.parse(await readFile(path.join(repo, `.codex/cache/codexa-tasks/${taskId}.json`), "utf8")) as TaskSnapshot;
+      expect(snapshot.taskId).toBe(taskId);
+    }
+    const latest = JSON.parse(await readFile(path.join(repo, ".codex/cache/codexa-tasks/latest.json"), "utf8")) as { taskId: string; path: string };
+    expect(taskIds).toContain(latest.taskId);
+    expect(latest.path).toBe(`${latest.taskId}.json`);
+  });
+
   it("preserves a valid same-task snapshot when a later orientation-only plan is blocked", async () => {
     const repo = await createHookFixtureRepo();
     await buildIndex({ repoRoot: repo });
@@ -196,9 +216,138 @@ describe("task lifecycle governance", () => {
       reason: "orientation-only"
     });
     expect(blocked.preservedSnapshot).toBe(true);
+    expect(blocked.taskId).not.toBe("orientation-preserve");
     const after = JSON.parse(await readFile(path.join(repo, ".codex/cache/codexa-tasks/orientation-preserve.json"), "utf8")) as TaskSnapshot;
     expect(after.taskId).toBe(before.taskId);
     expect(after.planRevision).toBe(before.planRevision);
+  });
+
+  it("preserves an existing task snapshot while issuing a followable blocked candidate flow", async () => {
+    const repo = await createHookFixtureRepo();
+    await mkdir(path.join(repo, "src/a"), { recursive: true });
+    await mkdir(path.join(repo, "src/b"), { recursive: true });
+    await writeFile(path.join(repo, "src/a/config.ts"), "export const config = 'a'\n", "utf8");
+    await writeFile(path.join(repo, "src/b/config.ts"), "export const config = 'b'\n", "utf8");
+    await buildIndex({ repoRoot: repo });
+    const originalTaskId = "candidate-preserve";
+    const valid = await changePlanQuery(repo, {
+      task: "Fix src/main.ts",
+      taskId: originalTaskId,
+      files: ["src/main.ts"],
+      invariants: ["Keep the main contract stable."],
+      saveSnapshot: true
+    }, { autoRefresh: false });
+    const before = (valid.data as { snapshot: TaskSnapshot }).snapshot;
+    expect((valid.data as { nextTools: Array<{ tool: string; readOnly: boolean; writes: string[] }> }).nextTools).toEqual([
+      expect.objectContaining({
+        tool: "post_edit_review",
+        readOnly: false,
+        writes: [".codex/cache/codexa-task-lifecycle", ".codex/cache/codexa-outcomes"]
+      })
+    ]);
+
+    const blocked = await changePlanQuery(repo, { task: "Fix config.ts", taskId: originalTaskId, files: ["config.ts"], saveSnapshot: true }, { autoRefresh: false });
+    const blockedData = blocked.data as {
+      snapshotBlock?: { taskId: string };
+      targetCandidates: Array<{ candidateId: string }>;
+    };
+    expect(blockedData.snapshotBlock?.taskId).toBeTruthy();
+    expect(blockedData.snapshotBlock?.taskId).not.toBe(originalTaskId);
+    expect(blockedData.targetCandidates.length).toBeGreaterThan(0);
+    const preserved = JSON.parse(await readFile(path.join(repo, `.codex/cache/codexa-tasks/${originalTaskId}.json`), "utf8")) as TaskSnapshot;
+    expect(preserved.planRevision).toBe(before.planRevision);
+    expect(preserved.plannedEditTargets).toEqual(before.plannedEditTargets);
+
+    const followed = await changePlanQuery(repo, {
+      taskId: blockedData.snapshotBlock?.taskId,
+      followCandidate: blockedData.targetCandidates[0]?.candidateId,
+      saveSnapshot: true
+    }, { autoRefresh: false });
+    expect((followed.data as { editReadiness: { editable: boolean }; followCandidate?: { status: string }; snapshot: TaskSnapshot })).toMatchObject({
+      editReadiness: { editable: true },
+      followCandidate: { status: "accepted" }
+    });
+    expect((followed.data as { snapshot: TaskSnapshot }).snapshot.invariants?.map((entry) => entry.statement)).toContain("Keep the main contract stable.");
+  });
+
+  it("keeps a newer explicit snapshot authoritative over a delayed implicit publication", async () => {
+    const repo = await createHookFixtureRepo();
+    const index = await buildIndex({ repoRoot: repo });
+    let releaseImplicit!: () => void;
+    let implicitEntered!: () => void;
+    const releaseGate = new Promise<void>((resolve) => { releaseImplicit = resolve; });
+    const enteredGate = new Promise<void>((resolve) => { implicitEntered = resolve; });
+    const snapshot = (task: string, origin?: "hook-implicit") => ({
+      task,
+      changeType: "unknown" as const,
+      ...(origin ? { origin } : {}),
+      snapshotFreshness: index.freshness,
+      plannedEditTargets: origin ? [] : ["src/main.ts"],
+      plannedFiles: origin ? [] : ["src/main.ts"],
+      focusFiles: [],
+      plannedTests: [],
+      requiredWorkflowChecks: [],
+      requiredDependencyChecks: [],
+      recipes: [],
+      dirtyBaseline: {
+        changedEntries: [],
+        dirtyFiles: [],
+        dirtyFileHashes: {},
+        headCommit: index.freshness.headCommit,
+        indexedAt: index.freshness.indexedAt
+      },
+      gaps: [],
+      warnings: []
+    });
+
+    const delayedImplicit = saveTaskSnapshot({
+      repoRoot: repo,
+      input: { task: "Implicit baseline", taskId: "implicit-race", saveSnapshot: true },
+      snapshot: snapshot("Implicit baseline", "hook-implicit"),
+      beforePersist: async () => {
+        implicitEntered();
+        await releaseGate;
+      }
+    });
+    await enteredGate;
+    const explicit = await saveTaskSnapshot({
+      repoRoot: repo,
+      input: { task: "Explicit plan", taskId: "explicit-race", files: ["src/main.ts"], saveSnapshot: true },
+      snapshot: snapshot("Explicit plan")
+    });
+    releaseImplicit();
+    await delayedImplicit;
+
+    const latest = await loadTaskSnapshot(repo);
+    expect(latest.snapshot?.taskId).toBe(explicit.snapshot.taskId);
+    await expect(readFile(path.join(repo, ".codex/cache/codexa-tasks/implicit-race.json"), "utf8")).rejects.toThrow();
+  });
+
+  it("never reports a followed candidate accepted unless replay saved an editable plan", async () => {
+    const repo = await createFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+    await changePlanQuery(repo, { task: "Valid helper plan", taskId: "candidate-replay-old", files: ["src/util.ts"], saveSnapshot: true }, { autoRefresh: false });
+    const blocked = await changePlanQuery(repo, { task: "Fix helper behavior", taskId: "candidate-replay-old", saveSnapshot: true }, { autoRefresh: false });
+    const blockedData = blocked.data as { snapshotBlock?: { taskId: string }; targetCandidates: Array<{ candidateId: string }> };
+    expect(blockedData.snapshotBlock?.taskId).toBeTruthy();
+    expect(blockedData.targetCandidates.length).toBeGreaterThan(0);
+
+    const followed = await changePlanQuery(repo, {
+      taskId: blockedData.snapshotBlock?.taskId,
+      followCandidate: blockedData.targetCandidates[0]?.candidateId,
+      saveSnapshot: true
+    }, { autoRefresh: false });
+    const followedData = followed.data as {
+      editReadiness?: { editable?: boolean };
+      followCandidate?: { status?: string };
+      snapshot?: TaskSnapshot;
+    };
+    if (followedData.followCandidate?.status === "accepted") {
+      expect(followedData.editReadiness?.editable).toBe(true);
+      expect(followedData.snapshot?.taskId).toBeTruthy();
+    } else {
+      expect(followedData.followCandidate?.status).toBe("rejected");
+    }
   });
 
   it("requires explicit invariant review and replans on a reported violation", async () => {

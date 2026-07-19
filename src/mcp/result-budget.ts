@@ -48,9 +48,8 @@ function budgetReceipt(result: McpToolResultShape, originalBytes: number, maxByt
   const envelope = result.structuredContent;
   const sourceData = isRecord(envelope.data) ? envelope.data : {};
   const mode = bounded(stringValue(envelope.mode) ?? stringValue(sourceData.mode) ?? "unknown", 60);
-  const compactedKernel = compactTerminalDecisionKernel(
-    isRecord(sourceData.decisionKernel) ? sourceData.decisionKernel : mcpDecisionKernel(sourceData, mode, envelope.freshness)
-  );
+  const sourceKernel = isRecord(sourceData.decisionKernel) ? sourceData.decisionKernel : mcpDecisionKernel(sourceData, mode, envelope.freshness);
+  const compactedKernel = compactTerminalDecisionKernel(sourceKernel);
   const sourceAuthority = isRecord(compactedKernel.authority) ? compactedKernel.authority : {};
   const originalActionability = validActionability(sourceAuthority.originalActionability ?? sourceAuthority.actionability ?? envelope.actionability);
   const sourceDelivery = compactDelivery(sourceData.delivery) ?? {
@@ -60,6 +59,12 @@ function budgetReceipt(result: McpToolResultShape, originalBytes: number, maxByt
   };
   const resultUri = detailedResultUri(sourceDelivery.resultUri);
   const terminalDetailRequired = compactedKernel.detailsRequired === true;
+  const sourceNextTools = Array.isArray(sourceData.nextTools) ? sourceData.nextTools : sourceKernel.nextTools;
+  const executableInputsOmitted = Array.isArray(sourceNextTools) && sourceNextTools.some((entry) => {
+    if (!isRecord(entry) || !isRecord(entry.requiredInputs)) return false;
+    return Object.keys(entry.requiredInputs).length > 0;
+  });
+  const effectiveDetailRequired = terminalDetailRequired || executableInputsOmitted;
   // Freshness is itself an orientation summary: stale/reason/count authority
   // remains complete after its unbounded path/hash lists are removed. It has
   // no narrower MCP form, so direct users to source control for exact paths.
@@ -69,17 +74,19 @@ function budgetReceipt(result: McpToolResultShape, originalBytes: number, maxByt
     ? "Freshness detail was compacted; stale state, reason, and dirty count remain authoritative. Use git status --short for exact paths; no further Codexa call is required."
     : detailUnavailable
       ? "Result detail was omitted to enforce the MCP transport budget; do not act on missing evidence. Retry with a narrower request."
+      : executableInputsOmitted
+        ? "Executable next-tool arguments were omitted to enforce the MCP transport budget; read the linked detailed result before acting."
       : terminalDetailRequired
         ? optionalBounded(compactedKernel.systemMessage, 240) ?? "Required detailed evidence is omitted from this bounded receipt; read the linked detailed result before acting."
         : optionalBounded(sourceData.systemMessage ?? envelope.systemMessage, 240);
   // The terminal kernel is the authority after transport compaction. Exact
   // lifecycle modes intentionally fail closed until their linked detail is
   // read, so the envelope must not retain the pre-compaction edit authority.
-  const actionability = detailUnavailable ? "blocked" : validActionability(sourceAuthority.actionability);
-  const authority = detailUnavailable
+  const actionability = detailUnavailable || executableInputsOmitted ? "blocked" : validActionability(sourceAuthority.actionability);
+  const authority = detailUnavailable || executableInputsOmitted
     ? defined({ ...sourceAuthority, actionability, originalActionability })
     : sourceAuthority;
-  const kernel = detailUnavailable
+  const kernel = detailUnavailable || executableInputsOmitted
     ? defined({ ...compactedKernel, authority, nextTools: [], systemMessage, detailsRequired: true })
     : compactSummarySufficient
       ? defined({ ...compactedKernel, authority, nextTools: [], systemMessage, detailsRequired: undefined })
@@ -89,8 +96,8 @@ function budgetReceipt(result: McpToolResultShape, originalBytes: number, maxByt
     resultUri,
     effectiveFormat: "concise",
     detailAvailable: resultUri ? true : false,
-    detailRequired: terminalDetailRequired || detailUnavailable || sourceDelivery.detailRequired === true,
-    requiredDetailReason: sourceDelivery.requiredDetailReason ?? (terminalDetailRequired || detailUnavailable ? "tool-result-budget" : undefined),
+    detailRequired: effectiveDetailRequired || detailUnavailable || sourceDelivery.detailRequired === true,
+    requiredDetailReason: sourceDelivery.requiredDetailReason ?? (effectiveDetailRequired || detailUnavailable ? "tool-result-budget" : undefined),
     escalationReason: sourceDelivery.escalationReason ?? "tool-result-budget"
   });
   const truncation = { "__mcp.toolResultBudget": { total: originalBytes, returned: maxBytes } };
@@ -107,7 +114,7 @@ function budgetReceipt(result: McpToolResultShape, originalBytes: number, maxByt
     truncation,
     mcp: { compacted: true, targetBytes: maxBytes, hardBudgetEnforced: true, budgetCompaction: "tool-result" }
   });
-  const nextTools = detailUnavailable ? [] : toolNames(kernel.nextTools, 1, 80);
+  const nextTools = detailUnavailable || executableInputsOmitted ? [] : toolNames(kernel.nextTools, 1, 80);
   const relatedResources = resultUri
     ? [{ uri: resultUri, name: "Codexa detailed MCP result", mimeType: "application/json", description: "Content-addressed detailed packet" }]
     : [];
@@ -121,7 +128,7 @@ function budgetReceipt(result: McpToolResultShape, originalBytes: number, maxByt
     lifecycle: compactLifecycle(
       envelope.lifecycle,
       nextTools,
-      terminalDetailRequired
+      effectiveDetailRequired
         ? resultUri
           ? "Read the linked detailed result before acting"
           : "MCP transport budget omitted required detail"

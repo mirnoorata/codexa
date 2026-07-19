@@ -7,6 +7,7 @@ export function changePlanEditReadiness(input: {
   input: ChangePlanInput;
   focusFiles: Array<{ file: FileFact; reasons: string[]; tier: EvidenceTier }>;
   explicitTargetProvided: boolean;
+  explicitTargetInvalid?: boolean;
   dirtyScope?: { requested?: boolean; mode?: "edit" | "orientation"; canPlan?: boolean; plannedEditTargets?: string[] };
   quality?: ContextQuality;
   packetVerdict?: string;
@@ -29,15 +30,17 @@ export function changePlanEditReadiness(input: {
   const hasEvidenceBackedFocus = input.focusFiles.some((entry) => entry.tier === "authoritative" || entry.tier === "derived");
   const highConfidenceContext = qualityLevel === "high" && hasEvidenceBackedFocus && (packetVerdict === undefined || packetVerdict === "edit-ready");
   const dirtyWorktreeContext = !input.explicitTargetProvided && input.dirtyScope?.requested === true && input.dirtyScope.mode === "edit" &&
-    input.dirtyScope.canPlan === true && (input.dirtyScope.plannedEditTargets?.length ?? 0) > 0 && hasEvidenceBackedFocus && packetVerdict !== "raw-search-better";
-  const editable = input.explicitTargetProvided || highConfidenceContext || dirtyWorktreeContext;
+    input.dirtyScope.canPlan === true && (input.dirtyScope.plannedEditTargets?.length ?? 0) > 0 && (packetVerdict === undefined || packetVerdict === "edit-ready");
+  const editable = !input.explicitTargetInvalid && (input.explicitTargetProvided || highConfidenceContext || dirtyWorktreeContext);
   const missingAnchors = uniqueSorted([
     ...(input.intentConfidence?.missingAnchors ?? []),
     ...(input.explicitTargetProvided || dirtyWorktreeContext ? [] : ["file-or-symbol-target"]),
     ...(highConfidenceContext || input.explicitTargetProvided || dirtyWorktreeContext ? [] : ["edit-ready-context"]),
-    ...(input.dirtyScope?.requested && !input.dirtyScope.canPlan ? ["known-dirty-worktree-scope"] : [])
+    ...(input.dirtyScope?.requested && !input.dirtyScope.canPlan ? ["known-dirty-worktree-scope"] : []),
+    ...(input.explicitTargetInvalid ? ["resolved-file-or-symbol-target"] : [])
   ]);
-  const reason = input.explicitTargetProvided ? "explicit file or symbol target provided"
+  const reason = input.explicitTargetInvalid ? "one or more explicit targets are missing, ambiguous, or not authorized as new destinations"
+    : input.explicitTargetProvided ? "explicit file or symbol target provided"
     : dirtyWorktreeContext ? `current dirty worktree explicitly requested as edit scope (${input.dirtyScope?.plannedEditTargets?.length ?? 0} file(s))`
       : highConfidenceContext ? "high-confidence evidence-backed packet"
         : packetVerdict === "raw-search-better" ? "raw search is likely a cleaner first pass than this broad packet"
@@ -47,7 +50,7 @@ export function changePlanEditReadiness(input: {
     editable,
     status: editable ? "edit-ready" : "orientation-only",
     reason,
-    source: input.explicitTargetProvided ? "explicit-target" : dirtyWorktreeContext ? "dirty-worktree" : highConfidenceContext ? "high-confidence-context" : "insufficient-context",
+    source: editable && input.explicitTargetProvided ? "explicit-target" : editable && dirtyWorktreeContext ? "dirty-worktree" : editable && highConfidenceContext ? "high-confidence-context" : "insufficient-context",
     explicitTargetProvided: input.explicitTargetProvided,
     packetVerdict,
     qualityLevel,

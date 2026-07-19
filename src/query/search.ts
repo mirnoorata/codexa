@@ -1,12 +1,14 @@
 import path from "node:path";
 import { indexGaps, formatGaps } from "./diff.js";
 import { confidenceTier, tierScore, clampInt, fitLinesToTokenBudget } from "./formatting.js";
+import { ambiguousFocusSymbolTargetCandidates, ambiguousFocusTargetCandidates, classifyChangePlanNeed, focusFilesAndSymbolsInTaskOrder, focusFilesInTaskOrder, isStructuralEditTask, normalizeTaskRepositoryPaths, plannedNewFocusPathTargets, unresolvedFocusPathTargets } from "./graph.js";
+import { nextTool } from "./next-tools.js";
 import { assessContextQuality, formatContextQuality, formatValueEstimate, valueEstimate } from "./quality.js";
 import { assertRawSearchPatternLimit, normalizeRawSearchPatterns, RAW_SEARCH_PATTERN_LIMIT, rawSearch, type RawSearchHit, type RawSearchResult } from "./raw-search.js";
 import { freshnessBanner } from "./runtime.js";
 import { ensureQuerySession, type QuerySessionInput } from "./session.js";
 import { formatTestRecommendations, recommendTests } from "./tests.js";
-import { findFile } from "./targets.js";
+import { findFile, newTargetPathIsContained } from "./targets.js";
 import { retrieveForTask, type RetrievalAnchor, type RetrievalMatch, type RetrievalResult } from "../retrieval.js";
 import { semanticOptionsFromQueryOptions, type SemanticRetrievalSummary } from "../semantic-retrieval.js";
 import type { CodexaIndex, FileFact, QueryOptions, QueryResult, SymbolFact, UsageSiteFact } from "../types.js";
@@ -107,11 +109,25 @@ export async function searchQuery(
     existing.push(`${formatRetrievalLaneSummary(match.lanes)} ${match.matchedTerms.slice(0, 5).join(", ") || "intent"}`);
     interpreted.reasons.set(match.file.path, existing);
   }
-  const searchFiles = uniqueFiles(
+  const repositoryFiles = index.files.map((file) => file.path);
+  const targetQuery = normalizeTaskRepositoryPaths(queryInput.query, repoRoot);
+  const explicitPathTargets = focusFilesInTaskOrder(targetQuery, repositoryFiles, repositoryFiles);
+  const detectedPlannedNewTargets = (await Promise.all(plannedNewFocusPathTargets(targetQuery, repositoryFiles).map(async (filePath) => (await newTargetPathIsContained(filePath, repoRoot)) ? filePath : undefined))).filter((filePath): filePath is string => Boolean(filePath));
+  const tentativePlanTargets = focusFilesAndSymbolsInTaskOrder(targetQuery, [...repositoryFiles, ...detectedPlannedNewTargets], [...repositoryFiles, ...detectedPlannedNewTargets], index.symbols);
+  const plannedNewTargets = isStructuralEditTask(targetQuery) && !tentativePlanTargets.some((filePath) => repositoryFiles.includes(filePath)) ? [] : detectedPlannedNewTargets;
+  const explicitPlanTargets = plannedNewTargets === detectedPlannedNewTargets
+    ? tentativePlanTargets
+    : focusFilesAndSymbolsInTaskOrder(targetQuery, repositoryFiles, repositoryFiles, index.symbols);
+  const explicitTargetFiles = explicitPlanTargets.map((filePath) => findFile(index, filePath)).filter((file): file is FileFact => Boolean(file));
+  const targetCandidates = [...new Set([...ambiguousFocusTargetCandidates(targetQuery, repositoryFiles), ...ambiguousFocusSymbolTargetCandidates(targetQuery, index.symbols, explicitPathTargets)])];
+  const unresolvedTargets = unresolvedFocusPathTargets(targetQuery, repositoryFiles, plannedNewTargets);
+  const candidateFiles = targetCandidates.map((filePath) => findFile(index, filePath)).filter((file): file is FileFact => Boolean(file));
+  const rankedSearchFiles = uniqueFiles(
     raw.sufficient
       ? [...rawIndexedFiles, ...interpreted.exactTargets]
       : [...interpreted.files, ...rawIndexedFiles, ...retrieval.matches.map((match) => match.file)]
-  ).slice(0, limit);
+  );
+  const searchFiles = uniqueFiles([...candidateFiles, ...explicitTargetFiles, ...rankedSearchFiles]).slice(0, limit);
   const tests = recommendTests(index, searchFiles.map((file) => file.path), repoRoot).slice(0, 10);
   const rawFileCount = raw.files.length;
   const rawExactHitCount = raw.hits.length;
@@ -138,12 +154,77 @@ export async function searchQuery(
     quality
   });
   const searchDiscipline = searchDisciplineLine(raw);
-  const actionability = raw.sufficient ? "raw_search_sufficient" : actionabilityFromSearchVerdict(retrieval.intentConfidence.verdict);
   const rawAnchorLine = formatRawExactAnchorLine(rawExactHitCount, retrieval);
-  const nextTools: [] = [];
-  const systemMessage = raw.sufficient
-    ? "Stop Codexa discovery and read the exact source hits. If the original task already crosses an API, runtime, persistence, security, rename, or delete boundary, one change_plan call is still warranted."
-    : "Stop Codexa discovery and inspect the ranked source targets. Use change_plan only if those reads confirm a material cross-boundary edit; do not stack another context packet.";
+  const searchFilePaths = searchFiles.map((file) => file.path);
+  const ambiguousExplicitTarget = targetCandidates.length > 0;
+  const unresolvedExplicitTarget = unresolvedTargets.length > 0;
+  const needsTarget = ambiguousExplicitTarget || unresolvedExplicitTarget;
+  const planFiles = explicitPlanTargets.slice(0, 64);
+  const changePlanNeed = planFiles.length > 0 && !needsTarget
+    ? classifyChangePlanNeed({
+        mode: retrieval.intentConfidence.mode,
+        task: queryInput.query,
+        explicitTargetCount: explicitPlanTargets.length,
+        targetFiles: planFiles,
+        repositoryFiles
+      })
+    : undefined;
+  const boundedTargetReady = retrieval.intentConfidence.mode === "edit" && planFiles.length > 0 && !needsTarget;
+  const nextTools = changePlanNeed
+    ? [
+        nextTool(
+          "change_plan",
+          changePlanNeed.reason,
+          { task: queryInput.query, files: planFiles, diff: false, saveSnapshot: true },
+          false,
+          [".codex/cache/codexa-tasks", ".codex/cache/codexa-task-lifecycle"]
+        )
+      ]
+    : [];
+  const effectiveIntent = boundedTargetReady
+    ? {
+        ...retrieval.intentConfidence,
+        mode: "edit" as const,
+        confidence: Math.max(0.7, retrieval.intentConfidence.confidence),
+        anchors: planFiles.slice(0, 8),
+        selectedAnchorCount: planFiles.length,
+        missingAnchors: [],
+        editReady: true,
+        verdict: "edit-ready" as const,
+        reasons: uniqueSorted([...retrieval.intentConfidence.reasons, "bounded task target supplies plan authority"])
+      }
+    : needsTarget
+      ? {
+        ...retrieval.intentConfidence,
+        anchors: [],
+        selectedAnchorCount: 0,
+        missingAnchors: uniqueSorted([...retrieval.intentConfidence.missingAnchors, ambiguousExplicitTarget ? "ambiguous repository target" : "unresolved repository path"]),
+        editReady: false,
+        verdict: "needs-target" as const,
+        reasons: uniqueSorted([...retrieval.intentConfidence.reasons, ambiguousExplicitTarget ? "ambiguous repository target" : "unresolved repository path"])
+      }
+      : retrieval.intentConfidence;
+  const effectiveDiagnostics = boundedTargetReady
+    ? uniqueSorted([...retrieval.diagnostics.filter((diagnostic) => !/needs explicit|raw search likely|workflow intent had no matching trace/iu.test(diagnostic)), "bounded task target supplies plan authority"])
+    : needsTarget
+      ? uniqueSorted([...retrieval.diagnostics, ambiguousExplicitTarget ? "named target matches multiple repository paths" : "named path does not resolve to an indexed repository file"])
+      : retrieval.diagnostics;
+  const actionability = boundedTargetReady
+    ? "edit_ready"
+    : needsTarget
+      ? "needs_target"
+    : raw.sufficient
+      ? "raw_search_sufficient"
+      : actionabilityFromSearchVerdict(effectiveIntent.verdict);
+  const systemMessage = nextTools[0]?.reason ?? (needsTarget
+    ? ambiguousExplicitTarget
+      ? "Choose one path from targetCandidates and inspect it directly; do not repeat search."
+      : "Correct one path from unresolvedTargets before edit planning; do not repeat broad discovery."
+    : boundedTargetReady && searchFiles.length === 0
+      ? "Stop Codexa discovery; no indexed source read is required. Proceed with the named new target."
+    : raw.sufficient
+      ? "Stop Codexa discovery and read the exact source hits."
+      : "Stop Codexa discovery and inspect the ranked source targets; do not stack another context packet.");
   const text = [
     freshnessBanner(freshness, refresh),
     formatContextQuality(quality),
@@ -151,11 +232,17 @@ export async function searchQuery(
     `Hybrid semantic search: ${queryInput.query}`,
     raw.patterns.length > 1 ? `Search patterns: ${formatSearchPatterns(raw.patterns)}` : undefined,
     formatSemanticLaneSummary(retrieval.semantic),
-    `Packet verdict: ${retrieval.intentConfidence.verdict}; edit-ready ${retrieval.intentConfidence.editReady ? "yes" : "no"}; confidence ${Math.round(retrieval.intentConfidence.confidence * 100)}%`,
+    `Packet verdict: ${effectiveIntent.verdict}; edit-ready ${effectiveIntent.editReady ? "yes" : "no"}; confidence ${Math.round(effectiveIntent.confidence * 100)}%`,
     `Actionability: ${actionability}`,
-    retrieval.diagnostics.length > 0 ? `Retrieval diagnostics: ${retrieval.diagnostics.join("; ")}` : undefined,
+    effectiveDiagnostics.length > 0 ? `Retrieval diagnostics: ${effectiveDiagnostics.join("; ")}` : undefined,
     searchDiscipline,
     rawAnchorLine,
+    targetCandidates.length > 0 ? "" : undefined,
+    targetCandidates.length > 0 ? "Ambiguous target candidates:" : undefined,
+    ...targetCandidates.slice(0, 40).map((filePath) => `- ${filePath}`),
+    unresolvedTargets.length > 0 ? "" : undefined,
+    unresolvedTargets.length > 0 ? "Unresolved repository paths:" : undefined,
+    ...unresolvedTargets.slice(0, 40).map((filePath) => `- ${filePath}`),
     "",
     raw.patterns.length > 1 ? "Raw hits (multi-pattern):" : "Raw hits:",
     ...(queryInput.includeRaw ?? true
@@ -190,16 +277,18 @@ export async function searchQuery(
       files: searchFiles,
       symbols: interpreted.symbols,
       usageSites: interpreted.usageSites,
-      retrieval,
+      retrieval: { ...retrieval, intentConfidence: effectiveIntent, diagnostics: effectiveDiagnostics },
       rankedAnchors: retrieval.anchors,
       relationalPackets: {
         processGroups: retrieval.processGroups,
         clusterGroups: retrieval.clusterGroups
       },
-      intentConfidence: retrieval.intentConfidence,
-      packetVerdict: retrieval.intentConfidence.verdict,
+      intentConfidence: effectiveIntent,
+      packetVerdict: effectiveIntent.verdict,
       actionability,
-      diagnostics: retrieval.diagnostics,
+      diagnostics: effectiveDiagnostics,
+      targetCandidates: targetCandidates.slice(0, 40),
+      unresolvedTargets: unresolvedTargets.slice(0, 40),
       tests,
       value,
       quality,
