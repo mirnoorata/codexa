@@ -135,8 +135,13 @@ it("core-profile envelopes steer only to directly registered or dispatcher-calla
       expect(promptText).toContain('`operation: \\"post_edit_review\\"`');
       expect(promptText).toContain('`operation: \\"diff_impact\\"`');
       expect(promptText).toContain('`operation: \\"test_plan\\"`');
+      expect(promptText).toContain('`arguments: {}`');
       expect(promptText).toContain('`arguments: {\\"diff\\":true}`');
+      expect(promptText).toContain("render this prompt again with `taskId`");
       expect(promptText).not.toMatch(/(?:call|invoke|run|use)\s+`?(?:post_edit_review|diff_impact|test_plan)`?/iu);
+
+      const boundDirtyDiff = await client.getPrompt({ name: "dirty_diff_review", arguments: { taskId: "core-dispatch-plan" } });
+      expect(JSON.stringify(boundDirtyDiff)).toContain('`arguments: {\\"taskId\\":\\"core-dispatch-plan\\"}`');
 
       const snapshotPrompt = await client.getPrompt({ name: "snapshot_edit_loop", arguments: { task: "change alpha", target: "src/alpha.ts" } });
       const snapshotText = JSON.stringify(snapshotPrompt);
