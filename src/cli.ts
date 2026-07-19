@@ -17,7 +17,7 @@ import { proveQuery } from "./prove.js";
 import { createQuerySession } from "./query/session.js";
 import { ingestVerificationArtifact } from "./verification-artifacts.js";
 import { validateArtifactIds } from "./lifecycle-contract.js";
-import { recordAdvisoryHookEvent, runPostEditHook, runPreEditHook } from "./cli/hooks.js";
+import { postEditReviewStateIsCurrent, recordAdvisoryHookEvent, runPostEditHook, runPreEditHook } from "./cli/hooks.js";
 import type { ChangeType } from "./types.js";
 import { runEval } from "./eval.js";
 import { registerQueryCommands } from "./cli/query-commands.js";
@@ -48,7 +48,7 @@ const program = new Command();
 // subcommands stay quiet (their stderr lands in host transcripts on every
 // edit); everything else warns once and proceeds so diagnosis (doctor)
 // stays reachable on the unsupported major.
-const NODE_GUARD_QUIET_COMMANDS = new Set(["session-start", "hook-pre-edit", "hook-post-edit"]);
+const NODE_GUARD_QUIET_COMMANDS = new Set(["session-start", "hook-pre-edit", "hook-post-edit", "hook-review-state"]);
 program.hook("preAction", (_thisCommand, actionCommand) => {
   if (nodeSupported()) {
     return;
@@ -195,6 +195,14 @@ program
   .description("Bounded hook helper that runs the post-edit review packet after edit tools.")
   .action(async (repo: string) => {
     await runPostEditHook(repo);
+  });
+
+program
+  .command("hook-review-state")
+  .argument("<repo>", "repository root")
+  .description("Read-only hook helper that reports whether the current plan and workspace already have a non-blocking final review.")
+  .action(async (repo: string) => {
+    console.log((await postEditReviewStateIsCurrent(repo)) ? "current" : "review");
   });
 
 program

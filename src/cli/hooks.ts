@@ -7,6 +7,7 @@ import { saveImplicitBaselineSnapshot } from "../implicit-baseline.js";
 import { getFreshness } from "../indexer.js";
 import { resolveMcpRepoRoot, shouldPreferConfiguredRepoRoot } from "../mcp-repo-root.js";
 import {
+  latestCompletedPostEditReviewMatches,
   loadPostEditHookReviewState,
   postEditHookReviewSignature,
   recordCodexaHookEvent,
@@ -161,6 +162,28 @@ export async function runPostEditHook(repo: string): Promise<void> {
     } finally {
       await release();
     }
+  });
+}
+
+/**
+ * Read-only completion probe for host Stop hooks. It intentionally returns
+ * false on any missing or degraded identity so the host falls back to a real
+ * review instead of trusting an ambiguous cache record.
+ */
+export async function postEditReviewStateIsCurrent(repo: string): Promise<boolean> {
+  const { activeRepoRoot } = await resolveHookRepoRoots(repo);
+  const loaded = await loadTaskSnapshot(activeRepoRoot);
+  if (!loaded.snapshot) {
+    return false;
+  }
+  const freshness = await getFreshness(activeRepoRoot, undefined, { recover: false });
+  return latestCompletedPostEditReviewMatches({
+    repoRoot: activeRepoRoot,
+    freshness,
+    taskId: loaded.snapshot.taskId,
+    planRevision: loaded.snapshot.planRevision ?? 1,
+    snapshotCreatedAt: loaded.snapshot.createdAt,
+    snapshotPublicationSequence: loaded.snapshot.publicationSequence
   });
 }
 

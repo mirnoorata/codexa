@@ -41,6 +41,7 @@ STOP_INTERNAL_MAX_SECONDS=33
 STOP_REVIEW_MIN_SECONDS=5
 STOP_FINALIZE_MARGIN_SECONDS=1
 STOP_GIT_CALL_MAX_SECONDS=2
+STOP_STATE_CALL_MAX_SECONDS=5
 STOP_BUDGET_SECONDS="${CLAUDIO_STOP_BUDGET_SECONDS:-$STOP_INTERNAL_MAX_SECONDS}"
 case "$STOP_BUDGET_SECONDS" in
   ''|*[!0-9]*|??????????*) STOP_BUDGET_SECONDS="$STOP_INTERNAL_MAX_SECONDS" ;;
@@ -80,6 +81,30 @@ claudio_stop_review_one() {
   fi
 
   local snapshot_file="$repo/.codex/cache/codexa-tasks/latest.json"
+
+  # A successful evidence-bearing review persists a state-bound identity in
+  # the latest outcome pointer. Ask the shared engine to validate that pointer
+  # against the current plan revision, index snapshot, HEAD, and dirty-file
+  # hashes before spending a second review call. Any parse, trust, or timeout
+  # failure falls through to the normal review. Later edits change the shared
+  # workspace digest, so they never inherit this skip.
+  local outcome_pointer="$repo/.codex/cache/codexa-outcomes/latest.json"
+  if [[ -f "$outcome_pointer" ]] \
+    && grep -Eq '"completionAuthority"[[:space:]]*:[[:space:]]*"(complete|advisory_inspect)"' "$outcome_pointer" 2>/dev/null \
+    && claudio_codexa_available; then
+    local state_remaining_seconds state_budget_seconds review_state
+    state_remaining_seconds="$(claudio_stop_remaining_seconds)"
+    state_budget_seconds=$((state_remaining_seconds - STOP_REVIEW_MIN_SECONDS - STOP_FINALIZE_MARGIN_SECONDS))
+    if (( state_budget_seconds > STOP_STATE_CALL_MAX_SECONDS )); then
+      state_budget_seconds=$STOP_STATE_CALL_MAX_SECONDS
+    fi
+    if (( state_budget_seconds >= 1 )); then
+      review_state="$(claudio_codexa_run "$state_budget_seconds" hook-review-state "$repo" 2>/dev/null)" || review_state=""
+      if [[ "$review_state" == "current" ]]; then
+        return 20
+      fi
+    fi
+  fi
 
   local remaining_seconds fingerprint_budget_seconds
   remaining_seconds="$(claudio_stop_remaining_seconds)"

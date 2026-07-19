@@ -25,6 +25,7 @@ import type {
   VerificationArtifactSummary
 } from "./types.js";
 import { stableId } from "./util.js";
+import { workspaceStateDigest } from "./workspace-state.js";
 
 type OutcomeCommandReport = VerificationCommandReport & { runner?: AutoVerifyReportRunner };
 
@@ -48,6 +49,8 @@ export interface PostEditOutcomeInput {
   task: string;
   taskId?: string;
   snapshotPath?: string;
+  snapshotCreatedAt?: string;
+  snapshotPublicationSequence?: number;
   verdict: PostEditVerdict;
   inspectMode: PostEditInspectMode;
   inspectReasons: string[];
@@ -126,12 +129,15 @@ export interface PostEditOutcome {
   task: string;
   taskId?: string;
   snapshotPath?: string;
+  snapshotCreatedAt?: string;
+  snapshotPublicationSequence?: number;
   verdict: PostEditVerdict;
   inspectMode: PostEditInspectMode;
   inspectReasons: string[];
   completionAuthority: PostEditCompletionAuthority;
   headCommit: string | null;
   indexSnapshotId: string;
+  workspaceStateDigest: string;
   planRevision?: number;
   invariants?: TaskInvariant[];
   invariantReviews?: TaskInvariantReview[];
@@ -169,6 +175,22 @@ export interface PostEditOutcome {
   qualityLevel?: string;
   confidence?: Record<Confidence | "fallback", number>;
   calibrationLabels: string[];
+}
+
+interface LatestPostEditOutcomePointer {
+  schemaVersion: 1;
+  outcomeId: string;
+  path: string;
+  createdAt: string;
+  verdict: PostEditVerdict;
+  completionAuthority: PostEditCompletionAuthority;
+  taskId?: string;
+  planRevision: number;
+  snapshotCreatedAt?: string;
+  snapshotPublicationSequence?: number;
+  headCommit: string | null;
+  indexSnapshotId: string;
+  workspaceStateDigest: string;
 }
 
 export interface PostEditHookReviewState {
@@ -210,12 +232,15 @@ export function buildPostEditOutcome(input: PostEditOutcomeInput, createdAt = ne
     task: input.task,
     taskId: input.taskId,
     snapshotPath: input.snapshotPath,
+    snapshotCreatedAt: input.snapshotCreatedAt,
+    snapshotPublicationSequence: input.snapshotPublicationSequence,
     verdict: input.verdict,
     inspectMode: input.inspectMode,
     inspectReasons: input.inspectReasons,
     completionAuthority: input.completionAuthority,
     headCommit: input.freshness.headCommit,
     indexSnapshotId: input.freshness.snapshotId,
+    workspaceStateDigest: workspaceStateDigest(input.freshness),
     planRevision: input.planRevision,
     invariants: input.invariants,
     invariantReviews: input.invariantReviews.map((review) => ({
@@ -276,9 +301,78 @@ export async function savePostEditOutcome(input: PostEditOutcomeInput): Promise<
     path: path.basename(outcomePath),
     createdAt,
     verdict: outcome.verdict,
-    taskId: outcome.taskId
-  });
+    completionAuthority: outcome.completionAuthority,
+    taskId: outcome.taskId,
+    planRevision: outcome.planRevision ?? 1,
+    snapshotCreatedAt: outcome.snapshotCreatedAt,
+    snapshotPublicationSequence: outcome.snapshotPublicationSequence,
+    headCommit: outcome.headCommit,
+    indexSnapshotId: outcome.indexSnapshotId,
+    workspaceStateDigest: outcome.workspaceStateDigest
+  } satisfies LatestPostEditOutcomePointer);
   return { outcome, path: outcomePath, relativePath: path.posix.join(OUTCOME_DIR, `${outcome.outcomeId}.json`) };
+}
+
+/**
+ * A completion hook may skip only when the latest persisted non-blocking review
+ * names this exact plan revision and the current checkout is byte-identical to
+ * the state that review authorized. The pointed outcome is revalidated so a
+ * torn or hand-edited latest pointer never suppresses a real review.
+ */
+export async function latestCompletedPostEditReviewMatches(input: {
+  repoRoot: string;
+  freshness: FreshnessInfo;
+  taskId: string;
+  planRevision: number;
+  snapshotCreatedAt?: string;
+  snapshotPublicationSequence?: number;
+}): Promise<boolean> {
+  if (!workspaceStateSupportsExactIdentity(input.freshness)) {
+    return false;
+  }
+  const repoRoot = path.resolve(input.repoRoot);
+  const dir = path.join(repoRoot, OUTCOME_DIR);
+  let pointer: LatestPostEditOutcomePointer;
+  let outcome: Partial<PostEditOutcome>;
+  try {
+    const parsedPointer = JSON.parse(await fs.readFile(path.join(dir, LATEST_FILE), "utf8")) as unknown;
+    if (!isLatestPostEditOutcomePointer(parsedPointer)) {
+      return false;
+    }
+    pointer = parsedPointer;
+    if (pointer.path !== `${pointer.outcomeId}.json` || path.basename(pointer.path) !== pointer.path) {
+      return false;
+    }
+    outcome = JSON.parse(await fs.readFile(path.join(dir, pointer.path), "utf8")) as Partial<PostEditOutcome>;
+  } catch {
+    return false;
+  }
+  if (pointer.completionAuthority !== "complete" && pointer.completionAuthority !== "advisory_inspect") {
+    return false;
+  }
+  const currentDigest = workspaceStateDigest(input.freshness);
+  return (
+    pointer.taskId === input.taskId &&
+    pointer.planRevision === input.planRevision &&
+    pointer.snapshotCreatedAt === input.snapshotCreatedAt &&
+    pointer.snapshotPublicationSequence === input.snapshotPublicationSequence &&
+    pointer.headCommit === input.freshness.headCommit &&
+    pointer.indexSnapshotId === input.freshness.snapshotId &&
+    pointer.workspaceStateDigest === currentDigest &&
+    outcome.schemaVersion === 1 &&
+    outcome.outcomeId === pointer.outcomeId &&
+    outcome.createdAt === pointer.createdAt &&
+    outcome.repoRoot === "." &&
+    outcome.verdict === pointer.verdict &&
+    outcome.taskId === pointer.taskId &&
+    outcome.planRevision === pointer.planRevision &&
+    outcome.snapshotCreatedAt === pointer.snapshotCreatedAt &&
+    outcome.snapshotPublicationSequence === pointer.snapshotPublicationSequence &&
+    outcome.completionAuthority === pointer.completionAuthority &&
+    outcome.headCommit === pointer.headCommit &&
+    outcome.indexSnapshotId === pointer.indexSnapshotId &&
+    outcome.workspaceStateDigest === pointer.workspaceStateDigest
+  );
 }
 
 export function postEditHookReviewSignature(input: { freshness: FreshnessInfo; taskId?: string; autoVerifyMode?: string }): string {
@@ -391,6 +485,48 @@ function stableOutcomeId(repoRoot: string, input: PostEditOutcomeInput, createdA
 
 function isPostEditVerdict(value: unknown): value is PostEditVerdict {
   return value === "continue" || value === "run_tests" || value === "inspect" || value === "replan";
+}
+
+function isPostEditCompletionAuthority(value: unknown): value is PostEditCompletionAuthority {
+  return value === "complete" || value === "tests_required" || value === "advisory_inspect" || value === "blocking_inspect" || value === "replan_required";
+}
+
+function isLatestPostEditOutcomePointer(value: unknown): value is LatestPostEditOutcomePointer {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return false;
+  }
+  const record = value as Partial<LatestPostEditOutcomePointer>;
+  return (
+    record.schemaVersion === 1 &&
+    typeof record.outcomeId === "string" &&
+    typeof record.path === "string" &&
+    typeof record.createdAt === "string" &&
+    isPostEditVerdict(record.verdict) &&
+    isPostEditCompletionAuthority(record.completionAuthority) &&
+    (record.taskId === undefined || typeof record.taskId === "string") &&
+    Number.isInteger(record.planRevision) &&
+    (record.planRevision ?? 0) > 0 &&
+    (record.snapshotCreatedAt === undefined || typeof record.snapshotCreatedAt === "string") &&
+    (record.snapshotPublicationSequence === undefined || (Number.isInteger(record.snapshotPublicationSequence) && (record.snapshotPublicationSequence ?? 0) > 0)) &&
+    (record.headCommit === null || typeof record.headCommit === "string") &&
+    typeof record.indexSnapshotId === "string" &&
+    /^[a-f0-9]{64}$/u.test(record.workspaceStateDigest ?? "")
+  );
+}
+
+function workspaceStateSupportsExactIdentity(freshness: FreshnessInfo): boolean {
+  if (freshness.missing || (freshness.degradedGitState?.length ?? 0) > 0) {
+    return false;
+  }
+  const dirtyFiles = [...new Set(freshness.dirtyFiles)].sort();
+  const hashedFiles = Object.keys(freshness.dirtyFileHashes).sort();
+  if (dirtyFiles.length !== hashedFiles.length || dirtyFiles.some((file, index) => file !== hashedFiles[index])) {
+    return false;
+  }
+  // Ordinary files use content SHA-1; a deleted path uses the stable `missing`
+  // sentinel. Metadata/unreadable/non-file fallbacks are deliberately not
+  // strong enough to suppress a later review.
+  return Object.values(freshness.dirtyFileHashes).every((digest) => digest === "missing" || /^[a-f0-9]{40}$/u.test(digest));
 }
 
 function isHookName(value: unknown): value is CodexaHookName {
