@@ -410,9 +410,9 @@ describe("task lifecycle governance", () => {
     }
   });
 
-  it("recovers a newer same-task snapshot when a crash leaves its deleted blocked marker published", async () => {
+  it("recovers a newer same-task snapshot when a crash occurs before blocked-marker deletion", async () => {
     const repo = await createHookFixtureRepo();
-    await buildIndex({ repoRoot: repo });
+    const index = await buildIndex({ repoRoot: repo });
     const taskId = "blocked-upgrade-crash";
     await saveBlockedTaskSnapshot({
       repoRoot: repo,
@@ -420,28 +420,46 @@ describe("task lifecycle governance", () => {
       reason: "orientation-only"
     });
     const dir = path.join(repo, ".codex/cache/codexa-tasks");
-    const latestPath = path.join(dir, "latest.json");
-    const staleBlockedPointer = await readFile(latestPath, "utf8");
-
-    const accepted = await changePlanQuery(
-      repo,
-      { task: "Apply the resolved edit", taskId, files: ["src/main.ts"], saveSnapshot: true },
-      { autoRefresh: false }
-    );
-    const acceptedSnapshot = (accepted.data as { snapshot: TaskSnapshot }).snapshot;
-    await expect(readFile(path.join(dir, `${taskId}.blocked.json`), "utf8")).rejects.toThrow();
-
-    // Reachable crash state: the accepted snapshot replaced the blocked marker,
-    // but the process stopped before publishing its newer latest.json pointer.
-    await writeFile(latestPath, staleBlockedPointer, "utf8");
-    await expect(loadTaskSnapshot(repo)).resolves.toMatchObject({
-      recoveredLatest: true,
-      latestTaskId: taskId,
+    await expect(saveTaskSnapshot({
+      repoRoot: repo,
+      input: { task: "Apply the resolved edit", taskId, files: ["src/main.ts"], saveSnapshot: true },
       snapshot: {
-        taskId,
-        publicationSequence: acceptedSnapshot.publicationSequence
+        task: "Apply the resolved edit",
+        changeType: "unknown",
+        snapshotFreshness: index.freshness,
+        plannedEditTargets: ["src/main.ts"],
+        plannedFiles: ["src/main.ts"],
+        focusFiles: [],
+        plannedTests: [],
+        requiredWorkflowChecks: [],
+        requiredDependencyChecks: [],
+        recipes: [],
+        dirtyBaseline: {
+          changedEntries: [],
+          dirtyFiles: [],
+          dirtyFileHashes: {},
+          headCommit: index.freshness.headCommit,
+          indexedAt: index.freshness.indexedAt
+        },
+        gaps: [],
+        warnings: []
+      },
+      afterPersistBeforeBlockedCleanup: async () => {
+        throw new Error("simulated crash before blocked cleanup");
       }
-    });
+    })).rejects.toThrow("simulated crash before blocked cleanup");
+
+    const acceptedSnapshot = JSON.parse(await readFile(path.join(dir, `${taskId}.json`), "utf8")) as TaskSnapshot;
+    expect(JSON.parse(await readFile(path.join(dir, "latest.json"), "utf8"))).toMatchObject({ taskId, blocked: true });
+    expect(JSON.parse(await readFile(path.join(dir, `${taskId}.blocked.json`), "utf8"))).toMatchObject({ taskId, kind: "change-plan-snapshot-blocked" });
+    for (const loaded of [await loadTaskSnapshot(repo), await loadTaskSnapshot(repo, taskId)]) {
+      expect(loaded).toMatchObject({
+        recoveredLatest: true,
+        latestTaskId: taskId,
+        snapshot: { taskId, publicationSequence: acceptedSnapshot.publicationSequence }
+      });
+      expect(loaded.missingReason).toBeUndefined();
+    }
   });
 
   it("preserves a valid same-task snapshot when a later orientation-only plan is blocked", async () => {
