@@ -63,28 +63,73 @@ export function normalizeInputPaths(filePaths: string[], repoRoot: string): stri
   });
 }
 
-export async function newTargetPathIsContained(filePath: string, repoRoot: string): Promise<boolean> {
+export type RepositoryTargetPathAuthority = {
+  requestedPath: string;
+  path?: string;
+  status: "indexed" | "existing-unindexed" | "missing" | "invalid";
+  viaSymlink: boolean;
+  reason?: string;
+};
+
+/**
+ * Resolve a proposed repository target against both the filesystem and the
+ * current index. `normalizeInputPath` supplies the lexical containment check;
+ * this additional filesystem walk keeps an existing ignored file or a
+ * symlink alias from being mistaken for a brand-new destination.
+ */
+export async function repositoryTargetPathAuthority(
+  filePath: string,
+  repoRoot: string,
+  repositoryFiles: Iterable<string>
+): Promise<RepositoryTargetPathAuthority> {
+  const requestedPath = filePath;
   const normalized = normalizeInputPath(filePath, repoRoot);
-  if (!normalized) return false;
+  if (!normalized) {
+    return { requestedPath, status: "invalid", viaSymlink: false, reason: "target is not a contained repository-relative path" };
+  }
+
   const absoluteRoot = path.resolve(repoRoot);
   const repoReal = await fs.realpath(absoluteRoot).catch(() => "");
-  if (!repoReal) return false;
-  let probe = path.resolve(absoluteRoot, normalized);
-  while (isSubpath(probe, absoluteRoot)) {
-    const stat = await fs.lstat(probe).catch((error: unknown) => errorCode(error) === "ENOENT" ? undefined : null);
-    if (stat === null) return false;
-    if (stat) {
-      // realpath(2) reports ENOENT for a dangling symlink just as it does for
-      // an ordinary missing path. lstat keeps those cases distinct so a
-      // broken link cannot make containment fail open while we walk upward.
-      const real = await fs.realpath(probe).catch(() => "");
-      if (!real) return false;
-      return isSubpath(real, repoReal);
-    }
-    if (probe === absoluteRoot) return false;
-    probe = path.dirname(probe);
+  if (!repoReal) {
+    return { requestedPath, status: "invalid", viaSymlink: false, reason: "repository root could not be resolved" };
   }
-  return false;
+
+  let probe = absoluteRoot;
+  let viaSymlink = false;
+  for (const segment of normalized.split("/")) {
+    probe = path.join(probe, segment);
+    const stat = await fs.lstat(probe).catch((error: unknown) => errorCode(error) === "ENOENT" ? undefined : null);
+    if (stat === null) {
+      return { requestedPath, path: normalized, status: "invalid", viaSymlink, reason: "target path could not be inspected safely" };
+    }
+    if (!stat) {
+      if (viaSymlink) {
+        return { requestedPath, path: normalized, status: "invalid", viaSymlink, reason: "missing target traverses a symlink alias" };
+      }
+      return { requestedPath, path: normalized, status: "missing", viaSymlink: false };
+    }
+    viaSymlink ||= stat.isSymbolicLink();
+  }
+
+  const realTarget = await fs.realpath(path.resolve(absoluteRoot, normalized)).catch(() => "");
+  if (!realTarget || !isSubpath(realTarget, repoReal)) {
+    return { requestedPath, path: normalized, status: "invalid", viaSymlink, reason: "target resolves outside the repository" };
+  }
+  const canonicalPath = normalizePath(path.relative(repoReal, realTarget));
+  if (!canonicalPath || canonicalPath === ".." || canonicalPath.startsWith("../")) {
+    return { requestedPath, status: "invalid", viaSymlink, reason: "target does not resolve to a repository file path" };
+  }
+  const indexedPaths = new Set(repositoryFiles);
+  return {
+    requestedPath,
+    path: canonicalPath,
+    status: indexedPaths.has(canonicalPath) ? "indexed" : "existing-unindexed",
+    viaSymlink
+  };
+}
+
+export async function newTargetPathIsContained(filePath: string, repoRoot: string): Promise<boolean> {
+  return (await repositoryTargetPathAuthority(filePath, repoRoot, [])).status === "missing";
 }
 
 function errorCode(error: unknown): string {

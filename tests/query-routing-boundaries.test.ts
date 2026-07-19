@@ -78,6 +78,8 @@ describe("query routing boundaries", () => {
       "I need API auth fixed in src/api.ts",
       "API auth should be fixed in src/api.ts",
       "The API auth needs fixing in src/api.ts",
+      "Auth needs a fix in src/api.ts",
+      "The endpoint requires a change in src/api.ts",
       "Can we fix API auth in src/api.ts?",
       "Please help fix API auth in src/api.ts",
       "Remove src/util.ts",
@@ -114,6 +116,46 @@ describe("query routing boundaries", () => {
       const result = await focusBriefQuery(repo, { task, diff: false, limit: 6, tokenBudget: 1000 }, { autoRefresh: false });
       expect((result.data as { nextCall: { tool: string } }).nextCall.tool, task).not.toBe("change_plan");
     }
+  });
+
+  it("never treats existing unindexed files, lexical aliases, or symlink aliases as new terminal targets", async () => {
+    const repo = await createFixtureRepo();
+    await writeFile(path.join(repo, ".gitignore"), ".env\nalias\n", "utf8");
+    await writeFile(path.join(repo, ".env"), "TOKEN=fixture\n", "utf8");
+    await symlink("src", path.join(repo, "alias"), "dir");
+    const index = await buildIndex({ repoRoot: repo });
+    expect(index.files.map((file) => file.path)).not.toContain(".env");
+    expect(index.files.map((file) => file.path)).not.toContain("alias/util.ts");
+
+    for (const [task, expectedCanonical] of [
+      ["Create src/./util.ts", "src/util.ts"],
+      ["Create alias/util.ts", "src/util.ts"]
+    ] as const) {
+      const focus = await focusBriefQuery(repo, { task, diff: false }, { autoRefresh: false });
+      expect((focus.data as { nextCall: { tool: string } }).nextCall.tool, task).not.toBe("none");
+      expect((focus.data as { focusFiles: Array<{ path: string }> }).focusFiles.map((file) => file.path), task).toContain(expectedCanonical);
+      const search = await searchQuery(repo, { query: task }, { autoRefresh: false });
+      expect((search.data as { files: Array<{ path: string }> }).files.map((file) => file.path), task).toContain(expectedCanonical);
+      const pack = await contextPackQuery(repo, { task, diff: false, includeSnippets: false }, { autoRefresh: false });
+      expect((pack.data as { boundedPlanTargets: string[] }).boundedPlanTargets, task).toContain(expectedCanonical);
+      expect(pack.text, task).not.toContain("No indexed source read is required");
+      const plan = await changePlanQuery(repo, { task, files: [task.includes("alias") ? "alias/util.ts" : "src/./util.ts"], diff: false, saveSnapshot: false }, { autoRefresh: false });
+      expect((plan.data as { editReadiness: { editable: boolean }; plannedEditTargets: string[] }), task).toMatchObject({ editReadiness: { editable: true }, plannedEditTargets: [expectedCanonical] });
+    }
+
+    for (const task of ["Create .env", "Create alias/new.ts"]) {
+      const focus = await focusBriefQuery(repo, { task, diff: false }, { autoRefresh: false });
+      expect((focus.data as { nextCall: { tool: string }; unresolvedTargets: string[] }).nextCall.tool, task).not.toBe("none");
+      expect((focus.data as { unresolvedTargets: string[] }).unresolvedTargets.length, task).toBeGreaterThan(0);
+      const search = await searchQuery(repo, { query: task }, { autoRefresh: false });
+      expect((search.data as { actionability: string }).actionability, task).not.toBe("edit_ready");
+      const pack = await contextPackQuery(repo, { task, diff: false, includeSnippets: false }, { autoRefresh: false });
+      expect((pack.data as { actionability: string }).actionability, task).toBe("needs_target");
+      expect(pack.text, task).not.toContain("No indexed source read is required");
+    }
+
+    const unindexedPlan = await changePlanQuery(repo, { task: "Create .env", files: [".env"], diff: false, saveSnapshot: false }, { autoRefresh: false });
+    expect((unindexedPlan.data as { editReadiness: { editable: boolean }; plannedEditTargets: string[] })).toMatchObject({ editReadiness: { editable: false }, plannedEditTargets: [] });
   });
 
   it("disambiguates colliding doc basenames without planning docs-only risk wording", async () => {

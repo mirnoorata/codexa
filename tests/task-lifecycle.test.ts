@@ -418,6 +418,44 @@ describe("task lifecycle governance", () => {
     });
   });
 
+  it("preserves resolved file and symbol scope while replacing one ambiguous followed target", async () => {
+    const repo = await createHookFixtureRepo();
+    await mkdir(path.join(repo, "src/a"), { recursive: true });
+    await mkdir(path.join(repo, "src/b"), { recursive: true });
+    await writeFile(path.join(repo, "src/a/config.ts"), "export const config = 'a'\n", "utf8");
+    await writeFile(path.join(repo, "src/b/config.ts"), "export const config = 'b'\n", "utf8");
+    await buildIndex({ repoRoot: repo });
+
+    const blocked = await changePlanQuery(repo, {
+      task: "Fix main and config.ts",
+      taskId: "mixed-candidate-scope",
+      files: ["src/main.ts", "config.ts"],
+      symbols: ["main"],
+      saveSnapshot: true
+    }, { autoRefresh: false });
+    const blockedData = blocked.data as {
+      snapshotBlock: { taskId: string };
+      targetCandidates: Array<{ candidateId: string; path: string; nextChangePlanArgs: { files?: string[]; symbols?: string[] } }>;
+    };
+    const selected = blockedData.targetCandidates.find((candidate) => candidate.path === "src/a/config.ts" && candidate.nextChangePlanArgs.files?.includes("src/main.ts"))!;
+    expect(selected.nextChangePlanArgs.files).toEqual(["src/main.ts", "src/a/config.ts"]);
+    expect(selected.nextChangePlanArgs.symbols).toHaveLength(1);
+
+    const followed = await changePlanQuery(repo, {
+      taskId: blockedData.snapshotBlock.taskId,
+      followCandidate: selected.candidateId,
+      saveSnapshot: true
+    }, { autoRefresh: false });
+    const followedData = followed.data as { followCandidate: { status: string; plannedEditTargets: string[] }; snapshot: TaskSnapshot };
+    expect(followedData.followCandidate.status, JSON.stringify(followedData.followCandidate)).toBe("accepted");
+    expect(followedData).toMatchObject({
+      followCandidate: { status: "accepted", plannedEditTargets: ["src/a/config.ts", "src/main.ts"] },
+      snapshot: { plannedEditTargets: ["src/a/config.ts", "src/main.ts"] }
+    });
+    expect(followedData.snapshot.input.files).toEqual(["src/main.ts", "src/a/config.ts"]);
+    expect(followedData.snapshot.input.symbols).toEqual(selected.nextChangePlanArgs.symbols);
+  });
+
   it("does not mutate a blocked marker when candidate replay is rejected", async () => {
     const repo = await createHookFixtureRepo();
     await mkdir(path.join(repo, "src/a"), { recursive: true });
