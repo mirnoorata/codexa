@@ -2,7 +2,8 @@ import path from "node:path";
 import { formatGaps } from "./diff.js";
 import { buildPlanComplexityReview, formatComplexityReview } from "./complexity.js";
 import { nextTool } from "./next-tools.js";
-import { contextPackQuery, structuredNewTargetAuthority } from "./context.js";
+import { contextPackQuery } from "./context.js";
+import { structuredNewTargetAuthority } from "./context/target-authority.js";
 import { focusFilesAndSymbolsInTaskOrder, focusFilesInTaskOrder, isLikelyPathTypo, normalizeTaskRepositoryPaths, plannedNewFocusPathTargets } from "./graph.js";
 import { formatContextQuality, type ContextQuality } from "./quality.js";
 import {
@@ -44,7 +45,7 @@ import { formatRequiredChecks, requiredDependencyChecksForPlan, requiredWorkflow
 import { getDiffFootprint } from "./worktree.js";
 import { formatTaskInvariants, nextTaskPlanLifecycle } from "../task-lifecycle.js";
 import { changePlanEditReadiness, normalizeTargetCandidateSelector, resolveChangePlanFollowBaseInput } from "./change-plan/readiness.js";
-import { candidateSymbols, dedupeTargetCandidates, formatTargetCandidates, meaningfulTaskTokens, rawSearchQueries, uniqueInOrder, withTargetCandidateId } from "./change-plan/candidate-helpers.js";
+import { candidateSymbols, dedupeTargetCandidates, followedReplaySnapshotTargets, formatTargetCandidates, meaningfulTaskTokens, rawSearchQueries, uniqueInOrder, withTargetCandidateId } from "./change-plan/candidate-helpers.js";
 export async function changePlanQuery(
   sessionInput: QuerySessionInput,
   input: ChangePlanInput = {},
@@ -100,6 +101,9 @@ export async function changePlanQuery(
     quality?: ContextQuality;
     gaps?: string[];
     warnings?: string[];
+    boundedPlanTargets?: string[];
+    targetCandidates?: unknown[];
+    unresolvedTargets?: string[];
   };
   const focusFiles = packData.focusFiles ?? [];
   const tests = packData.tests ?? [];
@@ -109,19 +113,14 @@ export async function changePlanQuery(
   const requestedExplicitFiles = normalizeInputPaths(effectiveInput.files ?? [], repoRoot);
   const structuredNewTargetMode = structuredNewTargetAuthority(effectiveInput.task, effectiveInput.changeType);
   const repositoryFiles = session.index.files.map((file) => file.path);
+  const packetPlanTargets = (await Promise.all((packData.boundedPlanTargets ?? []).map(async (filePath) => (repositoryFiles.includes(filePath) || await newTargetPathIsContained(filePath, repoRoot)) ? filePath : undefined))).filter((filePath): filePath is string => Boolean(filePath));
   const targetTask = normalizeTaskRepositoryPaths(effectiveInput.task ?? "", repoRoot);
   const detectedNaturalNewTargets = (await Promise.all(plannedNewFocusPathTargets(targetTask, repositoryFiles).map(async (filePath) => (await newTargetPathIsContained(filePath, repoRoot)) ? filePath : undefined))).filter((filePath): filePath is string => Boolean(filePath));
   const tentativeNaturalPlanTargets = focusFilesAndSymbolsInTaskOrder(targetTask, [...repositoryFiles, ...detectedNaturalNewTargets], [...repositoryFiles, ...detectedNaturalNewTargets], session.index.symbols);
-  const naturalStructuralSourcePresent = tentativeNaturalPlanTargets.some((filePath) => repositoryFiles.includes(filePath));
+  const naturalStructuralSourcePresent = [...tentativeNaturalPlanTargets, ...packetPlanTargets].some((filePath) => repositoryFiles.includes(filePath));
   const naturalNewTargets = structuredNewTargetMode.structural && !naturalStructuralSourcePresent ? [] : detectedNaturalNewTargets;
-  const naturalPlanTargets = naturalNewTargets === detectedNaturalNewTargets
-    ? tentativeNaturalPlanTargets
-    : focusFilesAndSymbolsInTaskOrder(targetTask, repositoryFiles, repositoryFiles, session.index.symbols);
-  const naturalPathPlanTargets = focusFilesInTaskOrder(
-    targetTask,
-    [...repositoryFiles, ...naturalNewTargets],
-    [...repositoryFiles, ...naturalNewTargets]
-  );
+  const naturalPathPlanTargets = focusFilesInTaskOrder(targetTask, [...repositoryFiles, ...naturalNewTargets], [...repositoryFiles, ...naturalNewTargets]);
+  const explicitScopeTargets = packetPlanTargets.length > 0 ? packetPlanTargets : naturalPathPlanTargets;
   const explicitRootNewPaths = new Set((effectiveInput.files ?? []).flatMap((filePath) => {
     if (!filePath.replaceAll("\\", "/").startsWith("./")) return [];
     const normalized = normalizeInputPath(filePath, repoRoot);
@@ -133,7 +132,9 @@ export async function changePlanQuery(
   const dirtyExplicitPaths = taskReferencesDirtyContext(effectiveInput.task ?? "")
     ? new Set((await getWorktreeState(session)).files.filter((filePath) => !filePath.startsWith(".codex/")))
     : new Set<string>();
-  let invalidExplicitTarget = requestedExplicitFiles.length !== (effectiveInput.files ?? []).length;
+  let invalidExplicitTarget = requestedExplicitFiles.length !== (effectiveInput.files ?? []).length
+    || (packData.targetCandidates?.length ?? 0) > 0 || (packData.unresolvedTargets?.length ?? 0) > 0
+    || (packData.packetVerdict === "needs-target" && packetPlanTargets.length === 0);
   let ambiguousExplicitFile = false;
   for (const filePath of requestedExplicitFiles) {
     const resolved = resolveFileTarget(session.index, filePath, repoRoot);
@@ -171,11 +172,11 @@ export async function changePlanQuery(
   }
   const validatedExplicitTargets = [...validatedExplicitFiles, ...validatedSymbolFiles];
   const structuredTargetMismatch = validatedExplicitTargets.length > 0
-    && naturalPathPlanTargets.length > 0
-    && !validatedExplicitTargets.some((filePath) => naturalPathPlanTargets.includes(filePath));
+    && explicitScopeTargets.length > 0
+    && !validatedExplicitTargets.some((filePath) => explicitScopeTargets.includes(filePath));
   if (structuredTargetMismatch) invalidExplicitTarget = true;
   if (!invalidExplicitTarget && validatedExplicitTargets.length > 0) {
-    for (const filePath of naturalPathPlanTargets) if (!validatedExplicitFiles.includes(filePath) && !validatedSymbolFiles.includes(filePath)) validatedExplicitFiles.push(filePath);
+    for (const filePath of explicitScopeTargets) if (!validatedExplicitFiles.includes(filePath) && !validatedSymbolFiles.includes(filePath)) validatedExplicitFiles.push(filePath);
   }
   const explicitTargetProvided = !invalidExplicitTarget && validatedExplicitFiles.length + validatedSymbolFiles.length > 0;
   const editReadiness = changePlanEditReadiness({
@@ -217,7 +218,7 @@ export async function changePlanQuery(
   const plannedRecipes = editReadiness.editable ? recipes : [];
   const replayInput = { ...effectiveInput, invariants: invariants.map((invariant) => invariant.statement) };
   const blockedSnapshotInput = priorSnapshotLoad?.snapshot ? { ...replayInput, taskId: undefined } : replayInput;
-  const blockedSnapshot = effectiveInput.saveSnapshot && !editReadiness.editable && !requestedFollowCandidate
+  const blockedSnapshot = effectiveInput.saveSnapshot && !editReadiness.editable && !requestedFollowCandidate && !options.preserveBlockedSnapshotOnFailure
     ? await saveBlockedTaskSnapshot({
         repoRoot,
         input: blockedSnapshotInput,
@@ -459,7 +460,6 @@ export async function changePlanQuery(
 function managedPostEditReviewAvailable(): boolean {
   return process.env.CODEXA_MANAGED_POST_EDIT === "1";
 }
-
 function changePlanFreshnessBlockedResult(input: {
   freshness: FreshnessInfo;
   refresh?: RefreshInfo;
@@ -563,10 +563,10 @@ async function changePlanFollowCandidateResult(input: {
       : selected.nextChangePlanArgs.invariants ?? input.baseInput.invariants,
     saveSnapshot: true
   };
-  const result = await changePlanQuery(input.session, followedInput, { ...input.options, autoRefresh: false });
+  const result = await changePlanQuery(input.session, followedInput, { ...input.options, autoRefresh: false, preserveBlockedSnapshotOnFailure: true });
   const resultData = result.data && typeof result.data === "object" ? (result.data as Record<string, unknown>) : {};
-  const replayReadiness = resultData.editReadiness && typeof resultData.editReadiness === "object" ? resultData.editReadiness as Record<string, unknown> : undefined;
-  if (replayReadiness?.editable !== true || !resultData.snapshot || typeof resultData.snapshot !== "object") {
+  const replayTargets = followedReplaySnapshotTargets(resultData, revalidation.wouldPlanEditTargets);
+  if (!replayTargets) {
     return changePlanFollowCandidateRejectedResult({
       session: input.session,
       requestedCandidate: input.requestedCandidate,
@@ -589,7 +589,7 @@ async function changePlanFollowCandidateResult(input: {
         rank: selected.rank,
         kind: selected.kind,
         path: selected.path,
-        plannedEditTargets: revalidation.wouldPlanEditTargets,
+        plannedEditTargets: replayTargets,
         validationReasons: revalidation.validationReasons
       }
     }

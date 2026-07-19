@@ -25,7 +25,6 @@ import {
   verificationCoverageForCommands
 } from "./verification.js";
 import { classifyTaskIntent, retrieveForTask, retrieveIntentOnly, type IntentConfidence, type RetrievalMatch, type RetrievalResult, type TaskIntent } from "../retrieval.js";
-import { promptModeForTask } from "../retrieval/intent.js";
 import { semanticOptionsFromQueryOptions } from "../semantic-retrieval.js";
 import { compactChangedSymbol, compactDiffGroup, compactFileFact, compactRetrievalResult, compactWorkflowTrace } from "./compact-data.js";
 import { pruneMissingFiles, prunedFilesGap } from "./prune-missing.js";
@@ -60,6 +59,7 @@ import {
   type PacketFocusEntry
 } from "./context/focus.js";
 import { readContextSnippet } from "./context/snippets.js";
+import { structuredNewTargetAuthority } from "./context/target-authority.js";
 
 export async function contextPackQuery(input: QuerySessionInput, contextInput: ContextPackInput = {}, options: QueryOptions = {}): Promise<QueryResult> {
   const session = await ensureQuerySession(input, options);
@@ -78,13 +78,16 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
   const repositoryPathSet = new Set(repositoryFiles);
   const targetTask = contextInput.task ? normalizeTaskRepositoryPaths(contextInput.task, repoRoot) : "";
   const structuredNewTargetMode = structuredNewTargetAuthority(contextInput.task, changeType);
+  const requestedResolvedPaths = addExplicitTargetsToContextFocus({ index, repoRoot, requestedFiles, requestedSymbols, focus: focusState, warnings });
+  const explicitDisambiguatesNaturalTarget = [...ambiguousFocusTargetCandidateGroups(targetTask, repositoryFiles), ...ambiguousFocusSymbolTargetCandidateGroups(targetTask, index.symbols)]
+    .some((group) => group.some((filePath) => requestedResolvedPaths.includes(filePath)));
   const detectedNaturalNewTargets = targetTask
     ? (await Promise.all(plannedNewFocusPathTargets(targetTask, repositoryFiles).map(async (filePath) => (await newTargetPathIsContained(filePath, repoRoot)) ? filePath : undefined))).filter((filePath): filePath is string => Boolean(filePath))
     : [];
   const tentativeNaturalPlanTargets = contextInput.task
     ? focusFilesAndSymbolsInTaskOrder(targetTask, [...repositoryFiles, ...detectedNaturalNewTargets], [...repositoryFiles, ...detectedNaturalNewTargets], index.symbols)
     : [];
-  const naturalStructuralSourcePresent = tentativeNaturalPlanTargets.some((filePath) => repositoryPathSet.has(filePath));
+  const naturalStructuralSourcePresent = tentativeNaturalPlanTargets.some((filePath) => repositoryPathSet.has(filePath)) || explicitDisambiguatesNaturalTarget;
   const naturalNewTargets = structuredNewTargetMode.structural && !naturalStructuralSourcePresent ? [] : detectedNaturalNewTargets;
   const naturalPlanTargets = naturalNewTargets === detectedNaturalNewTargets
     ? tentativeNaturalPlanTargets
@@ -94,14 +97,6 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
   const naturalPathPlanTargets = contextInput.task
     ? focusFilesInTaskOrder(targetTask, [...repositoryFiles, ...naturalNewTargets], [...repositoryFiles, ...naturalNewTargets])
     : [];
-  const requestedResolvedPaths = addExplicitTargetsToContextFocus({
-    index,
-    repoRoot,
-    requestedFiles,
-    requestedSymbols,
-    focus: focusState,
-    warnings
-  });
   const normalizedRequestedFiles = normalizeInputPaths(requestedFiles, repoRoot);
   const explicitRootNewPaths = new Set(requestedFiles.flatMap((filePath) => {
     if (!filePath.replaceAll("\\", "/").startsWith("./")) return [];
@@ -358,12 +353,13 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
   const structuredTargetMismatch = explicitTargetProvided
     && explicitPlanPaths.length > 0
     && naturalPathPlanTargets.length > 0
-    && !explicitPlanPaths.some((filePath) => naturalPathPlanTargets.includes(filePath));
+    && !explicitPlanPaths.some((filePath) => naturalPathPlanTargets.includes(filePath))
+    && !explicitDisambiguatesNaturalTarget;
   const planPaths = explicitTargetProvided ? [...new Set([...naturalPathPlanTargets, ...explicitPlanPaths])] : qualifiedDirtyScopePlan ? qualifiedDirtyTargets : naturalPlanTargets;
   const naturalTargetCandidates = contextInput.task
     ? dirtyContextTask
       ? dirtyTargetCandidates
-      : [...new Set([...ambiguousFocusTargetCandidates(targetTask, repositoryFiles), ...ambiguousFocusSymbolTargetCandidates(targetTask, index.symbols, planPaths)])]
+      : [...new Set([...ambiguousFocusTargetCandidates(targetTask, repositoryFiles, planPaths), ...ambiguousFocusSymbolTargetCandidates(targetTask, index.symbols, planPaths)])]
     : [];
   const unresolvedNaturalTargets = contextInput.task ? (dirtyContextTask ? dirtyUnresolvedTargets : unresolvedFocusPathTargets(targetTask, repositoryFiles, naturalNewTargets)) : [];
   const changePlanNeed = classifyChangePlanNeed({
@@ -381,6 +377,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
   const editIntentWithoutTarget = !explicitTargetProvided && !dirtyContextTask && !dirtyScopeChangePlan && planPaths.length === 0 && (materialChangeType || packetIntent?.mode === "edit");
   const retrievalNeedsTarget = planPaths.length === 0 && (packetIntent?.verdict === "needs-target" || packetIntent?.verdict === "raw-search-better");
   const unresolvedTarget = unresolvedExplicitTarget || structuredTargetMismatch || naturalTargetCandidates.length > 0 || unresolvedNaturalTargets.length > 0 || editIntentWithoutTarget || retrievalNeedsTarget;
+  const boundedPlanTargets = unresolvedTarget ? [] : planPaths.slice(0, 64);
   const riskyEditNeedsPlan = !dirtyQualifierNoMatch && !unresolvedTarget && (dirtyScopeChangePlan || planPaths.length > 0) && Boolean(changePlanNeed);
   const boundedEditTarget = !dirtyQualifierNoMatch && !unresolvedTarget && planPaths.length > 0 && (materialChangeType || packetIntent?.mode === "edit" || fallbackPlanMode === "edit");
   const recoveryQuery = [...new Set([contextInput.task, explicitQuery, ...requestedFiles, ...requestedSymbols].filter((value): value is string => Boolean(value?.trim())))].join(" ");
@@ -517,6 +514,7 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
       warnings: uniqueSorted([...session.warnings, ...warnings]),
       targetCandidates: naturalTargetCandidates,
       unresolvedTargets: unresolvedNaturalTargets,
+      boundedPlanTargets,
       nextReads,
       baseline,
       retrieval: naturalRetrieval
@@ -574,14 +572,6 @@ export async function taskBriefQuery(input: QuerySessionInput, contextInput: Con
       mode: "task_brief"
     }
   };
-}
-
-export function structuredNewTargetAuthority(task: string | undefined, changeType: ContextPackInput["changeType"]): { allowed: boolean; structural: boolean } {
-  const normalized = (task ?? "").trim().toLowerCase().replace(/^(?:session start|task|request):\s*/u, "").replace(/^context(?:\s+first)?[.:]\s*/u, "").replace(/^(?:(?:please\s+)?(?:can|could|would|will)\s+you\s+(?:please\s+)?|please\s+)/u, "");
-  const editDirected = promptModeForTask(task, changeType) === "edit";
-  const structural = editDirected && (changeType === "rename" || isStructuralEditTask(normalized));
-  const creation = editDirected && /\b(?:add(?:ing)?|build(?:ing)?|creat(?:e|ing)|document(?:ing)?|generat(?:e|ing)|implement(?:ing)?|sav(?:e|ing)|scaffold(?:ing)?|write|writing)\b/u.test(normalized);
-  return { allowed: structural || creation, structural };
 }
 
 export async function focusBriefQuery(input: QuerySessionInput, focusInput: FocusBriefInput = {}, options: QueryOptions = {}): Promise<QueryResult> {

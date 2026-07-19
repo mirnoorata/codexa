@@ -73,6 +73,8 @@ export interface RefreshInfo {
 
 export interface QueryOptions {
   autoRefresh?: boolean;
+  /** Internal replay guard: a rejected candidate must not replace its authoritative blocked marker. */
+  preserveBlockedSnapshotOnFailure?: boolean;
   sessionMemory?: "auto" | "off";
   // MCP server-side tool exposure: "core" registers the three bounded direct
   // tools and routes every other logical operation through capabilities.

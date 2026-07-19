@@ -164,8 +164,9 @@ export function hasAmbiguousFocusTarget(task: string, repositoryFiles: string[])
   return ambiguousFocusTargetCandidates(task, repositoryFiles).length > 0;
 }
 
-export function ambiguousFocusTargetCandidates(task: string, repositoryFiles: string[]): string[] {
-  return uniqueSorted(ambiguousFocusTargetCandidateGroups(task, repositoryFiles).flat())
+export function ambiguousFocusTargetCandidates(task: string, repositoryFiles: string[], selectedPaths: string[] = []): string[] {
+  const selected = new Set(selectedPaths);
+  return uniqueSorted(ambiguousFocusTargetCandidateGroups(task, repositoryFiles).filter((group) => !group.some((filePath) => selected.has(filePath))).flat())
     .sort((left, right) => left.split(/[\\/]/u).length - right.split(/[\\/]/u).length || left.localeCompare(right));
 }
 

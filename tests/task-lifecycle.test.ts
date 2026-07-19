@@ -361,6 +361,39 @@ describe("task lifecycle governance", () => {
     expect((followed.data as { snapshot: TaskSnapshot }).snapshot.invariants?.map((entry) => entry.statement)).toContain("Keep the main contract stable.");
   });
 
+  it("binds a followed structural candidate to its source and destination", async () => {
+    const repo = await createHookFixtureRepo();
+    await mkdir(path.join(repo, "src/a"), { recursive: true });
+    await mkdir(path.join(repo, "src/b"), { recursive: true });
+    await writeFile(path.join(repo, "src/a/config.ts"), "export const config = 'a'\n", "utf8");
+    await writeFile(path.join(repo, "src/b/config.ts"), "export const config = 'b'\n", "utf8");
+    await buildIndex({ repoRoot: repo });
+    const blocked = await changePlanQuery(repo, { task: "Rename config.ts to src/renamed-config.ts", taskId: "rename-config", files: ["config.ts"], saveSnapshot: true }, { autoRefresh: false });
+    const blockedData = blocked.data as { snapshotBlock: { taskId: string }; targetCandidates: Array<{ candidateId: string; path: string }> };
+    const selected = blockedData.targetCandidates.find((candidate) => candidate.path === "src/a/config.ts")!;
+    const followed = await changePlanQuery(repo, { taskId: blockedData.snapshotBlock.taskId, followCandidate: selected.candidateId, saveSnapshot: true }, { autoRefresh: false });
+    expect((followed.data as { followCandidate: { status: string; plannedEditTargets: string[] }; snapshot: TaskSnapshot })).toMatchObject({
+      followCandidate: { status: "accepted", plannedEditTargets: ["src/a/config.ts", "src/renamed-config.ts"] },
+      snapshot: { plannedEditTargets: ["src/a/config.ts", "src/renamed-config.ts"] }
+    });
+  });
+
+  it("does not mutate a blocked marker when candidate replay is rejected", async () => {
+    const repo = await createHookFixtureRepo();
+    await mkdir(path.join(repo, "src/a"), { recursive: true });
+    await mkdir(path.join(repo, "src/b"), { recursive: true });
+    await writeFile(path.join(repo, "src/a/config.ts"), "export const config = 'a'\n", "utf8");
+    await writeFile(path.join(repo, "src/b/config.ts"), "export const config = 'b'\n", "utf8");
+    await buildIndex({ repoRoot: repo });
+    const blocked = await changePlanQuery(repo, { task: "Move config.ts to /tmp/outside", taskId: "rejected-candidate", files: ["config.ts"], saveSnapshot: true }, { autoRefresh: false });
+    const blockedData = blocked.data as { snapshotBlock: { taskId: string; path: string }; targetCandidates: Array<{ candidateId: string }> };
+    const markerPath = path.join(repo, blockedData.snapshotBlock.path);
+    const markerBefore = await readFile(markerPath, "utf8");
+    const followed = await changePlanQuery(repo, { taskId: blockedData.snapshotBlock.taskId, followCandidate: blockedData.targetCandidates[0]!.candidateId, saveSnapshot: true }, { autoRefresh: false });
+    expect((followed.data as { followCandidate?: { status?: string } }).followCandidate).toMatchObject({ status: "rejected" });
+    expect(await readFile(markerPath, "utf8")).toBe(markerBefore);
+  });
+
   it("keeps a newer explicit snapshot authoritative over a delayed implicit publication", async () => {
     const repo = await createHookFixtureRepo();
     const index = await buildIndex({ repoRoot: repo });
