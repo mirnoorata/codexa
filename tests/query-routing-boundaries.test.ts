@@ -582,10 +582,12 @@ describe("query routing boundaries", () => {
     const repo = await createFixtureRepo();
     const outside = `${repo}-outside`;
     await mkdir(outside, { recursive: true });
+    await mkdir(path.join(outside, "deep"), { recursive: true });
     await symlink(outside, path.join(repo, "escape"), "dir");
     await symlink(`${repo}-missing-outside`, path.join(repo, "dangling-escape"), "dir");
+    await symlink(path.join(outside, "deep"), path.join(repo, "parent-escape"), "dir");
     await buildIndex({ repoRoot: repo });
-    for (const relativePath of ["escape/new.ts", "dangling-escape/new.ts"]) {
+    for (const relativePath of ["escape/new.ts", "dangling-escape/new.ts", "parent-escape/../new.ts"]) {
       const task = `Create ./${relativePath}`;
       const focus = await focusBriefQuery(repo, { task, diff: false, limit: 6, tokenBudget: 1000 }, { autoRefresh: false });
       expect((focus.data as { actionability: string; unresolvedTargets?: string[] })).toMatchObject({ actionability: "needs_target", unresolvedTargets: [relativePath] });
