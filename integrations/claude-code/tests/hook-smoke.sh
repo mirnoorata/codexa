@@ -634,16 +634,19 @@ else
   fail "stop handles untracked symlink without dereferencing" "rc=$LAST_RC stderr='$LAST_STDERR'"
 fi
 
-# Degraded-git-scan: stub `git` to time out on ls-files. The review must
-# still run (because the fingerprint differs from any cached one), BUT
-# the marker must NOT be written, so the next Stop retries. We verify by
+# Degraded-git-scan: stub `git` to time out on ls-files. The Stop hook must
+# kill the slow probe soon enough to preserve a viable review budget. The
+# review still runs (because the fingerprint differs from any cached one),
+# BUT the marker must NOT be written, so the next Stop retries. We verify by
 # running Stop twice with the same degraded stub and confirming both
-# invocations run the review.
+# invocations finish within the shared deadline and run the review.
 DEGR_REPO="$TMP/wired-degraded"
 make_wired_repo "$DEGR_REPO"
 echo '{"taskId":"d","path":"d.json","createdAt":"now"}' >"$DEGR_REPO/.codex/cache/codexa-tasks/latest.json"
 DEGR_BIN_DIR="$TMP/degr-bin"
+DEGR_DATA="$TMP/degr-data"
 mkdir -p "$DEGR_BIN_DIR"
+mkdir -p "$DEGR_DATA"
 cat >"$DEGR_BIN_DIR/git" <<'EOF'
 #!/usr/bin/env bash
 case "$*" in
@@ -659,32 +662,59 @@ EOF
 chmod +x "$DEGR_BIN_DIR/git"
 
 run_degr() {
-  local stdout stderr
+  local stdout stderr started
   stdout="$(mktemp)"; stderr="$(mktemp)"
+  started=$SECONDS
   (
     cd "$DEGR_REPO"
     env -i HOME="$HOME" PATH="$DEGR_BIN_DIR:/usr/bin:/bin" \
       CLAUDIO_NODE_BIN="$REVIEW_NODE" CODEXA_CLI="$TMP/stub-cli-review.js" \
-      CLAUDE_PLUGIN_ROOT="$INTEG_ROOT" CLAUDE_PLUGIN_DATA="$TMP/degr-data" \
+      CLAUDE_PLUGIN_ROOT="$INTEG_ROOT" CLAUDE_PLUGIN_DATA="$DEGR_DATA" \
+      CLAUDIO_STOP_BUDGET_SECONDS=12 \
       bash "$INTEG_ROOT/scripts/stop.sh"
   ) >"$stdout" 2>"$stderr" <<<"{\"session_id\":\"degr\",\"cwd\":\"$DEGR_REPO\"}"
   LAST_RC=$?
+  LAST_ELAPSED=$((SECONDS - started))
   LAST_STDOUT="$(cat "$stdout")"
   LAST_STDERR="$(cat "$stderr")"
   rm -f "$stdout" "$stderr"
 }
 
 run_degr
-if [[ $LAST_RC -eq 0 ]] && printf '%s' "$LAST_STDERR" | grep -q "Post-edit review for"; then
-  pass "stop runs review under degraded git scan"
+degr_markers="$(find "$DEGR_DATA" -type f -name 'stop-review-v2-*' -print | wc -l | tr -d ' ')"
+if [[ $LAST_RC -eq 0 && $LAST_ELAPSED -le 12 && $LAST_ELAPSED -lt 35 && "$degr_markers" == "0" ]] \
+   && printf '%s' "$LAST_STDERR" | grep -q "Post-edit review for" \
+   && printf '%s' "$LAST_STDERR" | grep -q "fingerprint was incomplete; debounce marker unchanged, next turn retries"; then
+  pass "stop preserves review time under a slow git probe"
 else
-  fail "stop runs review under degraded git scan" "rc=$LAST_RC stderr='$LAST_STDERR'"
+  fail "stop preserves review time under a slow git probe" "rc=$LAST_RC elapsed=${LAST_ELAPSED}s markers=$degr_markers stderr='$LAST_STDERR'"
 fi
 run_degr
-if [[ $LAST_RC -eq 0 ]] && printf '%s' "$LAST_STDERR" | grep -q "Post-edit review for"; then
+degr_markers="$(find "$DEGR_DATA" -type f -name 'stop-review-v2-*' -print | wc -l | tr -d ' ')"
+if [[ $LAST_RC -eq 0 && $LAST_ELAPSED -le 12 && $LAST_ELAPSED -lt 35 && "$degr_markers" == "0" ]] \
+   && printf '%s' "$LAST_STDERR" | grep -q "Post-edit review for" \
+   && printf '%s' "$LAST_STDERR" | grep -q "fingerprint was incomplete; debounce marker unchanged, next turn retries"; then
   pass "stop does not cache a degraded-scan debounce marker"
 else
-  fail "stop does not cache a degraded-scan debounce marker" "rc=$LAST_RC stderr='$LAST_STDERR'"
+  fail "stop does not cache a degraded-scan debounce marker" "rc=$LAST_RC elapsed=${LAST_ELAPSED}s markers=$degr_markers stderr='$LAST_STDERR'"
+fi
+
+# If the shared deadline is already too small to complete a meaningful
+# review, fail closed: emit a retryable diagnostic and leave the debounce
+# marker absent so a later Stop turn can retry with a full budget.
+LOW_BUDGET_REPO="$TMP/wired-low-budget"
+LOW_BUDGET_DATA="$TMP/low-budget-data"
+make_wired_repo "$LOW_BUDGET_REPO"
+mkdir -p "$LOW_BUDGET_DATA"
+echo '{"taskId":"low","path":"low.json","createdAt":"now"}' >"$LOW_BUDGET_REPO/.codex/cache/codexa-tasks/latest.json"
+run_hook "stop.sh" "{\"session_id\":\"low\",\"cwd\":\"$LOW_BUDGET_REPO\"}" "$INTEG_ROOT" "CLAUDIO_NODE_BIN=$REVIEW_NODE CODEXA_CLI=$TMP/stub-cli-review.js CLAUDE_PLUGIN_DATA=$LOW_BUDGET_DATA CLAUDIO_STOP_BUDGET_SECONDS=5"
+low_budget_markers="$(find "$LOW_BUDGET_DATA" -type f -name 'stop-review-v2-*' -print | wc -l | tr -d ' ')"
+if [[ $LAST_RC -eq 0 && "$low_budget_markers" == "0" ]] \
+   && printf '%s' "$LAST_STDERR" | grep -q "deadline left no viable review budget" \
+   && ! printf '%s' "$LAST_STDERR" | grep -q "Post-edit review for"; then
+  pass "stop fails closed without caching when review budget is not viable"
+else
+  fail "stop fails closed without caching when review budget is not viable" "rc=$LAST_RC markers=$low_budget_markers stderr='$LAST_STDERR'"
 fi
 
 # Oversized untracked file: rewrite with DIFFERENT content at the SAME

@@ -11,7 +11,8 @@
 #       whose fingerprint is already debounced from a prior turn.
 #
 # Rules:
-#   - Per-repo review has a 30s hard budget.
+#   - One 33s internal deadline covers all repos; any individual review gets at
+#     most 30s from the viable time remaining.
 #   - Debounced per (session, repo, snapshot-content, dirty-tree-hash).
 #   - Always exits 0. When a review's verdict is replan or a blocking
 #     inspect, the drift summary is made model-visible through the Stop
@@ -36,6 +37,31 @@ CLAUDIO_ROOT="${CLAUDE_PLUGIN_ROOT:-$(cd "$(dirname "$0")/.." && pwd -P)}"
 . "$CLAUDIO_ROOT/scripts/lib/codexa-repo.sh"
 
 MAX_STOP_REPOS_PER_TURN="${CLAUDIO_STOP_MAX_REPOS:-3}"
+STOP_INTERNAL_MAX_SECONDS=33
+STOP_REVIEW_MIN_SECONDS=5
+STOP_FINALIZE_MARGIN_SECONDS=1
+STOP_GIT_CALL_MAX_SECONDS=2
+STOP_BUDGET_SECONDS="${CLAUDIO_STOP_BUDGET_SECONDS:-$STOP_INTERNAL_MAX_SECONDS}"
+case "$STOP_BUDGET_SECONDS" in
+  ''|*[!0-9]*|??????????*) STOP_BUDGET_SECONDS="$STOP_INTERNAL_MAX_SECONDS" ;;
+esac
+STOP_BUDGET_SECONDS=$((10#$STOP_BUDGET_SECONDS))
+if (( STOP_BUDGET_SECONDS > STOP_INTERNAL_MAX_SECONDS )); then
+  STOP_BUDGET_SECONDS=$STOP_INTERNAL_MAX_SECONDS
+fi
+STOP_STARTED_SECONDS=$SECONDS
+
+# One deadline covers every repo fingerprint and review in this Stop
+# invocation. The manifest kills the hook at 35s; the 33s internal cap leaves
+# time for final block JSON and cleanup instead of relying on that outer kill.
+claudio_stop_remaining_seconds() {
+  local elapsed remaining
+  elapsed=$((SECONDS - STOP_STARTED_SECONDS))
+  (( elapsed < 0 )) && elapsed=0
+  remaining=$((STOP_BUDGET_SECONDS - elapsed))
+  (( remaining < 0 )) && remaining=0
+  printf '%s\n' "$remaining"
+}
 
 # Run a post-edit review for one repo. Returns 0 in all cases — this is a
 # best-effort helper that never raises. Emits one stderr block per call.
@@ -55,54 +81,87 @@ claudio_stop_review_one() {
 
   local snapshot_file="$repo/.codex/cache/codexa-tasks/latest.json"
 
+  local remaining_seconds fingerprint_budget_seconds
+  remaining_seconds="$(claudio_stop_remaining_seconds)"
+  if (( remaining_seconds <= STOP_REVIEW_MIN_SECONDS + STOP_FINALIZE_MARGIN_SECONDS )); then
+    printf '[codexa] Post-edit review skipped: Stop deadline left no viable review budget; debounce marker unchanged, next turn retries.\n' >&2
+    return 0
+  fi
+  fingerprint_budget_seconds=$((remaining_seconds - STOP_REVIEW_MIN_SECONDS - STOP_FINALIZE_MARGIN_SECONDS))
+
   # Content-sensitive fingerprint. See session banner in the file below for
   # the full contract. Returns non-zero when any git step was degraded so
   # the caller never writes a cacheable marker from a trust-less state.
   local fingerprint_tmp
   fingerprint_tmp="$(mktemp)" || return 0
-  python3 - "$repo" "$snapshot_file" >"$fingerprint_tmp" 2>/dev/null <<'PY'
+  python3 - "$repo" "$snapshot_file" "$fingerprint_budget_seconds" "$STOP_GIT_CALL_MAX_SECONDS" >"$fingerprint_tmp" 2>/dev/null <<'PY'
 import datetime
 import hashlib
 import json
 import os
+import signal
 import stat
 import subprocess
 import sys
+import time
 
 repo = sys.argv[1]
 snapshot = sys.argv[2]
+fingerprint_budget_seconds = max(0.1, float(sys.argv[3]))
+git_call_max_seconds = max(0.1, float(sys.argv[4]))
+fingerprint_deadline = time.monotonic() + fingerprint_budget_seconds
 
 MAX_UNTRACKED_FILES = 2000
 MAX_UNTRACKED_TOTAL_BYTES = 32 * 1024 * 1024  # 32 MiB
 MAX_SINGLE_FILE_BYTES = 4 * 1024 * 1024        #  4 MiB
 MAX_GIT_OUTPUT_BYTES = 16 * 1024 * 1024        # 16 MiB per git invocation
-GIT_TIMEOUT_SECONDS = 8
 
 degraded = False
 
 
 def git_out(args):
     global degraded
+    remaining = fingerprint_deadline - time.monotonic()
+    if remaining <= 0:
+        degraded = True
+        return b"__STOP_FINGERPRINT_DEADLINE__\n", 124
+    proc = None
     try:
-        result = subprocess.run(
+        proc = subprocess.Popen(
             ["git", *args],
             cwd=repo,
-            capture_output=True,
-            timeout=GIT_TIMEOUT_SECONDS,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
         )
-    except subprocess.TimeoutExpired:
+        out, _ = proc.communicate(timeout=min(git_call_max_seconds, remaining))
+        returncode = proc.returncode
+    except subprocess.TimeoutExpired as error:
         degraded = True
-        return b"__GIT_TIMEOUT__\n", 124
+        if proc is not None:
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except OSError:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+            try:
+                out, _ = proc.communicate(timeout=0.5)
+            except subprocess.TimeoutExpired:
+                out = error.output or b""
+        else:
+            out = error.output or b""
+        return out[:MAX_GIT_OUTPUT_BYTES] + b"\n__GIT_TIMEOUT__\n", 124
     except OSError:
         degraded = True
         return b"__GIT_UNAVAILABLE__\n", 127
-    if result.returncode != 0:
+    if returncode != 0:
         degraded = True
-    out = result.stdout
     if len(out) > MAX_GIT_OUTPUT_BYTES:
         degraded = True
         out = out[:MAX_GIT_OUTPUT_BYTES] + b"\n__GIT_OUTPUT_TRUNCATED__\n"
-    return out, result.returncode
+    return out, returncode
 
 
 h = hashlib.sha256()
@@ -128,6 +187,10 @@ bytes_read = 0
 for entry in raw.split(b"\0"):
     if not entry:
         continue
+    if time.monotonic() >= fingerprint_deadline:
+        degraded = True
+        h.update(b"FINGERPRINT_DEADLINE\n")
+        break
     count += 1
     if count > MAX_UNTRACKED_FILES:
         degraded = True
@@ -305,8 +368,19 @@ PY
     fi
   fi
 
+  remaining_seconds="$(claudio_stop_remaining_seconds)"
+  if (( remaining_seconds <= STOP_REVIEW_MIN_SECONDS + STOP_FINALIZE_MARGIN_SECONDS )); then
+    printf '[codexa] Post-edit review skipped: Stop deadline left no viable review budget; debounce marker unchanged, next turn retries.\n' >&2
+    return 0
+  fi
+  local review_budget_seconds
+  review_budget_seconds=$((remaining_seconds - STOP_FINALIZE_MARGIN_SECONDS))
+  if (( review_budget_seconds > 30 )); then
+    review_budget_seconds=30
+  fi
+
   local out rc
-  out="$(claudio_codexa_run 30 post-edit-review "$repo" --change-type unknown --budget 1600 --limit 8 2>&1)"
+  out="$(claudio_codexa_run "$review_budget_seconds" post-edit-review "$repo" --change-type unknown --budget 1600 --limit 8 2>&1)"
   rc=$?
 
   local safe_repo
@@ -322,6 +396,8 @@ EOF
 
   if [[ "${fingerprint_rc:-0}" -eq 0 ]]; then
     touch "$marker" 2>/dev/null || true
+  else
+    printf '[codexa] Stop fingerprint was incomplete; debounce marker unchanged, next turn retries.\n' >&2
   fi
 
   if [[ -z "$out" ]]; then
@@ -436,10 +512,10 @@ default_state_dir="${XDG_STATE_HOME:-$HOME/.local/state}/codexa-claude-code"
 data_dir="${CLAUDE_PLUGIN_DATA:-$default_state_dir}"
 mkdir -p "$data_dir" 2>/dev/null || true
 
-# Blockworthy review verdicts accumulate here and are emitted as one Stop
-# JSON decision from the EXIT trap — so a hook-timeout SIGTERM mid-review
-# (worst case: 3 sequential repo reviews can exceed the 35s hook budget)
-# still surfaces whatever was already found instead of failing open.
+# Blockworthy review verdicts accumulate here and are emitted as one Stop JSON
+# decision from the EXIT trap. The shared internal deadline keeps fingerprint
+# and review work below the manifest timeout; the trap still preserves any
+# earlier finding if the host interrupts unexpectedly.
 # Missing mktemp degrades to stderr-only behavior.
 _CLAUDIO_BLOCK_FILE="$(mktemp 2>/dev/null)" || _CLAUDIO_BLOCK_FILE=""
 _claudio_stop_finalize() {
