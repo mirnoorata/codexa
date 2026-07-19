@@ -1,0 +1,151 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R 6 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 3218 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(Change Summary) Tj T*
+() Tj T*
+(- Project: codexa) Tj T*
+(- Checkout: isolated codexa task worktree) Tj T*
+(- Branch: codex/general/codexa-20260718-000156-focus-orientation) Tj T*
+(- Base: main) Tj T*
+(- Primary commit: 803460f) Tj T*
+(- Subject: perf\(mcp\): reduce agentic Codexa overhead) Tj T*
+() Tj T*
+(Changed Files) Tj T*
+() Tj T*
+(803460f perf\(mcp\): reduce agentic Codexa overhead) Tj T*
+(README.md                                          | 207 ++++++++----) Tj T*
+(docs/architecture/codexa-context-server.md         | 124 ++++---) Tj T*
+(docs/guides/new-user-tutorial.md                   |  73 +++--) Tj T*
+(.../codexa-zero-loss-overhead-plan-2026-07-13.md   |   5 +) Tj T*
+(integrations/claude-code/README.md                 |  69 ++--) Tj T*
+(integrations/claude-code/scripts/codexa-mcp.js     |   5 +-) Tj T*
+(integrations/claude-code/scripts/session-start.sh  |  99 +++---) Tj T*
+(integrations/claude-code/tests/cmd-smoke.sh        |  44 +++) Tj T*
+(integrations/claude-code/tests/hook-smoke.sh       |  24 +-) Tj T*
+(plugins/codexa/.codex-plugin/plugin.json           |  13 +-) Tj T*
+(plugins/codexa/.mcp.json                           |   3 +-) Tj T*
+(plugins/codexa/scripts/codexa-mcp.js               |   6 +-) Tj T*
+(plugins/codexa/skills/codexa/SKILL.md              |  33 +-) Tj T*
+(scripts/benchmark-mcp-transport.mjs                |  56 +++-) Tj T*
+(scripts/verify-plugin-package.mjs                  |  22 +-) Tj T*
+(src/artifacts.ts                                   |  42 +--) Tj T*
+(src/cli.ts                                         |   8 +-) Tj T*
+(src/cli/hooks.ts                                   |  74 +++--) Tj T*
+(src/codex-contract.ts                              |  46 ++-) Tj T*
+(src/init.ts                                        |  92 ++++--) Tj T*
+(src/mcp-tool-catalog.ts                            |   1 +) Tj T*
+(src/mcp.ts                                         |  45 ++-) Tj T*
+(src/mcp/decision-kernel.ts                         |  30 +-) Tj T*
+(src/mcp/envelope.ts                                | 129 ++++----) Tj T*
+(src/mcp/prompts.ts                                 |  23 +-) Tj T*
+(src/mcp/result-artifacts.ts                        |  20 +-) Tj T*
+(src/mcp/result-budget.ts                           | 364 +++++++++++++++++++++) Tj T*
+(src/mcp/telemetry.ts                               |  28 ++) Tj T*
+(src/mcp/tool-registry.ts                           |  78 ++---) Tj T*
+(src/mcp/tools.ts                                   |  14 +-) Tj T*
+(src/query/change-plan.ts                           |  35 +-) Tj T*
+(src/query/context.ts                               |  81 +++--) Tj T*
+(src/query/graph-traversal.ts                       |  43 ++-) Tj T*
+(src/query/graph.ts                                 |  24 +-) Tj T*
+(src/query/impact.ts                                |  13 +-) Tj T*
+(src/query/inspection.ts                            |  12 +-) Tj T*
+(src/query/search.ts                                |  15 +-) Tj T*
+(src/types/runtime.ts                               |   4 +-) Tj T*
+(tests/benchmark-mcp-transport.test.ts              |  27 +-) Tj T*
+(...jects-malformed-integer-options-instead.test.ts |  36 +-) Tj T*
+ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 3013 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(...s-02-launches-windows-package-local-cmd.test.ts |   5 +-) Tj T*
+(tests/cli-hooks-03-suite.test.ts                   |  10 +-) Tj T*
+(tests/cli-hooks-04-suite.test.ts                   |   2 +-) Tj T*
+(tests/index-identity.test.ts                       |   6 +-) Tj T*
+(...exer-03-reserves-fixed-risk-path-symbol.test.ts |   4 +-) Tj T*
+(...er-04-separates-evidence-tiers-and-uses.test.ts |   3 +) Tj T*
+(...r-05-answers-broad-focus-graph-workflow.test.ts |  32 ++) Tj T*
+(tests/init.test.ts                                 |  47 ++-) Tj T*
+(tests/mcp-01-keeps-the-primary-mcp-happy.test.ts   |  59 ++--) Tj T*
+(tests/mcp-02-does-not-let-stale-codexa.test.ts     |  30 +-) Tj T*
+(...p-04-reports-package-version-and-codexa.test.ts |  19 +-) Tj T*
+(tests/mcp-05-suite.test.ts                         |  32 +-) Tj T*
+(...p-06-core-profile-envelopes-never-steer.test.ts |  74 ++++-) Tj T*
+(tests/mcp-advanced-auto.test.ts                    |  37 ++-) Tj T*
+(tests/mcp-capabilities.test.ts                     |  27 +-) Tj T*
+(tests/mcp-decision-kernel.test.ts                  |   5 +-) Tj T*
+(tests/mcp-envelope-guidance.test.ts                | 117 +++++++) Tj T*
+(tests/mcp-result-artifacts.test.ts                 |   2 +-) Tj T*
+(tests/mcp-result-budget.test.ts                    | 325 ++++++++++++++++++) Tj T*
+(tests/mcp-telemetry.test.ts                        |  30 +-) Tj T*
+(tests/plugin-package.test.ts                       |  37 ++-) Tj T*
+(tests/session.test.ts                              |   5 +-) Tj T*
+(62 files changed, 2244 insertions\(+\), 731 deletions\(-\)) Tj T*
+(create mode 100644 src/mcp/result-budget.ts) Tj T*
+(create mode 100644 tests/mcp-envelope-guidance.test.ts) Tj T*
+(create mode 100644 tests/mcp-result-budget.test.ts) Tj T*
+() Tj T*
+(Verification) Tj T*
+() Tj T*
+(- git diff --check: passed) Tj T*
+(- npm run check: passed) Tj T*
+(- npm run package:hygiene: passed) Tj T*
+(- Codexa post-edit-review: generated as a local verification artifact) Tj T*
+(- Codexa verdict replan \(none\) accepted over block: The saved plan predates reviewer-driven) Tj T*
+(transport, documentation, and bare-launch default fixes. Codexa reports no unaccounted) Tj T*
+(tests, while the full gate, package hygiene, clean transport benchmark, and two independent) Tj T*
+(audits cover the integrated diff.) Tj T*
+(- Codexa test-plan: generated as a local verification artifact) Tj T*
+(- git diff --cached --check: passed) Tj T*
+(- staged safety scan: passed) Tj T*
+() Tj T*
+(Notes) Tj T*
+() Tj T*
+(Defaults every agent launcher to the 3-tool core surface while preserving 22 logical) Tj T*
+(operations through capabilities. Adds terminal guidance, managed-hook coalescing, hard) Tj T*
+(ToolResult budgets, and a deterministic decoded-payload benchmark. Clean-fixture tools/list) Tj T*
+(bytes fall from 68,134 to 8,745 and startup advertisement plus discovery from 87,682 to) Tj T*
+(28,293. These are decoded JSON byte proxies, not model-token measurements.) Tj T*
+ET
+endstream
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000121 00000 n 
+0000000191 00000 n 
+0000000317 00000 n 
+0000003586 00000 n 
+0000003712 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R >>
+startxref
+6776
+%%EOF
