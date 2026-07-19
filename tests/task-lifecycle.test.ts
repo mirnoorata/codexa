@@ -410,7 +410,54 @@ describe("task lifecycle governance", () => {
       snapshot: snapshot("Retried replan")
     });
     expect((await loadTaskSnapshot(repo, taskId)).snapshot?.publicationSequence).toBe(retried.snapshot.publicationSequence);
-    await expect(readFile(path.join(repo, `.codex/cache/codexa-tasks/${taskId}.previous.json`), "utf8")).rejects.toThrow();
+    await expect(readFile(path.join(repo, `.codex/cache/codexa-tasks/.previous/${taskId}.json`), "utf8")).rejects.toThrow();
+  });
+
+  it("keeps rollback artifacts isolated from task ids ending in previous", async () => {
+    const repo = await createHookFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+
+    await changePlanQuery(
+      repo,
+      {
+        task: "Modify src/main.ts for the previous task",
+        taskId: "collision.previous",
+        files: ["src/main.ts"],
+        saveSnapshot: true
+      },
+      { autoRefresh: false }
+    );
+    await changePlanQuery(
+      repo,
+      {
+        task: "Modify src/main.ts for the collision task",
+        taskId: "collision",
+        files: ["src/main.ts"],
+        saveSnapshot: true
+      },
+      { autoRefresh: false }
+    );
+    await changePlanQuery(
+      repo,
+      {
+        task: "Modify src/main.ts again for the collision task",
+        taskId: "collision",
+        files: ["src/main.ts"],
+        saveSnapshot: true
+      },
+      { autoRefresh: false }
+    );
+
+    expect(await loadTaskSnapshot(repo, "collision.previous")).toMatchObject({
+      snapshot: { taskId: "collision.previous", planRevision: 1 }
+    });
+    expect(await loadTaskSnapshot(repo, "collision")).toMatchObject({
+      snapshot: { taskId: "collision", planRevision: 2 }
+    });
+    expect(JSON.parse(await readFile(path.join(repo, ".codex/cache/codexa-tasks/collision.previous.json"), "utf8"))).toMatchObject({
+      taskId: "collision.previous"
+    });
+    await expect(readFile(path.join(repo, ".codex/cache/codexa-tasks/.previous/collision.json"), "utf8")).rejects.toThrow();
   });
 
   it("uses one authority order for delayed same-time publications and recovery", async () => {
