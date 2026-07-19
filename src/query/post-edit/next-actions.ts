@@ -67,8 +67,8 @@ export function postEditStructuredNextTools(
           "change_plan",
           input.degradedSnapshotTests.length > 0 ? "planned-test provenance degraded; rebuild the plan for the current edit scope" : "saved plan drifted from the current edit scope",
           { taskId: input.taskId, files: input.reviewScope.slice(0, 8), saveSnapshot: true, changeType: input.changeType },
-          true,
-          [".codex/cache/codexa-task-snapshots"]
+          false,
+          [".codex/cache/codexa-tasks", ".codex/cache/codexa-task-lifecycle"]
         )
       : undefined,
     input.riskEscalationsNeedInspection ? nextTool("impact", "high-risk or unplanned target needs relationship inspection", { file: input.riskEscalations[0]?.path }) : undefined
