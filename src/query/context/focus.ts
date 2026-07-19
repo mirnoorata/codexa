@@ -1,9 +1,11 @@
 import path from "node:path";
 import { isTestPath } from "../../language.js";
 import type { IntentConfidence, RetrievalMatch, RetrievalResult, TaskIntent } from "../../retrieval.js";
+import { promptModeForTask } from "../../retrieval/intent.js";
 import type { ChangedSymbol, CodexaIndex, DiffImpactGroup, EvidenceTier, FileFact } from "../../types.js";
 import { uniqueSorted } from "../../util.js";
 import { betterTier, confidenceTier, formatReasons, tierScore } from "../formatting.js";
+import { focusFilesInTaskOrder } from "../graph.js";
 import { matchReason, matchScore } from "../search.js";
 import { findFile, resolveFileTarget, resolveSymbolTarget } from "../targets.js";
 import { isCodexaControlPath } from "../worktree.js";
@@ -87,15 +89,18 @@ export function addExplicitTargetsToContextFocus(input: {
 
   for (const requested of input.requestedSymbols) {
     const resolved = resolveSymbolTarget(input.index, requested);
-    if (resolved.ambiguous.length > 0) {
+    const selectedAmbiguousSymbol = resolved.ambiguous.filter((symbol) => requestedResolvedPaths.includes(symbol.path));
+    const resolvedSymbol = resolved.symbol ?? (selectedAmbiguousSymbol.length === 1 ? selectedAmbiguousSymbol[0] : undefined);
+    if (resolved.ambiguous.length > 0 && !resolvedSymbol) {
       input.warnings.push(`ambiguous symbol ${requested}`);
       continue;
     }
-    if (resolved.symbol) {
-      input.focus.addFocus(resolved.symbol.path, `requested symbol ${resolved.symbol.qualifiedName}`, 100, "authoritative", "explicit_target");
-      input.focus.impactSeeds.set(resolved.symbol.path, `requested symbol ${resolved.symbol.qualifiedName}`);
-      for (const usage of input.index.usageSites.filter((site) => site.targetSymbolId === resolved.symbol!.id).slice(0, 12)) {
-        input.focus.addFocus(usage.path, `uses ${resolved.symbol.qualifiedName}`, 4, confidenceTier(usage.confidence), "graph_impact");
+    if (resolvedSymbol) {
+      requestedResolvedPaths.push(resolvedSymbol.path);
+      input.focus.addFocus(resolvedSymbol.path, `requested symbol ${resolvedSymbol.qualifiedName}`, 100, "authoritative", "explicit_target");
+      input.focus.impactSeeds.set(resolvedSymbol.path, `requested symbol ${resolvedSymbol.qualifiedName}`);
+      for (const usage of input.index.usageSites.filter((site) => site.targetSymbolId === resolvedSymbol.id).slice(0, 12)) {
+        input.focus.addFocus(usage.path, `uses ${resolvedSymbol.qualifiedName}`, 4, confidenceTier(usage.confidence), "graph_impact");
       }
     } else {
       input.warnings.push(`missing symbol ${requested}`);
@@ -430,14 +435,9 @@ export function taskAsksForTests(task: string): boolean {
 }
 
 export function exactFocusFileMatches(index: { files: FileFact[] }, task: string): FileFact[] {
-  const lowerTask = task.toLowerCase();
-  return index.files
-    .filter((file) => {
-      const lowerPath = file.path.toLowerCase();
-      const baseName = path.posix.basename(lowerPath);
-      return lowerTask.includes(lowerPath) || lowerTask.includes(baseName);
-    })
-    .sort((a, b) => b.rank - a.rank || a.path.localeCompare(b.path));
+  const repositoryFiles = index.files.map((file) => file.path);
+  const filesByPath = new Map(index.files.map((file) => [file.path, file]));
+  return focusFilesInTaskOrder(task, repositoryFiles, repositoryFiles).map((filePath) => filesByPath.get(filePath)).filter((file): file is FileFact => Boolean(file));
 }
 
 export function isConfigExpansionPath(filePath: string): boolean {
@@ -462,12 +462,13 @@ export function shouldAddExplicitNaturalMatch(match: RetrievalMatch, explicitCon
 
 export function dirtyScopeSummary(input: {
   taskIntents: TaskIntent[];
+  task?: string;
   changed: string[];
   worktree: WorktreeState | undefined;
   broadDirty: boolean;
   focusEntries: PacketFocusEntry[];
 }): DirtyScopeSummary {
-  const mode = dirtyScopeMode(input.taskIntents);
+  const mode = dirtyScopeMode(input.taskIntents, input.task);
   const changedPlanFiles = uniqueSorted(input.changed.filter((filePath) => !isCodexaControlPath(filePath)));
   const degraded = input.worktree?.degraded ?? false;
   const canPlan = changedPlanFiles.length > 0 && !degraded;
@@ -490,8 +491,8 @@ export function dirtyScopeSummary(input: {
   };
 }
 
-export function dirtyScopeMode(taskIntents: TaskIntent[]): "edit" | "orientation" {
-  return taskIntents.some((intent) => intent === "implementation" || intent === "debugging") ? "edit" : "orientation";
+export function dirtyScopeMode(taskIntents: TaskIntent[], task?: string): "edit" | "orientation" {
+  return task ? promptModeForTask(task) : taskIntents.includes("implementation") ? "edit" : "orientation";
 }
 
 export function dirtyWorktreeIntentConfidence(input: {
@@ -501,11 +502,12 @@ export function dirtyWorktreeIntentConfidence(input: {
   worktree: WorktreeState | undefined;
 }): IntentConfidence {
   const primaryIntent = input.taskIntents.find((intent) => intent !== "unknown") ?? "unknown";
-  const dirtyAnchors = uniqueSorted(
-    input.focusEntries
+  const dirtyAnchors = uniqueSorted([
+    ...input.focusEntries
       .filter((entry) => entry.provenance.some((item) => item.source === "dirty_worktree"))
-      .map((entry) => entry.file.path)
-  ).slice(0, 8);
+      .map((entry) => entry.file.path),
+    ...input.dirtyScope.plannedEditTargets
+  ]).slice(0, 8);
   const missingAnchors: string[] = [];
   if (input.dirtyScope.changedFileCount === 0) {
     missingAnchors.push("no dirty files");
@@ -513,7 +515,7 @@ export function dirtyWorktreeIntentConfidence(input: {
   if (input.worktree?.degraded) {
     missingAnchors.push("worktree state unavailable");
   }
-  if (input.dirtyScope.mode === "edit" && dirtyAnchors.length === 0) {
+  if (input.dirtyScope.mode === "edit" && input.dirtyScope.changedFileCount > 0 && dirtyAnchors.length === 0) {
     missingAnchors.push("no selected dirty-worktree anchors");
   }
   const confidence = Math.max(
@@ -531,10 +533,10 @@ export function dirtyWorktreeIntentConfidence(input: {
   const verdict: IntentConfidence["verdict"] =
     editReady
       ? "edit-ready"
-      : input.dirtyScope.mode === "orientation" && dirtyAnchors.length > 0 && !input.worktree?.degraded
+      : (input.dirtyScope.changedFileCount === 0 || input.dirtyScope.mode === "orientation") && !input.worktree?.degraded
         ? "orientation-only"
         : "needs-target";
-  const recommendedNextTool = verdict === "edit-ready" ? "change_plan" : verdict === "orientation-only" ? "diff_impact" : "search";
+  const recommendedNextTool = verdict === "edit-ready" ? "change_plan" : verdict === "orientation-only" ? (input.dirtyScope.changedFileCount > 0 ? "diff_impact" : "source") : "search";
   return {
     mode: input.dirtyScope.mode,
     intent: primaryIntent,
@@ -640,7 +642,7 @@ export function isStrongPacketAnchor(entry: PacketFocusEntry, dirtyAnchorAllowed
 }
 
 export function taskReferencesDirtyContext(task: string): boolean {
-  return /\b(current|dirty|diff|worktree|working tree|changed|changes|unstaged|staged|this change|these changes)\b/iu.test(task);
+  return /\b(?:(?:this|these|current|local|my|pending|uncommitted)\s+changes?|(?:current|pending|uncommitted)\s+(?:diff|worktree|working\s+tree)|(?:dirty|modified|staged|unstaged)\s+(?:changes?|diff|files?|worktree|working\s+tree)|(?:diff|worktree|working\s+tree)\s+(?:changes?|files?|state))\b/iu.test(task);
 }
 
 export function packetIntentDiagnostics(intent: IntentConfidence, baseDiagnostics: string[]): string[] {

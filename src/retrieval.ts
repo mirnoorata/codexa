@@ -3,7 +3,9 @@ import { isTestPath, moduleNameForPath } from "./language.js";
 import { semanticLaneEntriesForQuery, type SemanticQueryOptions, type SemanticRetrievalSummary } from "./semantic-retrieval.js";
 import type { CodexaIndex, Confidence, FileFact, GraphEdgeFact, ModuleClusterFact, SymbolFact, WorkflowTraceFact } from "./types.js";
 import { rankLog2, uniqueSorted } from "./util.js";
-import { BROAD_WORKFLOW_TERMS, LANE_WEIGHTS, RETRIEVAL_RUNTIME_CACHE_LIMIT, SEMANTIC_ANCHOR_MIN_SCORE, STOP_WORDS, SUPPORT_WORKFLOW_TERMS, SYNONYMS } from "./retrieval/constants.js";
+import { BROAD_WORKFLOW_TERMS, LANE_WEIGHTS, RETRIEVAL_RUNTIME_CACHE_LIMIT, SEMANTIC_ANCHOR_MIN_SCORE, SUPPORT_WORKFLOW_TERMS, SYNONYMS } from "./retrieval/constants.js";
+import { activeRetrievalLanes as activeLanes, isDecoyLikePath, queryAllowsDecoy, tokenizeRetrievalText as tokenize } from "./retrieval/helpers.js";
+import { promptModeForTask } from "./retrieval/intent.js";
 
 export type TaskIntent =
   | "architecture"
@@ -132,7 +134,7 @@ const retrievalRuntimeCache = new Map<string, RetrievalRuntime>();
 export async function retrieveForTask(index: CodexaIndex, query: string, limit = 12, semanticOptions?: SemanticQueryOptions): Promise<RetrievalResult> {
   const rawTerms = tokenize(query);
   const terms = expandedQueryTerms(query);
-  const intents = classifyTaskIntent(query, terms);
+  const intents = classifyTaskIntent(query);
   const allowDecoys = queryAllowsDecoy(query);
   const runtime = retrievalRuntimeForIndex(index);
   const bm25Entries = runtime.docs
@@ -188,6 +190,29 @@ export async function retrieveForTask(index: CodexaIndex, query: string, limit =
   return { query, intents, terms, matches, workflows, modules, anchors, processGroups, clusterGroups, broad, intentConfidence, diagnostics, semantic: semanticResult.summary };
 }
 
+export function retrieveIntentOnly(query: string): RetrievalResult {
+  const rawTerms = tokenize(query);
+  const terms = expandedQueryTerms(query);
+  const intents = classifyTaskIntent(query);
+  const broad = rawTerms.length <= 2 || intents.includes("architecture") || intents.includes("workflow");
+  const intentConfidence = analyzeIntentConfidence(query, intents, terms, [], [], broad);
+  return {
+    query,
+    intents,
+    terms,
+    matches: [],
+    workflows: [],
+    modules: [],
+    anchors: [],
+    processGroups: [],
+    clusterGroups: [],
+    broad,
+    intentConfidence,
+    diagnostics: [],
+    semantic: { enabled: false, status: "disabled", diagnostics: [] }
+  };
+}
+
 function retrievalRuntimeForIndex(index: CodexaIndex): RetrievalRuntime {
   const key = [
     index.snapshot.snapshotId,
@@ -223,8 +248,8 @@ function retrievalRuntimeForIndex(index: CodexaIndex): RetrievalRuntime {
   return runtime;
 }
 
-export function classifyTaskIntent(query: string, terms = expandedQueryTerms(query)): TaskIntent[] {
-  const joined = `${query.toLowerCase()} ${terms.join(" ")}`;
+export function classifyTaskIntent(query: string): TaskIntent[] {
+  const joined = query.toLowerCase();
   const intents: TaskIntent[] = [];
   const add = (intent: TaskIntent, pattern: RegExp) => {
     if (pattern.test(joined)) {
@@ -232,15 +257,17 @@ export function classifyTaskIntent(query: string, terms = expandedQueryTerms(que
     }
   };
   add("architecture", /\b(architecture|understand|overview|map|module|subsystem|competitor|sourcegraph|aider|deepwiki)\b/);
-  add("workflow", /\b(workflow|flow|execution|route|endpoint|job|process|queue|polling)\b|\b(?:workflow|dependency|call|execution)\s+path\b/);
+  if (/\b(workflow|flow|execution|route|endpoint|job|process|queue|polling)\b|\b(?:workflow|dependency|call|execution)\s+path\b/u.test(query.toLowerCase())) intents.push("workflow");
   add("debugging", /\b(debug|bug|fix|error|failure|broken|trace|root cause)\b/);
   add("testing", /\b(test|verify|validation|pytest|vitest|coverage|regression)\b/);
   add("frontend", /\b(frontend|react|tsx|component|hook|ui|canvas|web)\b/);
   add("backend", /\b(backend|api|python|server|adapter|store|database|route)\b/);
   add("configuration", /\b(config|env|service|script|deploy|package|manifest|init|hook|session)\b/);
   add("risk", /\b(risk|security|shell|filesystem|sql|danger|unsafe|blast)\b/);
-  add("implementation", /\b(add|implement|change|update|refactor|rename|delete|modify)\b/);
-  return intents.length > 0 ? uniqueInOrder(intents) : ["unknown"];
+  if (promptModeForTask(query) === "edit") {
+    intents.push("implementation");
+  }
+  return intents.length > 0 ? [...new Set(intents)] : ["unknown"];
 }
 
 export function expandedQueryTerms(query: string): string[] {
@@ -629,7 +656,7 @@ function analyzeIntentConfidence(
   workflows: WorkflowTraceFact[],
   broad: boolean
 ): IntentConfidence {
-  const mode: PromptMode = intents.some((intent) => intent === "implementation" || intent === "debugging") ? "edit" : "orientation";
+  const mode: PromptMode = promptModeForTask(query);
   const primaryIntent = intents.find((intent) => intent !== "unknown") ?? "unknown";
   const allowTestAnchors = /\b(test|tests|spec|specs|pytest|vitest|coverage|verification|verify)\b/i.test(query);
   const directAnchorMatches = matches.filter((match) => (match.lanes.exact ?? 0) > 0 || (match.lanes.symbol ?? 0) > 0 || (match.lanes.workflow ?? 0) > 0);
@@ -956,41 +983,4 @@ function buildClusterGroups(index: CodexaIndex, modules: RetrievalResult["module
     })
     .filter((group) => group.score > 0)
     .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
-}
-
-function activeLanes(lanes: RetrievalMatch["lanes"]): RetrievalLane[] {
-  const order: RetrievalLane[] = ["exact", "symbol", "semantic", "bm25", "workflow", "test", "dirty", "graph"];
-  return order.filter((lane) => (lanes[lane] ?? 0) > 0);
-}
-
-function tokenize(value: string): string[] {
-  const expandedCamel = value.replace(/([a-z0-9])([A-Z])/g, "$1 $2");
-  return uniqueSorted(
-    expandedCamel
-      .toLowerCase()
-      .split(/[^a-z0-9]+/)
-      .map((term) => term.trim())
-      .filter((term) => term.length >= 2 && !STOP_WORDS.has(term))
-  );
-}
-
-function isDecoyLikePath(filePath: string): boolean {
-  const spaced = filePath.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase();
-  return /(?:^|\b|[._/-])(decoy|mock|old|backup|copy|fixture)(?:$|\b|[._/-])/.test(spaced) || /(decoy|mock|backup|fixture)/.test(spaced.replace(/[^a-z0-9]+/g, ""));
-}
-
-function queryAllowsDecoy(query: string): boolean {
-  return /\b(decoy|mock|fixture|backup|old|copy)\b/i.test(query);
-}
-
-function uniqueInOrder<T>(items: T[]): T[] {
-  const seen = new Set<T>();
-  const result: T[] = [];
-  for (const item of items) {
-    if (!seen.has(item)) {
-      seen.add(item);
-      result.push(item);
-    }
-  }
-  return result;
 }

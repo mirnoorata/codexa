@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { existsSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
@@ -75,9 +76,16 @@ export async function saveTaskSnapshot({ repoRoot, input, snapshot, beforePersis
     await beforePersist?.();
     await atomicJsonWrite(snapshotPath, saved);
     await fs.rm(path.join(dir, `${taskId}.blocked.json`), { force: true });
-    await atomicJsonWrite(path.join(dir, LATEST_FILE), { schemaVersion: 1, taskId, path: path.basename(snapshotPath), createdAt });
     await recordTaskPlanRevision(repo, taskId, planRevision, invariants);
-    await removeImplicitSiblingSnapshots(dir, taskId);
+    const published = await publishLatestSnapshot(repo, dir, {
+      schemaVersion: 1,
+      taskId,
+      path: path.basename(snapshotPath),
+      createdAt,
+      origin: saved.origin
+    });
+    if (published) await removeImplicitSiblingSnapshots(dir, taskId);
+    else if (saved.origin === "hook-implicit") await fs.rm(snapshotPath, { force: true });
     return { snapshot: saved, path: snapshotPath };
   });
 }
@@ -113,7 +121,7 @@ export async function saveBlockedTaskSnapshot({ repoRoot, input, reason, details
   const repo = path.resolve(repoRoot);
   const createdAt = new Date().toISOString();
   const taskId = normalizeTaskId(input.taskId) ?? defaultTaskId(repo, input, createdAt);
-  return withTaskLifecycleLock(repo, taskId, async () => {
+  const saved = await withTaskLifecycleLock(repo, taskId, async () => {
     const dir = snapshotDir(repo);
     await fs.mkdir(dir, { recursive: true });
     const snapshotPath = path.join(dir, `${taskId}.json`);
@@ -137,16 +145,20 @@ export async function saveBlockedTaskSnapshot({ repoRoot, input, reason, details
   ) as BlockedTaskSnapshotMarker;
     await atomicJsonWrite(markerPath, marker);
     await fs.rm(snapshotPath, { force: true });
-    await atomicJsonWrite(path.join(dir, LATEST_FILE), {
-    schemaVersion: 1,
-    taskId,
-    path: path.basename(markerPath),
-    createdAt,
-    blocked: true,
-    reason
-  });
+    await publishLatestSnapshot(repo, dir, {
+      schemaVersion: 1,
+      taskId,
+      path: path.basename(markerPath),
+      createdAt,
+      blocked: true,
+      reason,
+      origin: "blocked"
+    });
     return { taskId, path: markerPath };
   });
+  if (!saved.preservedSnapshot) return saved;
+  const fresh = await saveBlockedTaskSnapshot({ repoRoot: repo, input: { ...input, taskId: undefined }, reason, details });
+  return { ...fresh, preservedSnapshot: true };
 }
 
 export async function loadTaskSnapshot(repoRoot: string, taskId?: string): Promise<TaskSnapshotLoadResult> {
@@ -243,6 +255,37 @@ interface LatestSnapshotPointer {
   path?: unknown;
   blocked?: unknown;
   reason?: unknown;
+  createdAt?: unknown;
+  origin?: unknown;
+}
+
+async function publishLatestSnapshot(repoRoot: string, dir: string, candidate: Record<string, unknown>): Promise<boolean> {
+  return withTaskLifecycleLock(repoRoot, "\0codexa-latest-snapshot-publication", async () => {
+    const latestPath = path.join(dir, LATEST_FILE);
+    const current = await readJson<LatestSnapshotPointer>(latestPath);
+    if (current.ok && !(await shouldPublishLatest(dir, current.value, candidate))) return false;
+    await atomicJsonWrite(latestPath, candidate);
+    return true;
+  });
+}
+
+async function shouldPublishLatest(dir: string, current: LatestSnapshotPointer, candidate: Record<string, unknown>): Promise<boolean> {
+  const currentImplicit = await latestPointerIsImplicit(dir, current);
+  const candidateImplicit = candidate.origin === "hook-implicit";
+  if (currentImplicit !== candidateImplicit) return !candidateImplicit;
+  const currentTime = typeof current.createdAt === "string" ? Date.parse(current.createdAt) : Number.NaN;
+  const candidateTime = typeof candidate.createdAt === "string" ? Date.parse(candidate.createdAt) : Number.NaN;
+  if (Number.isFinite(currentTime) && Number.isFinite(candidateTime) && candidateTime !== currentTime) return candidateTime > currentTime;
+  const currentTaskId = typeof current.taskId === "string" ? current.taskId : "";
+  const candidateTaskId = typeof candidate.taskId === "string" ? candidate.taskId : "";
+  return candidateTaskId.localeCompare(currentTaskId) > 0;
+}
+
+async function latestPointerIsImplicit(dir: string, pointer: LatestSnapshotPointer): Promise<boolean> {
+  if (pointer.origin === "hook-implicit") return true;
+  if (pointer.blocked === true || typeof pointer.path !== "string") return false;
+  const snapshot = await readJson<Partial<TaskSnapshot>>(path.join(dir, pointer.path));
+  return snapshot.ok && snapshot.value.origin === "hook-implicit";
 }
 
 async function readBlockedSnapshotMarker(
@@ -493,9 +536,13 @@ function slug(value: string): string {
 }
 
 async function atomicJsonWrite(filePath: string, value: unknown): Promise<void> {
-  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  await fs.writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  await fs.rename(tmp, filePath);
+  const tmp = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+    await fs.rename(tmp, filePath);
+  } finally {
+    await fs.rm(tmp, { force: true }).catch(() => undefined);
+  }
 }
 
 function redactRepoPath(value: unknown, repoRoot: string): unknown {

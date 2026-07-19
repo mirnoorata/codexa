@@ -1,7 +1,8 @@
+import { promises as fs } from "node:fs";
 import path from "node:path";
 import { freshnessBanner, ambiguityResult } from "./runtime.js";
 import type { CodexaIndex, FileFact, QueryResult, SymbolFact } from "../types.js";
-import { normalizePath } from "../util.js";
+import { isSubpath, normalizePath } from "../util.js";
 
 export type ResolvedGraphTarget = {
   label: string;
@@ -46,12 +47,13 @@ export function resolveFileTarget(index: CodexaIndex, filePath: string, repoRoot
 }
 
 export function normalizeInputPath(filePath: string, repoRoot: string): string | undefined {
-  const normalized = filePath.split(path.sep).join("/");
-  if (path.isAbsolute(filePath)) {
-    const relative = path.relative(repoRoot, filePath).split(path.sep).join("/");
-    return relative && !relative.startsWith("..") ? relative : undefined;
-  }
-  return normalized && !normalized.startsWith("..") ? normalized : undefined;
+  const portablePath = filePath.trim();
+  if (/^(?:~(?:[\\/]|$)|\$[A-Za-z_][A-Za-z0-9_]*(?:[\\/]|$)|file:\/\/|[A-Za-z]:[\\/]|\\\\|\/\/)/u.test(portablePath)) return undefined;
+  const absoluteRoot = path.resolve(repoRoot);
+  const absoluteTarget = path.resolve(absoluteRoot, portablePath);
+  const relative = path.relative(absoluteRoot, absoluteTarget);
+  if (!relative || relative === ".." || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) return undefined;
+  return relative.split(path.sep).join("/");
 }
 
 export function normalizeInputPaths(filePaths: string[], repoRoot: string): string[] {
@@ -59,6 +61,34 @@ export function normalizeInputPaths(filePaths: string[], repoRoot: string): stri
     const normalized = normalizeInputPath(filePath, repoRoot);
     return normalized ? [normalizePath(normalized)] : [];
   });
+}
+
+export async function newTargetPathIsContained(filePath: string, repoRoot: string): Promise<boolean> {
+  const normalized = normalizeInputPath(filePath, repoRoot);
+  if (!normalized) return false;
+  const absoluteRoot = path.resolve(repoRoot);
+  const repoReal = await fs.realpath(absoluteRoot).catch(() => "");
+  if (!repoReal) return false;
+  let probe = path.resolve(absoluteRoot, normalized);
+  while (isSubpath(probe, absoluteRoot)) {
+    const stat = await fs.lstat(probe).catch((error: unknown) => errorCode(error) === "ENOENT" ? undefined : null);
+    if (stat === null) return false;
+    if (stat) {
+      // realpath(2) reports ENOENT for a dangling symlink just as it does for
+      // an ordinary missing path. lstat keeps those cases distinct so a
+      // broken link cannot make containment fail open while we walk upward.
+      const real = await fs.realpath(probe).catch(() => "");
+      if (!real) return false;
+      return isSubpath(real, repoReal);
+    }
+    if (probe === absoluteRoot) return false;
+    probe = path.dirname(probe);
+  }
+  return false;
+}
+
+function errorCode(error: unknown): string {
+  return error && typeof error === "object" && "code" in error ? String((error as { code?: unknown }).code) : "";
 }
 
 export function resolveGraphTarget(

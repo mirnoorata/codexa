@@ -117,7 +117,7 @@ export function compactNextTool(value: unknown, truncation?: McpTruncation, path
     schemaVersion: record.schemaVersion,
     tool: record.tool,
     reason: typeof record.reason === "string" ? record.reason.slice(0, 240) : record.reason,
-    requiredInputs: compactGenericValue(record.requiredInputs, { arrayLimit: 8, objectKeyLimit: 16, maxDepth: 3 }, truncation ?? localTruncation, `${pathName}.requiredInputs`),
+    requiredInputs: compactGenericValue(record.requiredInputs, { arrayLimit: 80, objectKeyLimit: 16, maxDepth: 3 }, truncation ?? localTruncation, `${pathName}.requiredInputs`),
     readOnly: record.readOnly,
     writes: limitArray(record.writes, 8)
   };
