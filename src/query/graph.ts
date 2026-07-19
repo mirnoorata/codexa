@@ -313,7 +313,7 @@ function isAmbiguousExplicitSymbolOccurrence(task: string, label: string, index:
 }
 
 function hasSymbolDependencyCueBefore(before: string): boolean {
-  return /\b(?:using|call(?:s|ing)?|invok(?:e|es|ing)|import(?:s|ing)?)\s+(?:the\s+)?$/iu.test(before);
+  return /\b(?:using|call(?:s|ing)?|invok(?:e|es|ing)|import(?:s|ing)?|model(?:ed|led)\s+after|same\s+behaviou?r\s+as|analogous\s+to|based\s+on)\s+(?:the\s+)?$/iu.test(before);
 }
 
 function hasMutationVerbBefore(before: string): boolean {

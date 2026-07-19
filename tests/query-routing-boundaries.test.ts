@@ -774,7 +774,11 @@ describe("query routing boundaries", () => {
       "Create src/new.ts using helper",
       "Create src/new.ts that calls helper",
       "Create src/new.ts that invokes helper",
-      "Create src/new.ts importing helper"
+      "Create src/new.ts importing helper",
+      "Create src/new.ts modeled after helper",
+      "Create src/new.ts with the same behavior as helper",
+      "Create src/new.ts analogous to helper",
+      "Create src/new.ts based on helper"
     ]) {
       const focus = await focusBriefQuery(repo, { task, diff: false }, { autoRefresh: false });
       const focusData = focus.data as { focusFiles: Array<{ path: string }>; nextCall: { tool: string; arguments?: { files?: string[] } } };
