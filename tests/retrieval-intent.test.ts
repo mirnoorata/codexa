@@ -45,6 +45,7 @@ describe("retrieval prompt intent", () => {
     "Write a report that describes the API in src/util.ts",
     "Generate a report including security recommendations for src/util.ts",
     "Does src/util.ts need fixing?",
+    "Does src/util.ts need a fix?",
     "Check whether src/util.ts needs fixing",
     "Assess whether src/util.ts needs fixing",
     "Determine whether src/util.ts needs fixing",
@@ -160,6 +161,7 @@ describe("retrieval prompt intent", () => {
     "- Fix src/util.ts",
     "- [ ] Fix src/util.ts",
     "Write a report to docs/report.md",
+    "Create a report in docs/report.md",
     "Create a report and save it to docs/report.md",
     "Create a report of src/api.ts at docs/report.md",
     "Write a summary of src/api.ts to docs/summary.md",
@@ -170,7 +172,9 @@ describe("retrieval prompt intent", () => {
     "Create summary.ts",
     "Write checklist.ts",
     "Create graph.ts",
-    "Create review.ts"
+    "Create review.ts",
+    "I need a fix for src/util.ts",
+    "src/util.ts needs a fix"
   ])("keeps %s edit-directed", (task) => {
     expect(promptModeForTask(task)).toBe("edit");
     expect(classifyTaskIntent(task)).toContain("implementation");
