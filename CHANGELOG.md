@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.15.2](https://github.com/mirnoorata/codexa/compare/v0.15.1...v0.15.2) (2026-07-20)
+
+
+### Bug Fixes
+
+* **cli:** honor Claude project roots ([35644b8](https://github.com/mirnoorata/codexa/commit/35644b8e28ae396de15138ccf1df475a1c2cfe5a))
+* **init:** avoid stable hook rewrites ([a2601af](https://github.com/mirnoorata/codexa/commit/a2601af7815df88f6e649fd4d29bd7601cf9e06d))
+* **init:** keep tracked wiring portable across worktrees ([eecaf01](https://github.com/mirnoorata/codexa/commit/eecaf01906616f785792a1ea4cae81f19a964d83))
+* **init:** preserve Claude-only wiring ([a8fc8b7](https://github.com/mirnoorata/codexa/commit/a8fc8b75eba248379aa619158366d8b659e39d77))
+
 ## [0.15.1](https://github.com/mirnoorata/codexa/compare/v0.15.0...v0.15.1) (2026-07-19)
 
 
