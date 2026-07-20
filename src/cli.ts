@@ -8,6 +8,7 @@ import { checkGithubSync } from "./github-sync.js";
 import { publishProjectGithubRelease } from "./github-release.js";
 import { runDoctor } from "./doctor.js";
 import { initializeProject, sessionStartSummary } from "./init.js";
+import { resolveGitRepoRoot } from "./init-portability.js";
 import { runLiveIndexer } from "./live-index.js";
 import { serveMcp, serveMcpHttp, type McpTransportKind } from "./mcp.js";
 import { buildSemanticIndex, type SemanticProviderKind } from "./semantic-retrieval.js";
@@ -183,18 +184,18 @@ program
 
 program
   .command("hook-pre-edit")
-  .argument("<repo>", "repository root")
+  .argument("[repo]", "repository root; defaults to the current git root")
   .description("Cheap hook helper that saves an implicit pre-edit baseline when no change-plan snapshot exists before an edit.")
-  .action(async (repo: string) => {
-    await runPreEditHook(repo);
+  .action(async (repo: string | undefined) => {
+    await runPreEditHook(resolveRequiredGitRepo(repo, "hook-pre-edit"));
   });
 
 program
   .command("hook-post-edit")
-  .argument("<repo>", "repository root")
+  .argument("[repo]", "repository root; defaults to the current git root")
   .description("Bounded hook helper that runs the post-edit review packet after edit tools.")
-  .action(async (repo: string) => {
-    await runPostEditHook(repo);
+  .action(async (repo: string | undefined) => {
+    await runPostEditHook(resolveRequiredGitRepo(repo, "hook-post-edit"));
   });
 
 program
@@ -581,9 +582,9 @@ program
   .option("--workspace-session <id>", "active WORKING.md session row to prefer when <repo> is a workspace launch root")
   .description("Print the lightweight Codexa SessionStart summary used by Codex hooks.")
   .action(async (repo: string | undefined, opts: { context: boolean; autoRefresh: boolean; workspaceFocusFile?: string; workspaceSession?: string }) => {
-    const resolved = path.resolve(repo ?? process.cwd());
+    const resolved = repo ? path.resolve(repo) : resolveGitRepoRoot(undefined) ?? process.cwd();
     const startedAt = Date.now();
-    const summary = await sessionStartSummary(repo, opts.context || process.env.CODEXA_SESSIONSTART_CONTEXT === "1", {
+    const summary = await sessionStartSummary(resolved, opts.context || process.env.CODEXA_SESSIONSTART_CONTEXT === "1", {
       autoRefresh: opts.autoRefresh,
       workspaceFocusFile: opts.workspaceFocusFile ? path.resolve(opts.workspaceFocusFile) : undefined,
       workspaceSessionId: opts.workspaceSession
@@ -601,7 +602,7 @@ program
 
 program
   .command("serve")
-  .argument("<repo>", "repository root")
+  .argument("[repo]", "repository root; defaults to the current git root")
   .option("--semantic", "force semantic retrieval for MCP task queries when auto-detection would skip it")
   .option("--no-semantic", "disable automatic semantic retrieval for MCP task queries")
   .option("--semantic-provider <provider>", "semantic query provider: openai or local-command", parseSemanticProvider)
@@ -627,8 +628,8 @@ program
   .option("--port <n>", "HTTP port for --transport http", parseIntOption, 8729)
   .option("--endpoint <path>", "HTTP MCP endpoint path for --transport http", "/mcp")
   .description("Start the MCP server over stdio by default, or Streamable HTTP with --transport http.")
-  .action(async (repo: string, opts: CliQueryOptions & { transport: McpTransportKind; host: string; port: number; endpoint: string; tools: "core" | "full" }) => {
-    const resolved = path.resolve(repo);
+  .action(async (repo: string | undefined, opts: CliQueryOptions & { transport: McpTransportKind; host: string; port: number; endpoint: string; tools: "core" | "full" }) => {
+    const resolved = resolveRequiredGitRepo(repo, "serve");
     const queryOptions = { ...queryOptionsFromCli(opts), toolProfile: opts.tools };
     if (opts.transport === "http") {
       await serveMcpHttp(resolved, queryOptions, { host: opts.host, port: opts.port, endpoint: opts.endpoint });
@@ -636,6 +637,18 @@ program
     }
     await serveMcp(resolved, queryOptions);
   });
+
+function resolveRequiredGitRepo(repo: string | undefined, command: string): string {
+  if (repo) {
+    return path.resolve(repo);
+  }
+  const candidate = path.resolve(process.cwd());
+  const gitRoot = resolveGitRepoRoot(candidate);
+  if (!gitRoot) {
+    throw new Error(`Codexa ${command} requires a git repository: ${candidate}`);
+  }
+  return gitRoot;
+}
 
 program.parseAsync(process.argv).catch((error) => {
   console.error(error instanceof Error ? error.message : String(error));

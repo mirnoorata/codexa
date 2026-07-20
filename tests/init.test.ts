@@ -1068,6 +1068,7 @@ describe("node interpreter pinning in generated wiring", () => {
     const result = await initializeProject(worktree, { cliPath: "/opt/codexa/dist/cli.js" });
 
     expect(await realpath(result.repoRoot)).toBe(await realpath(worktree));
+    expect(result.serverName).toBe(`codexa-${path.basename(repo).toLowerCase()}`);
     const config = await readFile(path.join(worktree, ".codex/config.toml"), "utf8");
     expect(config).toContain("serve");
     const hooks = await readFile(path.join(worktree, ".codex/hooks.json"), "utf8");
@@ -1093,5 +1094,42 @@ describe("node interpreter pinning in generated wiring", () => {
     const config = await readFile(path.join(repo, ".codex/config.toml"), "utf8");
     expect(config).toContain('command = "node"');
     expect(config).not.toContain(`command = "${process.execPath}"`);
+  });
+
+  it("keeps tracked project wiring byte-identical across linked worktrees", async () => {
+    const repo = await createInitRepo();
+    const cliPath = "/opt/codexa/dist/cli.js";
+    const first = await initializeProject(repo, { cliPath, claude: true, index: false });
+    execFileSync("git", ["add", ".codex/config.toml", ".codex/hooks.json", ".mcp.json"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "track wiring"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+
+    // The first refresh after tracking is the one-time portability migration.
+    await initializeProject(repo, { cliPath, claude: true, index: false });
+    execFileSync("git", ["add", ".codex/config.toml", ".codex/hooks.json", ".mcp.json"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "make wiring portable"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+
+    const expectedConfig = await readFile(path.join(repo, ".codex/config.toml"), "utf8");
+    const expectedHooks = await readFile(path.join(repo, ".codex/hooks.json"), "utf8");
+    const expectedClaudeMcp = await readFile(path.join(repo, ".mcp.json"), "utf8");
+    expect(expectedConfig).toContain(`args = ["${cliPath}", "serve", "--auto-refresh", "--tools", "core"]`);
+    expect(expectedConfig).not.toContain(repo);
+    expect(expectedHooks).not.toContain(repo);
+    expect(expectedClaudeMcp).not.toContain(repo);
+
+    const worktree = path.join(path.dirname(repo), `${path.basename(repo)}-portable-wt`);
+    execFileSync("git", ["worktree", "add", "-b", "portable-wt", worktree], { cwd: repo, stdio: "ignore" });
+    const result = await initializeProject(path.join(worktree, "src"), { cliPath, claude: true, index: false });
+
+    expect(result.serverName).toBe(first.serverName);
+    expect(await readFile(path.join(worktree, ".codex/config.toml"), "utf8")).toBe(expectedConfig);
+    expect(await readFile(path.join(worktree, ".codex/hooks.json"), "utf8")).toBe(expectedHooks);
+    expect(await readFile(path.join(worktree, ".mcp.json"), "utf8")).toBe(expectedClaudeMcp);
+    expect(execFileSync("git", ["status", "--porcelain"], { cwd: worktree, encoding: "utf8" })).toBe("");
   });
 });

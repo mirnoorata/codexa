@@ -158,9 +158,11 @@ are preserved, and malformed JSON aborts the write). When init runs from an
 evictable npx cache, generated configs pin `npx -y @mirnoorata/codexa@<version>`
 instead of the cache path so they keep working after a cache prune.
 
-Linked git worktrees are wired the same way — wiring never travels with the
-branch because `.codex/config.toml` is host-local, so a fresh worktree is
-invisible to Codexa until you run init in it:
+Linked git worktrees are wired the same way. Untracked `.codex/config.toml`
+and hook files stay host-local, so a fresh worktree is invisible to Codexa
+until you run init in it. If a team intentionally tracks those files, init
+renders worktree-relative launch commands and keeps the shared files unchanged
+when the same branch is checked out at a different path:
 
 ```bash
 git worktree add ../my-feature feature-branch
@@ -169,7 +171,8 @@ codexa init ../my-feature        # non-interactive: config + hooks + a fresh ind
 
 The worktree gets its own index (its HEAD and dirty state differ from the
 parent checkout's, so the parent's index would serve stale answers). If you
-automate worktree creation, add `codexa init` to that automation.
+automate worktree creation, add `codexa init` to that automation; tracked
+wiring remains Git-clean while the worktree-local ignored index is refreshed.
 
 Codexa binds an index to the canonical worktree root, Git top-level root,
 HEAD commit, and workspace-state digest. Context and review queries fail closed
