@@ -20,6 +20,29 @@ async function committedRepo(prefix: string): Promise<string> {
     return repo;
   }
 
+it("resolves no-argument lifecycle hooks from a nested worktree directory", async () => {
+    const repo = await committedRepo("codexa-portable-hooks-");
+    const nested = path.join(repo, "nested", "deeper");
+    await mkdir(nested, { recursive: true });
+    const indexed = spawnSync(process.execPath, [cli, "index", repo], { cwd: repo, encoding: "utf8", env: testEnv() });
+    expect(indexed.status).toBe(0);
+
+    const sessionStart = spawnSync(process.execPath, [cli, "session-start"], { cwd: nested, encoding: "utf8", env: testEnv() });
+    expect(sessionStart.status).toBe(0);
+    expect(sessionStart.stdout).toContain(`Codexa context for ${repo}`);
+
+    const baseline = spawnSync(process.execPath, [cli, "hook-pre-edit"], { cwd: nested, encoding: "utf8", env: testEnv() });
+    expect(baseline.status).toBe(0);
+    const latestPath = path.join(repo, ".codex/cache/codexa-tasks/latest.json");
+    expect(JSON.parse(await readFile(latestPath, "utf8")).path).toMatch(/\.json$/u);
+    await expect(readFile(path.join(nested, ".codex/cache/codexa-tasks/latest.json"), "utf8")).rejects.toThrow();
+
+    await writeFile(path.join(repo, "src.ts"), "export const value = 2;\n", "utf8");
+    const postEdit = spawnSync(process.execPath, [cli, "hook-post-edit"], { cwd: nested, encoding: "utf8", env: testEnv() });
+    expect(postEdit.status).toBe(0);
+    expect(await readdir(path.join(repo, ".codex/cache/codexa-outcomes"))).not.toHaveLength(0);
+  }, 60_000);
+
 it("records the CURRENT head commit even when a stale index bundle exists", async () => {
     const repo = await committedRepo("codexa-implicit-head-");
     const indexed = spawnSync(process.execPath, [cli, "index", repo], { cwd: repo, encoding: "utf8", env: testEnv() });

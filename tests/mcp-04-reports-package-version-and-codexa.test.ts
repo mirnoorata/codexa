@@ -45,6 +45,34 @@ it("reports package version and Codexa loop instructions during MCP initializati
     }
   });
 
+it("resolves an omitted serve repo from a nested worktree directory", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-portable-serve-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdir(path.join(repo, "src", "nested"), { recursive: true });
+    await writeFile(path.join(repo, "src/index.ts"), "export function portableMarker() { return 1 }\n", "utf8");
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    await buildIndex({ repoRoot: repo });
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", "--no-auto-refresh", "--session-memory", "off"],
+      cwd: path.join(repo, "src", "nested"),
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-portable-serve-test", version: "0.1.0" });
+    await client.connect(transport);
+    try {
+      const result = await client.callTool({ name: "search", arguments: { query: "portableMarker" } });
+      expect(JSON.stringify(result.structuredContent)).toContain("src/index.ts");
+    } finally {
+      await client.close();
+    }
+  });
+
 it("serves Codexa tools over explicit Streamable HTTP transport", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-http-"));
     execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
