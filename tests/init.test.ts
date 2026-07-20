@@ -900,12 +900,53 @@ describe("Claude Code init wiring", () => {
     expect(Object.keys(parsed.mcpServers)).toEqual([result.serverName]);
   });
 
-  it("aborts the --claude write when .mcp.json is malformed", async () => {
+  it("preflights malformed .mcp.json before changing tracked Codexa wiring", async () => {
     const repo = await createInitRepo();
+    await initializeProject(repo, { cliPath: "/opt/codexa/dist/cli.js", claude: true, index: false });
+    const configPath = path.join(repo, ".codex/config.toml");
+    const hooksPath = path.join(repo, ".codex/hooks.json");
+    const configBefore = await readFile(configPath, "utf8");
+    const hooksBefore = await readFile(hooksPath, "utf8");
     await writeFile(path.join(repo, ".mcp.json"), "{ not json", "utf8");
+    execFileSync("git", ["add", ".codex/config.toml", ".codex/hooks.json", ".mcp.json"], { cwd: repo, stdio: "ignore" });
 
     await expect(initializeProject(repo, { cliPath: "/opt/codexa/dist/cli.js", claude: true, index: false })).rejects.toThrow(/Cannot update/u);
+    expect(await readFile(configPath, "utf8")).toBe(configBefore);
+    expect(await readFile(hooksPath, "utf8")).toBe(hooksBefore);
     expect(await readFile(path.join(repo, ".mcp.json"), "utf8")).toBe("{ not json");
+  });
+
+  it("preserves a tracked Claude-only server name and full profile in linked worktrees", async () => {
+    const repo = await createInitRepo();
+    const mcpPath = path.join(repo, ".mcp.json");
+    const expected = `${JSON.stringify(
+      {
+        mcpServers: {
+          "codexa-team": {
+            command: "node",
+            args: ["/opt/codexa/dist/cli.js", "serve", "--auto-refresh", "--tools", "full"]
+          }
+        }
+      },
+      null,
+      2
+    )}\n`;
+    await writeFile(mcpPath, expected, "utf8");
+    await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+    execFileSync("git", ["add", ".mcp.json", ".gitignore"], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "track Claude wiring"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+
+    const worktree = path.join(path.dirname(repo), `${path.basename(repo)}-claude-only-wt`);
+    execFileSync("git", ["worktree", "add", "-b", "claude-only-wt", worktree], { cwd: repo, stdio: "ignore" });
+    const result = await initializeProject(worktree, { cliPath: "/opt/codexa/dist/cli.js", claude: true, index: false });
+
+    expect(result.serverName).toBe("codexa-team");
+    expect(await readFile(path.join(worktree, ".mcp.json"), "utf8")).toBe(expected);
+    expect(await readFile(path.join(worktree, ".codex/config.toml"), "utf8")).toContain('"--tools", "full"');
+    expect(execFileSync("git", ["status", "--porcelain"], { cwd: worktree, encoding: "utf8" })).toBe("");
   });
 
   it("pins a versioned npx launch when the CLI resolves from the npx cache", async () => {
