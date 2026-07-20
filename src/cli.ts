@@ -8,7 +8,7 @@ import { checkGithubSync } from "./github-sync.js";
 import { publishProjectGithubRelease } from "./github-release.js";
 import { runDoctor } from "./doctor.js";
 import { initializeProject, sessionStartSummary } from "./init.js";
-import { resolveGitRepoRoot } from "./init-portability.js";
+import { resolveImplicitGitRepoRoot } from "./init-portability.js";
 import { runLiveIndexer } from "./live-index.js";
 import { serveMcp, serveMcpHttp, type McpTransportKind } from "./mcp.js";
 import { buildSemanticIndex, type SemanticProviderKind } from "./semantic-retrieval.js";
@@ -582,7 +582,7 @@ program
   .option("--workspace-session <id>", "active WORKING.md session row to prefer when <repo> is a workspace launch root")
   .description("Print the lightweight Codexa SessionStart summary used by Codex hooks.")
   .action(async (repo: string | undefined, opts: { context: boolean; autoRefresh: boolean; workspaceFocusFile?: string; workspaceSession?: string }) => {
-    const resolved = repo ? path.resolve(repo) : resolveGitRepoRoot(undefined) ?? process.cwd();
+    const resolved = repo ? path.resolve(repo) : resolveImplicitGitRepoRoot() ?? process.cwd();
     const startedAt = Date.now();
     const summary = await sessionStartSummary(resolved, opts.context || process.env.CODEXA_SESSIONSTART_CONTEXT === "1", {
       autoRefresh: opts.autoRefresh,
@@ -643,7 +643,7 @@ function resolveRequiredGitRepo(repo: string | undefined, command: string): stri
     return path.resolve(repo);
   }
   const candidate = path.resolve(process.cwd());
-  const gitRoot = resolveGitRepoRoot(candidate);
+  const gitRoot = resolveImplicitGitRepoRoot();
   if (!gitRoot) {
     throw new Error(`Codexa ${command} requires a git repository: ${candidate}`);
   }

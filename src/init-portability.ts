@@ -8,6 +8,15 @@ export function resolveGitRepoRoot(repoInput: string | undefined): string | null
   return gitRoot ? path.resolve(gitRoot) : null;
 }
 
+export function resolveImplicitGitRepoRoot(): string | null {
+  const claudeProjectDir = process.env.CLAUDE_PROJECT_DIR?.trim();
+  if (claudeProjectDir) {
+    const claudeRoot = resolveGitRepoRoot(claudeProjectDir);
+    if (claudeRoot) return claudeRoot;
+  }
+  return resolveGitRepoRoot(undefined);
+}
+
 export function portableRepoArg(repoRoot: string, targetRelPath: string): string | undefined {
   return isGitTracked(repoRoot, targetRelPath) ? undefined : repoRoot;
 }

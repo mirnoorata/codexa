@@ -73,6 +73,34 @@ it("resolves an omitted serve repo from a nested worktree directory", async () =
     }
   });
 
+it("prefers Claude's project directory when an omitted serve repo starts elsewhere", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-claude-project-dir-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await writeFile(path.join(repo, "claude-marker.ts"), "export const claudeProjectMarker = 1\n", "utf8");
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+    await buildIndex({ repoRoot: repo });
+
+    const transport = new StdioClientTransport({
+      command: process.execPath,
+      args: [path.join(process.cwd(), "dist/cli.js"), "serve", "--no-auto-refresh", "--session-memory", "off"],
+      cwd: os.tmpdir(),
+      env: { ...process.env, CLAUDE_PROJECT_DIR: repo },
+      stderr: "pipe"
+    });
+    const client = new Client({ name: "codexa-claude-project-dir-test", version: "0.1.0" });
+    await client.connect(transport);
+    try {
+      const result = await client.callTool({ name: "search", arguments: { query: "claudeProjectMarker" } });
+      expect(JSON.stringify(result.structuredContent)).toContain("claude-marker.ts");
+    } finally {
+      await client.close();
+    }
+});
+
 it("serves Codexa tools over explicit Streamable HTTP transport", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-http-"));
     execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
