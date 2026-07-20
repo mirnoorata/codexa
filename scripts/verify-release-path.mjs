@@ -61,7 +61,7 @@ requireText(".github/workflows/npm-publish.yml", [
   "actions/checkout@v7",
   "ref: ${{ github.event.release.tag_name }}",
   "fetch-depth: 0",
-  "actions/setup-node@v6",
+  "actions/setup-node@v7",
   "node-version: \"24.x\"",
   "npm install -g npm@^11.10.0 --registry \"${NPM_REGISTRY}\" --ignore-scripts",
   "RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}",
