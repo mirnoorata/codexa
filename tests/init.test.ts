@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, realpath, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
@@ -711,6 +711,17 @@ describe("Codexa project init", () => {
     const postToolCommands = hooks.hooks.PostToolUse.flatMap((entry) => entry.hooks.map((hook) => hook.command));
     expect(sessionCommands).toEqual(["echo keep"]);
     expect(postToolCommands).toEqual(["bash ./scripts/hook-post-edit-audit.sh /tmp/repo"]);
+
+    const hooksPath = path.join(repo, ".codex/hooks.json");
+    const sentinel = new Date("2001-01-01T00:00:00.000Z");
+    await utimes(hooksPath, sentinel, sentinel);
+    const beforeRepeat = await stat(hooksPath);
+    await initializeProject(repo, {
+      cliPath: "/opt/context/dist/cli.js",
+      hooks: false,
+      index: false
+    });
+    expect((await stat(hooksPath)).mtimeMs).toBe(beforeRepeat.mtimeMs);
   });
 
   it("anchors init to the git root when invoked from a nested directory", async () => {

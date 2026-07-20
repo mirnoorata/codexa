@@ -668,6 +668,7 @@ function renderHookCommand(launchShell: string, action: string, repoArg: string 
 
 interface CodexaManagedHooksRemoval {
   keepHooksFeature: boolean;
+  original?: string;
   contents?: string;
 }
 
@@ -693,6 +694,7 @@ async function planCodexaManagedHooksRemoval(hooksPath: string, options: { cliPa
   }
   return {
     keepHooksFeature: true,
+    original: existing,
     contents: `${JSON.stringify({ ...parsed, hooks: cleanedHooks }, null, 2)}\n`
   };
 }
@@ -702,7 +704,7 @@ async function applyCodexaManagedHooksRemoval(hooksPath: string, removal: Codexa
     await rm(hooksPath, { force: true });
     return;
   }
-  await writeFile(hooksPath, removal.contents, "utf8");
+  await writeTextIfChanged(hooksPath, removal.original ?? "", removal.contents);
 }
 
 function cleanHookList(value: unknown, options: { cliPath: string; repoRoot: string }): Record<string, unknown>[] {
