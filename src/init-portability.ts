@@ -1,6 +1,14 @@
 import { execFileSync } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
+import type { InitToolProfile } from "./types/init.js";
+
+export interface ExistingClaudeMcpConfig {
+  contents: string;
+  parsed: Record<string, unknown>;
+  serverName?: string;
+  toolProfile?: InitToolProfile;
+}
 
 export function resolveGitRepoRoot(repoInput: string | undefined): string | null {
   const candidate = path.resolve(repoInput ?? process.cwd());
@@ -50,6 +58,30 @@ export function detectExistingServerName(config: string): string | undefined {
   return undefined;
 }
 
+export function inspectClaudeMcpConfig(contents: string, mcpPath: string): ExistingClaudeMcpConfig {
+  const parsed = contents.trim() ? parseJsonObject(contents, mcpPath) : {};
+  const servers = isPlainObject(parsed.mcpServers) ? parsed.mcpServers : {};
+  const codexaEntries = Object.entries(servers).filter(([, entry]) => isCodexaMcpJsonEntry(entry));
+  if (codexaEntries.length !== 1) return { contents, parsed };
+  const [serverName, entry] = codexaEntries[0];
+  return {
+    contents,
+    parsed,
+    serverName: /^[A-Za-z0-9_-]{1,64}$/u.test(serverName) ? serverName : undefined,
+    toolProfile: detectClaudeMcpToolProfile(entry)
+  };
+}
+
+export function isCodexaMcpJsonEntry(entry: unknown): boolean {
+  if (!isPlainObject(entry)) return false;
+  const command = typeof entry.command === "string" ? entry.command : "";
+  const args = Array.isArray(entry.args) ? entry.args.filter((value): value is string => typeof value === "string") : [];
+  const serveIndex = args.indexOf("serve");
+  if (serveIndex === -1) return false;
+  const launcherToken = serveIndex === 0 ? command : args[serveIndex - 1];
+  return isCodexaLauncherToken(launcherToken);
+}
+
 export function defaultServerName(repoRoot: string): string {
   const commonDir = runGit(repoRoot, ["rev-parse", "--git-common-dir"]);
   if (!commonDir) return `codexa-${slugify(path.basename(repoRoot))}`;
@@ -69,6 +101,40 @@ function runGit(cwd: string, args: string[]): string | null {
   } catch {
     return null;
   }
+}
+
+function detectClaudeMcpToolProfile(entry: unknown): InitToolProfile | undefined {
+  if (!isPlainObject(entry) || !Array.isArray(entry.args)) return undefined;
+  const args = entry.args.filter((value): value is string => typeof value === "string");
+  const profile = args[args.lastIndexOf("--tools") + 1];
+  if (profile === "core" || profile === "full") return profile;
+  // Generated entries predating explicit profiles exposed the full catalog.
+  return isCodexaMcpJsonEntry(entry) ? "full" : undefined;
+}
+
+function isCodexaLauncherToken(token: string | undefined): boolean {
+  if (!token) return false;
+  return (
+    token === "codexa" ||
+    /^@mirnoorata\/codexa(?:@[^\s]*)?$/u.test(token) ||
+    /[\\/]codexa[\\/]dist[\\/]cli\.js$/u.test(token) ||
+    /[\\/]@mirnoorata[\\/]codexa[\\/]dist[\\/]cli\.js$/u.test(token)
+  );
+}
+
+function parseJsonObject(value: string, filePath: string): Record<string, unknown> {
+  try {
+    const parsed = JSON.parse(value);
+    if (!isPlainObject(parsed)) throw new Error("top-level JSON value must be an object");
+    return parsed;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Cannot update ${filePath}: ${message}`);
+  }
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function slugify(value: string): string {

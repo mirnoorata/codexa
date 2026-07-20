@@ -3,7 +3,17 @@ import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { assertCiWorkflowWritable, writeCiWorkflow } from "./ci-workflow.js";
 import { renderCodexUseContract } from "./codex-contract.js";
 import { buildIndexLocked } from "./indexer.js";
-import { defaultServerName, detectExistingServerName, isGitTracked, portableRepoArg, resolveGitRepoRoot, writeTextIfChanged } from "./init-portability.js";
+import {
+  defaultServerName,
+  detectExistingServerName,
+  inspectClaudeMcpConfig,
+  isCodexaMcpJsonEntry,
+  isGitTracked,
+  portableRepoArg,
+  resolveGitRepoRoot,
+  writeTextIfChanged,
+  type ExistingClaudeMcpConfig
+} from "./init-portability.js";
 import { CORE_PROFILE_TOOL_NAMES, PRIMARY_CODEX_LOOP } from "./mcp-tool-catalog.js";
 import { resolveMcpRepoRoot } from "./mcp-repo-root.js";
 import { pinnableNodeExecPath } from "./node-version.js";
@@ -95,10 +105,16 @@ export async function initializeProject(repoInput: string | undefined, options: 
   const launch = resolveLaunchSpec(cliPath);
   const configPath = path.join(codexDir, "config.toml");
   const hooksPath = path.join(codexDir, "hooks.json");
+  const claudeMcpPath = options.claude ? path.join(repoRoot, ".mcp.json") : null;
   const existingConfig = await readTextIfExists(configPath);
-  const serverName = validateServerName(options.serverName ?? detectExistingServerName(existingConfig) ?? defaultServerName(repoRoot));
+  // Parse requested shared JSON before touching any other wiring so a bad
+  // tracked file cannot leave a one-time portability migration half-applied.
+  const existingClaudeMcp = claudeMcpPath ? inspectClaudeMcpConfig(await readTextIfExists(claudeMcpPath), claudeMcpPath) : null;
+  const serverName = validateServerName(
+    options.serverName ?? detectExistingServerName(existingConfig) ?? existingClaudeMcp?.serverName ?? defaultServerName(repoRoot)
+  );
   const writeHooks = options.hooks ?? true;
-  const toolProfile = options.toolProfile ?? detectExistingToolProfile(existingConfig) ?? "core";
+  const toolProfile = options.toolProfile ?? detectExistingToolProfile(existingConfig) ?? existingClaudeMcp?.toolProfile ?? "core";
   const autoRefresh = options.autoRefresh ?? true;
 
   if (options.policyPack) {
@@ -139,9 +155,8 @@ export async function initializeProject(repoInput: string | undefined, options: 
 
   const agentsMdPath = options.agentsMd ? await upsertManagedDoc(repoRoot, "AGENTS.md", serverName) : null;
   const claudeMdPath = options.claudeMd ? await upsertManagedDoc(repoRoot, "CLAUDE.md", serverName) : null;
-  const claudeMcpPath = options.claude ? path.join(repoRoot, ".mcp.json") : null;
-  if (claudeMcpPath) {
-    await upsertClaudeMcpConfig(claudeMcpPath, {
+  if (claudeMcpPath && existingClaudeMcp) {
+    await upsertClaudeMcpConfig(claudeMcpPath, existingClaudeMcp, {
       autoRefresh,
       launch,
       repoArg: portableRepoArg(repoRoot, ".mcp.json"),
@@ -474,6 +489,7 @@ function renderMcpServerBlock(options: { autoRefresh: boolean; launch: LaunchSpe
 // Malformed JSON aborts instead of being silently replaced.
 async function upsertClaudeMcpConfig(
   mcpPath: string,
+  existingConfig: ExistingClaudeMcpConfig,
   options: {
     autoRefresh: boolean;
     launch: LaunchSpec;
@@ -483,8 +499,7 @@ async function upsertClaudeMcpConfig(
     toolProfile: InitToolProfile;
   }
 ): Promise<void> {
-  const existing = await readTextIfExists(mcpPath);
-  const parsed = existing.trim() ? parseHooksJson(existing, mcpPath) : {};
+  const { contents: existing, parsed } = existingConfig;
   const servers = isPlainObject(parsed.mcpServers) ? { ...parsed.mcpServers } : {};
   for (const [name, entry] of Object.entries(servers)) {
     if (name === options.serverName || isCodexaMcpJsonEntry(entry)) {
@@ -508,32 +523,6 @@ async function upsertClaudeMcpConfig(
 // immediately before the standalone "serve" arg must be the codexa binary,
 // package, or CLI bundle. A loose substring match would also delete user
 // servers that merely mention "codexa" somewhere in a path plus a serve.js.
-function isCodexaMcpJsonEntry(entry: unknown): boolean {
-  if (!isPlainObject(entry)) {
-    return false;
-  }
-  const command = typeof entry.command === "string" ? entry.command : "";
-  const args = Array.isArray(entry.args) ? entry.args.filter((value): value is string => typeof value === "string") : [];
-  const serveIndex = args.indexOf("serve");
-  if (serveIndex === -1) {
-    return false;
-  }
-  const launcherToken = serveIndex === 0 ? command : args[serveIndex - 1];
-  return isCodexaLauncherToken(launcherToken);
-}
-
-function isCodexaLauncherToken(token: string | undefined): boolean {
-  if (!token) {
-    return false;
-  }
-  return (
-    token === "codexa" ||
-    /^@mirnoorata\/codexa(?:@[^\s]*)?$/u.test(token) ||
-    /[\\/]codexa[\\/]dist[\\/]cli\.js$/u.test(token) ||
-    /[\\/]@mirnoorata[\\/]codexa[\\/]dist[\\/]cli\.js$/u.test(token)
-  );
-}
-
 const MANAGED_DOC_START = "<!-- >>> codexa managed -->";
 const MANAGED_DOC_END = "<!-- <<< codexa managed -->";
 
