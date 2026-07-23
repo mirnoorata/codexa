@@ -737,6 +737,17 @@ receipt validation additionally owns HEAD and source/build-input drift. If
 `--auto-refresh` is enabled, SessionStart rebuilds a missing or stale
 index when durable setup is not required or verified; normal source evolution
 does not force a bootstrap rerun.
+
+Adoption integrity walks `node_modules` once from its root, so nested packages
+are neither omitted nor repeatedly hashed. Regular files, legitimate
+hardlinks, in-root symlink targets such as `.bin` entries, and extraneous
+packages all affect the manifest. The scan fails closed if a symlink escapes
+the installed tree, a file changes while it is read, the generated runtime
+exceeds 10,000 entries or 256 MiB, dependencies exceed 100,000 entries or
+2 GiB, one file exceeds its bounded class, or the combined adoption scan takes
+more than 20 seconds. `benchmark:ci` separately requires the valid
+adoption-scope check to complete within five seconds.
+
 Shared controllers delegate adoption-scope validation to a trusted canonical
 Codexa runtime before executing the validated `dist/` entry point. The ignored
 receipt is not a signature and cannot authorize unvalidated worktree code.

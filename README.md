@@ -203,9 +203,12 @@ gate still recomputes source, complete `dist/`, HEAD, and installed dependency
 inventory.
 Shared adoption uses a trusted canonical Codexa CLI with `--scope adoption`.
 That scope validates durable startup inputs, the complete generated runtime,
-and the installed dependency inventory while permitting ordinary source/HEAD
-evolution. The receipt is local freshness evidence and never authorizes a
-controller to execute generated code from the worktree before validation.
+and a single-pass, bounded manifest of the complete installed dependency tree
+while permitting ordinary source/HEAD evolution. Legitimate dependency
+hardlinks and in-tree executable links are supported; extraneous packages,
+content changes, or links escaping `node_modules` invalidate adoption. The
+receipt is local freshness evidence and never authorizes a controller to
+execute generated code from the worktree before validation.
 
 If a Remote-SSH host creates the worktree without invoking local-environment
 setup, treat it as source-ready only. Repair the active remote worktree and
@@ -979,10 +982,13 @@ matches `HEAD`.
 `benchmark:ci` is self-preparing: it runs the same serialized clean-install,
 build, core-wiring, receipt, and strict-startup bootstrap used by a fresh
 worktree before measuring hot paths, then opts the SessionStart metric into
-strict readiness with `--strict-session-start`. Direct uses of the benchmark
-remain advisory unless that flag is supplied, so an intentionally unwired
-fixture can still measure transport cost. This avoids benchmarking an
-accidentally stale local build without silently changing the benchmark target.
+strict readiness with `--strict-session-start` and measures adoption-scope
+receipt validation with `--verify-startup-contract`. The adoption metric binds
+the complete installed dependency tree and built runtime, and fails above five
+seconds. Direct uses of the benchmark remain advisory unless those flags are
+supplied, so an intentionally unwired fixture can still measure transport cost.
+This avoids benchmarking an accidentally stale local build without silently
+changing the benchmark target.
 
 ## Public Proof
 

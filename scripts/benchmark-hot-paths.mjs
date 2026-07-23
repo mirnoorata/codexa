@@ -44,6 +44,16 @@ recordArtifact("index.json", ".codex/codebase/index.json");
 recordArtifact("facts.ndjson", ".codex/codebase/facts.ndjson");
 recordArtifact("repo-map.md", ".codex/codebase/repo-map.md");
 
+if (args.verifyStartupContract) {
+  const adoptionRun = timeCommand(
+    "worktree-receipt adoption",
+    [process.execPath, cli, "worktree-receipt", "validate", repoRoot, "--scope", "adoption", "--json"],
+    { timeoutMs: 20_000 }
+  );
+  assertAdoptionReceipt(adoptionRun.stdout);
+  benchmark.metrics.push(singleMetric("cli.worktree_receipt_adoption", adoptionRun.durationMs, 5_000));
+}
+
 benchmark.metrics.push(
   runCliBenchmark("cli.session_start", sessionStartArgs, 1_000),
   runCliBenchmark("cli.status", ["status", repoRoot], 2_000),
@@ -151,6 +161,21 @@ function assertSuccessfulMcpToolResult(result, label) {
   }
   if (!result.structuredContent || typeof result.structuredContent !== "object" || Array.isArray(result.structuredContent)) {
     throw new Error(`${label} returned no structured MCP payload`);
+  }
+}
+
+function assertAdoptionReceipt(stdout) {
+  let receipt;
+  try {
+    receipt = JSON.parse(stdout);
+  } catch {
+    throw new Error("worktree-receipt adoption returned invalid JSON");
+  }
+  if (receipt?.state !== "verified" || receipt?.validation !== "adoption") {
+    throw new Error(
+      `worktree-receipt adoption returned ${receipt?.state ?? "unknown"}` +
+      ` (validation=${receipt?.validation ?? "unknown"})`
+    );
   }
 }
 
@@ -266,6 +291,8 @@ function parseArgs(argv) {
       parsed.warnOnly = true;
     } else if (arg === "--strict-session-start") {
       parsed.strictSessionStart = true;
+    } else if (arg === "--verify-startup-contract") {
+      parsed.verifyStartupContract = true;
     } else {
       throw new Error(`Unknown benchmark option: ${arg}`);
     }

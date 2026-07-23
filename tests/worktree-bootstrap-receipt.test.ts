@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, truncate, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
@@ -23,6 +23,10 @@ describe("worktree bootstrap receipt", () => {
     const receipt = await issueReceipt(repo, "posix-hooks");
     expect(receipt.schemaVersion).toBe(2);
     expect(receipt.threadMcp).toBe("unverified");
+    expect(receipt.dependencyInventory).toMatchObject({
+      count: 1,
+      fileCount: 4
+    });
     await expect(inspectWorktreeBootstrapReceipt(repo)).resolves.toMatchObject({
       state: "verified",
       lane: "posix-hooks",
@@ -81,6 +85,30 @@ describe("worktree bootstrap receipt", () => {
       validation: "adoption",
       reason: "dependency-inventory-drift"
     });
+  });
+
+  it("binds extraneous installed packages and rejects an oversized dependency file", async () => {
+    const repo = await createReceiptFixture("codexa-worktree-receipt-inventory-");
+    await issueReceipt(repo, "posix-hooks");
+    await mkdir(path.join(repo, "node_modules/extraneous-package"), { recursive: true });
+    await writeFile(
+      path.join(repo, "node_modules/extraneous-package/package.json"),
+      `${JSON.stringify({ name: "extraneous-package", version: "1.0.0" })}\n`,
+      "utf8"
+    );
+    await expect(inspectWorktreeBootstrapReceipt(repo, { validation: "adoption" })).resolves.toMatchObject({
+      state: "stale",
+      validation: "adoption",
+      reason: "dependency-inventory-drift"
+    });
+
+    const oversizedRepo = await createReceiptFixture("codexa-worktree-receipt-oversized-");
+    const oversizedPath = path.join(oversizedRepo, "node_modules/example-dependency/oversized.bin");
+    await writeFile(oversizedPath, "", "utf8");
+    await truncate(oversizedPath, 256 * 1024 * 1024 + 1);
+    await expect(issueReceipt(oversizedRepo, "posix-hooks")).rejects.toThrow(
+      /dependency-inventory-file-size-limit-exceeded/u
+    );
   });
 
   it("separates durable startup, executable adoption, and full completion validation", async () => {
@@ -150,6 +178,14 @@ describe("worktree bootstrap receipt", () => {
     await expect(
       issueWorktreeBootstrapReceipt(repo, "posix-hooks", "0".repeat(64))
     ).rejects.toThrow(/build-input-changed-during-bootstrap/u);
+
+    await issueReceipt(repo, "posix-hooks");
+    await writeFile(path.join(repo, ".npmrc"), "audit=false\n", "utf8");
+    await expect(inspectWorktreeBootstrapReceipt(repo, { validation: "startup" })).resolves.toMatchObject({
+      state: "stale",
+      validation: "startup",
+      reason: "startup-input-drift"
+    });
 
     await issueReceipt(repo, "posix-hooks");
     await mkdir(path.join(repo, "scripts"), { recursive: true });
@@ -313,6 +349,7 @@ async function createReceiptFixture(
   };
   await writeFile(path.join(repo, "package.json"), `${JSON.stringify(packageJson, null, 2)}\n`, "utf8");
   await writeFile(path.join(repo, "package-lock.json"), `${JSON.stringify(packageLock, null, 2)}\n`, "utf8");
+  await writeFile(path.join(repo, ".npmrc"), "audit=true\n", "utf8");
   await writeFile(path.join(repo, "tsconfig.json"), "{}\n", "utf8");
   await writeFile(path.join(repo, "src/index.ts"), "export const fixture = 1;\n", "utf8");
   await writeFile(path.join(repo, "dist/cli.js"), "#!/usr/bin/env node\n", "utf8");
@@ -350,7 +387,11 @@ async function createReceiptFixture(
     "export const dependencyFixture = 1;\n",
     "utf8"
   );
-  execFileSync("git", ["add", "package.json", "package-lock.json", "tsconfig.json", "src", "dist", ".codex/worktree-bootstrap.sh"], {
+  await link(
+    path.join(repo, "node_modules/example-dependency/index.js"),
+    path.join(repo, "node_modules/example-dependency/index-hardlink.js")
+  );
+  execFileSync("git", ["add", ".npmrc", "package.json", "package-lock.json", "tsconfig.json", "src", "dist", ".codex/worktree-bootstrap.sh"], {
     cwd: repo,
     stdio: "ignore"
   });
