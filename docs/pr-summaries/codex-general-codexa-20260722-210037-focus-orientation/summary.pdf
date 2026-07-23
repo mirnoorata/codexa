@@ -1,0 +1,106 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R 6 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 2627 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(Change Summary) Tj T*
+() Tj T*
+(- Project: codexa) Tj T*
+(- Checkout: isolated codexa task worktree) Tj T*
+(- Branch: codex/general/codexa-20260722-210037-focus-orientation) Tj T*
+(- Base: main) Tj T*
+(- Primary commit: 79c8898) Tj T*
+(- Subject: feat\(startup\): make project readiness truthful) Tj T*
+() Tj T*
+(Changed Files) Tj T*
+() Tj T*
+(79c8898 feat\(startup\): make project readiness truthful) Tj T*
+(.codex/environments/environment.toml               |   5 +) Tj T*
+(.codex/worktree-bootstrap.sh                       | 233 ++++++) Tj T*
+(AGENTS.md                                          |  99 +--) Tj T*
+(README.md                                          |  21 +-) Tj T*
+(docs/architecture/codexa-context-server.md         |  32 +-) Tj T*
+(docs/guides/codex-sessionstart-hook.md             |  49 +-) Tj T*
+(docs/guides/new-user-tutorial.md                   |  25 +-) Tj T*
+(package-lock.json                                  |  91 ++-) Tj T*
+(package.json                                       |   4 +) Tj T*
+(src/cli.ts                                         |  31 +-) Tj T*
+(src/init-portability.ts                            |  51 +-) Tj T*
+(src/init.ts                                        | 229 +-----) Tj T*
+(src/mcp-repo-root.ts                               |  28 +-) Tj T*
+(src/session-start.ts                               | 889 +++++++++++++++++++++) Tj T*
+(...jects-malformed-integer-options-instead.test.ts | 197 ++++-) Tj T*
+(tests/init.test.ts                                 |  67 +-) Tj T*
+(tests/mcp-01-keeps-the-primary-mcp-happy.test.ts   |   4 +-) Tj T*
+(tests/session-start.test.ts                        | 403 ++++++++++) Tj T*
+(18 files changed, 2044 insertions\(+\), 414 deletions\(-\)) Tj T*
+(create mode 100644 .codex/environments/environment.toml) Tj T*
+(create mode 100755 .codex/worktree-bootstrap.sh) Tj T*
+(create mode 100644 src/session-start.ts) Tj T*
+(create mode 100644 tests/session-start.test.ts) Tj T*
+() Tj T*
+(Verification) Tj T*
+() Tj T*
+(- git diff --check: passed) Tj T*
+(- rtk proxy bash -n .codex/worktree-bootstrap.sh: passed) Tj T*
+(- rtk proxy shellcheck -S warning .codex/worktree-bootstrap.sh: passed) Tj T*
+(- rtk npm run check: passed) Tj T*
+(- rtk npm audit --audit-level=moderate: passed) Tj T*
+(- rtk npm run package:hygiene: passed) Tj T*
+(- rtk npm run smoke:package: passed) Tj T*
+(- Codexa post-edit-review: generated as a local verification artifact) Tj T*
+(- Codexa verdict: continue \(none\)) Tj T*
+(- git diff --cached --check: passed) Tj T*
+(- staged safety scan: passed) Tj T*
+() Tj T*
+(Notes) Tj T*
+() Tj T*
+ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 7 0 R >>
+endobj
+7 0 obj
+<< /Length 257 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(Implements the Codexa pilot for project-bound startup: native worktree setup, compact) Tj T*
+(faceted SessionStart receipts, core MCP exposure, identity-bound indexing, and full-runtime) Tj T*
+(bootstrap attestation.) Tj T*
+ET
+endstream
+endobj
+xref
+0 8
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000121 00000 n 
+0000000191 00000 n 
+0000000317 00000 n 
+0000002995 00000 n 
+0000003121 00000 n 
+trailer
+<< /Size 8 /Root 1 0 R >>
+startxref
+3428
+%%EOF
