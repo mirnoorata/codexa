@@ -61,7 +61,8 @@ export async function currentAdoptionReceiptFacts(
       path.join(dist, "cli.js"),
       DIST_RUNTIME_MAX_FILE_BYTES,
       "dist-cli",
-      deadlineAt
+      deadlineAt,
+      repo
     )),
     dependencyInventory: await installedDependencyInventory(repo, packageLockPath, deadlineAt)
   };
@@ -86,7 +87,8 @@ async function installedDependencyInventory(
     packageLockPath,
     STARTUP_INPUT_MAX_BYTES,
     "package-lock",
-    deadlineAt
+    deadlineAt,
+    repoRoot
   )).toString("utf8")) as {
     packages?: Record<string, unknown>;
   };
@@ -390,13 +392,27 @@ export async function readBoundedStableRegularFile(
   filePath: string,
   maxBytes: number,
   label: string,
-  deadlineAt?: number
+  deadlineAt?: number,
+  containmentRoot?: string
 ): Promise<Buffer> {
   if (deadlineAt !== undefined) assertAdoptionDeadline(deadlineAt);
+  const containment = containmentRoot
+    ? await resolveStableContainment(containmentRoot, label)
+    : undefined;
   await assertSafeManagedFile(filePath);
   const expected = await fs.lstat(filePath);
   if (!expected.isFile() || expected.isSymbolicLink() || expected.nlink !== 1) {
     throw new Error(`${label}-invalid`);
+  }
+  const initialFileReal = containment
+    ? await stableFileRealpath(filePath, label)
+    : undefined;
+  if (
+    containment &&
+    initialFileReal &&
+    !isContainedPath(containment.rootReal, initialFileReal)
+  ) {
+    throw new Error(`${label}-outside-containment`);
   }
   if (expected.size > maxBytes) throw new Error(`${label}-size-limit-exceeded`);
   const handle = await fs.open(filePath, "r").catch((error: unknown) => {
@@ -461,11 +477,45 @@ export async function readBoundedStableRegularFile(
     ) {
       throw new Error(`${label}-changed-during-read`);
     }
+    if (containment && initialFileReal && containmentRoot) {
+      const finalContainment = await resolveStableContainment(containmentRoot, label);
+      const finalFileReal = await stableFileRealpath(filePath, label);
+      if (
+        finalContainment.rootReal !== containment.rootReal ||
+        finalContainment.dev !== containment.dev ||
+        finalContainment.ino !== containment.ino ||
+        finalFileReal !== initialFileReal ||
+        !isContainedPath(finalContainment.rootReal, finalFileReal)
+      ) {
+        throw new Error(`${label}-containment-changed-during-read`);
+      }
+    }
     if (deadlineAt !== undefined) assertAdoptionDeadline(deadlineAt);
     return contents;
   } finally {
     await handle.close();
   }
+}
+
+async function resolveStableContainment(
+  containmentRoot: string,
+  label: string
+): Promise<{ rootReal: string; dev: number; ino: number }> {
+  const rootReal = await fs.realpath(containmentRoot);
+  const root = await fs.lstat(rootReal);
+  if (!root.isDirectory() || root.isSymbolicLink()) {
+    throw new Error(`${label}-containment-invalid`);
+  }
+  return { rootReal, dev: root.dev, ino: root.ino };
+}
+
+async function stableFileRealpath(filePath: string, label: string): Promise<string> {
+  return fs.realpath(filePath).catch((error: unknown) => {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      throw new Error(`${label}-changed-during-read`);
+    }
+    throw error;
+  });
 }
 
 function sha256(contents: Buffer): string {

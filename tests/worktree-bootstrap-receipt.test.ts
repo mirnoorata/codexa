@@ -122,7 +122,7 @@ describe("worktree bootstrap receipt", () => {
     ).resolves.toMatchObject({
       state: "unavailable",
       validation: "adoption",
-      reason: "startup-input-size-limit-exceeded"
+      reason: "package-lock-size-limit-exceeded"
     });
 
     const excessiveEntriesRepo = await createReceiptFixture("codexa-worktree-receipt-lock-entries-");
@@ -442,6 +442,45 @@ describe("worktree bootstrap receipt", () => {
     expect(buildProducer.stderr).toContain("build-input-size-limit-exceeded");
   }, 20_000);
 
+  it("keeps declared startup inputs independent from bounded durable receipt facts", async () => {
+    const repo = await createReceiptFixture("codexa-worktree-receipt-budget-classes-");
+    const declared: string[] = [];
+    for (let index = 0; index < 3; index += 1) {
+      const name = `declared/${index}.bin`;
+      const file = path.join(repo, name);
+      declared.push(name);
+      await mkdir(path.dirname(file), { recursive: true });
+      await writeFile(file, "");
+      await truncate(file, 16 * 1024 * 1024);
+    }
+    await writeFile(
+      path.join(repo, ".codex/worktree-bootstrap.sh"),
+      ["#!/bin/sh", ...declared.map(
+        (name) => `# focus-worktree-bootstrap-input: ${name}`
+      ), ""].join("\n"),
+      "utf8"
+    );
+    const configPrefix = "[features]\nhooks = true\n#";
+    await writeFile(
+      path.join(repo, ".codex/config.toml"),
+      `${configPrefix}${"x".repeat(9 * 1024 * 1024 - configPrefix.length)}`
+    );
+
+    const producer = producerInputDigests(repo);
+    await expect(worktreeBootstrapStartupInputSha256(repo)).resolves.toBe(
+      producer.startupInputSha256
+    );
+    await expect(issueReceipt(repo, "posix-hooks")).resolves.toMatchObject({
+      startupInputSha256: producer.startupInputSha256
+    });
+
+    await truncate(path.join(repo, ".codex/config.toml"), 16 * 1024 * 1024 + 1);
+    await expect(inspectWorktreeBootstrapReceipt(repo, { validation: "startup" })).resolves.toMatchObject({
+      state: "unavailable",
+      reason: "config-size-limit-exceeded"
+    });
+  }, 30_000);
+
   it("caps source discovery before materializing an unbounded build manifest", async () => {
     const repo = await createReceiptFixture("codexa-worktree-receipt-build-entries-");
     const wide = path.join(repo, "src/wide");
@@ -575,6 +614,40 @@ describe("worktree bootstrap receipt", () => {
       });
     } finally {
       vi.restoreAllMocks();
+    }
+    expect(swapped).toBe(true);
+  });
+
+  it("binds receipt reads to stable repository containment", async () => {
+    const repo = await createReceiptFixture("codexa-worktree-receipt-parent-race-");
+    await issueReceipt(repo, "posix-hooks");
+    const receiptDir = path.join(repo, ".codex/tmp");
+    const receiptPath = path.join(repo, WORKTREE_BOOTSTRAP_RECEIPT_RELATIVE_PATH);
+    const displaced = path.join(repo, ".codex/tmp-displaced");
+    const outside = await trackedTmp("codexa-worktree-receipt-parent-race-target-");
+    await writeFile(
+      path.join(outside, path.basename(receiptPath)),
+      await readFile(receiptPath)
+    );
+    const originalLstat = nodeFs.lstat.bind(nodeFs);
+    let swapped = false;
+    vi.spyOn(nodeFs, "lstat").mockImplementation(async (candidate) => {
+      if (!swapped && path.resolve(String(candidate)) === receiptPath) {
+        swapped = true;
+        await rename(receiptDir, displaced);
+        await symlink(outside, receiptDir, "dir");
+      }
+      return originalLstat(candidate);
+    });
+    try {
+      await expect(inspectWorktreeBootstrapReceipt(repo)).resolves.toMatchObject({
+        state: "invalid",
+        reason: "receipt-outside-containment"
+      });
+    } finally {
+      vi.restoreAllMocks();
+      await rm(receiptDir, { recursive: true, force: true });
+      await rename(displaced, receiptDir);
     }
     expect(swapped).toBe(true);
   });

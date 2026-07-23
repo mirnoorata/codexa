@@ -8,7 +8,7 @@ import {
   assertSafeManagedFile,
   assertSafeManagedStateDirectory,
   ensureSafeManagedStateDirectory,
-  isGitTracked
+  isGitTrackedAsync
 } from "./init-portability.js";
 import {
   currentAdoptionReceiptFacts,
@@ -40,6 +40,8 @@ interface InputScanBudget {
   maxEntries: number;
   maxFiles: number;
   maxLogicalBytes: number;
+  rootDev?: number;
+  rootIno?: number;
   rootReal?: string;
   visitedEntries: number;
 }
@@ -121,6 +123,11 @@ type WorktreeBootstrapCompletionFacts = Pick<
   "head" | "buildInputSha256"
 >;
 
+interface WorktreeBootstrapStartupSnapshot {
+  facts: WorktreeBootstrapStartupFacts;
+  hookInputs: { configContents: Buffer; hooksContents: Buffer | null; hooksTracked: boolean };
+}
+
 export function parseWorktreeBootstrapLane(value: string): WorktreeBootstrapLane {
   if (value === "posix-hooks" || value === "native-windows-mcp") return value;
   throw new Error("worktree receipt lane must be posix-hooks or native-windows-mcp");
@@ -177,11 +184,12 @@ export async function issueWorktreeBootstrapReceipt(
   if (!dependencyCheck.ok) {
     throw new Error("Cannot issue Codexa worktree receipt: npm dependency tree is incomplete");
   }
-  const hookContract = await inspectHookLaneContract(repo, lane);
+  const startup = await currentStartupReceiptSnapshot(repo);
+  const hookContract = inspectHookLaneContract(repo, lane, startup);
   if (!hookContract.ok) {
     throw new Error(`Cannot issue Codexa worktree receipt: ${hookContract.reason}`);
   }
-  const receipt = await currentReceiptFacts(repo, lane);
+  const receipt = await currentReceiptFacts(repo, lane, startup.facts);
   if (receipt.startupInputSha256 !== expectedStartupInputSha256) {
     throw new Error("Cannot issue Codexa worktree receipt: startup-input-changed-during-bootstrap");
   }
@@ -215,13 +223,13 @@ export async function validateWorktreeBootstrapReceipt(
   receipt: WorktreeBootstrapReceipt,
   validation: WorktreeBootstrapValidation = "full"
 ): Promise<WorktreeBootstrapInspection> {
-  let current: WorktreeBootstrapStartupFacts;
-  const startupBudget = createStartupScanBudget();
+  let startup: WorktreeBootstrapStartupSnapshot;
   try {
-    current = await currentStartupReceiptFacts(repoRoot, startupBudget);
+    startup = await currentStartupReceiptSnapshot(repoRoot);
   } catch (error) {
     return { state: "unavailable", lane: receipt.lane, validation, reason: boundedReason(error) };
   }
+  const current = startup.facts;
   const comparisons: Array<[boolean, string]> = [
     [receipt.repoRoot === current.repoRoot, "worktree-identity-drift"],
     [receipt.gitCommonDir === current.gitCommonDir, "git-identity-drift"],
@@ -246,11 +254,7 @@ export async function validateWorktreeBootstrapReceipt(
   if (platformReason) {
     return { state: "stale", lane: receipt.lane, validation, reason: platformReason, receipt };
   }
-  const hookContract = await inspectHookLaneContract(
-    path.resolve(repoRoot),
-    receipt.lane,
-    startupBudget
-  );
+  const hookContract = inspectHookLaneContract(path.resolve(repoRoot), receipt.lane, startup);
   if (!hookContract.ok) {
     return { state: "stale", lane: receipt.lane, validation, reason: hookContract.reason, receipt };
   }
@@ -317,7 +321,8 @@ export async function inspectWorktreeBootstrapReceipt(
       receiptPath,
       RECEIPT_MAX_BYTES,
       "receipt",
-      Date.now() + STARTUP_SCAN_TIMEOUT_MS
+      Date.now() + STARTUP_SCAN_TIMEOUT_MS,
+      repo
     )).toString("utf8")) as unknown;
     if (!isWorktreeBootstrapReceipt(parsed)) {
       return { state: "invalid", validation, reason: "receipt-schema-invalid" };
@@ -342,7 +347,7 @@ async function currentReceiptFacts(
   startupFacts?: WorktreeBootstrapStartupFacts
 ): Promise<WorktreeBootstrapReceipt> {
   const repo = path.resolve(repoRoot);
-  const startup = startupFacts ?? await currentStartupReceiptFacts(repo);
+  const startup = startupFacts ?? (await currentStartupReceiptSnapshot(repo)).facts;
   const [adoption, completion] = await Promise.all([
     currentAdoptionReceiptFacts(repo),
     currentCompletionReceiptFacts(repo)
@@ -378,11 +383,11 @@ async function currentCompletionReceiptFacts(
   };
 }
 
-async function currentStartupReceiptFacts(
-  repoRoot: string,
-  budget: InputScanBudget = createStartupScanBudget()
-): Promise<WorktreeBootstrapStartupFacts> {
+async function currentStartupReceiptSnapshot(
+  repoRoot: string
+): Promise<WorktreeBootstrapStartupSnapshot> {
   const repo = path.resolve(repoRoot);
+  const budget = createStartupScanBudget();
   const repoRootReal = await fs.realpath(repo);
   const commonDirResult = await runCommand(
     "git",
@@ -393,51 +398,70 @@ async function currentStartupReceiptFacts(
   const gitCommonDir = await fs.realpath(commonDirResult.stdout.trim());
   await assertSafeManagedStateDirectory(repo);
   const nodePath = await fs.realpath(process.execPath);
+  const packageJsonContents = await readBudgetedStableRegularFile(
+    path.join(repo, "package.json"),
+    STARTUP_INPUT_MAX_BYTES,
+    "package-json",
+    budget,
+    repo
+  );
+  const packageLockContents = await readBudgetedStableRegularFile(
+    path.join(repo, "package-lock.json"),
+    STARTUP_INPUT_MAX_BYTES,
+    "package-lock",
+    budget,
+    repo
+  );
+  const uvLockContents = await readOptionalRegularFile(
+    repo,
+    path.join(repo, "uv.lock"),
+    budget,
+    "uv-lock"
+  );
+  const configContents = await readBudgetedStableRegularFile(
+    path.join(repo, ".codex", "config.toml"),
+    STARTUP_INPUT_MAX_BYTES,
+    "config",
+    budget,
+    repo
+  );
+  const hooksContents = await readOptionalRegularFile(
+    repo,
+    path.join(repo, ".codex", "hooks.json"),
+    budget,
+    "hooks"
+  );
+  const dependencySealContents = await readBudgetedStableRegularFile(
+    path.join(repo, WORKTREE_BOOTSTRAP_DEPENDENCY_SEAL_RELATIVE_PATH),
+    STARTUP_INPUT_MAX_BYTES,
+    "dependency-seal",
+    budget,
+    repo
+  );
+  const hooksTracked = await isGitTrackedAsync(repo, ".codex/hooks.json");
+  const startupInputSha256 = await hashStartupInputs(repo);
   return {
-    repoRoot: repoRootReal,
-    gitCommonDir,
-    rootLockSha256: await hashNamedFiles(repo, ["package-lock.json", "uv.lock"], budget),
-    packageJsonSha256: await hashRegularFile(
-      repo,
-      path.join(repo, "package.json"),
-      budget,
-      "package-json"
-    ),
-    packageLockSha256: sha256(await readBudgetedStableRegularFile(
-      path.join(repo, "package-lock.json"),
-      STARTUP_INPUT_MAX_BYTES,
-      "package-lock",
-      budget,
-      repo
-    )),
-    startupInputSha256: await hashStartupInputs(repo, budget),
-    configSha256: await hashRegularFile(
-      repo,
-      path.join(repo, ".codex", "config.toml"),
-      budget,
-      "config"
-    ),
-    hooksSha256: await hashOptionalRegularFile(
-      repo,
-      path.join(repo, ".codex", "hooks.json"),
-      budget,
-      "hooks"
-    ),
-    dependencySealSha256: await hashRegularFile(
-      repo,
-      path.join(repo, WORKTREE_BOOTSTRAP_DEPENDENCY_SEAL_RELATIVE_PATH),
-      budget,
-      "dependency-seal"
-    ),
-    runtime: {
-      nodePath,
-      nodeVersion: process.version,
-      nodeModulesAbi: process.versions.modules,
-      platform: process.platform,
-      arch: process.arch
+    facts: {
+      repoRoot: repoRootReal,
+      gitCommonDir,
+      rootLockSha256: hashNamedContents([["package-lock.json", packageLockContents], ["uv.lock", uvLockContents]]),
+      packageJsonSha256: sha256(packageJsonContents),
+      packageLockSha256: sha256(packageLockContents),
+      startupInputSha256,
+      configSha256: sha256(configContents),
+      hooksSha256: hooksContents ? sha256(hooksContents) : "missing",
+      dependencySealSha256: sha256(dependencySealContents),
+      runtime: {
+        nodePath,
+        nodeVersion: process.version,
+        nodeModulesAbi: process.versions.modules,
+        platform: process.platform,
+        arch: process.arch
+      },
+      toolProfile: "core",
+      threadMcp: "unverified"
     },
-    toolProfile: "core",
-    threadMcp: "unverified"
+    hookInputs: { configContents, hooksContents, hooksTracked }
   };
 }
 
@@ -540,8 +564,7 @@ async function hashNamedFiles(
   names: string[],
   budget: InputScanBudget = createStartupScanBudget()
 ): Promise<string> {
-  const hash = createHash("sha256");
-  hash.update("codexa-startup-input-v2\0", "utf8");
+  const entries: Array<readonly [string, Buffer | null]> = [];
   for (const name of names) {
     const filePath = path.join(repoRoot, name);
     try {
@@ -552,12 +575,19 @@ async function hashNamedFiles(
         budget,
         repoRoot
       );
-      updateManifestRecord(hash, name, contents);
+      entries.push([name, contents]);
     } catch (error) {
-      if (isNodeError(error) && error.code === "ENOENT") updateManifestRecord(hash, name, null);
+      if (isNodeError(error) && error.code === "ENOENT") entries.push([name, null]);
       else throw error;
     }
   }
+  return hashNamedContents(entries);
+}
+
+function hashNamedContents(entries: Array<readonly [string, Buffer | null]>): string {
+  const hash = createHash("sha256");
+  hash.update("codexa-startup-input-v2\0", "utf8");
+  for (const [name, contents] of entries) updateManifestRecord(hash, name, contents);
   return hash.digest("hex");
 }
 
@@ -632,41 +662,12 @@ function updateManifestRecord(
   hash.update(contents);
 }
 
-async function hashRegularFile(
-  repoRoot: string,
-  filePath: string,
-  budget: InputScanBudget = createStartupScanBudget(),
-  label = "startup-input"
-): Promise<string> {
-  return sha256(await readBudgetedStableRegularFile(
-    filePath,
-    STARTUP_INPUT_MAX_BYTES,
-    label,
-    budget,
-    repoRoot
-  ));
-}
-
-async function hashOptionalRegularFile(
-  repoRoot: string,
-  filePath: string,
-  budget: InputScanBudget = createStartupScanBudget(),
-  label = "startup-input"
-): Promise<string> {
-  try {
-    return await hashRegularFile(repoRoot, filePath, budget, label);
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") return "missing";
-    throw error;
-  }
-}
-
 async function readBudgetedStableRegularFile(
   filePath: string,
   maxBytes: number,
   label: string,
   budget: InputScanBudget,
-  repoRoot?: string
+  repoRoot: string
 ): Promise<Buffer> {
   assertInputScanDeadline(budget);
   budget.fileCount += 1;
@@ -677,27 +678,35 @@ async function readBudgetedStableRegularFile(
     filePath,
     maxBytes,
     label,
-    budget.deadlineAt
+    budget.deadlineAt,
+    repoRoot
   );
   budget.logicalBytes += contents.length;
   if (budget.logicalBytes > budget.maxLogicalBytes) {
     throw new Error(`${budget.label}-byte-limit-exceeded`);
   }
-  if (repoRoot) {
-    const rootReal = await fs.realpath(repoRoot);
-    if (budget.rootReal && budget.rootReal !== rootReal) {
-      throw new Error(`${budget.label}-repository-changed`);
+  const rootReal = await fs.realpath(repoRoot);
+  const root = await fs.lstat(rootReal);
+  if (
+    budget.rootReal && (
+      budget.rootReal !== rootReal ||
+      budget.rootDev !== root.dev ||
+      budget.rootIno !== root.ino
+    )
+  ) {
+    throw new Error(`${budget.label}-repository-changed`);
+  }
+  budget.rootReal = rootReal;
+  budget.rootDev = root.dev;
+  budget.rootIno = root.ino;
+  const fileReal = await fs.realpath(filePath).catch((error: unknown) => {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      throw new Error(`${label}-changed-during-read`);
     }
-    budget.rootReal = rootReal;
-    const fileReal = await fs.realpath(filePath).catch((error: unknown) => {
-      if (isNodeError(error) && error.code === "ENOENT") {
-        throw new Error(`${label}-changed-during-read`);
-      }
-      throw error;
-    });
-    if (!isContainedPath(rootReal, fileReal)) {
-      throw new Error(`${label}-outside-repository`);
-    }
+    throw error;
+  });
+  if (!isContainedPath(rootReal, fileReal)) {
+    throw new Error(`${label}-outside-repository`);
   }
   assertInputScanDeadline(budget);
   return contents;
@@ -860,32 +869,21 @@ function lanePlatformMismatch(lane: WorktreeBootstrapLane, platform: NodeJS.Plat
   return platform === "win32" ? "lane-platform-drift" : null;
 }
 
-async function inspectHookLaneContract(
+function inspectHookLaneContract(
   repoRoot: string,
   lane: WorktreeBootstrapLane,
-  budget: InputScanBudget = createStartupScanBudget()
-): Promise<{ ok: true } | { ok: false; reason: string }> {
+  snapshot: WorktreeBootstrapStartupSnapshot
+): { ok: true } | { ok: false; reason: string } {
   try {
-    const configContents = (await readBudgetedStableRegularFile(
-      path.join(repoRoot, ".codex", "config.toml"),
-      STARTUP_INPUT_MAX_BYTES,
-      "config",
-      budget,
-      repoRoot
-    )).toString("utf8");
+    const configContents = snapshot.hookInputs.configContents.toString("utf8");
     const parsedConfig = parseToml(configContents) as unknown;
     if (!isPlainObject(parsedConfig)) return { ok: false, reason: "hook-config-invalid" };
     const hooksFeature = isPlainObject(parsedConfig.features) ? parsedConfig.features.hooks : undefined;
-    const hooksContents = await readOptionalRegularFile(
-      repoRoot,
-      path.join(repoRoot, ".codex", "hooks.json"),
-      budget,
-      "hooks"
-    );
+    const hooksContents = snapshot.hookInputs.hooksContents;
     const parsedHooks = hooksContents ? JSON.parse(hooksContents.toString("utf8")) as unknown : {};
     const hooks = isPlainObject(parsedHooks) && isPlainObject(parsedHooks.hooks) ? parsedHooks.hooks : {};
-    const nodePath = await fs.realpath(process.execPath);
-    const hooksTracked = isGitTracked(repoRoot, ".codex/hooks.json");
+    const nodePath = snapshot.facts.runtime.nodePath;
+    const hooksTracked = snapshot.hookInputs.hooksTracked;
     const expectedCommands = new Map([
       ["session-start", expectedCodexaHookCommand(repoRoot, nodePath, hooksTracked, "session-start")],
       ["hook-pre-edit", expectedCodexaHookCommand(repoRoot, nodePath, hooksTracked, "hook-pre-edit")],
