@@ -38,7 +38,7 @@ export interface SessionStartOptions {
   workspaceSessionId?: string;
 }
 
-export type SessionStartConfigState = "configured" | "not-configured" | "invalid" | "unavailable";
+export type SessionStartConfigState = "configured" | "runtime-unverified" | "not-configured" | "invalid" | "unavailable";
 export type SessionStartToolProfile = InitToolProfile | "legacy" | "drift" | "unknown";
 export type SessionStartIndexState = "fresh" | "stale" | "missing" | "parser-degraded" | "metadata-invalid" | "identity-blocked" | "not-selected" | "unavailable";
 
@@ -512,9 +512,17 @@ async function inspectSessionStartConfig(repoRoot: string): Promise<SessionStart
         reason: "Codexa-managed command/args do not identify a recognized Codexa launcher"
       };
     }
-    const commandError = await validateLauncherCommand(commandValue);
-    if (commandError) {
-      return { state: "invalid", path: configPath, serverName, command, launcher, toolProfile: "unknown", reason: commandError };
+    const commandValidation = await validateLauncherCommand(commandValue);
+    if (commandValidation.state === "invalid") {
+      return {
+        state: "invalid",
+        path: configPath,
+        serverName,
+        command,
+        launcher,
+        toolProfile: "unknown",
+        reason: commandValidation.reason
+      };
     }
     if (serveIndex === 1) {
       const launcherError = await validateCodexaNodeLauncher(launcherValue);
@@ -559,8 +567,9 @@ async function inspectSessionStartConfig(repoRoot: string): Promise<SessionStart
         reason: boundedReceiptValue(`managed serve repo ${resolvedConfiguredRepoRoot} does not match active repo ${path.resolve(repoRoot)}`, 300)
       };
     }
+    const commandReason = commandValidation.state === "unverified" ? commandValidation.reason : undefined;
     return {
-      state: "configured",
+      state: commandValidation.state === "unverified" ? "runtime-unverified" : "configured",
       path: configPath,
       serverName,
       command,
@@ -569,7 +578,7 @@ async function inspectSessionStartConfig(repoRoot: string): Promise<SessionStart
       toolProfile,
       serverToolProfile,
       ...(enabledTools ? { enabledTools } : {}),
-      ...(reason ? { reason } : {})
+      ...(commandReason || reason ? { reason: commandReason ?? reason } : {})
     };
   } catch (error) {
     return { state: "invalid", path: configPath, serverName, toolProfile: "unknown", reason: boundedErrorMessage(error) };
@@ -677,7 +686,12 @@ async function validateCodexaNodeLauncher(launcher: string): Promise<string | un
   }
 }
 
-async function validateLauncherCommand(command: string): Promise<string | undefined> {
+type LauncherCommandValidation =
+  | { state: "verified" }
+  | { state: "unverified"; reason: string }
+  | { state: "invalid"; reason: string };
+
+async function validateLauncherCommand(command: string): Promise<LauncherCommandValidation> {
   const nodeCommand = isRecognizedNodeCommand(command);
   const npxCommand = command === "npx" || command === "npx.cmd";
   let currentNode: string | undefined;
@@ -685,9 +699,9 @@ async function validateLauncherCommand(command: string): Promise<string | undefi
     try {
       currentNode = await realpath(process.execPath);
     } catch {
-      return "Codexa cannot resolve the current trusted Node runtime";
+      return { state: "invalid", reason: "Codexa cannot resolve the current trusted Node runtime" };
     }
-    if (!nodeSupported()) return "Codexa is not running under a supported Node runtime";
+    if (!nodeSupported()) return { state: "invalid", reason: "Codexa is not running under a supported Node runtime" };
   }
   for (const candidate of executableCommandCandidates(command)) {
     try {
@@ -696,38 +710,61 @@ async function validateLauncherCommand(command: string): Promise<string | undefi
       if (!commandStat.isFile()) continue;
       await access(resolved, fsConstants.R_OK | fsConstants.X_OK);
       if (nodeCommand && currentNode && !sameResolvedExecutable(resolved, currentNode)) {
-        return "Codexa-managed Node command is not the current trusted runtime; re-run codexa init";
+        if (path.isAbsolute(command)) {
+          return {
+            state: "invalid",
+            reason: "Codexa-managed Node command is not the current trusted runtime; re-run codexa init"
+          };
+        }
+        return {
+          state: "unverified",
+          reason: "Codexa-managed Node command resolves through a runtime shim that cannot be statically attested; strict readiness requires direct host-local wiring"
+        };
       }
-      if (npxCommand && currentNode && !(await npxCandidateUsesCurrentNode(candidate, currentNode))) {
-        return "Codexa-managed npx command is not paired with the current trusted Node runtime; re-run codexa init";
+      if (npxCommand && currentNode && !(await npxCandidateBelongsToCurrentRuntime(resolved, currentNode))) {
+        return {
+          state: "unverified",
+          reason: "Codexa-managed npx wrapper is not part of the current trusted Node installation; strict readiness requires trusted host-local wiring"
+        };
       }
-      return undefined;
+      return { state: "verified" };
     } catch {
       // Try the next PATH entry. The receipt reports only the aggregate failure.
     }
   }
-  return "Codexa-managed launcher command does not resolve to an executable file";
+  return { state: "invalid", reason: "Codexa-managed launcher command does not resolve to an executable file" };
 }
 
-async function npxCandidateUsesCurrentNode(candidate: string, currentNode: string): Promise<boolean> {
-  for (const sibling of pairedNodeCommandCandidates(candidate)) {
+async function npxCandidateBelongsToCurrentRuntime(resolvedCandidate: string, currentNode: string): Promise<boolean> {
+  for (const trustedCandidate of trustedNpxCommandCandidates(currentNode)) {
     try {
-      if (sameResolvedExecutable(await realpath(sibling), currentNode)) return true;
+      if (sameResolvedExecutable(await realpath(trustedCandidate), resolvedCandidate)) return true;
     } catch {
-      // A missing sibling cannot prove which Node runtime the wrapper uses.
+      // Missing installation layouts are simply not candidates for attestation.
     }
   }
   return false;
 }
 
-export function pairedNodeCommandCandidates(
-  npxCandidate: string,
+export function trustedNpxCommandCandidates(
+  currentNode: string,
   platform: NodeJS.Platform = process.platform
 ): string[] {
   const pathApi = platform === "win32" ? path.win32 : path.posix;
-  const directory = pathApi.dirname(npxCandidate);
-  const names = platform === "win32" ? ["node.exe", "node"] : ["node", "nodejs"];
-  return names.map((name) => pathApi.join(directory, name));
+  const nodeDirectory = pathApi.dirname(currentNode);
+  if (platform === "win32") {
+    return [
+      pathApi.join(nodeDirectory, "npx.cmd"),
+      pathApi.join(nodeDirectory, "npx.exe"),
+      pathApi.join(nodeDirectory, "node_modules", "npm", "bin", "npx-cli.js")
+    ];
+  }
+  const prefix = pathApi.dirname(nodeDirectory);
+  return [
+    pathApi.join(prefix, "lib", "node_modules", "npm", "bin", "npx-cli.js"),
+    pathApi.join(prefix, "share", "nodejs", "npm", "bin", "npx-cli.js"),
+    pathApi.join(nodeDirectory, "node_modules", "npm", "bin", "npx-cli.js")
+  ];
 }
 
 function sameResolvedExecutable(left: string, right: string): boolean {

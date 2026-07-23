@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { initializeProject, renderSessionStartJson, SESSION_START_JSON_MAX_BYTES, sessionStartReceipt, sessionStartStrictFailures, sessionStartSummary } from "../src/init.js";
-import { executableCommandCandidates, pairedNodeCommandCandidates, workspaceRepoProject } from "../src/session-start.js";
+import { executableCommandCandidates, trustedNpxCommandCandidates, workspaceRepoProject } from "../src/session-start.js";
 import { CODEXA_VERSION } from "../src/version.js";
 
 const testCliPath = path.resolve(process.cwd(), "dist/cli.js");
@@ -452,7 +452,7 @@ describe("Codexa versioned SessionStart receipt", () => {
     await expect(readFile(sentinel, "utf8")).rejects.toThrow();
   });
 
-  it("rejects npx when its sibling Node is not the current trusted runtime", async () => {
+  it("keeps an untrusted npx wrapper out of strict configured state without executing it", async () => {
     const repo = await createRepo("codexa-session-receipt-untrusted-npx-");
     await initializeProject(repo, { cliPath: "/tmp/_npx/fixture/node_modules/@mirnoorata/codexa/dist/cli.js" });
     const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "codexa-untrusted-npx-"));
@@ -468,10 +468,63 @@ describe("Codexa versioned SessionStart receipt", () => {
     try {
       const receipt = await sessionStartReceipt(repo, false);
       expect(receipt.config).toMatchObject({
-        state: "invalid",
-        reason: "Codexa-managed npx command is not paired with the current trusted Node runtime; re-run codexa init"
+        state: "runtime-unverified",
+        reason: "Codexa-managed npx wrapper is not part of the current trusted Node installation; strict readiness requires trusted host-local wiring"
       });
-      expect(sessionStartStrictFailures(receipt)).toContain("config invalid");
+      expect(sessionStartStrictFailures(receipt)).toContain("config runtime-unverified");
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+    }
+    await expect(readFile(sentinel, "utf8")).rejects.toThrow();
+  });
+
+  it("does not let a fake npx borrow provenance from a trusted Node symlink", async () => {
+    const repo = await createRepo("codexa-session-receipt-fake-npx-");
+    await initializeProject(repo, { cliPath: "/tmp/_npx/fixture/node_modules/@mirnoorata/codexa/dist/cli.js" });
+    const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "codexa-fake-npx-"));
+    const fakeNpx = path.join(runtimeRoot, "npx");
+    const sentinel = path.join(runtimeRoot, "npx-executed");
+    await writeFile(fakeNpx, `#!/usr/bin/env bash\nprintf executed >${JSON.stringify(sentinel)}\nexit 1\n`, "utf8");
+    await chmod(fakeNpx, 0o755);
+    await symlink(process.execPath, path.join(runtimeRoot, "node"));
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${runtimeRoot}${path.delimiter}${originalPath ?? ""}`;
+    try {
+      const receipt = await sessionStartReceipt(repo, false);
+      expect(receipt.config).toMatchObject({ state: "runtime-unverified" });
+      expect(sessionStartStrictFailures(receipt)).toContain("config runtime-unverified");
+    } finally {
+      if (originalPath === undefined) delete process.env.PATH;
+      else process.env.PATH = originalPath;
+    }
+    await expect(readFile(sentinel, "utf8")).rejects.toThrow();
+  });
+
+  it("reports a transparent bare-Node shim as unverified instead of broken", async () => {
+    const repo = await createRepo("codexa-session-receipt-node-shim-");
+    await initializeProject(repo, { cliPath: testCliPath });
+    const configPath = path.join(repo, ".codex/config.toml");
+    const config = await readFile(configPath, "utf8");
+    await writeFile(configPath, config.replace(/^command\s*=.*$/mu, 'command = "node"'), "utf8");
+    const runtimeRoot = await mkdtemp(path.join(os.tmpdir(), "codexa-node-shim-"));
+    const shim = path.join(runtimeRoot, "node");
+    const sentinel = path.join(runtimeRoot, "node-executed");
+    await writeFile(
+      shim,
+      `#!/usr/bin/env bash\nprintf executed >${JSON.stringify(sentinel)}\nexec ${JSON.stringify(process.execPath)} "$@"\n`,
+      "utf8"
+    );
+    await chmod(shim, 0o755);
+    const originalPath = process.env.PATH;
+    process.env.PATH = `${runtimeRoot}${path.delimiter}${originalPath ?? ""}`;
+    try {
+      const receipt = await sessionStartReceipt(repo, false);
+      expect(receipt.config).toMatchObject({
+        state: "runtime-unverified",
+        reason: "Codexa-managed Node command resolves through a runtime shim that cannot be statically attested; strict readiness requires direct host-local wiring"
+      });
+      expect(sessionStartStrictFailures(receipt)).toContain("config runtime-unverified");
     } finally {
       if (originalPath === undefined) delete process.env.PATH;
       else process.env.PATH = originalPath;
@@ -513,8 +566,10 @@ describe("Codexa versioned SessionStart receipt", () => {
     expect(executableCommandCandidates("node", "C:\\one;D:\\two", "win32", ".EXE;.CMD")).toEqual([
       "C:\\one\\node.exe", "C:\\one\\node.cmd", "D:\\two\\node.exe", "D:\\two\\node.cmd"
     ]);
-    expect(pairedNodeCommandCandidates("C:\\runtime\\npx.cmd", "win32")).toEqual([
-      "C:\\runtime\\node.exe", "C:\\runtime\\node"
+    expect(trustedNpxCommandCandidates("C:\\runtime\\node.exe", "win32")).toEqual([
+      "C:\\runtime\\npx.cmd",
+      "C:\\runtime\\npx.exe",
+      "C:\\runtime\\node_modules\\npm\\bin\\npx-cli.js"
     ]);
   });
 });
