@@ -27,6 +27,11 @@ export { renderSessionStartJson, renderSessionStartReceipt, SESSION_START_JSON_M
 export type { SessionStartConfigState, SessionStartIndexState, SessionStartOptions, SessionStartReceipt, SessionStartToolProfile } from "./session-start.js";
 
 const EDIT_HOOK_MATCHER = "Edit|MultiEdit|Write|NotebookEdit|apply_patch";
+// SessionStart's normal p95 is gated below one second, but its fail-closed
+// routing, setup, and Git probes have independent bounded degradation windows.
+// Keep the host ceiling above their documented aggregate so the CLI can emit
+// an advisory unavailable receipt instead of being killed mid-diagnosis.
+const SESSION_START_HOOK_TIMEOUT_SECONDS = 60;
 
 interface LaunchSpec {
   command: string;
@@ -420,7 +425,7 @@ async function upsertHooksConfig(hooksPath: string, options: { cliPath: string; 
         type: "command",
         command: renderHookCommand(launchShell, "session-start", options.repoArg),
         statusMessage: "Loading Codexa context",
-        timeout: 5
+        timeout: SESSION_START_HOOK_TIMEOUT_SECONDS
       }
     ]
   });

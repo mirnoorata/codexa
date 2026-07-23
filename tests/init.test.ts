@@ -70,13 +70,14 @@ describe("Codexa project init", () => {
 
     const hooks = JSON.parse(await readFile(path.join(repo, ".codex/hooks.json"), "utf8")) as {
       hooks: {
-        SessionStart: Array<{ hooks: Array<{ command: string }> }>;
+        SessionStart: Array<{ hooks: Array<{ command: string; timeout: number }> }>;
         PreToolUse: Array<{ matcher: string; hooks: Array<{ command: string }> }>;
         PostToolUse: Array<{ matcher: string; hooks: Array<{ command: string }> }>;
       };
     };
     expect(hooks.hooks.SessionStart).toHaveLength(1);
     expect(hooks.hooks.SessionStart[0].hooks[0].command).toBe(`${process.execPath} '${cliPath}' session-start '${repo}'`);
+    expect(hooks.hooks.SessionStart[0].hooks[0].timeout).toBe(60);
     expect(hooks.hooks.PreToolUse[0].matcher).toBe("Edit|MultiEdit|Write|NotebookEdit|apply_patch");
     expect(hooks.hooks.PreToolUse[0].hooks[0].command).toBe(`${process.execPath} '${cliPath}' hook-pre-edit '${repo}'`);
     expect(hooks.hooks.PostToolUse[0].hooks[0].command).toBe(`${process.execPath} '${cliPath}' hook-post-edit '${repo}'`);
