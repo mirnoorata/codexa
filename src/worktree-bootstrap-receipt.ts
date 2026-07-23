@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { promises as fs, type Dirent } from "node:fs";
+import { promises as fs } from "node:fs";
 import path from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { runCommand } from "./command.js";
@@ -16,6 +16,8 @@ import {
   STARTUP_INPUT_MAX_BYTES,
   type WorktreeBootstrapAdoptionFacts
 } from "./worktree-bootstrap-adoption.js";
+import { captureStableDirectory, revalidateStableDirectories } from "./stable-directory-snapshot.js";
+import type { StableDirectoryBudget, StableDirectorySnapshot } from "./stable-directory-snapshot.js";
 
 export const WORKTREE_BOOTSTRAP_RECEIPT_RELATIVE_PATH = ".codex/tmp/worktree-bootstrap-receipt.json";
 export const WORKTREE_BOOTSTRAP_DEPENDENCY_SEAL_RELATIVE_PATH = "node_modules/.codexa-dependencies.json";
@@ -32,18 +34,21 @@ const BUILD_SCAN_MAX_FILES = 10_000;
 const BUILD_SCAN_MAX_ENTRIES = 10_000;
 const BUILD_SCAN_MAX_LOGICAL_BYTES = 256 * 1024 * 1024;
 
-interface InputScanBudget {
+interface InputScanBudget extends StableDirectoryBudget {
   deadlineAt: number;
   fileCount: number;
-  label: string;
   logicalBytes: number;
-  maxEntries: number;
   maxFiles: number;
   maxLogicalBytes: number;
   rootDev?: number;
   rootIno?: number;
   rootReal?: string;
-  visitedEntries: number;
+}
+
+interface InputTreeSnapshot {
+  containmentRootReal: string;
+  directories: StableDirectorySnapshot[];
+  files: string[];
 }
 
 export type WorktreeBootstrapLane = "posix-hooks" | "native-windows-mcp";
@@ -467,13 +472,16 @@ async function currentStartupReceiptSnapshot(
 
 async function hashBuildInputs(repoRoot: string): Promise<string> {
   const budget = createBuildScanBudget();
+  const tree = await regularTreeFiles(repoRoot, path.join(repoRoot, "src"), budget);
   const files = [
     path.join(repoRoot, "package.json"),
     path.join(repoRoot, "package-lock.json"),
     path.join(repoRoot, "tsconfig.json"),
-    ...await regularTreeFiles(repoRoot, path.join(repoRoot, "src"), budget)
+    ...tree.files
   ];
-  return hashFileManifest(repoRoot, files, budget);
+  const digest = await hashFileManifest(repoRoot, files, budget);
+  await revalidateInputDirectories(tree, budget);
+  return digest;
 }
 
 async function hashStartupInputs(
@@ -595,7 +603,7 @@ async function regularTreeFiles(
   repoRoot: string,
   directory: string,
   budget: InputScanBudget
-): Promise<string[]> {
+): Promise<InputTreeSnapshot> {
   const repoReal = await fs.realpath(repoRoot);
   const directoryStat = await fs.lstat(directory);
   if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) {
@@ -604,8 +612,13 @@ async function regularTreeFiles(
   const directoryReal = await fs.realpath(directory);
   if (!isContainedPath(repoReal, directoryReal)) throw new Error("tree-outside-repository");
   const files: string[] = [];
+  const directories: StableDirectorySnapshot[] = [];
   const visit = async (current: string): Promise<void> => {
-    const entries = await readBoundedDirectoryEntries(current, budget);
+    const captured = await captureStableDirectory(current, repoReal, budget, "scan", () => {
+      assertInputScanDeadline(budget);
+    });
+    directories.push(captured.snapshot);
+    const entries = captured.entries;
     for (const entry of entries) {
       const candidate = path.join(current, entry.name);
       if (entry.isDirectory()) {
@@ -620,7 +633,7 @@ async function regularTreeFiles(
     }
   };
   await visit(directory);
-  return files;
+  return { containmentRootReal: repoReal, directories, files };
 }
 
 async function hashFileManifest(
@@ -747,7 +760,8 @@ function createInputScanBudget(
     maxEntries,
     maxFiles,
     maxLogicalBytes,
-    visitedEntries: 0
+    scannedDirectoryEntries: 0,
+    revalidatedDirectoryEntries: 0
   };
 }
 
@@ -757,28 +771,11 @@ function assertInputScanDeadline(budget: InputScanBudget): void {
   }
 }
 
-async function readBoundedDirectoryEntries(
-  directory: string,
+async function revalidateInputDirectories(
+  tree: InputTreeSnapshot,
   budget: InputScanBudget
-): Promise<Dirent[]> {
-  const entries: Dirent[] = [];
-  const handle = await fs.opendir(directory);
-  try {
-    while (true) {
-      assertInputScanDeadline(budget);
-      const entry = await handle.read();
-      if (!entry) break;
-      budget.visitedEntries += 1;
-      if (budget.visitedEntries > budget.maxEntries) {
-        throw new Error(`${budget.label}-entry-limit-exceeded`);
-      }
-      entries.push(entry);
-    }
-  } finally {
-    await handle.close();
-  }
-  assertInputScanDeadline(budget);
-  return entries.sort((left, right) => left.name.localeCompare(right.name));
+): Promise<void> {
+  await revalidateStableDirectories(tree, budget, () => assertInputScanDeadline(budget));
 }
 
 function sha256(contents: Buffer): string {

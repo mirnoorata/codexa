@@ -256,6 +256,69 @@ describe("worktree bootstrap receipt", () => {
     });
   });
 
+  it("rejects a source entry added after its directory was enumerated", async () => {
+    const repo = await createReceiptFixture("codexa-worktree-receipt-source-entry-race-");
+    const earlyDirectory = path.join(repo, "src/a");
+    const trigger = path.join(repo, "src/z-trigger.ts");
+    await mkdir(earlyDirectory);
+    await writeFile(path.join(earlyDirectory, "existing.ts"), "export const early = true;\n", "utf8");
+    await writeFile(trigger, "export const trigger = true;\n", "utf8");
+
+    const originalOpen = nodeFs.open.bind(nodeFs);
+    let mutated = false;
+    vi.spyOn(nodeFs, "open").mockImplementation(async (file, flags, mode) => {
+      if (!mutated && path.resolve(String(file)) === trigger) {
+        await writeFile(
+          path.join(earlyDirectory, "injected.ts"),
+          "export const injected = true;\n",
+          "utf8"
+        );
+        mutated = true;
+      }
+      return originalOpen(file, flags, mode);
+    });
+    try {
+      await expect(worktreeBootstrapBuildInputSha256(repo)).rejects.toThrow(
+        /build-input-directory-changed-during-scan/u
+      );
+    } finally {
+      vi.restoreAllMocks();
+    }
+    expect(mutated).toBe(true);
+  });
+
+  it("rejects a source directory replaced after its files were hashed", async () => {
+    const repo = await createReceiptFixture("codexa-worktree-receipt-source-directory-race-");
+    const earlyDirectory = path.join(repo, "src/a");
+    const replacement = path.join(repo, "source-replacement");
+    const displaced = path.join(repo, "source-displaced");
+    const trigger = path.join(repo, "src/z-trigger.ts");
+    await mkdir(earlyDirectory);
+    await mkdir(replacement);
+    await writeFile(path.join(earlyDirectory, "existing.ts"), "export const early = true;\n", "utf8");
+    await writeFile(path.join(replacement, "existing.ts"), "export const early = true;\n", "utf8");
+    await writeFile(trigger, "export const trigger = true;\n", "utf8");
+
+    const originalOpen = nodeFs.open.bind(nodeFs);
+    let mutated = false;
+    vi.spyOn(nodeFs, "open").mockImplementation(async (file, flags, mode) => {
+      if (!mutated && path.resolve(String(file)) === trigger) {
+        await rename(earlyDirectory, displaced);
+        await rename(replacement, earlyDirectory);
+        mutated = true;
+      }
+      return originalOpen(file, flags, mode);
+    });
+    try {
+      await expect(worktreeBootstrapBuildInputSha256(repo)).rejects.toThrow(
+        /build-input-directory-changed-during-scan/u
+      );
+    } finally {
+      vi.restoreAllMocks();
+    }
+    expect(mutated).toBe(true);
+  });
+
   it("distinguishes a missing startup input from a present file containing the old sentinel text", async () => {
     const repo = await createReceiptFixture("codexa-worktree-receipt-missing-frame-");
     const npmrcPath = path.join(repo, ".npmrc");

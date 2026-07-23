@@ -1,10 +1,16 @@
 import { createHash } from "node:crypto";
-import { promises as fs, type Dirent, type Stats } from "node:fs";
+import { promises as fs, type Stats } from "node:fs";
 import path from "node:path";
 import {
   assertSafeManagedDirectory,
   assertSafeManagedFile
 } from "./init-portability.js";
+import {
+  captureStableDirectory,
+  revalidateStableDirectories,
+  type StableDirectoryBudget,
+  type StableDirectorySnapshot
+} from "./stable-directory-snapshot.js";
 
 const ADOPTION_SCAN_TIMEOUT_MS = 20_000;
 const DIST_RUNTIME_MAX_ENTRIES = 10_000;
@@ -27,14 +33,17 @@ export interface WorktreeBootstrapAdoptionFacts {
   };
 }
 
-interface AdoptionScanBudget {
-  label: string;
+interface AdoptionScanBudget extends StableDirectoryBudget {
   deadlineAt: number;
-  maxEntries: number;
   maxLogicalBytes: number;
   maxFileBytes: number;
-  entries: number;
   logicalBytes: number;
+}
+
+interface AdoptionTreeSnapshot {
+  budget: AdoptionScanBudget;
+  containmentRootReal: string;
+  directories: StableDirectorySnapshot[];
 }
 
 export async function currentAdoptionReceiptFacts(
@@ -45,26 +54,33 @@ export async function currentAdoptionReceiptFacts(
   const dist = path.join(repo, "dist");
   await assertSafeManagedDirectory(dist);
   const deadlineAt = Date.now() + ADOPTION_SCAN_TIMEOUT_MS;
-  return {
-    distRuntimeSha256: await hashBoundedRegularTree(
-      repo,
-      dist,
-      createScanBudget(
-        "dist-runtime",
-        deadlineAt,
-        DIST_RUNTIME_MAX_ENTRIES,
-        DIST_RUNTIME_MAX_LOGICAL_BYTES,
-        DIST_RUNTIME_MAX_FILE_BYTES
-      )
-    ),
-    distCliSha256: sha256(await readBoundedStableRegularFile(
-      path.join(dist, "cli.js"),
-      DIST_RUNTIME_MAX_FILE_BYTES,
-      "dist-cli",
+  const distRuntime = await hashBoundedRegularTree(
+    repo,
+    dist,
+    createScanBudget(
+      "dist-runtime",
       deadlineAt,
-      repo
-    )),
-    dependencyInventory: await installedDependencyInventory(repo, packageLockPath, deadlineAt)
+      DIST_RUNTIME_MAX_ENTRIES,
+      DIST_RUNTIME_MAX_LOGICAL_BYTES,
+      DIST_RUNTIME_MAX_FILE_BYTES
+    )
+  );
+  const distCliSha256 = sha256(await readBoundedStableRegularFile(
+    path.join(dist, "cli.js"),
+    DIST_RUNTIME_MAX_FILE_BYTES,
+    "dist-cli",
+    deadlineAt,
+    repo
+  ));
+  const dependency = await installedDependencyInventory(repo, packageLockPath, deadlineAt);
+  // Revalidate in reverse scan order so the oldest snapshot (dist/) is checked
+  // nearest the acceptance boundary. Both passes share the original deadline.
+  await revalidateDirectorySnapshots(dependency.tree);
+  await revalidateDirectorySnapshots(distRuntime.tree);
+  return {
+    distRuntimeSha256: distRuntime.sha256,
+    distCliSha256,
+    dependencyInventory: dependency.facts
   };
 }
 
@@ -72,7 +88,10 @@ async function installedDependencyInventory(
   repoRoot: string,
   packageLockPath: string,
   deadlineAt: number
-): Promise<{ sha256: string; count: number; fileCount: number; logicalBytes: number }> {
+): Promise<{
+  facts: { sha256: string; count: number; fileCount: number; logicalBytes: number };
+  tree: AdoptionTreeSnapshot;
+}> {
   const repoReal = await fs.realpath(repoRoot);
   const nodeModules = path.join(repoRoot, "node_modules");
   const nodeModulesEntry = await fs.lstat(nodeModules);
@@ -146,13 +165,16 @@ async function installedDependencyInventory(
     )
   );
   return {
-    sha256: createHash("sha256")
-      .update(installedPackagePaths.join("\n"), "utf8")
-      .update(`\0${tree.sha256}`, "utf8")
-      .digest("hex"),
-    count: installedPackagePaths.length,
-    fileCount: tree.fileCount,
-    logicalBytes: tree.logicalBytes
+    facts: {
+      sha256: createHash("sha256")
+        .update(installedPackagePaths.join("\n"), "utf8")
+        .update(`\0${tree.sha256}`, "utf8")
+        .digest("hex"),
+      count: installedPackagePaths.length,
+      fileCount: tree.fileCount,
+      logicalBytes: tree.logicalBytes
+    },
+    tree: tree.tree
   };
 }
 
@@ -169,7 +191,8 @@ function createScanBudget(
     maxEntries,
     maxLogicalBytes,
     maxFileBytes,
-    entries: 0,
+    scannedDirectoryEntries: 0,
+    revalidatedDirectoryEntries: 0,
     logicalBytes: 0
   };
 }
@@ -178,15 +201,24 @@ async function hashBoundedRegularTree(
   repoRoot: string,
   directory: string,
   budget: AdoptionScanBudget
-): Promise<string> {
+): Promise<{ sha256: string; tree: AdoptionTreeSnapshot }> {
   const repoReal = await fs.realpath(repoRoot);
   const directoryReal = await fs.realpath(directory);
   if (!isContainedPath(repoReal, directoryReal)) throw new Error("tree-outside-repository");
   const hash = createHash("sha256");
   const scratch = Buffer.allocUnsafe(1024 * 1024);
+  const directories: StableDirectorySnapshot[] = [];
   const visit = async (current: string): Promise<void> => {
     assertAdoptionDeadline(budget.deadlineAt);
-    const entries = await readBoundedDirectoryEntries(current, budget);
+    const captured = await captureStableDirectory(
+      current,
+      repoReal,
+      budget,
+      "scan",
+      () => assertAdoptionDeadline(budget.deadlineAt)
+    );
+    directories.push(captured.snapshot);
+    const entries = captured.entries;
     for (const entry of entries) {
       const candidate = path.join(current, entry.name);
       if (entry.isDirectory()) {
@@ -210,20 +242,37 @@ async function hashBoundedRegularTree(
     }
   };
   await visit(directory);
-  return hash.digest("hex");
+  return {
+    sha256: hash.digest("hex"),
+    tree: { budget, containmentRootReal: repoReal, directories }
+  };
 }
 
 async function hashDependencyTree(
   repoRoot: string,
   nodeModulesReal: string,
   budget: AdoptionScanBudget
-): Promise<{ sha256: string; fileCount: number; logicalBytes: number }> {
+): Promise<{
+  sha256: string;
+  fileCount: number;
+  logicalBytes: number;
+  tree: AdoptionTreeSnapshot;
+}> {
   const hash = createHash("sha256");
   const scratch = Buffer.allocUnsafe(1024 * 1024);
   let fileCount = 0;
+  const directories: StableDirectorySnapshot[] = [];
   const visit = async (current: string): Promise<void> => {
     assertAdoptionDeadline(budget.deadlineAt);
-    const entries = await readBoundedDirectoryEntries(current, budget);
+    const captured = await captureStableDirectory(
+      current,
+      nodeModulesReal,
+      budget,
+      "scan",
+      () => assertAdoptionDeadline(budget.deadlineAt)
+    );
+    directories.push(captured.snapshot);
+    const entries = captured.entries;
     for (const entry of entries) {
       const candidate = path.join(current, entry.name);
       const relative = path.relative(nodeModulesReal, candidate).replaceAll(path.sep, "/");
@@ -261,7 +310,8 @@ async function hashDependencyTree(
   return {
     sha256: hash.digest("hex"),
     fileCount,
-    logicalBytes: budget.logicalBytes
+    logicalBytes: budget.logicalBytes,
+    tree: { budget, containmentRootReal: nodeModulesReal, directories }
   };
 }
 
@@ -346,32 +396,14 @@ function assertAdoptionDeadline(deadlineAt: number): void {
   if (Date.now() > deadlineAt) throw new Error("adoption-scan-timeout");
 }
 
-async function readBoundedDirectoryEntries(
-  directory: string,
-  budget: AdoptionScanBudget
-): Promise<Dirent[]> {
-  const entries: Dirent[] = [];
-  const handle = await fs.opendir(directory);
-  try {
-    while (true) {
-      assertAdoptionDeadline(budget.deadlineAt);
-      const entry = await handle.read();
-      if (!entry) break;
-      budget.entries += 1;
-      if (budget.entries > budget.maxEntries) {
-        throw new Error(`${budget.label}-entry-limit-exceeded`);
-      }
-      entries.push(entry);
-    }
-  } finally {
-    await handle.close();
-  }
-  assertAdoptionDeadline(budget.deadlineAt);
-  return entries.sort((left, right) => compareEntryNames(left.name, right.name));
-}
-
-function compareEntryNames(left: string, right: string): number {
-  return left < right ? -1 : left > right ? 1 : 0;
+async function revalidateDirectorySnapshots(
+  tree: AdoptionTreeSnapshot
+): Promise<void> {
+  await revalidateStableDirectories(
+    tree,
+    tree.budget,
+    () => assertAdoptionDeadline(tree.budget.deadlineAt)
+  );
 }
 
 async function assertDependencyRegularFile(

@@ -55,6 +55,62 @@ describe("worktree bootstrap adoption integrity", () => {
     expect(swapped).toBe(true);
   });
 
+  it("rejects a dist entry added after the dist tree was enumerated", async () => {
+    const repo = await createAdoptionFixture("codexa-adoption-dist-entry-race-");
+    const dependencyRoot = path.join(repo, "node_modules");
+    const injected = path.join(repo, "dist/injected.js");
+    const originalOpendir = nodeFs.opendir.bind(nodeFs);
+    let mutated = false;
+    vi.spyOn(nodeFs, "opendir").mockImplementation(async (directory, options) => {
+      const handle = await originalOpendir(directory, options);
+      if (path.resolve(String(directory)) !== dependencyRoot) return handle;
+
+      const originalRead = handle.read.bind(handle);
+      Object.defineProperty(handle, "read", {
+        configurable: true,
+        value: async () => {
+          const entry = await originalRead();
+          if (entry === null && !mutated) {
+            await writeFile(injected, "injected after dist enumeration\n", "utf8");
+            mutated = true;
+          }
+          return entry;
+        }
+      });
+      return handle;
+    });
+
+    await expect(currentAdoptionReceiptFacts(repo)).rejects.toThrow(
+      /dist-runtime-directory-changed-during-scan/u
+    );
+    expect(mutated).toBe(true);
+  });
+
+  it("rejects a dependency entry removed after its subtree was hashed", async () => {
+    const repo = await createAdoptionFixture("codexa-adoption-dependency-entry-race-");
+    const earlyDirectory = path.join(repo, "node_modules/a-package");
+    const removed = path.join(earlyDirectory, "index.js");
+    const trigger = path.join(repo, "node_modules/z-trigger.js");
+    await mkdir(earlyDirectory);
+    await writeFile(removed, "early dependency\n", "utf8");
+    await writeFile(trigger, "late dependency\n", "utf8");
+
+    const originalOpen = nodeFs.open.bind(nodeFs);
+    let mutated = false;
+    vi.spyOn(nodeFs, "open").mockImplementation(async (file, flags, mode) => {
+      if (!mutated && path.resolve(String(file)) === trigger) {
+        await rm(removed);
+        mutated = true;
+      }
+      return originalOpen(file, flags, mode);
+    });
+
+    await expect(currentAdoptionReceiptFacts(repo)).rejects.toThrow(
+      /dependency-inventory-directory-changed-during-scan/u
+    );
+    expect(mutated).toBe(true);
+  });
+
   it("orders non-ASCII manifest entries without the process locale", async () => {
     const repo = await createAdoptionFixture("codexa-adoption-deterministic-order-");
     const dist = path.join(repo, "dist");

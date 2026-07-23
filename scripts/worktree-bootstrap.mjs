@@ -219,11 +219,16 @@ async function snapshotBootstrapInputs(repoRoot) {
 
 async function hashBuildInputs(repoRoot) {
   const budget = createBuildScanBudget();
+  const tree = await regularTreeFiles(
+    repoRoot,
+    path.join(repoRoot, "src"),
+    budget
+  );
   const files = [
     path.join(repoRoot, "package.json"),
     path.join(repoRoot, "package-lock.json"),
     path.join(repoRoot, "tsconfig.json"),
-    ...await regularTreeFiles(repoRoot, path.join(repoRoot, "src"), budget)
+    ...tree.files
   ];
   const hash = createHash("sha256");
   hash.update("codexa-build-input-v2\0", "utf8");
@@ -240,7 +245,9 @@ async function hashBuildInputs(repoRoot) {
       )
     );
   }
-  return hash.digest("hex");
+  const digest = hash.digest("hex");
+  await revalidateInputDirectories(tree, budget);
+  return digest;
 }
 
 async function hashStartupInputs(repoRoot) {
@@ -361,9 +368,18 @@ function updateManifestRecord(hash, name, contents) {
 
 async function regularTreeFiles(repoRoot, directory, budget) {
   await assertContainedDirectory(repoRoot, directory);
+  const repoReal = await fs.realpath(repoRoot);
   const files = [];
+  const directories = [];
   const visit = async (current) => {
-    const entries = await readBoundedDirectoryEntries(current, budget);
+    const captured = await captureStableInputDirectory(
+      current,
+      repoReal,
+      budget,
+      "scan"
+    );
+    directories.push(captured.snapshot);
+    const entries = captured.entries;
     for (const entry of entries) {
       const candidate = path.join(current, entry.name);
       if (entry.isDirectory()) {
@@ -378,7 +394,7 @@ async function regularTreeFiles(repoRoot, directory, budget) {
     }
   };
   await visit(directory);
-  return files;
+  return { containmentRootReal: repoReal, directories, files };
 }
 
 async function runLockProbe(probeMode, repoInput) {
@@ -1033,7 +1049,8 @@ function createInputScanBudget(label, maxFiles, maxEntries, maxLogicalBytes, tim
     maxEntries,
     maxFiles,
     maxLogicalBytes,
-    visitedEntries: 0
+    scannedDirectoryEntries: 0,
+    revalidatedDirectoryEntries: 0
   };
 }
 
@@ -1043,7 +1060,7 @@ function assertInputScanDeadline(budget) {
   }
 }
 
-async function readBoundedDirectoryEntries(directory, budget) {
+async function readBoundedDirectoryEntries(directory, budget, phase) {
   const entries = [];
   const handle = await fs.opendir(directory);
   try {
@@ -1051,8 +1068,10 @@ async function readBoundedDirectoryEntries(directory, budget) {
       assertInputScanDeadline(budget);
       const entry = await handle.read();
       if (!entry) break;
-      budget.visitedEntries += 1;
-      if (budget.visitedEntries > budget.maxEntries) {
+      const count = phase === "scan"
+        ? ++budget.scannedDirectoryEntries
+        : ++budget.revalidatedDirectoryEntries;
+      if (count > budget.maxEntries) {
         throw new Error(`${budget.label}-entry-limit-exceeded`);
       }
       entries.push(entry);
@@ -1061,7 +1080,128 @@ async function readBoundedDirectoryEntries(directory, budget) {
     await handle.close();
   }
   assertInputScanDeadline(budget);
-  return entries.sort((left, right) => left.name.localeCompare(right.name));
+  return entries.sort((left, right) => compareEntryNames(left.name, right.name));
+}
+
+async function captureStableInputDirectory(
+  directory,
+  containmentRootReal,
+  budget,
+  phase
+) {
+  const before = await inputDirectorySnapshotState(
+    directory,
+    containmentRootReal,
+    budget
+  );
+  const entries = await readBoundedDirectoryEntries(directory, budget, phase);
+  const after = await inputDirectorySnapshotState(
+    directory,
+    containmentRootReal,
+    budget
+  );
+  if (!sameInputDirectorySnapshotState(before, after)) {
+    throw new Error(`${budget.label}-directory-changed-during-scan`);
+  }
+  return {
+    entries,
+    snapshot: {
+      path: directory,
+      ...after,
+      entrySetSha256: inputDirectoryEntrySetSha256(entries)
+    }
+  };
+}
+
+async function revalidateInputDirectories(tree, budget) {
+  for (const expected of tree.directories) {
+    const current = await captureStableInputDirectory(
+      expected.path,
+      tree.containmentRootReal,
+      budget,
+      "revalidation"
+    ).catch((error) => {
+      if (
+        error?.code === "ENOENT" ||
+        error?.code === "ENOTDIR" ||
+        error?.code === "ELOOP"
+      ) {
+        throw new Error(`${budget.label}-directory-changed-during-scan`);
+      }
+      throw error;
+    });
+    if (
+      !sameInputDirectorySnapshotState(expected, current.snapshot) ||
+      expected.entrySetSha256 !== current.snapshot.entrySetSha256
+    ) {
+      throw new Error(`${budget.label}-directory-changed-during-scan`);
+    }
+  }
+  assertInputScanDeadline(budget);
+}
+
+async function inputDirectorySnapshotState(
+  directory,
+  containmentRootReal,
+  budget
+) {
+  assertInputScanDeadline(budget);
+  const entry = await fs.lstat(directory);
+  if (!entry.isDirectory() || entry.isSymbolicLink()) {
+    throw new Error(`${budget.label}-directory-changed-during-scan`);
+  }
+  const realPath = await fs.realpath(directory);
+  if (!isContainedPath(containmentRootReal, realPath)) {
+    throw new Error(`${budget.label}-directory-changed-during-scan`);
+  }
+  assertInputScanDeadline(budget);
+  return {
+    realPath,
+    dev: entry.dev,
+    ino: entry.ino,
+    mode: entry.mode,
+    nlink: entry.nlink,
+    size: entry.size,
+    mtimeMs: entry.mtimeMs,
+    ctimeMs: entry.ctimeMs
+  };
+}
+
+function sameInputDirectorySnapshotState(left, right) {
+  return left.realPath === right.realPath &&
+    left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.nlink === right.nlink &&
+    left.size === right.size &&
+    left.mtimeMs === right.mtimeMs &&
+    left.ctimeMs === right.ctimeMs;
+}
+
+function inputDirectoryEntrySetSha256(entries) {
+  const hash = createHash("sha256");
+  hash.update("codexa-directory-entries-v1\0", "utf8");
+  for (const entry of entries) {
+    const name = Buffer.from(entry.name, "utf8");
+    hash.update(`${directoryEntryKind(entry)}${name.length}:`, "utf8");
+    hash.update(name);
+  }
+  return hash.digest("hex");
+}
+
+function directoryEntryKind(entry) {
+  if (entry.isDirectory()) return "D";
+  if (entry.isFile()) return "F";
+  if (entry.isSymbolicLink()) return "L";
+  if (entry.isBlockDevice()) return "B";
+  if (entry.isCharacterDevice()) return "C";
+  if (entry.isFIFO()) return "P";
+  if (entry.isSocket()) return "S";
+  return "U";
+}
+
+function compareEntryNames(left, right) {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 function isContainedPath(parent, candidate) {
