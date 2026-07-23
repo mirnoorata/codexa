@@ -42,9 +42,10 @@ names, hostnames, or session memory to the public repository.
   with no valid receipt is only source-ready and needs explicit repair/fallback.
 - If a Remote-SSH host creates the worktree without invoking local setup, run
   `bash .codex/worktree-bootstrap.sh` inside that remote worktree, then run
-  `node dist/cli.js session-start "$PWD" --json --strict`. Start a new thread
-  after repair because SessionStart cannot prove the current thread's MCP
-  handshake.
+  `node dist/cli.js session-start "$PWD" --json --strict`. Reload or reopen the
+  exact repaired checkout so the host can initialize its MCP server; do not
+  start a generic new Worktree chat, which may create a replacement worktree.
+  SessionStart cannot prove the current thread's MCP handshake.
 
 ## GitHub Change and Release Path
 

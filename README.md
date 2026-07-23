@@ -203,9 +203,11 @@ bash .codex/worktree-bootstrap.sh
 node dist/cli.js session-start "$PWD" --json --strict
 ```
 
-Then start a new thread (or explicitly reload the project) so the host can
-initialize the repaired MCP server. Neither the bootstrap receipt nor
-SessionStart can prove an already-running thread's MCP handshake.
+Then reload or reopen that exact repaired checkout so the host can initialize
+its MCP server. Do not start a generic new Worktree chat: it may create a
+replacement checkout, abandon the repair, and repeat the skipped-setup path.
+Neither the bootstrap receipt nor SessionStart can prove an already-running
+thread's MCP handshake.
 That bootstrap receipt attests local dependency/build/init setup only. The
 SessionStart receipt separately validates managed config and index state and
 still cannot attest the host's current-thread MCP handshake.
