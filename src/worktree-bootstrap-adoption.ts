@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { promises as fs, type Stats } from "node:fs";
+import { constants as fsConstants, promises as fs, type Stats } from "node:fs";
 import path from "node:path";
 import {
   assertSafeManagedDirectory,
@@ -13,6 +13,8 @@ import {
 } from "./stable-directory-snapshot.js";
 
 const ADOPTION_SCAN_TIMEOUT_MS = 20_000;
+const STABLE_REGULAR_READ_FLAGS =
+  fsConstants.O_RDONLY | fsConstants.O_NONBLOCK | fsConstants.O_NOFOLLOW;
 const DIST_RUNTIME_MAX_ENTRIES = 10_000;
 const DIST_RUNTIME_MAX_LOGICAL_BYTES = 256 * 1024 * 1024;
 const DIST_RUNTIME_MAX_FILE_BYTES = 128 * 1024 * 1024;
@@ -447,7 +449,7 @@ export async function readBoundedStableRegularFile(
     throw new Error(`${label}-outside-containment`);
   }
   if (expected.size > maxBytes) throw new Error(`${label}-size-limit-exceeded`);
-  const handle = await fs.open(filePath, "r").catch((error: unknown) => {
+  const handle = await fs.open(filePath, STABLE_REGULAR_READ_FLAGS).catch((error: unknown) => {
     if (isNodeError(error) && error.code === "ENOENT") {
       throw new Error(`${label}-changed-during-read`);
     }

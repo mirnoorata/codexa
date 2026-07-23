@@ -1,10 +1,14 @@
 import { createHash } from "node:crypto";
+import { execFileSync } from "node:child_process";
 import { promises as nodeFs } from "node:fs";
 import { lstat, mkdir, mkdtemp, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
-import { currentAdoptionReceiptFacts } from "../src/worktree-bootstrap-adoption.js";
+import {
+  currentAdoptionReceiptFacts,
+  readBoundedStableRegularFile
+} from "../src/worktree-bootstrap-adoption.js";
 
 const fixtures: string[] = [];
 
@@ -110,6 +114,33 @@ describe("worktree bootstrap adoption integrity", () => {
     );
     expect(mutated).toBe(true);
   });
+
+  it.skipIf(process.platform === "win32")(
+    "rejects a regular file replaced by a FIFO before open without blocking",
+    async () => {
+      const repo = await createAdoptionFixture("codexa-adoption-fifo-open-race-");
+      const target = path.join(repo, "dist/cli.js");
+      const originalOpen = nodeFs.open.bind(nodeFs);
+      let swapped = false;
+      vi.spyOn(nodeFs, "open").mockImplementation(async (file, flags, mode) => {
+        if (!swapped && path.resolve(String(file)) === target) {
+          await rm(target);
+          execFileSync("mkfifo", [target]);
+          swapped = true;
+        }
+        return originalOpen(file, flags, mode);
+      });
+
+      await expect(readBoundedStableRegularFile(
+        target,
+        1024,
+        "fifo-race",
+        Date.now() + 1_000,
+        repo
+      )).rejects.toThrow(/fifo-race-changed-during-read/u);
+      expect(swapped).toBe(true);
+    }
+  );
 
   it("orders non-ASCII manifest entries without the process locale", async () => {
     const repo = await createAdoptionFixture("codexa-adoption-deterministic-order-");
