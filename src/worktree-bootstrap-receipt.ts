@@ -484,11 +484,13 @@ async function installedDependencyInventory(
     const manifestPath = path.join(packageDir, "package.json");
     const contents = await readRegularFile(manifestPath);
     const manifest = JSON.parse(contents.toString("utf8")) as { name?: unknown; version?: unknown };
+    const packageContentsSha256 = await hashRegularTree(repoRoot, packageDir);
     records.push([
       lockPath,
       typeof manifest.name === "string" ? manifest.name : "",
       typeof manifest.version === "string" ? manifest.version : "",
-      sha256(contents)
+      sha256(contents),
+      packageContentsSha256
     ].join("\t"));
   }
   return {

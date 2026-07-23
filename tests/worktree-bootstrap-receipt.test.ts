@@ -66,6 +66,21 @@ describe("worktree bootstrap receipt", () => {
       state: "verified",
       validation: "adoption"
     });
+
+    await writeFile(
+      path.join(repo, "node_modules/example-dependency/index.js"),
+      "export const dependencyFixture = 2;\n",
+      "utf8"
+    );
+    await expect(inspectWorktreeBootstrapReceipt(repo, { validation: "startup" })).resolves.toMatchObject({
+      state: "verified",
+      validation: "startup"
+    });
+    await expect(inspectWorktreeBootstrapReceipt(repo, { validation: "adoption" })).resolves.toMatchObject({
+      state: "stale",
+      validation: "adoption",
+      reason: "dependency-inventory-drift"
+    });
   });
 
   it("separates durable startup, executable adoption, and full completion validation", async () => {
@@ -328,6 +343,11 @@ async function createReceiptFixture(
   await writeFile(
     path.join(repo, "node_modules/example-dependency/package.json"),
     `${JSON.stringify({ name: "example-dependency", version: "1.0.0" })}\n`,
+    "utf8"
+  );
+  await writeFile(
+    path.join(repo, "node_modules/example-dependency/index.js"),
+    "export const dependencyFixture = 1;\n",
     "utf8"
   );
   execFileSync("git", ["add", "package.json", "package-lock.json", "tsconfig.json", "src", "dist", ".codex/worktree-bootstrap.sh"], {
