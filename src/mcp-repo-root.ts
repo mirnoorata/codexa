@@ -44,9 +44,8 @@ const ACTIVE_PROJECT_FOCUS_REPO_PATTERN = /\b(?:via\s+)?(?:repo|repository)\s*:?
 const ACTIVE_PROJECT_FOCUS_DIRECT_PATH_PATTERN = /\bactive\s+project\s+focus\s*:\s*(?:`(\/[^`]+)`|(\/[^\s#|.,;:]+))\s*$/iu;
 const COMPACT_PROJECT_LINE_PATTERN = /^\s*(?:[-*]\s*)?project\s*:\s*(?:`([^`]+)`|([^\r\n#]+))/iu;
 const HEADING_PATTERN = /^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/u;
-const INACTIVE_SESSION_STATUSES = new Set(["done", "stale", "parked", "merged", "superseded", "removed", "shipped", "shipped+live", "live", "released", "closed", "abandoned"]);
-const TERMINAL_SESSION_STATUS_TOKENS = new Set(["done", "stale", "parked", "merged", "superseded", "removed", "shipped", "released", "closed", "abandoned"]);
-const ACTIVE_SESSION_STATUS_TOKENS = new Set(["active", "dirty", "open", "pr", "review", "verified", "wip"]);
+const INACTIVE_SESSION_STATUSES = new Set(["merged-live-verified", "released+verified"]);
+const WORKSPACE_SESSION_ID_MAX = 128;
 
 export async function shouldPreferConfiguredRepoRoot(configuredRootInput: string, options: McpRepoRootResolutionOptions = {}): Promise<boolean> {
   const configuredRoot = path.resolve(configuredRootInput);
@@ -159,7 +158,7 @@ async function readFocusedRepoPaths(focusFile: string, options: McpRepoRootResol
     return emptyFocusFileSelection();
   }
 
-  const workspaceSessionId = normalizeWorkspaceSessionId(options.workspaceSessionId ?? process.env.CODEXA_WORKSPACE_SESSION);
+  const workspaceSessionId = normalizeWorkspaceSessionId(options.workspaceSessionId ?? process.env.CODEXA_WORKSPACE_SESSION, true);
   const selectedSessionPaths: string[] = [];
   const explicitPaths: string[] = [];
   const activeSessionPaths: string[] = [];
@@ -363,17 +362,7 @@ function isActiveSessionStatus(status: string | undefined): boolean {
   if (!normalized || normalized === "status") {
     return false;
   }
-  if (INACTIVE_SESSION_STATUSES.has(normalized)) {
-    return false;
-  }
-  const tokens = normalized.split(/[^a-z0-9]+/u).filter(Boolean);
-  if (tokens.some((token) => TERMINAL_SESSION_STATUS_TOKENS.has(token))) {
-    return false;
-  }
-  if (tokens.some((token) => ACTIVE_SESSION_STATUS_TOKENS.has(token))) {
-    return true;
-  }
-  return !tokens.some((token) => INACTIVE_SESSION_STATUSES.has(token));
+  return !INACTIVE_SESSION_STATUSES.has(normalized);
 }
 
 function normalizeCandidatePath(candidate: string): string | null {
@@ -384,9 +373,14 @@ function normalizeCandidatePath(candidate: string): string | null {
   return path.resolve(trimmed);
 }
 
-function normalizeWorkspaceSessionId(candidate: string | undefined): string | undefined {
+function normalizeWorkspaceSessionId(candidate: string | undefined, strict = false): string | undefined {
   const trimmed = candidate?.trim().replace(/^`|`$/gu, "");
-  return trimmed ? trimmed : undefined;
+  if (!trimmed) return undefined;
+  if (trimmed.length > WORKSPACE_SESSION_ID_MAX || /[\u0000-\u001f\u007f]/u.test(trimmed)) {
+    if (strict) throw new Error(`Codexa workspace session id must be printable and at most ${WORKSPACE_SESSION_ID_MAX} characters`);
+    return undefined;
+  }
+  return trimmed;
 }
 
 async function validatedRepoRoot(candidate: CandidateRepoRoot): Promise<string | null> {

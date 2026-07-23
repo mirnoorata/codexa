@@ -174,6 +174,25 @@ parent checkout's, so the parent's index would serve stale answers). If you
 automate worktree creation, add `codexa init` to that automation; tracked
 wiring remains Git-clean while the worktree-local ignored index is refreshed.
 
+This repository also tracks a
+[Codex local-environment](https://learn.chatgpt.com/docs/environments/local-environment)
+definition at `.codex/environments/environment.toml`. When the Codex app
+creates a worktree for this saved project, the environment installs locked
+dependencies, builds Codexa, and initializes worktree-local `core` wiring
+automatically. In the desktop composer, select the saved Codexa project,
+`Worktree`, the intended starting branch (normally `main`), and the `Codexa`
+local environment before the first prompt. Create and configure that Worktree
+chat on desktop; Remote on mobile may continue a supported desktop Codex chat
+but cannot select or configure local setup. Once the app has created the linked
+worktree, adopt that checkout for the task instead of creating a second
+worktree. Successful setup writes an ignored, identity-bound bootstrap receipt
+so a host coordinator can validate the setup without rerunning it. The receipt
+binds the complete regular-file `dist/` runtime manifest, not only the CLI
+entry point, so a changed imported module invalidates readiness.
+That bootstrap receipt attests local dependency/build/init setup only. The
+SessionStart receipt separately validates managed config and index state and
+still cannot attest the host's current-thread MCP handshake.
+
 Codexa binds an index to the canonical worktree root, Git top-level root,
 HEAD commit, and workspace-state digest. Context and review queries fail closed
 when that identity does not match the active checkout. Auto-refresh may make
@@ -507,7 +526,7 @@ writes are allowed; source-file mutation is not exposed through MCP tools.
 | Command | Use it for |
 | --- | --- |
 | `codexa init <repo>` | Write repo-local Codex MCP config/hooks and index the repo (`--claude` for Claude Code, `--ci` for a read-only PR workflow, `--tools full` for every tool, `--agents-md` for an AGENTS.md workflow block). |
-| `codexa session-start <repo>` | Print cheap startup status and the automatic-use loop. |
+| `codexa session-start <repo>` | Print a cheap versioned receipt with separate config, index, and current-thread MCP activation states (`--json` for structured output; `--strict` for observable config/index gating). |
 | `codexa index <repo>` | Build `.codex/codebase/` artifacts once. |
 | `codexa watch <repo>` | Keep artifacts fresh during active edit sessions. |
 | `codexa status <repo>` | Check freshness and parser errors without refreshing. |

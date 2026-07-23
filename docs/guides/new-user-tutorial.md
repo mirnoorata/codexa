@@ -87,12 +87,23 @@ After setup, or whenever freshness is in doubt, check readiness with:
 codexa session-start /path/to/project
 ```
 
-A ready repository reports the repo path, the current commit, freshness, dirty
-file count, parser error count, and the selective-use policy. Managed host hooks
-surface status automatically, so an agent does not need to call this command at
-the start of every turn. `fresh` means the stored Codexa index matches the
-current checkout. `stale` usually means the checkout changed since the last
-index, and most context commands can refresh it automatically.
+The versioned receipt reports the repo path and current commit, static MCP
+configuration and tool profile, index freshness, dirty-file and parser-error
+counts, current-thread MCP activation, and the selective-use cadence. Managed
+host hooks surface it automatically, so an agent does not need to call this
+command at the start of every turn. `fresh` means the stored Codexa index
+matches the current checkout. `stale` usually means the checkout changed since
+the last index, and most context commands can refresh it automatically.
+`Current-thread MCP: unverified` is expected from SessionStart: only the host's
+actual MCP initialize handshake can prove that this thread loaded the server.
+At a shared workspace root, `routing: selection-required` and `Index:
+not-selected` mean only a previous workspace default or unselected active row
+was available; select an active row with `--workspace-session <id>` before
+loading project context. If a shared coordinator generates a selector file,
+use its validator rather than sourcing the mutable file directly.
+`metadata-invalid` means stored index identity fields failed bounded validation;
+`parser-degraded` means indexing completed with parser errors. Reindex and
+inspect the parser failures before treating either state as ready.
 
 For a fuller setup check, run:
 
@@ -207,7 +218,7 @@ inspect.
 If `codexa` is not found, confirm the npm global bin directory is on `PATH`, or
 use the source-checkout flow with `npm link`.
 
-If `session-start` reports `missing-index`, run:
+If `session-start` reports `Index: missing`, run:
 
 ```bash
 codexa index /path/to/project

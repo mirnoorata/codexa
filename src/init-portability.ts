@@ -1,7 +1,10 @@
 import { execFileSync } from "node:child_process";
 import { writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { InitToolProfile } from "./types/init.js";
+
+const CURRENT_CODEXA_CLI_PATH = fileURLToPath(new URL("./cli.js", import.meta.url));
 
 export interface ExistingClaudeMcpConfig {
   contents: string;
@@ -82,6 +85,17 @@ export function isCodexaMcpJsonEntry(entry: unknown): boolean {
   return isCodexaLauncherToken(launcherToken);
 }
 
+/** Recognizes only launcher shapes emitted by init or their portable direct-command equivalent. */
+export function isRecognizedCodexaLauncher(command: string, args: string[], serveIndex = args.indexOf("serve")): boolean {
+  if (serveIndex < 0) return false;
+  const launcherToken = serveIndex === 0 ? command : args[serveIndex - 1];
+  if (serveIndex === 0) return command === "codexa";
+  if (command === "npx" || command === "npx.cmd") {
+    return serveIndex === 2 && args[0] === "-y" && isVersionedCodexaPackage(launcherToken);
+  }
+  return serveIndex === 1 && isRecognizedNodeCommand(command) && isPotentialCodexaCliPath(launcherToken);
+}
+
 export function defaultServerName(repoRoot: string): string {
   const commonDir = runGit(repoRoot, ["rev-parse", "--git-common-dir"]);
   if (!commonDir) return `codexa-${slugify(path.basename(repoRoot))}`;
@@ -112,14 +126,47 @@ function detectClaudeMcpToolProfile(entry: unknown): InitToolProfile | undefined
   return isCodexaMcpJsonEntry(entry) ? "full" : undefined;
 }
 
-function isCodexaLauncherToken(token: string | undefined): boolean {
+export function isCodexaLauncherToken(token: string | undefined): boolean {
   if (!token) return false;
   return (
     token === "codexa" ||
     /^@mirnoorata\/codexa(?:@[^\s]*)?$/u.test(token) ||
+    isCodexaCliPath(token)
+  );
+}
+
+function isCodexaCliPath(token: string | undefined): boolean {
+  return Boolean(token && (
+    sameExecutablePath(token, CURRENT_CODEXA_CLI_PATH) ||
     /[\\/]codexa[\\/]dist[\\/]cli\.js$/u.test(token) ||
     /[\\/]@mirnoorata[\\/]codexa[\\/]dist[\\/]cli\.js$/u.test(token)
-  );
+  ));
+}
+
+function isPotentialCodexaCliPath(token: string | undefined): boolean {
+  return Boolean(token && path.isAbsolute(token) && (
+    isCodexaCliPath(token) || /[\\/]dist[\\/]cli\.js$/u.test(token)
+  ));
+}
+
+function isVersionedCodexaPackage(token: string | undefined): boolean {
+  const prefix = "@mirnoorata/codexa@";
+  if (!token?.startsWith(prefix)) return false;
+  const version = token.slice(prefix.length);
+  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/u.exec(version);
+  if (!match) return false;
+  const prerelease = match[4];
+  return !prerelease || prerelease.split(".").every((identifier) => !/^\d+$/u.test(identifier) || identifier === "0" || !identifier.startsWith("0"));
+}
+
+function isRecognizedNodeCommand(command: string): boolean {
+  return command === "node" || (path.isAbsolute(command) && /^node(?:js)?(?:\.exe)?$/iu.test(path.basename(command)));
+}
+
+function sameExecutablePath(left: string, right: string): boolean {
+  if (!path.isAbsolute(left) || !path.isAbsolute(right)) return false;
+  const normalize = (value: string): string => process.platform === "win32" ? path.resolve(value).toLowerCase() : path.resolve(value);
+  return normalize(left) === normalize(right);
 }
 
 function parseJsonObject(value: string, filePath: string): Record<string, unknown> {

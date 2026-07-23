@@ -7,7 +7,7 @@ import { defaultAutonomyMode, effectiveAutonomyMode, parseAutonomyMode, setAuton
 import { checkGithubSync } from "./github-sync.js";
 import { publishProjectGithubRelease } from "./github-release.js";
 import { runDoctor } from "./doctor.js";
-import { initializeProject, sessionStartSummary } from "./init.js";
+import { initializeProject, renderSessionStartJson, renderSessionStartReceipt, sessionStartReceipt, sessionStartStrictFailures } from "./init.js";
 import { resolveImplicitGitRepoRoot } from "./init-portability.js";
 import { runLiveIndexer } from "./live-index.js";
 import { serveMcp, serveMcpHttp, type McpTransportKind } from "./mcp.js";
@@ -84,7 +84,7 @@ program
   .option("--no-hooks", "do not write hooks.json")
   .option("--index", "index the repository immediately", true)
   .option("--no-index", "only write Codex config and hooks")
-  .option("--tools <profile>", "MCP tool exposure profile: core (3 direct tools plus dispatcher) or full; defaults to the repo's existing profile, else core", parseToolProfile)
+  .option("--tools <profile>", "MCP tool exposure profile: core (3 direct tools including the dispatcher) or full; defaults to the repo's existing profile, else core", parseToolProfile)
   .option("--agents-md", "write a managed Codexa workflow block into the repo's AGENTS.md (Codex)", false)
   .option("--claude-md", "write a managed Codexa workflow block into the repo's CLAUDE.md (Claude Code)", false)
   .option("--claude", "write the codexa MCP server entry into the repo's .mcp.json for Claude Code", false)
@@ -576,28 +576,37 @@ program
   .command("session-start")
   .argument("[repo]", "repository root; defaults to current directory")
   .option("--context", "include a small context preview", false)
-  .option("--auto-refresh", "refresh a stale or missing index before rendering the context preview", false)
-  .option("--no-auto-refresh", "do not refresh a stale or missing index before rendering the context preview")
+  .option("--auto-refresh", "refresh a stale or missing index during this startup invocation", false)
+  .option("--no-auto-refresh", "do not refresh a stale or missing index during this startup invocation")
+  .option("--json", "emit the versioned structured startup receipt")
+  .option("--strict", "exit nonzero when observable routing, config/profile, or index checks are not usable; MCP activation remains unverified", false)
   .option("--workspace-focus-file <path>", "workspace focus file to consult when <repo> is a workspace launch root")
   .option("--workspace-session <id>", "active WORKING.md session row to prefer when <repo> is a workspace launch root")
   .description("Print the lightweight Codexa SessionStart summary used by Codex hooks.")
-  .action(async (repo: string | undefined, opts: { context: boolean; autoRefresh: boolean; workspaceFocusFile?: string; workspaceSession?: string }) => {
+  .action(async (repo: string | undefined, opts: { context: boolean; autoRefresh: boolean; json?: boolean; strict: boolean; workspaceFocusFile?: string; workspaceSession?: string }) => {
     const resolved = repo ? path.resolve(repo) : resolveImplicitGitRepoRoot() ?? process.cwd();
     const startedAt = Date.now();
-    const summary = await sessionStartSummary(resolved, opts.context || process.env.CODEXA_SESSIONSTART_CONTEXT === "1", {
+    const includeContext = opts.context || process.env.CODEXA_SESSIONSTART_CONTEXT === "1";
+    const receipt = await sessionStartReceipt(resolved, includeContext, {
       autoRefresh: opts.autoRefresh,
       workspaceFocusFile: opts.workspaceFocusFile ? path.resolve(opts.workspaceFocusFile) : undefined,
       workspaceSessionId: opts.workspaceSession
     });
-    console.log(summary);
-    const unavailable = summary.includes("Codexa status unavailable:");
+    console.log(opts.json ? renderSessionStartJson(receipt) : renderSessionStartReceipt(receipt));
+    const unavailable = receipt.availability === "unavailable";
+    const strictFailures = opts.strict ? sessionStartStrictFailures(receipt) : [];
+    const failed = unavailable || strictFailures.length > 0;
     await recordAdvisoryHookEvent(resolved, {
       hook: "session-start",
-      status: unavailable ? "failed" : "ok",
+      status: failed ? "failed" : "ok",
       durationMs: Date.now() - startedAt,
-      reason: opts.context || process.env.CODEXA_SESSIONSTART_CONTEXT === "1" ? "context-preview" : "status",
-      error: unavailable ? summary.split(/\r?\n/u).find((line) => line.includes("Codexa status unavailable:")) : undefined
+      reason: opts.strict ? "strict-status" : includeContext ? "context-preview" : "status",
+      error: failed ? receipt.routing.error ?? receipt.index.error ?? strictFailures.join("; ") : undefined
     });
+    if (strictFailures.length > 0) {
+      console.error(`Codexa strict startup check failed: ${strictFailures.join("; ")}`);
+      process.exitCode = 1;
+    }
   });
 
 program

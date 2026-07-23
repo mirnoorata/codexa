@@ -451,7 +451,7 @@ it("does not scan user-global skill roots from repo-controlled skill hint config
     expect(summary.warnings.join("\n")).toContain("ignored skill root outside allowed skill roots: ~/.codex/skills");
   });
 
-it("ignores terminal composite session statuses when checking workspace conflicts", async () => {
+it("ignores only exact verified-delivery session statuses when checking workspace conflicts", async () => {
     const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-working-merged-live-"));
     execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
     const defaultRepo = await createIndexedMcpRepo(workspace, "default-repo", "alpha", "alphaSymbol");
@@ -469,7 +469,7 @@ it("ignores terminal composite session statuses when checking workspace conflict
         "",
         "| session | agent | repo | task | status | claims | last_seen | next |",
         "| --- | --- | --- | --- | --- | --- | --- | --- |",
-        `| codex-merged | codex | ${mergedRepo} | previous task | merged-live | none | earlier | done |`
+        `| codex-merged | codex | ${mergedRepo} | previous task | merged-live-verified | none | earlier | done |`
       ].join("\n"),
       "utf8"
     );

@@ -104,6 +104,161 @@ it("keeps session-start advisory when query setup fails", async () => {
     expect(result.stdout).toContain("Codexa startup hook is advisory");
   });
 
+it("emits a typed JSON startup receipt without claiming current-thread MCP activation", async () => {
+    const repo = await createHookFixtureRepo();
+    await mkdir(path.join(repo, ".codex"), { recursive: true });
+    const result = spawnSync(process.execPath, [path.resolve(process.cwd(), "dist/cli.js"), "session-start", repo, "--json"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: testEnv()
+    });
+
+    expect(result.status).toBe(0);
+    expect(result.stderr).toBe("");
+    const receipt = JSON.parse(result.stdout) as {
+      schemaVersion: number;
+      kind: string;
+      availability: string;
+      repoRoot: string;
+      config: { state: string; toolProfile: string };
+      index: { state: string };
+      threadMcp: { state: string; reason: string };
+    };
+    expect(receipt).toMatchObject({
+      schemaVersion: 1,
+      kind: "codexa-session-start",
+      availability: "ok",
+      repoRoot: repo,
+      config: { state: "not-configured", toolProfile: "unknown" },
+      index: { state: "missing" },
+      threadMcp: { state: "unverified", reason: "session-start-cannot-observe-host-initialize" }
+    });
+    const latest = JSON.parse(await readFile(path.join(repo, ".codex/cache/codexa-hooks/latest.json"), "utf8")) as { status: string; error?: string };
+    expect(latest).toMatchObject({ status: "ok" });
+    expect(latest.error).toBeUndefined();
+
+    const strictMissing = spawnSync(process.execPath, [path.resolve(process.cwd(), "dist/cli.js"), "session-start", repo, "--json", "--strict"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: testEnv()
+    });
+    expect(strictMissing.status).toBe(1);
+    expect(strictMissing.stderr).toContain("Codexa strict startup check failed:");
+    expect(strictMissing.stderr).toContain("config not-configured");
+    expect(strictMissing.stderr).toContain("index missing");
+
+    const initialized = spawnSync(process.execPath, [path.resolve(process.cwd(), "dist/cli.js"), "init", repo], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: testEnv()
+    });
+    expect(initialized.status).toBe(0);
+    const strictReady = spawnSync(process.execPath, [path.resolve(process.cwd(), "dist/cli.js"), "session-start", repo, "--json", "--strict"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: testEnv()
+    });
+    expect(strictReady.status).toBe(0);
+    expect(strictReady.stderr).toBe("");
+    expect(JSON.parse(strictReady.stdout)).toMatchObject({
+      config: { state: "configured", toolProfile: "core" },
+      index: { state: "fresh" },
+      threadMcp: { state: "unverified" }
+    });
+  });
+
+it("fails strict startup for an unrelated launcher and bounds excessive enabled tools", async () => {
+    const repo = await createHookFixtureRepo();
+    const cli = path.resolve(process.cwd(), "dist/cli.js");
+    expect(spawnSync(process.execPath, [cli, "init", repo], { cwd: process.cwd(), encoding: "utf8", env: testEnv() }).status).toBe(0);
+    const configPath = path.join(repo, ".codex/config.toml");
+    const config = await readFile(configPath, "utf8");
+
+    await writeFile(configPath, config.replace(/^command\s*=.*$/mu, 'command = "/bin/false"'), "utf8");
+    const badLauncher = spawnSync(process.execPath, [cli, "session-start", repo, "--json", "--strict"], {
+      cwd: process.cwd(), encoding: "utf8", env: testEnv()
+    });
+    expect(badLauncher.status).toBe(1);
+    expect(JSON.parse(badLauncher.stdout)).toMatchObject({
+      config: { state: "invalid", command: "/bin/false", reason: "Codexa-managed command/args do not identify a recognized Codexa launcher" }
+    });
+    expect(Buffer.byteLength(badLauncher.stdout, "utf8")).toBeLessThanOrEqual(4096);
+
+    const excessiveTools = Array.from({ length: 5000 }, (_, index) => `tool-${index}`);
+    await writeFile(configPath, config.replace(/^enabled_tools\s*=.*$/mu, `enabled_tools = ${JSON.stringify(excessiveTools)}`), "utf8");
+    const excessive = spawnSync(process.execPath, [cli, "session-start", repo, "--json", "--strict"], {
+      cwd: process.cwd(), encoding: "utf8", env: testEnv()
+    });
+    expect(excessive.status).toBe(1);
+    expect(JSON.parse(excessive.stdout)).toMatchObject({ config: { state: "invalid", toolProfile: "unknown" } });
+    expect(excessive.stdout).not.toContain("tool-4999");
+    expect(Buffer.byteLength(excessive.stdout, "utf8")).toBeLessThanOrEqual(4096);
+
+    const serverName = /^\[mcp_servers\.([A-Za-z0-9_-]+)\]$/mu.exec(config)?.[1];
+    expect(serverName).toBeTruthy();
+    const invalidManagedConfigs = [
+      config.replace('"--tools", "core"]', '"--tools", "core", "--transport", "http"]'),
+      config.replace(/^command\s*=/mu, `[mcp_servers.${serverName}.env]\ncommand =`),
+      `${config}\n[mcp_servers.${serverName}]\nduplicate = true\n`,
+      `${config}\nSTARTUP_RECEIPT_SENTINEL = "unterminated\n`
+    ];
+    for (const invalidConfig of invalidManagedConfigs) {
+      await writeFile(configPath, invalidConfig, "utf8");
+      const strict = spawnSync(process.execPath, [cli, "session-start", repo, "--json", "--strict"], {
+        cwd: process.cwd(), encoding: "utf8", env: testEnv()
+      });
+      expect(strict.status).toBe(1);
+      expect(JSON.parse(strict.stdout)).toMatchObject({ config: { state: "invalid" } });
+      expect(strict.stdout).not.toContain("STARTUP_RECEIPT_SENTINEL");
+      expect(Buffer.byteLength(strict.stdout, "utf8")).toBeLessThanOrEqual(4096);
+    }
+  });
+
+it("sanitizes hostile freshness metadata and treats parser errors as nonfresh", async () => {
+    const repo = await createHookFixtureRepo();
+    const cli = path.resolve(process.cwd(), "dist/cli.js");
+    expect(spawnSync(process.execPath, [cli, "init", repo], { cwd: process.cwd(), encoding: "utf8", env: testEnv() }).status).toBe(0);
+    const indexPath = path.join(repo, ".codex/codebase/index.json");
+    const original = JSON.parse(await readFile(indexPath, "utf8")) as Record<string, unknown>;
+    const originalFreshness = original.freshness as Record<string, unknown>;
+    const attack = `INDEX-INJECTION\n${"x".repeat(120_000)}`;
+
+    await writeFile(indexPath, `${JSON.stringify({ ...original, freshness: { ...originalFreshness, reason: attack, indexedAt: attack, snapshotId: attack } })}\n`, "utf8");
+    const hostileJson = spawnSync(process.execPath, [cli, "session-start", repo, "--json", "--strict"], {
+      cwd: process.cwd(), encoding: "utf8", env: testEnv()
+    });
+    expect(hostileJson.status).toBe(1);
+    expect(JSON.parse(hostileJson.stdout)).toMatchObject({ index: { state: "metadata-invalid" } });
+    expect(hostileJson.stdout).not.toContain("INDEX-INJECTION\\n");
+    expect(hostileJson.stdout).not.toContain("x".repeat(500));
+    expect(Buffer.byteLength(hostileJson.stdout, "utf8")).toBeLessThanOrEqual(4096);
+
+    const hostileText = spawnSync(process.execPath, [cli, "session-start", repo, "--strict"], {
+      cwd: process.cwd(), encoding: "utf8", env: testEnv()
+    });
+    expect(hostileText.status).toBe(1);
+    expect(hostileText.stdout).toContain("Index: metadata-invalid");
+    expect(hostileText.stdout).not.toContain("\nINDEX-INJECTION\n");
+    expect(Buffer.byteLength(hostileText.stdout, "utf8")).toBeLessThanOrEqual(2048);
+
+    await writeFile(indexPath, `${JSON.stringify({ ...original, freshness: { ...originalFreshness, repoRoot: attack, headCommit: attack } })}\n`, "utf8");
+    const wrongRepo = spawnSync(process.execPath, [cli, "session-start", repo, "--json", "--strict"], {
+      cwd: process.cwd(), encoding: "utf8", env: testEnv()
+    });
+    expect(wrongRepo.status).toBe(1);
+    expect(JSON.parse(wrongRepo.stdout)).toMatchObject({ index: { state: "metadata-invalid", repoRoot: repo } });
+    expect(Buffer.byteLength(wrongRepo.stdout, "utf8")).toBeLessThanOrEqual(4096);
+
+    await writeFile(indexPath, `${JSON.stringify({ ...original, freshness: { ...originalFreshness, parserErrorCount: 1 } })}\n`, "utf8");
+    const parserDegraded = spawnSync(process.execPath, [cli, "session-start", repo, "--json", "--strict"], {
+      cwd: process.cwd(), encoding: "utf8", env: testEnv()
+    });
+    expect(parserDegraded.status).toBe(1);
+    expect(JSON.parse(parserDegraded.stdout)).toMatchObject({ index: { state: "parser-degraded", parserErrorCount: 1 } });
+    expect(parserDegraded.stderr).toContain("index parser-degraded");
+    expect(Buffer.byteLength(parserDegraded.stdout, "utf8")).toBeLessThanOrEqual(4096);
+  });
+
 it("routes workspace-root session-start hooks through the focused repository", async () => {
     const workspace = await trackedTmpDir("codexa-session-start-focused-");
     const repo = path.join(workspace, "repo");
@@ -125,7 +280,7 @@ it("routes workspace-root session-start hooks through the focused repository", a
 
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain(`Codexa context for ${repo}:`);
+    expect(result.stdout).toContain(`Codexa context for ${repo} (startup receipt v1):`);
     expect(result.stdout).toContain(`Repo: ${repo}`);
     expect(result.stdout).not.toContain("Codexa status unavailable:");
     expect(result.stdout).not.toContain("Failed to read git status");
@@ -133,7 +288,7 @@ it("routes workspace-root session-start hooks through the focused repository", a
     expect(latest.status).toBe("ok");
   });
 
-it("routes workspace-root session-start hooks through the default repository", async () => {
+it("keeps workspace-root SessionStart selection-required when only a default repository exists", async () => {
     const workspace = await trackedTmpDir("codexa-session-start-default-");
     execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
     const repo = path.join(workspace, "repo");
@@ -155,27 +310,20 @@ it("routes workspace-root session-start hooks through the default repository", a
 
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain(`Codexa context for ${repo}:`);
-    expect(result.stdout).toContain(`Repo: ${repo}`);
+    expect(result.stdout).toContain(`Codexa context for ${workspace} (startup receipt v1):`);
+    expect(result.stdout).toContain("Workspace selection required:");
+    expect(result.stdout).toContain(`Repo: not selected (workspace=${workspace})`);
+    expect(result.stdout).toContain("Index: not-selected");
+    expect(result.stdout).not.toContain(repo);
     expect(result.stdout).not.toContain("Codexa status unavailable:");
     expect(result.stdout).not.toContain("Failed to read git status");
     const latest = JSON.parse(await readFile(path.join(workspace, ".codex/cache/codexa-hooks/latest.json"), "utf8")) as { status: string };
     expect(latest.status).toBe("ok");
   });
 
-it("routes workspace-root session-start hooks through the default repository despite unrelated active sessions", async () => {
+it("does not let a lone implicit active row select a repo for SessionStart", async () => {
     const workspace = await trackedTmpDir("codexa-session-start-default-active-");
     execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
-    const repo = path.join(workspace, "repo");
-    await mkdir(repo, { recursive: true });
-    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
-    await writeFile(path.join(repo, "README.md"), "# fixture\n", "utf8");
-    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
-    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
-      cwd: repo,
-      stdio: "ignore"
-    });
-
     const activeRepo = path.join(workspace, "active-repo");
     await mkdir(activeRepo, { recursive: true });
     execFileSync("git", ["init"], { cwd: activeRepo, stdio: "ignore" });
@@ -190,10 +338,6 @@ it("routes workspace-root session-start hooks through the default repository des
     await writeFile(
       path.join(workspace, ".codex", "WORKING.md"),
       [
-        "## Workspace Default",
-        "",
-        `- Default repo: \`${repo}\`.`,
-        "",
         "## Active Sessions",
         "",
         "| session | agent | repo | task | status | claims | last_seen | next |",
@@ -210,8 +354,10 @@ it("routes workspace-root session-start hooks through the default repository des
 
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain(`Codexa context for ${repo}:`);
-    expect(result.stdout).toContain(`Repo: ${repo}`);
+    expect(result.stdout).toContain(`Codexa context for ${workspace} (startup receipt v1):`);
+    expect(result.stdout).toContain("Workspace selection required:");
+    expect(result.stdout).toContain(`Repo: not selected (workspace=${workspace})`);
+    expect(result.stdout).toContain("Index: not-selected");
     expect(result.stdout).not.toContain(activeRepo);
     expect(result.stdout).not.toContain("Codexa status unavailable:");
     expect(result.stdout).not.toContain("Failed to read git status");
@@ -320,11 +466,18 @@ it("routes workspace-root session-start through an explicit workspace session fl
 
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain(`Codexa context for ${repoA}:`);
+    expect(result.stdout).toContain(`Codexa context for ${repoA} (startup receipt v1):`);
     expect(result.stdout).toContain(`Repo: ${repoA}`);
     expect(result.stdout).toContain("session-a");
     expect(result.stdout).not.toContain(repoB);
     expect(result.stdout).not.toContain("Codexa status unavailable:");
+
+    const fromEnv = spawnSync(process.execPath, [cli, "session-start", workspace, "--workspace-focus-file", focusFile], {
+      cwd: process.cwd(), encoding: "utf8", env: testEnv({ CODEXA_WORKSPACE_SESSION: "session-b" })
+    });
+    expect(fromEnv.status).toBe(0);
+    expect(fromEnv.stdout).toContain(`Repo: ${repoB}`);
+    expect(fromEnv.stdout).not.toContain(repoA);
 });
 
 it("routes workspace-root query CLI commands through an explicit workspace session flag", async () => {

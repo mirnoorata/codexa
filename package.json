@@ -72,6 +72,7 @@
   "dependencies": {
     "@modelcontextprotocol/sdk": "1.29.0",
     "commander": "15.0.0",
+    "smol-toml": "1.7.0",
     "tree-sitter": "0.21.1",
     "tree-sitter-python": "0.21.0",
     "tree-sitter-typescript": "0.23.2",
@@ -82,6 +83,9 @@
     "@types/node": "22.20.0",
     "tsx": "4.23.0",
     "vitest": "4.1.9"
+  },
+  "overrides": {
+    "@hono/node-server": "2.0.11"
   },
   "engines": {
     "node": ">=22"

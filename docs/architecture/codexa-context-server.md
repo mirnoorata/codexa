@@ -701,10 +701,34 @@ than a cache-backed full resolver pass.
 
 `codexa init` wires repos with `.codex/hooks.json` and the Codex hooks feature
 flag in `.codex/config.toml`. The hook runs `codexa session-start <repo>` on
-startup/resume. The helper prints cheap status by default; setting
-`CODEXA_SESSIONSTART_CONTEXT=1` also prints a bounded no-refresh `context-pack`
-preview. It does not mutate source files, but context commands can refresh
-generated Codexa cache artifacts when auto-refresh is enabled.
+startup/resume. The helper prints a cheap versioned receipt with independent
+configuration, index, and current-thread activation states; `--json` exposes
+the same facts structurally. Because the hook cannot observe the host MCP
+initialize handshake, activation remains `unverified` rather than being inferred
+from config presence. Setting `CODEXA_SESSIONSTART_CONTEXT=1` also prints the
+bounded context preview and workspace-row digest. It does not mutate source
+files, but context commands can refresh generated Codexa cache artifacts when
+auto-refresh is enabled.
+
+SessionStart does not activate a shared workspace's previous `Workspace
+Default` or a lone implicit active-session row. Without an explicit selected
+session row (via the option or `CODEXA_WORKSPACE_SESSION`), either fallback
+produces independent `selection-required` routing and `not-selected` index
+facets and skips config inspection and `statusQuery` for that repo. Explicit
+query commands retain their fallback routing. The config facet parses and
+bounds the managed command, recognizable Codexa launcher, arguments,
+enabled-tool exposure, and `serve` repo operand. It rejects unrelated launchers,
+excessive config arrays, and targets that resolve to another checkout. Index
+receipt metadata is validated and bounded before rendering;
+`metadata-invalid` and `parser-degraded` are distinct nonfresh states. If
+`--auto-refresh` is enabled, SessionStart itself rebuilds a missing or stale
+index before returning its receipt.
+
+`session-start --strict` is the controller-facing observable-state gate. It
+fails unresolved or selection-required routing/status, missing or invalid
+focused-repo config, legacy/drifted tool profiles, and every index state other
+than `fresh`. It does not fail solely because current-thread activation is
+unverified.
 
 The Codex plugin bundle does not ship hooks. `codexa init` can add edit-scoped
 Codex hooks, but they run before later shell verification and do not claim

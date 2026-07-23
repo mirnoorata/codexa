@@ -6,81 +6,48 @@ names, hostnames, or session memory to the public repository.
 
 ## Development
 
-- Install dependencies with `npm install`.
+- Restore locked dependencies with `npm ci`; use `npm install` when deliberately
+  changing dependencies and the lockfile.
 - Run the full gate with `npm run check`.
 - Keep generated output out of git: `dist/`, `node_modules/`, `.codex/codebase/`,
-  `.codex/cache/`, local storage, and local environment files are ignored.
+  `.codex/cache/`, local storage, project-local Codexa config, and hooks are
+  ignored. The repo-owned `.codex/environments/environment.toml` and
+  `.codex/worktree-bootstrap.sh` setup files are intentionally tracked.
 - Prefer small deterministic fixtures over references to private repositories or
   local infrastructure.
 - When adding docs or examples, use placeholders such as `/path/to/project`,
   `OWNER/REPO`, and `example.com`.
 
+## Codex Worktree Setup
+
+- In the desktop Codex composer, select this saved project, `Worktree`, the
+  intended starting branch (normally `main`), and the Codexa local environment
+  before the first prompt. Mobile remote access may continue that desktop chat
+  but does not configure or select local setup.
+- The tracked local environment runs `.codex/worktree-bootstrap.sh`, which
+  installs the locked dependencies, builds Codexa, and generates ignored
+  worktree-local Codexa wiring with the compact `core` tool profile.
+- Treat the app-created linked worktree as the task checkout. Do not create a
+  second worktree for the same task. App worktrees may start detached; attach a
+  named branch before committing. Let the app own cleanup of app-managed
+  worktrees.
+- Never copy `.codex/config.toml`, `.codex/hooks.json`, generated indexes, or
+  absolute launch commands from another checkout. Generate them in the active
+  worktree so Codexa's workspace identity remains correct.
+- Treat the identity-bound bootstrap receipt as proof; a selected environment
+  with no valid receipt is only source-ready and needs explicit repair/fallback.
+
 ## GitHub Change and Release Path
 
-- Codexa changes that are meant to ship should not remain local-only. Finish
-  them on a named branch, push that branch to GitHub, and merge through the
-  repository's normal GitHub flow before cutting a release from `main`.
-- Releases must use the tracked release lane:
-
-```bash
-npm run release:github:dry-run -- --tag vX.Y.Z
-npm run release:github -- --tag vX.Y.Z
-```
-
-- The release lane must keep running `security:check`, create or reuse a source
-  tag, push through the configured GitHub remote, and create or update the
-  GitHub Release entry with a changelog-style summary, changed-area summary,
-  GitHub restore commands, branch/worktree continuation commands, and a
-  forward-only rollback recipe.
-- Release Please is the preferred automated path after normal changes merge to
-  `main`. It runs from `.github/workflows/release-please.yml`, reads
-  `release-please-config.json` and `.release-please-manifest.json`, opens or
-  updates a release PR, and creates the GitHub Release after that release PR is
-  merged.
-- The Release Please workflow must use the `RELEASE_PLEASE_TOKEN` repository
-  secret, not the default `GITHUB_TOKEN`, because the downstream npm workflow
-  depends on the separate `release: published` event. If a user-visible package
-  release should happen, use a conventional commit subject such as `fix:` for a
-  patch release or `feat:` for a minor release so Release Please can version it.
-- npm publishing is downstream of the GitHub Release entry. The
-  `.github/workflows/npm-publish.yml` workflow listens for `release: published`,
-  checks that the release tag is exactly `v${package.json.version}`, requires
-  the tag commit to be contained in the repository default branch, rejects
-  GitHub prereleases and semver prerelease versions until an explicit npm
-  dist-tag policy exists, reruns `security:check`, skips versions already present
-  on the npm registry before the gate or that appear during the gate, and
-  publishes stable packages with provenance and an explicit `latest` dist-tag.
-- The tracked helper `bash scripts/codexa-publish.sh` is the Codexa publish
-  wrapper used by local `codexaPublish`; keep it pointed at the same
-  `release:github` lane so every release is restorable from GitHub and has a
-  visible changelog.
-- `codexaPublish` may create one source commit for dirty working-tree changes
-  before the PR merge/current-main release step. Use `--commit-message` for a
-  better changelog subject, or `--no-source-commit` to restore the old
-  clean-tree refusal.
-- When publishing through a PR, `codexaPublish` should satisfy protected branch
-  policy with GitHub auto-merge and wait until the PR lands before bumping,
-  tagging, or creating the GitHub Release. Bare `codexaPublish` should only
-  auto-select PRs that are open and not currently conflicting with `main`;
-  conflicted PRs need an explicit repair before release.
-- The version bump is also a protected-main change. When pushing is enabled,
-  `codexaPublish` should land `package.json` / `package-lock.json` bumps through
-  a release PR before creating the tag and GitHub Release.
-- Do not cut official releases from a dirty tree, detached worktree, or
-  machine-local project path. The only dirty-tree exception is the tracked
-  `codexaPublish` pre-release source commit on the active PR branch or on
-  `main` with `--current-main`. If local work is not ready for `main`, push a
-  branch or draft PR instead of tagging it.
-- After publishing, verify both surfaces:
-
-```bash
-git ls-remote --tags origin refs/tags/vX.Y.Z
-gh release view vX.Y.Z --repo OWNER/REPO --json tagName,name,url,targetCommitish
-```
-
-- Keep the release command project-agnostic. It may derive the project name
-  from the target repo, but it must not hardcode private workspace paths or
-  unrelated project names.
+- Shipping changes finish on a named branch: push that branch to GitHub and use
+  the protected-`main` PR flow. Never tag a dirty or detached checkout.
+- Release Please is the normal lane and requires `RELEASE_PLEASE_TOKEN`; use
+  conventional `fix:`/`feat:` subjects. A requested manual release uses
+  `npm run release:github`, then verifies it with
+  `gh release view vX.Y.Z --repo OWNER/REPO`.
+- Before any release, run `npm run security:check`. The full source-first npm
+  procedure and rollback path are in README `Release Automation` and
+  `docs/PUBLIC_RELEASE_CHECKLIST.md`; load them only for a release task.
 
 ## Privacy
 
