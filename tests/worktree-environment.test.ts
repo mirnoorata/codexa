@@ -51,6 +51,8 @@ describe("tracked Codex worktree environment", () => {
     expect(packageJson.scripts?.["benchmark:ci"]).toContain("--verify-startup-contract");
 
     const workflow = await readFile(path.join(repoRoot, ".github/workflows/check.yml"), "utf8");
+    expect(workflow).toContain("os: [ubuntu-latest, macos-latest, windows-latest]");
+    expect(workflow).not.toContain("worktree-bootstrap-macos-lock:");
     expect(workflow).toContain("git worktree add --detach ../codexa-linked-worktree HEAD");
     expect(workflow).toContain(
       "powershell -NoProfile -ExecutionPolicy Bypass -File ./.codex/worktree-bootstrap.ps1"

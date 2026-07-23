@@ -4,10 +4,13 @@ import type { Stats } from "node:fs";
 import { chmod, lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { runCommand } from "./command.js";
 import type { InitToolProfile } from "./types/init.js";
 import { CODEXA_VERSION } from "./version.js";
 
 const CURRENT_CODEXA_CLI_PATH = fileURLToPath(new URL("./cli.js", import.meta.url));
+const GIT_TRACKED_TIMEOUT_MS = 2_500;
+const GIT_TRACKED_MAX_BUFFER_BYTES = 16 * 1024;
 
 export interface ExistingClaudeMcpConfig {
   contents: string;
@@ -37,11 +40,34 @@ export function portableRepoArg(repoRoot: string, targetRelPath: string): string
 
 export function isGitTracked(repoRoot: string, relPath: string): boolean {
   try {
-    execFileSync("git", ["-C", repoRoot, "ls-files", "--error-unmatch", relPath], { stdio: "ignore" });
+    execFileSync("git", ["-C", repoRoot, "ls-files", "--error-unmatch", "--", relPath], {
+      maxBuffer: GIT_TRACKED_MAX_BUFFER_BYTES,
+      stdio: "ignore",
+      timeout: GIT_TRACKED_TIMEOUT_MS,
+      windowsHide: true
+    });
     return true;
   } catch {
     return false;
   }
+}
+
+export async function isGitTrackedAsync(repoRoot: string, relPath: string): Promise<boolean> {
+  const result = await runCommand(
+    "git",
+    ["-C", repoRoot, "ls-files", "--error-unmatch", "--", relPath],
+    {
+      timeoutMs: GIT_TRACKED_TIMEOUT_MS,
+      maxBufferBytes: GIT_TRACKED_MAX_BUFFER_BYTES,
+      okExitCodes: [0, 1]
+    }
+  );
+  if (result.timedOut) throw new Error("git-tracked-inspection-timeout");
+  if (result.truncated) throw new Error("git-tracked-inspection-output-limit-exceeded");
+  if (result.error || result.exitCode === null) throw new Error("git-tracked-inspection-unavailable");
+  if (result.exitCode === 0) return true;
+  if (result.exitCode === 1) return false;
+  throw new Error(`git-tracked-inspection-failed:${result.exitCode}`);
 }
 
 export function detectExistingServerName(config: string): string | undefined {
