@@ -4,9 +4,10 @@ import path from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { renderCodexUseContract } from "./codex-contract.js";
 import { buildIndexLocked } from "./indexer.js";
-import { isRecognizedCodexaLauncher } from "./init-portability.js";
+import { isRecognizedCodexaLauncher, isRecognizedNodeCommand } from "./init-portability.js";
 import { CORE_PROFILE_TOOL_NAMES, PRIMARY_CODEX_LOOP } from "./mcp-tool-catalog.js";
 import { isRoutableWorkspaceSessionStatus, resolveMcpRepoRoot, type McpRepoRootResolution } from "./mcp-repo-root.js";
+import { nodeSupported } from "./node-version.js";
 import { statusQuery } from "./queries.js";
 import type { InitToolProfile } from "./types/init.js";
 import { CODEXA_VERSION } from "./version.js";
@@ -677,18 +678,60 @@ async function validateCodexaNodeLauncher(launcher: string): Promise<string | un
 }
 
 async function validateLauncherCommand(command: string): Promise<string | undefined> {
+  const nodeCommand = isRecognizedNodeCommand(command);
+  const npxCommand = command === "npx" || command === "npx.cmd";
+  let currentNode: string | undefined;
+  if (nodeCommand || npxCommand) {
+    try {
+      currentNode = await realpath(process.execPath);
+    } catch {
+      return "Codexa cannot resolve the current trusted Node runtime";
+    }
+    if (!nodeSupported()) return "Codexa is not running under a supported Node runtime";
+  }
   for (const candidate of executableCommandCandidates(command)) {
     try {
       const resolved = await realpath(candidate);
       const commandStat = await stat(resolved);
       if (!commandStat.isFile()) continue;
       await access(resolved, fsConstants.R_OK | fsConstants.X_OK);
+      if (nodeCommand && currentNode && !sameResolvedExecutable(resolved, currentNode)) {
+        return "Codexa-managed Node command is not the current trusted runtime; re-run codexa init";
+      }
+      if (npxCommand && currentNode && !(await npxCandidateUsesCurrentNode(candidate, currentNode))) {
+        return "Codexa-managed npx command is not paired with the current trusted Node runtime; re-run codexa init";
+      }
       return undefined;
     } catch {
       // Try the next PATH entry. The receipt reports only the aggregate failure.
     }
   }
   return "Codexa-managed launcher command does not resolve to an executable file";
+}
+
+async function npxCandidateUsesCurrentNode(candidate: string, currentNode: string): Promise<boolean> {
+  for (const sibling of pairedNodeCommandCandidates(candidate)) {
+    try {
+      if (sameResolvedExecutable(await realpath(sibling), currentNode)) return true;
+    } catch {
+      // A missing sibling cannot prove which Node runtime the wrapper uses.
+    }
+  }
+  return false;
+}
+
+export function pairedNodeCommandCandidates(
+  npxCandidate: string,
+  platform: NodeJS.Platform = process.platform
+): string[] {
+  const pathApi = platform === "win32" ? path.win32 : path.posix;
+  const directory = pathApi.dirname(npxCandidate);
+  const names = platform === "win32" ? ["node.exe", "node"] : ["node", "nodejs"];
+  return names.map((name) => pathApi.join(directory, name));
+}
+
+function sameResolvedExecutable(left: string, right: string): boolean {
+  return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
 }
 
 export function executableCommandCandidates(

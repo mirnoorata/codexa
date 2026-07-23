@@ -206,6 +206,33 @@ it("fails strict startup for an unrelated launcher and bounds excessive enabled 
       }
     });
 
+    const otherNodeRoot = await mkdtemp(path.join(os.tmpdir(), "codexa-strict-other-node-"));
+    const otherNode = path.join(otherNodeRoot, "node");
+    const executionSentinel = path.join(otherNodeRoot, "executed");
+    await writeFile(
+      otherNode,
+      `#!/usr/bin/env bash\nprintf executed >${JSON.stringify(executionSentinel)}\nexit 1\n`,
+      "utf8"
+    );
+    await chmod(otherNode, 0o755);
+    await writeFile(configPath, config.replaceAll(process.execPath, otherNode), "utf8");
+    const incompatibleNode = spawnSync(process.execPath, [cli, "session-start", repo, "--json", "--strict"], {
+      cwd: process.cwd(), encoding: "utf8", env: testEnv()
+    });
+    expect(incompatibleNode.status).toBe(1);
+    expect(JSON.parse(incompatibleNode.stdout)).toMatchObject({
+      config: {
+        state: "invalid",
+        reason: "Codexa-managed Node command is not the current trusted runtime; re-run codexa init"
+      }
+    });
+    await expect(readFile(executionSentinel, "utf8")).rejects.toThrow();
+    const configuredServe = spawnSync(otherNode, [cli, "serve", repo, "--tools", "core"], {
+      cwd: process.cwd(), encoding: "utf8", env: testEnv()
+    });
+    expect(configuredServe.status).not.toBe(0);
+    expect(await readFile(executionSentinel, "utf8")).toBe("executed");
+
     const excessiveTools = Array.from({ length: 5000 }, (_, index) => `tool-${index}`);
     await writeFile(configPath, config.replace(/^enabled_tools\s*=.*$/mu, `enabled_tools = ${JSON.stringify(excessiveTools)}`), "utf8");
     const excessive = spawnSync(process.execPath, [cli, "session-start", repo, "--json", "--strict"], {

@@ -153,7 +153,7 @@ function isPotentialCodexaCliPath(token: string | undefined): boolean {
   ));
 }
 
-function isRecognizedNodeCommand(command: string): boolean {
+export function isRecognizedNodeCommand(command: string): boolean {
   return command === "node" || (path.isAbsolute(command) && /^node(?:js)?(?:\.exe)?$/iu.test(path.basename(command)));
 }
 
