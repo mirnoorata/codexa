@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { promises as fs } from "node:fs";
+import { promises as fs, type Dirent } from "node:fs";
 import path from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { runCommand } from "./command.js";
@@ -22,6 +22,27 @@ export const WORKTREE_BOOTSTRAP_DEPENDENCY_SEAL_RELATIVE_PATH = "node_modules/.c
 const RECEIPT_MAX_BYTES = 128 * 1024;
 const DEPENDENCY_MAX_ENTRIES = 100_000;
 const DEPENDENCY_MAX_LOGICAL_BYTES = 2 * 1024 * 1024 * 1024;
+const STARTUP_SCAN_TIMEOUT_MS = 5_000;
+const STARTUP_SCAN_MAX_FILES = 128;
+const STARTUP_SCAN_MAX_LOGICAL_BYTES = 64 * 1024 * 1024;
+const STARTUP_DECLARATION_MAX_COUNT = 64;
+const STARTUP_DECLARATION_MAX_NAME_BYTES = 32 * 1024;
+const BUILD_SCAN_TIMEOUT_MS = 10_000;
+const BUILD_SCAN_MAX_FILES = 10_000;
+const BUILD_SCAN_MAX_ENTRIES = 10_000;
+const BUILD_SCAN_MAX_LOGICAL_BYTES = 256 * 1024 * 1024;
+
+interface InputScanBudget {
+  deadlineAt: number;
+  fileCount: number;
+  label: string;
+  logicalBytes: number;
+  maxEntries: number;
+  maxFiles: number;
+  maxLogicalBytes: number;
+  rootReal?: string;
+  visitedEntries: number;
+}
 
 export type WorktreeBootstrapLane = "posix-hooks" | "native-windows-mcp";
 export type WorktreeBootstrapValidation = "startup" | "adoption" | "full";
@@ -195,8 +216,9 @@ export async function validateWorktreeBootstrapReceipt(
   validation: WorktreeBootstrapValidation = "full"
 ): Promise<WorktreeBootstrapInspection> {
   let current: WorktreeBootstrapStartupFacts;
+  const startupBudget = createStartupScanBudget();
   try {
-    current = await currentStartupReceiptFacts(repoRoot);
+    current = await currentStartupReceiptFacts(repoRoot, startupBudget);
   } catch (error) {
     return { state: "unavailable", lane: receipt.lane, validation, reason: boundedReason(error) };
   }
@@ -224,7 +246,11 @@ export async function validateWorktreeBootstrapReceipt(
   if (platformReason) {
     return { state: "stale", lane: receipt.lane, validation, reason: platformReason, receipt };
   }
-  const hookContract = await inspectHookLaneContract(path.resolve(repoRoot), receipt.lane);
+  const hookContract = await inspectHookLaneContract(
+    path.resolve(repoRoot),
+    receipt.lane,
+    startupBudget
+  );
   if (!hookContract.ok) {
     return { state: "stale", lane: receipt.lane, validation, reason: hookContract.reason, receipt };
   }
@@ -287,12 +313,12 @@ export async function inspectWorktreeBootstrapReceipt(
   const receiptPath = path.join(repo, WORKTREE_BOOTSTRAP_RECEIPT_RELATIVE_PATH);
   try {
     await assertSafeManagedStateDirectory(repo, "tmp");
-    await assertSafeManagedFile(receiptPath);
-    const stat = await fs.lstat(receiptPath);
-    if (stat.size > RECEIPT_MAX_BYTES) {
-      return { state: "invalid", validation, reason: "receipt-too-large" };
-    }
-    const parsed = JSON.parse(await fs.readFile(receiptPath, "utf8")) as unknown;
+    const parsed = JSON.parse((await readBoundedStableRegularFile(
+      receiptPath,
+      RECEIPT_MAX_BYTES,
+      "receipt",
+      Date.now() + STARTUP_SCAN_TIMEOUT_MS
+    )).toString("utf8")) as unknown;
     if (!isWorktreeBootstrapReceipt(parsed)) {
       return { state: "invalid", validation, reason: "receipt-schema-invalid" };
     }
@@ -302,6 +328,9 @@ export async function inspectWorktreeBootstrapReceipt(
       return required
         ? { state: "missing", validation, reason: "receipt-missing" }
         : { state: "not-required" };
+    }
+    if (error instanceof Error && error.message === "receipt-size-limit-exceeded") {
+      return { state: "invalid", validation, reason: "receipt-too-large" };
     }
     return { state: "invalid", validation, reason: boundedReason(error) };
   }
@@ -349,7 +378,10 @@ async function currentCompletionReceiptFacts(
   };
 }
 
-async function currentStartupReceiptFacts(repoRoot: string): Promise<WorktreeBootstrapStartupFacts> {
+async function currentStartupReceiptFacts(
+  repoRoot: string,
+  budget: InputScanBudget = createStartupScanBudget()
+): Promise<WorktreeBootstrapStartupFacts> {
   const repo = path.resolve(repoRoot);
   const repoRootReal = await fs.realpath(repo);
   const commonDirResult = await runCommand(
@@ -364,17 +396,39 @@ async function currentStartupReceiptFacts(repoRoot: string): Promise<WorktreeBoo
   return {
     repoRoot: repoRootReal,
     gitCommonDir,
-    rootLockSha256: await hashNamedFiles(repo, ["package-lock.json", "uv.lock"]),
-    packageJsonSha256: await hashRegularFile(path.join(repo, "package.json")),
-    packageLockSha256: sha256(await readBoundedStableRegularFile(
+    rootLockSha256: await hashNamedFiles(repo, ["package-lock.json", "uv.lock"], budget),
+    packageJsonSha256: await hashRegularFile(
+      repo,
+      path.join(repo, "package.json"),
+      budget,
+      "package-json"
+    ),
+    packageLockSha256: sha256(await readBudgetedStableRegularFile(
       path.join(repo, "package-lock.json"),
       STARTUP_INPUT_MAX_BYTES,
-      "package-lock"
+      "package-lock",
+      budget,
+      repo
     )),
-    startupInputSha256: await hashStartupInputs(repo),
-    configSha256: await hashRegularFile(path.join(repo, ".codex", "config.toml")),
-    hooksSha256: await hashOptionalRegularFile(path.join(repo, ".codex", "hooks.json")),
-    dependencySealSha256: await hashRegularFile(path.join(repo, WORKTREE_BOOTSTRAP_DEPENDENCY_SEAL_RELATIVE_PATH)),
+    startupInputSha256: await hashStartupInputs(repo, budget),
+    configSha256: await hashRegularFile(
+      repo,
+      path.join(repo, ".codex", "config.toml"),
+      budget,
+      "config"
+    ),
+    hooksSha256: await hashOptionalRegularFile(
+      repo,
+      path.join(repo, ".codex", "hooks.json"),
+      budget,
+      "hooks"
+    ),
+    dependencySealSha256: await hashRegularFile(
+      repo,
+      path.join(repo, WORKTREE_BOOTSTRAP_DEPENDENCY_SEAL_RELATIVE_PATH),
+      budget,
+      "dependency-seal"
+    ),
     runtime: {
       nodePath,
       nodeVersion: process.version,
@@ -388,22 +442,28 @@ async function currentStartupReceiptFacts(repoRoot: string): Promise<WorktreeBoo
 }
 
 async function hashBuildInputs(repoRoot: string): Promise<string> {
+  const budget = createBuildScanBudget();
   const files = [
     path.join(repoRoot, "package.json"),
     path.join(repoRoot, "package-lock.json"),
     path.join(repoRoot, "tsconfig.json"),
-    ...await regularTreeFiles(repoRoot, path.join(repoRoot, "src"))
+    ...await regularTreeFiles(repoRoot, path.join(repoRoot, "src"), budget)
   ];
-  return hashFileManifest(repoRoot, files);
+  return hashFileManifest(repoRoot, files, budget);
 }
 
-async function hashStartupInputs(repoRoot: string): Promise<string> {
+async function hashStartupInputs(
+  repoRoot: string,
+  budget: InputScanBudget = createStartupScanBudget()
+): Promise<string> {
   const wrapper = ".codex/worktree-bootstrap.sh";
   const declared = parseBootstrapInputNames(
-    (await readBoundedStableRegularFile(
+    (await readBudgetedStableRegularFile(
       path.join(repoRoot, wrapper),
       STARTUP_INPUT_MAX_BYTES,
-      "bootstrap-wrapper"
+      "bootstrap-wrapper",
+      budget,
+      repoRoot
     )).toString("utf8")
   );
   return hashNamedFiles(repoRoot, [...new Set([
@@ -411,7 +471,7 @@ async function hashStartupInputs(repoRoot: string): Promise<string> {
     ".codex/worktree-bootstrap.ps1",
     wrapper,
     ...declared
-  ])].sort());
+  ])].sort(), budget);
 }
 
 function parseBootstrapInputNames(wrapper: string): string[] {
@@ -419,7 +479,13 @@ function parseBootstrapInputNames(wrapper: string): string[] {
   const names = wrapper.split(/\r?\n/u)
     .filter((line) => line.startsWith(prefix))
     .map((line) => line.slice(prefix.length));
-  if (names.length === 0 || new Set(names).size !== names.length) {
+  const nameBytes = names.reduce((total, name) => total + Buffer.byteLength(name, "utf8"), 0);
+  if (
+    names.length === 0 ||
+    names.length > STARTUP_DECLARATION_MAX_COUNT ||
+    nameBytes > STARTUP_DECLARATION_MAX_NAME_BYTES ||
+    new Set(names).size !== names.length
+  ) {
     throw new Error("bootstrap-input-declarations-invalid");
   }
   for (const name of names) {
@@ -438,16 +504,22 @@ function parseBootstrapInputNames(wrapper: string): string[] {
   return names;
 }
 
-async function hashNamedFiles(repoRoot: string, names: string[]): Promise<string> {
+async function hashNamedFiles(
+  repoRoot: string,
+  names: string[],
+  budget: InputScanBudget = createStartupScanBudget()
+): Promise<string> {
   const hash = createHash("sha256");
   hash.update("codexa-startup-input-v2\0", "utf8");
   for (const name of names) {
     const filePath = path.join(repoRoot, name);
     try {
-      const contents = await readBoundedStableRegularFile(
+      const contents = await readBudgetedStableRegularFile(
         filePath,
         STARTUP_INPUT_MAX_BYTES,
-        "startup-input"
+        "startup-input",
+        budget,
+        repoRoot
       );
       updateManifestRecord(hash, name, contents);
     } catch (error) {
@@ -458,7 +530,11 @@ async function hashNamedFiles(repoRoot: string, names: string[]): Promise<string
   return hash.digest("hex");
 }
 
-async function regularTreeFiles(repoRoot: string, directory: string): Promise<string[]> {
+async function regularTreeFiles(
+  repoRoot: string,
+  directory: string,
+  budget: InputScanBudget
+): Promise<string[]> {
   const repoReal = await fs.realpath(repoRoot);
   const directoryStat = await fs.lstat(directory);
   if (!directoryStat.isDirectory() || directoryStat.isSymbolicLink()) {
@@ -468,8 +544,8 @@ async function regularTreeFiles(repoRoot: string, directory: string): Promise<st
   if (!isContainedPath(repoReal, directoryReal)) throw new Error("tree-outside-repository");
   const files: string[] = [];
   const visit = async (current: string): Promise<void> => {
-    const entries = await fs.readdir(current, { withFileTypes: true });
-    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    const entries = await readBoundedDirectoryEntries(current, budget);
+    for (const entry of entries) {
       const candidate = path.join(current, entry.name);
       if (entry.isDirectory()) {
         await assertSafeManagedDirectory(candidate);
@@ -486,14 +562,24 @@ async function regularTreeFiles(repoRoot: string, directory: string): Promise<st
   return files;
 }
 
-async function hashFileManifest(base: string, files: string[]): Promise<string> {
+async function hashFileManifest(
+  base: string,
+  files: string[],
+  budget: InputScanBudget
+): Promise<string> {
   const hash = createHash("sha256");
   hash.update("codexa-build-input-v2\0", "utf8");
   for (const file of files.sort()) {
     updateManifestRecord(
       hash,
       path.relative(base, file).replaceAll(path.sep, "/"),
-      await readRegularFile(file)
+      await readBudgetedStableRegularFile(
+        file,
+        STARTUP_INPUT_MAX_BYTES,
+        "build-input",
+        budget,
+        base
+      )
     );
   }
   return hash.digest("hex");
@@ -515,22 +601,144 @@ function updateManifestRecord(
   hash.update(contents);
 }
 
-async function hashRegularFile(filePath: string): Promise<string> {
-  return sha256(await readRegularFile(filePath));
+async function hashRegularFile(
+  repoRoot: string,
+  filePath: string,
+  budget: InputScanBudget = createStartupScanBudget(),
+  label = "startup-input"
+): Promise<string> {
+  return sha256(await readBudgetedStableRegularFile(
+    filePath,
+    STARTUP_INPUT_MAX_BYTES,
+    label,
+    budget,
+    repoRoot
+  ));
 }
 
-async function hashOptionalRegularFile(filePath: string): Promise<string> {
+async function hashOptionalRegularFile(
+  repoRoot: string,
+  filePath: string,
+  budget: InputScanBudget = createStartupScanBudget(),
+  label = "startup-input"
+): Promise<string> {
   try {
-    return await hashRegularFile(filePath);
+    return await hashRegularFile(repoRoot, filePath, budget, label);
   } catch (error) {
     if (isNodeError(error) && error.code === "ENOENT") return "missing";
     throw error;
   }
 }
 
-async function readRegularFile(filePath: string): Promise<Buffer> {
-  await assertSafeManagedFile(filePath);
-  return fs.readFile(filePath);
+async function readBudgetedStableRegularFile(
+  filePath: string,
+  maxBytes: number,
+  label: string,
+  budget: InputScanBudget,
+  repoRoot?: string
+): Promise<Buffer> {
+  assertInputScanDeadline(budget);
+  budget.fileCount += 1;
+  if (budget.fileCount > budget.maxFiles) {
+    throw new Error(`${budget.label}-file-limit-exceeded`);
+  }
+  const contents = await readBoundedStableRegularFile(
+    filePath,
+    maxBytes,
+    label,
+    budget.deadlineAt
+  );
+  budget.logicalBytes += contents.length;
+  if (budget.logicalBytes > budget.maxLogicalBytes) {
+    throw new Error(`${budget.label}-byte-limit-exceeded`);
+  }
+  if (repoRoot) {
+    const rootReal = await fs.realpath(repoRoot);
+    if (budget.rootReal && budget.rootReal !== rootReal) {
+      throw new Error(`${budget.label}-repository-changed`);
+    }
+    budget.rootReal = rootReal;
+    const fileReal = await fs.realpath(filePath).catch((error: unknown) => {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        throw new Error(`${label}-changed-during-read`);
+      }
+      throw error;
+    });
+    if (!isContainedPath(rootReal, fileReal)) {
+      throw new Error(`${label}-outside-repository`);
+    }
+  }
+  assertInputScanDeadline(budget);
+  return contents;
+}
+
+function createStartupScanBudget(): InputScanBudget {
+  return createInputScanBudget(
+    "startup-input",
+    STARTUP_SCAN_MAX_FILES,
+    STARTUP_SCAN_MAX_FILES,
+    STARTUP_SCAN_MAX_LOGICAL_BYTES,
+    STARTUP_SCAN_TIMEOUT_MS
+  );
+}
+
+function createBuildScanBudget(): InputScanBudget {
+  return createInputScanBudget(
+    "build-input",
+    BUILD_SCAN_MAX_FILES,
+    BUILD_SCAN_MAX_ENTRIES,
+    BUILD_SCAN_MAX_LOGICAL_BYTES,
+    BUILD_SCAN_TIMEOUT_MS
+  );
+}
+
+function createInputScanBudget(
+  label: string,
+  maxFiles: number,
+  maxEntries: number,
+  maxLogicalBytes: number,
+  timeoutMs: number
+): InputScanBudget {
+  return {
+    deadlineAt: Date.now() + timeoutMs,
+    fileCount: 0,
+    label,
+    logicalBytes: 0,
+    maxEntries,
+    maxFiles,
+    maxLogicalBytes,
+    visitedEntries: 0
+  };
+}
+
+function assertInputScanDeadline(budget: InputScanBudget): void {
+  if (Date.now() > budget.deadlineAt) {
+    throw new Error(`${budget.label}-scan-timeout`);
+  }
+}
+
+async function readBoundedDirectoryEntries(
+  directory: string,
+  budget: InputScanBudget
+): Promise<Dirent[]> {
+  const entries: Dirent[] = [];
+  const handle = await fs.opendir(directory);
+  try {
+    while (true) {
+      assertInputScanDeadline(budget);
+      const entry = await handle.read();
+      if (!entry) break;
+      budget.visitedEntries += 1;
+      if (budget.visitedEntries > budget.maxEntries) {
+        throw new Error(`${budget.label}-entry-limit-exceeded`);
+      }
+      entries.push(entry);
+    }
+  } finally {
+    await handle.close();
+  }
+  assertInputScanDeadline(budget);
+  return entries.sort((left, right) => left.name.localeCompare(right.name));
 }
 
 function sha256(contents: Buffer): string {
@@ -623,14 +831,26 @@ function lanePlatformMismatch(lane: WorktreeBootstrapLane, platform: NodeJS.Plat
 
 async function inspectHookLaneContract(
   repoRoot: string,
-  lane: WorktreeBootstrapLane
+  lane: WorktreeBootstrapLane,
+  budget: InputScanBudget = createStartupScanBudget()
 ): Promise<{ ok: true } | { ok: false; reason: string }> {
   try {
-    const configContents = (await readRegularFile(path.join(repoRoot, ".codex", "config.toml"))).toString("utf8");
+    const configContents = (await readBudgetedStableRegularFile(
+      path.join(repoRoot, ".codex", "config.toml"),
+      STARTUP_INPUT_MAX_BYTES,
+      "config",
+      budget,
+      repoRoot
+    )).toString("utf8");
     const parsedConfig = parseToml(configContents) as unknown;
     if (!isPlainObject(parsedConfig)) return { ok: false, reason: "hook-config-invalid" };
     const hooksFeature = isPlainObject(parsedConfig.features) ? parsedConfig.features.hooks : undefined;
-    const hooksContents = await readOptionalRegularFile(path.join(repoRoot, ".codex", "hooks.json"));
+    const hooksContents = await readOptionalRegularFile(
+      repoRoot,
+      path.join(repoRoot, ".codex", "hooks.json"),
+      budget,
+      "hooks"
+    );
     const parsedHooks = hooksContents ? JSON.parse(hooksContents.toString("utf8")) as unknown : {};
     const hooks = isPlainObject(parsedHooks) && isPlainObject(parsedHooks.hooks) ? parsedHooks.hooks : {};
     const nodePath = await fs.realpath(process.execPath);
@@ -709,9 +929,20 @@ function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
 }
 
-async function readOptionalRegularFile(filePath: string): Promise<Buffer | null> {
+async function readOptionalRegularFile(
+  repoRoot: string,
+  filePath: string,
+  budget: InputScanBudget,
+  label: string
+): Promise<Buffer | null> {
   try {
-    return await readRegularFile(filePath);
+    return await readBudgetedStableRegularFile(
+      filePath,
+      STARTUP_INPUT_MAX_BYTES,
+      label,
+      budget,
+      repoRoot
+    );
   } catch (error) {
     if (isNodeError(error) && error.code === "ENOENT") return null;
     throw error;

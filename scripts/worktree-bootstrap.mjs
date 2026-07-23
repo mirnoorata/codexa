@@ -15,10 +15,25 @@ import { fileURLToPath } from "node:url";
 
 class BootstrapLockBusyError extends Error {}
 
+const STARTUP_INPUT_MAX_BYTES = 16 * 1024 * 1024;
+const STARTUP_SCAN_TIMEOUT_MS = 5_000;
+const STARTUP_SCAN_MAX_FILES = 128;
+const STARTUP_SCAN_MAX_LOGICAL_BYTES = 64 * 1024 * 1024;
+const STARTUP_DECLARATION_MAX_COUNT = 64;
+const STARTUP_DECLARATION_MAX_NAME_BYTES = 32 * 1024;
+const BUILD_SCAN_TIMEOUT_MS = 10_000;
+const BUILD_SCAN_MAX_FILES = 10_000;
+const BUILD_SCAN_MAX_ENTRIES = 10_000;
+const BUILD_SCAN_MAX_LOGICAL_BYTES = 256 * 1024 * 1024;
+const LOCK_OWNER_MAX_BYTES = 64 * 1024;
+
 try {
   const mode = process.argv[2] ?? "";
   if (mode === "--verify-lock" || mode === "--try-lock") {
     await runLockProbe(mode, process.argv[3] ?? process.cwd());
+  } else if (mode === "--inspect-inputs") {
+    const repoRoot = await resolveGitRoot(process.argv[3] ?? process.cwd());
+    process.stdout.write(`${JSON.stringify(await snapshotBootstrapInputs(repoRoot))}\n`);
   } else if (mode === "auto") {
     await runBootstrap(process.platform === "win32" ? "native-windows-mcp" : "posix-hooks", process.argv[3] ?? process.cwd());
   } else {
@@ -51,8 +66,10 @@ async function runBootstrap(lane, repoInput) {
   let logHandle;
   let primaryError;
   try {
-    const expectedStartupInput = await hashStartupInputs(repoRoot);
-    const expectedBuildInput = await hashBuildInputs(repoRoot);
+    const {
+      startupInputSha256: expectedStartupInput,
+      buildInputSha256: expectedBuildInput
+    } = await snapshotBootstrapInputs(repoRoot);
     const preflight = spawnSync(
       process.execPath,
       [path.join(repoRoot, "scripts/worktree-bootstrap-preflight.mjs"), repoRoot],
@@ -163,12 +180,13 @@ async function writeDependencySeal(repoRoot, buildInputSha256) {
   await assertContainedDirectory(repoRoot, nodeModules);
   const sealPath = path.join(nodeModules, ".codexa-dependencies.json");
   await assertSafeFile(sealPath);
+  const budget = createStartupScanBudget();
   const seal = {
     schemaVersion: 1,
     kind: "codexa-dependency-install",
-    packageJsonSha256: await hashFile(path.join(repoRoot, "package.json")),
-    packageLockSha256: await hashFile(path.join(repoRoot, "package-lock.json")),
-    npmrcSha256: await hashFile(path.join(repoRoot, ".npmrc")),
+    packageJsonSha256: await hashFile(repoRoot, path.join(repoRoot, "package.json"), budget, "package-json"),
+    packageLockSha256: await hashFile(repoRoot, path.join(repoRoot, "package-lock.json"), budget, "package-lock"),
+    npmrcSha256: await hashFile(repoRoot, path.join(repoRoot, ".npmrc"), budget, "npmrc"),
     buildInputSha256,
     runtime: {
       nodeVersion: process.version,
@@ -191,12 +209,20 @@ async function writeDependencySeal(repoRoot, buildInputSha256) {
   }
 }
 
+async function snapshotBootstrapInputs(repoRoot) {
+  return {
+    startupInputSha256: await hashStartupInputs(repoRoot),
+    buildInputSha256: await hashBuildInputs(repoRoot)
+  };
+}
+
 async function hashBuildInputs(repoRoot) {
+  const budget = createBuildScanBudget();
   const files = [
     path.join(repoRoot, "package.json"),
     path.join(repoRoot, "package-lock.json"),
     path.join(repoRoot, "tsconfig.json"),
-    ...await regularTreeFiles(repoRoot, path.join(repoRoot, "src"))
+    ...await regularTreeFiles(repoRoot, path.join(repoRoot, "src"), budget)
   ];
   const hash = createHash("sha256");
   hash.update("codexa-build-input-v2\0", "utf8");
@@ -204,22 +230,35 @@ async function hashBuildInputs(repoRoot) {
     updateManifestRecord(
       hash,
       path.relative(repoRoot, filePath).replaceAll(path.sep, "/"),
-      await readRegularFile(filePath)
+      await readBudgetedStableRegularFile(
+        filePath,
+        STARTUP_INPUT_MAX_BYTES,
+        "build-input",
+        budget,
+        repoRoot
+      )
     );
   }
   return hash.digest("hex");
 }
 
 async function hashStartupInputs(repoRoot) {
+  const budget = createStartupScanBudget();
   const wrapper = ".codex/worktree-bootstrap.sh";
-  const wrapperContents = (await readRegularFile(path.join(repoRoot, wrapper))).toString("utf8");
+  const wrapperContents = (await readBudgetedStableRegularFile(
+    path.join(repoRoot, wrapper),
+    STARTUP_INPUT_MAX_BYTES,
+    "bootstrap-wrapper",
+    budget,
+    repoRoot
+  )).toString("utf8");
   const declared = parseBootstrapInputNames(wrapperContents);
   return hashNamedFiles(repoRoot, [...new Set([
     ".codex/environments/environment.toml",
     ".codex/worktree-bootstrap.ps1",
     wrapper,
     ...declared
-  ])].sort());
+  ])].sort(), budget);
 }
 
 function parseBootstrapInputNames(wrapper) {
@@ -227,7 +266,13 @@ function parseBootstrapInputNames(wrapper) {
   const names = wrapper.split(/\r?\n/u)
     .filter((line) => line.startsWith(prefix))
     .map((line) => line.slice(prefix.length));
-  if (names.length === 0 || new Set(names).size !== names.length) {
+  const nameBytes = names.reduce((total, name) => total + Buffer.byteLength(name, "utf8"), 0);
+  if (
+    names.length === 0 ||
+    names.length > STARTUP_DECLARATION_MAX_COUNT ||
+    nameBytes > STARTUP_DECLARATION_MAX_NAME_BYTES ||
+    new Set(names).size !== names.length
+  ) {
     throw new Error("Codexa bootstrap input declarations are missing or duplicated.");
   }
   for (const name of names) {
@@ -246,12 +291,22 @@ function parseBootstrapInputNames(wrapper) {
   return names;
 }
 
-async function hashNamedFiles(repoRoot, names) {
+async function hashNamedFiles(repoRoot, names, budget = createStartupScanBudget()) {
   const hash = createHash("sha256");
   hash.update("codexa-startup-input-v2\0", "utf8");
   for (const name of names) {
     try {
-      updateManifestRecord(hash, name, await readRegularFile(path.join(repoRoot, name)));
+      updateManifestRecord(
+        hash,
+        name,
+        await readBudgetedStableRegularFile(
+          path.join(repoRoot, name),
+          STARTUP_INPUT_MAX_BYTES,
+          "startup-input",
+          budget,
+          repoRoot
+        )
+      );
     } catch (error) {
       if (error?.code === "ENOENT") updateManifestRecord(hash, name, null);
       else throw error;
@@ -272,12 +327,12 @@ function updateManifestRecord(hash, name, contents) {
   hash.update(contents);
 }
 
-async function regularTreeFiles(repoRoot, directory) {
+async function regularTreeFiles(repoRoot, directory, budget) {
   await assertContainedDirectory(repoRoot, directory);
   const files = [];
   const visit = async (current) => {
-    const entries = await fs.readdir(current, { withFileTypes: true });
-    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+    const entries = await readBoundedDirectoryEntries(current, budget);
+    for (const entry of entries) {
       const candidate = path.join(current, entry.name);
       if (entry.isDirectory()) {
         await assertContainedDirectory(repoRoot, candidate);
@@ -461,7 +516,13 @@ async function acquireBootstrapLock(repoRoot) {
       let owner;
       try {
         await assertSafeFile(ownerPath);
-        owner = JSON.parse(await fs.readFile(ownerPath, "utf8"));
+        owner = JSON.parse((await readBudgetedStableRegularFile(
+          ownerPath,
+          LOCK_OWNER_MAX_BYTES,
+          "bootstrap-lock-owner",
+          createStartupScanBudget(),
+          repoRoot
+        )).toString("utf8"));
       } catch (ownerError) {
         if (ownerError?.code === "ENOENT") {
           const entries = await fs.readdir(lockDir);
@@ -501,7 +562,14 @@ async function acquireBootstrapLock(repoRoot) {
 
 async function releaseBootstrapLock(lock) {
   await assertSafeFile(lock.ownerPath);
-  const owner = JSON.parse(await fs.readFile(lock.ownerPath, "utf8"));
+  const repoRoot = path.dirname(path.dirname(path.dirname(lock.lockDir)));
+  const owner = JSON.parse((await readBudgetedStableRegularFile(
+    lock.ownerPath,
+    LOCK_OWNER_MAX_BYTES,
+    "bootstrap-lock-owner",
+    createStartupScanBudget(),
+    repoRoot
+  )).toString("utf8"));
   if (
     owner?.schemaVersion !== 2 ||
     owner?.token !== lock.token ||
@@ -650,13 +718,175 @@ async function assertSafeFile(filePath) {
   }
 }
 
-async function readRegularFile(filePath) {
-  await assertSafeFile(filePath);
-  return fs.readFile(filePath);
+async function readBudgetedStableRegularFile(filePath, maxBytes, label, budget, repoRoot) {
+  assertInputScanDeadline(budget);
+  budget.fileCount += 1;
+  if (budget.fileCount > budget.maxFiles) {
+    throw new Error(`${budget.label}-file-limit-exceeded`);
+  }
+  const expected = await fs.lstat(filePath);
+  if (!expected.isFile() || expected.isSymbolicLink() || expected.nlink !== 1) {
+    throw new Error(`${label}-invalid`);
+  }
+  if (expected.size > maxBytes) throw new Error(`${label}-size-limit-exceeded`);
+  const handle = await fs.open(filePath, "r").catch((error) => {
+    if (error?.code === "ENOENT") throw new Error(`${label}-changed-during-read`);
+    throw error;
+  });
+  try {
+    const opened = await handle.stat();
+    if (
+      !opened.isFile() ||
+      opened.dev !== expected.dev ||
+      opened.ino !== expected.ino ||
+      opened.size !== expected.size ||
+      opened.mode !== expected.mode ||
+      opened.nlink !== expected.nlink
+    ) {
+      throw new Error(`${label}-changed-during-read`);
+    }
+    const contents = Buffer.alloc(expected.size);
+    let position = 0;
+    while (position < contents.length) {
+      assertInputScanDeadline(budget);
+      const { bytesRead } = await handle.read(
+        contents,
+        position,
+        contents.length - position,
+        position
+      );
+      if (bytesRead <= 0) throw new Error(`${label}-changed-during-read`);
+      position += bytesRead;
+    }
+    const final = await handle.stat();
+    if (
+      final.dev !== opened.dev ||
+      final.ino !== opened.ino ||
+      final.size !== opened.size ||
+      final.mode !== opened.mode ||
+      final.nlink !== opened.nlink ||
+      final.mtimeMs !== opened.mtimeMs ||
+      final.ctimeMs !== opened.ctimeMs
+    ) {
+      throw new Error(`${label}-changed-during-read`);
+    }
+    const named = await fs.lstat(filePath).catch((error) => {
+      if (error?.code === "ENOENT") throw new Error(`${label}-changed-during-read`);
+      throw error;
+    });
+    if (
+      !named.isFile() ||
+      named.isSymbolicLink() ||
+      named.nlink !== final.nlink ||
+      named.dev !== final.dev ||
+      named.ino !== final.ino ||
+      named.size !== final.size ||
+      named.mode !== final.mode ||
+      named.mtimeMs !== final.mtimeMs ||
+      named.ctimeMs !== final.ctimeMs
+    ) {
+      throw new Error(`${label}-changed-during-read`);
+    }
+    budget.logicalBytes += contents.length;
+    if (budget.logicalBytes > budget.maxLogicalBytes) {
+      throw new Error(`${budget.label}-byte-limit-exceeded`);
+    }
+    if (repoRoot) {
+      const rootReal = await fs.realpath(repoRoot);
+      if (budget.rootReal && budget.rootReal !== rootReal) {
+        throw new Error(`${budget.label}-repository-changed`);
+      }
+      budget.rootReal = rootReal;
+      const fileReal = await fs.realpath(filePath).catch((error) => {
+        if (error?.code === "ENOENT") throw new Error(`${label}-changed-during-read`);
+        throw error;
+      });
+      if (!isContainedPath(rootReal, fileReal)) {
+        throw new Error(`${label}-outside-repository`);
+      }
+    }
+    assertInputScanDeadline(budget);
+    return contents;
+  } finally {
+    await handle.close();
+  }
 }
 
-async function hashFile(filePath) {
-  return createHash("sha256").update(await readRegularFile(filePath)).digest("hex");
+async function hashFile(
+  repoRoot,
+  filePath,
+  budget = createStartupScanBudget(),
+  label = "startup-input"
+) {
+  return createHash("sha256")
+    .update(await readBudgetedStableRegularFile(
+      filePath,
+      STARTUP_INPUT_MAX_BYTES,
+      label,
+      budget,
+      repoRoot
+    ))
+    .digest("hex");
+}
+
+function createStartupScanBudget() {
+  return createInputScanBudget(
+    "startup-input",
+    STARTUP_SCAN_MAX_FILES,
+    STARTUP_SCAN_MAX_FILES,
+    STARTUP_SCAN_MAX_LOGICAL_BYTES,
+    STARTUP_SCAN_TIMEOUT_MS
+  );
+}
+
+function createBuildScanBudget() {
+  return createInputScanBudget(
+    "build-input",
+    BUILD_SCAN_MAX_FILES,
+    BUILD_SCAN_MAX_ENTRIES,
+    BUILD_SCAN_MAX_LOGICAL_BYTES,
+    BUILD_SCAN_TIMEOUT_MS
+  );
+}
+
+function createInputScanBudget(label, maxFiles, maxEntries, maxLogicalBytes, timeoutMs) {
+  return {
+    deadlineAt: Date.now() + timeoutMs,
+    fileCount: 0,
+    label,
+    logicalBytes: 0,
+    maxEntries,
+    maxFiles,
+    maxLogicalBytes,
+    visitedEntries: 0
+  };
+}
+
+function assertInputScanDeadline(budget) {
+  if (Date.now() > budget.deadlineAt) {
+    throw new Error(`${budget.label}-scan-timeout`);
+  }
+}
+
+async function readBoundedDirectoryEntries(directory, budget) {
+  const entries = [];
+  const handle = await fs.opendir(directory);
+  try {
+    while (true) {
+      assertInputScanDeadline(budget);
+      const entry = await handle.read();
+      if (!entry) break;
+      budget.visitedEntries += 1;
+      if (budget.visitedEntries > budget.maxEntries) {
+        throw new Error(`${budget.label}-entry-limit-exceeded`);
+      }
+      entries.push(entry);
+    }
+  } finally {
+    await handle.close();
+  }
+  assertInputScanDeadline(budget);
+  return entries.sort((left, right) => left.name.localeCompare(right.name));
 }
 
 function isContainedPath(parent, candidate) {

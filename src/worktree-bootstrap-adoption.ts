@@ -369,11 +369,16 @@ export async function readBoundedStableRegularFile(
   if (deadlineAt !== undefined) assertAdoptionDeadline(deadlineAt);
   await assertSafeManagedFile(filePath);
   const expected = await fs.lstat(filePath);
-  if (!expected.isFile() || expected.isSymbolicLink()) {
+  if (!expected.isFile() || expected.isSymbolicLink() || expected.nlink !== 1) {
     throw new Error(`${label}-invalid`);
   }
   if (expected.size > maxBytes) throw new Error(`${label}-size-limit-exceeded`);
-  const handle = await fs.open(filePath, "r");
+  const handle = await fs.open(filePath, "r").catch((error: unknown) => {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      throw new Error(`${label}-changed-during-read`);
+    }
+    throw error;
+  });
   try {
     const opened = await handle.stat();
     if (
@@ -381,7 +386,8 @@ export async function readBoundedStableRegularFile(
       opened.dev !== expected.dev ||
       opened.ino !== expected.ino ||
       opened.size !== expected.size ||
-      opened.mode !== expected.mode
+      opened.mode !== expected.mode ||
+      opened.nlink !== expected.nlink
     ) {
       throw new Error(`${label}-changed-during-read`);
     }
@@ -404,7 +410,28 @@ export async function readBoundedStableRegularFile(
       final.ino !== opened.ino ||
       final.size !== opened.size ||
       final.mode !== opened.mode ||
-      final.mtimeMs !== opened.mtimeMs
+      final.nlink !== opened.nlink ||
+      final.mtimeMs !== opened.mtimeMs ||
+      final.ctimeMs !== opened.ctimeMs
+    ) {
+      throw new Error(`${label}-changed-during-read`);
+    }
+    const named = await fs.lstat(filePath).catch((error: unknown) => {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        throw new Error(`${label}-changed-during-read`);
+      }
+      throw error;
+    });
+    if (
+      !named.isFile() ||
+      named.isSymbolicLink() ||
+      named.nlink !== final.nlink ||
+      named.dev !== final.dev ||
+      named.ino !== final.ino ||
+      named.size !== final.size ||
+      named.mode !== final.mode ||
+      named.mtimeMs !== final.mtimeMs ||
+      named.ctimeMs !== final.ctimeMs
     ) {
       throw new Error(`${label}-changed-during-read`);
     }

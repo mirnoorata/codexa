@@ -1,8 +1,9 @@
-import { execFileSync, spawnSync } from "node:child_process";
-import { link, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, truncate, writeFile } from "node:fs/promises";
+import { execFileSync, spawnSync, type SpawnSyncReturns } from "node:child_process";
+import { promises as nodeFs } from "node:fs";
+import { chmod, link, mkdir, mkdtemp, readFile, realpath, rename, rm, symlink, truncate, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterAll, describe, expect, it } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 import {
   inspectWorktreeBootstrapReceipt,
   issueWorktreeBootstrapReceipt,
@@ -273,13 +274,137 @@ describe("worktree bootstrap receipt", () => {
     const injectedPath = path.join(repo, "src/evil.ts");
     await writeFile(firstPath, Buffer.from("prefix\0src/evil.ts\0payload", "utf8"));
     const unsplit = await worktreeBootstrapBuildInputSha256(repo);
+    const unsplitProducer = producerInputDigests(repo);
 
     await writeFile(firstPath, "prefix", "utf8");
     await writeFile(injectedPath, "payload", "utf8");
     const split = await worktreeBootstrapBuildInputSha256(repo);
+    const splitProducer = producerInputDigests(repo);
 
     expect(split).not.toBe(unsplit);
+    expect(unsplitProducer.buildInputSha256).toBe(unsplit);
+    expect(splitProducer.buildInputSha256).toBe(split);
+    expect(splitProducer.buildInputSha256).not.toBe(unsplitProducer.buildInputSha256);
   });
+
+  it("keeps the production producer and receipt verifier input digests identical", async () => {
+    const repo = await createReceiptFixture("codexa-worktree-receipt-producer-parity-");
+    const producer = producerInputDigests(repo);
+
+    await expect(worktreeBootstrapStartupInputSha256(repo)).resolves.toBe(
+      producer.startupInputSha256
+    );
+    await expect(worktreeBootstrapBuildInputSha256(repo)).resolves.toBe(
+      producer.buildInputSha256
+    );
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "fails the production bootstrap before npm when declarations exceed the shared budget",
+    async () => {
+      const repo = await createReceiptFixture("codexa-worktree-receipt-declaration-limit-");
+      const declarations = Array.from(
+        { length: 65 },
+        (_, index) => `# focus-worktree-bootstrap-input: declared/${index}.txt`
+      );
+      await writeFile(
+        path.join(repo, ".codex/worktree-bootstrap.sh"),
+        ["#!/bin/sh", ...declarations, ""].join("\n"),
+        "utf8"
+      );
+      const fakeBin = path.join(repo, "fake-bin");
+      const npmSentinel = path.join(repo, "npm-ran");
+      await mkdir(fakeBin);
+      await writeFile(
+        path.join(fakeBin, "npm"),
+        "#!/bin/sh\nprintf ran >\"$CODEXA_TEST_NPM_SENTINEL\"\n",
+        "utf8"
+      );
+      await chmod(path.join(fakeBin, "npm"), 0o700);
+
+      await expect(worktreeBootstrapStartupInputSha256(repo)).rejects.toThrow(
+        /bootstrap-input-declarations-invalid/u
+      );
+      const inspection = runProducerInputInspection(repo);
+      expect(inspection.status).not.toBe(0);
+      expect(inspection.stderr).toContain("Codexa bootstrap input declarations are missing or duplicated.");
+
+      const bootstrap = spawnSync(
+        process.execPath,
+        [path.resolve("scripts/worktree-bootstrap.mjs"), "posix-hooks", repo],
+        {
+          encoding: "utf8",
+          env: {
+            ...process.env,
+            CODEXA_TEST_NPM_SENTINEL: npmSentinel,
+            PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ""}`
+          }
+        }
+      );
+      expect(bootstrap.status).not.toBe(0);
+      expect(bootstrap.stderr).toContain("Codexa bootstrap input declarations are missing or duplicated.");
+      await expect(readFile(npmSentinel, "utf8")).rejects.toThrow();
+    }
+  );
+
+  it("enforces mirrored startup and build byte budgets", async () => {
+    const startupRepo = await createReceiptFixture("codexa-worktree-receipt-startup-bytes-");
+    const declared: string[] = [];
+    for (let index = 0; index < 5; index += 1) {
+      const name = `declared/${index}.bin`;
+      const file = path.join(startupRepo, name);
+      declared.push(name);
+      await mkdir(path.dirname(file), { recursive: true });
+      await writeFile(file, "");
+      await truncate(file, 16 * 1024 * 1024);
+    }
+    await writeFile(
+      path.join(startupRepo, ".codex/worktree-bootstrap.sh"),
+      [
+        "#!/bin/sh",
+        ...declared.map((name) => `# focus-worktree-bootstrap-input: ${name}`),
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+    await expect(worktreeBootstrapStartupInputSha256(startupRepo)).rejects.toThrow(
+      /startup-input-byte-limit-exceeded/u
+    );
+    const startupProducer = runProducerInputInspection(startupRepo);
+    expect(startupProducer.status).not.toBe(0);
+    expect(startupProducer.stderr).toContain("startup-input-byte-limit-exceeded");
+
+    const buildRepo = await createReceiptFixture("codexa-worktree-receipt-build-bytes-");
+    await truncate(path.join(buildRepo, "src/index.ts"), 16 * 1024 * 1024 + 1);
+    await expect(worktreeBootstrapBuildInputSha256(buildRepo)).rejects.toThrow(
+      /build-input-size-limit-exceeded/u
+    );
+    const buildProducer = runProducerInputInspection(buildRepo);
+    expect(buildProducer.status).not.toBe(0);
+    expect(buildProducer.stderr).toContain("build-input-size-limit-exceeded");
+  }, 20_000);
+
+  it("caps source discovery before materializing an unbounded build manifest", async () => {
+    const repo = await createReceiptFixture("codexa-worktree-receipt-build-entries-");
+    const wide = path.join(repo, "src/wide");
+    await mkdir(wide);
+    const writes: Array<Promise<void>> = [];
+    for (let index = 0; index <= 10_000; index += 1) {
+      writes.push(writeFile(path.join(wide, `${index.toString().padStart(5, "0")}.ts`), ""));
+      if (writes.length === 256) {
+        await Promise.all(writes);
+        writes.length = 0;
+      }
+    }
+    await Promise.all(writes);
+
+    await expect(worktreeBootstrapBuildInputSha256(repo)).rejects.toThrow(
+      /build-input-entry-limit-exceeded/u
+    );
+    const producer = runProducerInputInspection(repo);
+    expect(producer.status).not.toBe(0);
+    expect(producer.stderr).toContain("build-input-entry-limit-exceeded");
+  }, 20_000);
 
   it("derives lane readiness from installed Codexa hook state", async () => {
     const posixRepo = await createReceiptFixture("codexa-worktree-receipt-posix-lane-");
@@ -343,6 +468,57 @@ describe("worktree bootstrap receipt", () => {
       state: "invalid",
       reason: "receipt-schema-invalid"
     });
+  });
+
+  it("bounds receipt bytes and rejects hardlinked or path-replaced receipt state", async () => {
+    const oversized = await createReceiptFixture("codexa-worktree-receipt-too-large-");
+    await issueReceipt(oversized, "posix-hooks");
+    await truncate(
+      path.join(oversized, WORKTREE_BOOTSTRAP_RECEIPT_RELATIVE_PATH),
+      128 * 1024 + 1
+    );
+    await expect(inspectWorktreeBootstrapReceipt(oversized)).resolves.toMatchObject({
+      state: "invalid",
+      reason: "receipt-too-large"
+    });
+
+    const hardlinked = await createReceiptFixture("codexa-worktree-receipt-hardlink-");
+    await issueReceipt(hardlinked, "posix-hooks");
+    const hardlinkedReceipt = path.join(
+      hardlinked,
+      WORKTREE_BOOTSTRAP_RECEIPT_RELATIVE_PATH
+    );
+    await link(hardlinkedReceipt, path.join(hardlinked, "receipt-hardlink.json"));
+    await expect(inspectWorktreeBootstrapReceipt(hardlinked)).resolves.toMatchObject({
+      state: "invalid",
+      reason: expect.stringMatching(/refuses redirected or non-regular managed file/u)
+    });
+
+    const replaced = await createReceiptFixture("codexa-worktree-receipt-replaced-");
+    await issueReceipt(replaced, "posix-hooks");
+    const replacedReceipt = path.join(replaced, WORKTREE_BOOTSTRAP_RECEIPT_RELATIVE_PATH);
+    const replacement = path.join(replaced, ".codex/tmp/replacement.json");
+    const displaced = path.join(replaced, ".codex/tmp/displaced.json");
+    await writeFile(replacement, await readFile(replacedReceipt));
+    const originalOpen = nodeFs.open.bind(nodeFs);
+    let swapped = false;
+    vi.spyOn(nodeFs, "open").mockImplementation(async (file, flags, mode) => {
+      if (!swapped && path.resolve(String(file)) === replacedReceipt) {
+        swapped = true;
+        await rename(replacedReceipt, displaced);
+        await rename(replacement, replacedReceipt);
+      }
+      return originalOpen(file, flags, mode);
+    });
+    try {
+      await expect(inspectWorktreeBootstrapReceipt(replaced)).resolves.toMatchObject({
+        state: "invalid",
+        reason: "receipt-changed-during-read"
+      });
+    } finally {
+      vi.restoreAllMocks();
+    }
+    expect(swapped).toBe(true);
   });
 
   it("refuses redirected receipt state without touching the target", async () => {
@@ -555,6 +731,26 @@ async function issueReceipt(
     lane,
     await worktreeBootstrapBuildInputSha256(repoRoot),
     await worktreeBootstrapStartupInputSha256(repoRoot)
+  );
+}
+
+function producerInputDigests(repoRoot: string): {
+  buildInputSha256: string;
+  startupInputSha256: string;
+} {
+  const result = runProducerInputInspection(repoRoot);
+  expect(result.status, result.stderr).toBe(0);
+  return JSON.parse(result.stdout) as {
+    buildInputSha256: string;
+    startupInputSha256: string;
+  };
+}
+
+function runProducerInputInspection(repoRoot: string): SpawnSyncReturns<string> {
+  return spawnSync(
+    process.execPath,
+    [path.resolve("scripts/worktree-bootstrap.mjs"), "--inspect-inputs", repoRoot],
+    { encoding: "utf8" }
   );
 }
 
