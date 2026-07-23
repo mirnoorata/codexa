@@ -1,10 +1,11 @@
 import path from "node:path";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { assertCiWorkflowWritable, writeCiWorkflow } from "./ci-workflow.js";
 import { buildIndexLocked } from "./indexer.js";
 import {
   defaultServerName,
   detectExistingServerName,
+  assertSafeManagedFile,
   inspectClaudeMcpConfig,
   isCodexaMcpJsonEntry,
   isGitTracked,
@@ -96,7 +97,9 @@ export async function initializeProject(repoInput: string | undefined, options: 
   const configPath = path.join(codexDir, "config.toml");
   const hooksPath = path.join(codexDir, "hooks.json");
   const claudeMcpPath = options.claude ? path.join(repoRoot, ".mcp.json") : null;
-  const existingConfig = await readTextIfExists(configPath);
+  await assertSafeManagedDirectory(codexDir);
+  const existingConfig = await readManagedTextIfExists(configPath);
+  await assertSafeManagedFile(hooksPath);
   // Parse requested shared JSON before touching any other wiring so a bad
   // tracked file cannot leave a one-time portability migration half-applied.
   const existingClaudeMcp = claudeMcpPath ? inspectClaudeMcpConfig(await readTextIfExists(claudeMcpPath), claudeMcpPath) : null;
@@ -114,6 +117,7 @@ export async function initializeProject(repoInput: string | undefined, options: 
     await assertCiWorkflowWritable(repoRoot);
   }
   await mkdir(codexDir, { recursive: true });
+  await assertSafeManagedDirectory(codexDir);
   const hookOptions = {
     cliPath,
     launch: pinNodeLaunch(launch, repoRoot, path.join(".codex", "hooks.json")),
@@ -210,7 +214,7 @@ async function upsertCodexConfig(
     toolProfile: InitToolProfile;
   }
 ): Promise<void> {
-  const existing = await readTextIfExists(configPath);
+  const existing = await readManagedTextIfExists(configPath);
   let next = stripManagedBlocks(existing);
   // Legacy detection keys on the real CLI path, never on launch args like
   // "-y", which would also match unrelated npx-launched server blocks.
@@ -376,7 +380,7 @@ function assertBalancedManagedDocMarkers(content: string, docPath: string): void
 }
 
 async function upsertHooksConfig(hooksPath: string, options: { cliPath: string; launch: LaunchSpec; repoArg?: string; repoRoot: string }): Promise<void> {
-  const existing = await readTextIfExists(hooksPath);
+  const existing = await readManagedTextIfExists(hooksPath);
   const parsed = existing.trim() ? parseHooksJson(existing, hooksPath) : {};
   const hooks = isPlainObject(parsed.hooks) ? parsed.hooks : {};
   const cleanedSessionStart = cleanHookList(hooks.SessionStart, options);
@@ -450,7 +454,7 @@ interface CodexaManagedHooksRemoval {
 }
 
 async function planCodexaManagedHooksRemoval(hooksPath: string, options: { cliPath: string; repoRoot: string }): Promise<CodexaManagedHooksRemoval> {
-  const existing = await readTextIfExists(hooksPath);
+  const existing = await readManagedTextIfExists(hooksPath);
   if (!existing.trim()) {
     return { keepHooksFeature: false };
   }
@@ -730,6 +734,23 @@ async function readTextIfExists(filePath: string): Promise<string> {
     if (isNodeError(error) && error.code === "ENOENT") {
       return "";
     }
+    throw error;
+  }
+}
+
+async function readManagedTextIfExists(filePath: string): Promise<string> {
+  await assertSafeManagedFile(filePath);
+  return readTextIfExists(filePath);
+}
+
+async function assertSafeManagedDirectory(directoryPath: string): Promise<void> {
+  try {
+    const entry = await lstat(directoryPath);
+    if (!entry.isDirectory() || entry.isSymbolicLink()) {
+      throw new Error(`Codexa init refuses redirected or non-directory managed state: ${directoryPath}`);
+    }
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return;
     throw error;
   }
 }

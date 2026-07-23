@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { lstat, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { InitToolProfile } from "./types/init.js";
@@ -110,7 +111,33 @@ export function defaultServerName(repoRoot: string): string {
 }
 
 export async function writeTextIfChanged(filePath: string, existing: string, contents: string): Promise<void> {
-  if (existing !== contents) await writeFile(filePath, contents, "utf8");
+  if (existing === contents) return;
+  await assertSafeManagedFile(filePath);
+  let mode = 0o666;
+  try {
+    mode = (await lstat(filePath)).mode & 0o777;
+  } catch (error) {
+    if (!isNodeError(error) || error.code !== "ENOENT") throw error;
+  }
+  const temporaryPath = `${filePath}.codexa-${process.pid}-${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporaryPath, contents, { encoding: "utf8", flag: "wx", mode });
+    await rename(temporaryPath, filePath);
+  } finally {
+    await rm(temporaryPath, { force: true });
+  }
+}
+
+export async function assertSafeManagedFile(filePath: string): Promise<void> {
+  try {
+    const entry = await lstat(filePath);
+    if (!entry.isFile() || entry.isSymbolicLink() || entry.nlink !== 1) {
+      throw new Error(`Codexa refuses redirected or non-regular managed file: ${filePath}`);
+    }
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return;
+    throw error;
+  }
 }
 
 function runGit(cwd: string, args: string[]): string | null {
@@ -176,6 +203,10 @@ function parseJsonObject(value: string, filePath: string): Record<string, unknow
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error;
 }
 
 function slugify(value: string): string {
