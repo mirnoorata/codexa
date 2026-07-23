@@ -112,6 +112,54 @@ describe("worktree bootstrap receipt", () => {
     );
   });
 
+  it("caps lockfile bytes and package entries before adoption materialization", async () => {
+    const oversizedLockRepo = await createReceiptFixture("codexa-worktree-receipt-lock-bytes-");
+    await issueReceipt(oversizedLockRepo, "posix-hooks");
+    await truncate(path.join(oversizedLockRepo, "package-lock.json"), 16 * 1024 * 1024 + 1);
+    await expect(
+      inspectWorktreeBootstrapReceipt(oversizedLockRepo, { validation: "adoption" })
+    ).resolves.toMatchObject({
+      state: "unavailable",
+      validation: "adoption",
+      reason: "startup-input-size-limit-exceeded"
+    });
+
+    const excessiveEntriesRepo = await createReceiptFixture("codexa-worktree-receipt-lock-entries-");
+    const lock = JSON.parse(
+      await readFile(path.join(excessiveEntriesRepo, "package-lock.json"), "utf8")
+    ) as { packages: Record<string, unknown> };
+    for (let index = 0; index <= 100_000; index += 1) {
+      lock.packages[`fixture-${index}`] = {};
+    }
+    await writeFile(
+      path.join(excessiveEntriesRepo, "package-lock.json"),
+      JSON.stringify(lock),
+      "utf8"
+    );
+    await expect(issueReceipt(excessiveEntriesRepo, "posix-hooks")).rejects.toThrow(
+      /package-lock-entry-limit-exceeded/u
+    );
+  });
+
+  it("caps a wide runtime directory before sorting beyond the adoption entry budget", async () => {
+    const repo = await createReceiptFixture("codexa-worktree-receipt-wide-dist-");
+    const wide = path.join(repo, "dist", "wide");
+    await mkdir(wide);
+    const writes: Array<Promise<void>> = [];
+    for (let index = 0; index <= 10_000; index += 1) {
+      writes.push(writeFile(path.join(wide, `${index.toString().padStart(5, "0")}.js`), ""));
+      if (writes.length === 256) {
+        await Promise.all(writes);
+        writes.length = 0;
+      }
+    }
+    await Promise.all(writes);
+
+    await expect(issueReceipt(repo, "posix-hooks")).rejects.toThrow(
+      /dist-runtime-entry-limit-exceeded/u
+    );
+  }, 20_000);
+
   it("separates durable startup, executable adoption, and full completion validation", async () => {
     const repo = await createReceiptFixture("codexa-worktree-receipt-validation-scope-");
     await issueReceipt(repo, "posix-hooks");

@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { promises as fs, type Stats } from "node:fs";
+import { promises as fs } from "node:fs";
 import path from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { runCommand } from "./command.js";
@@ -10,17 +10,18 @@ import {
   ensureSafeManagedStateDirectory,
   isGitTracked
 } from "./init-portability.js";
+import {
+  currentAdoptionReceiptFacts,
+  readBoundedStableRegularFile,
+  STARTUP_INPUT_MAX_BYTES,
+  type WorktreeBootstrapAdoptionFacts
+} from "./worktree-bootstrap-adoption.js";
 
 export const WORKTREE_BOOTSTRAP_RECEIPT_RELATIVE_PATH = ".codex/tmp/worktree-bootstrap-receipt.json";
 export const WORKTREE_BOOTSTRAP_DEPENDENCY_SEAL_RELATIVE_PATH = "node_modules/.codexa-dependencies.json";
 const RECEIPT_MAX_BYTES = 128 * 1024;
-const ADOPTION_SCAN_TIMEOUT_MS = 20_000;
-const DIST_RUNTIME_MAX_ENTRIES = 10_000;
-const DIST_RUNTIME_MAX_LOGICAL_BYTES = 256 * 1024 * 1024;
-const DIST_RUNTIME_MAX_FILE_BYTES = 128 * 1024 * 1024;
 const DEPENDENCY_MAX_ENTRIES = 100_000;
 const DEPENDENCY_MAX_LOGICAL_BYTES = 2 * 1024 * 1024 * 1024;
-const DEPENDENCY_MAX_FILE_BYTES = 256 * 1024 * 1024;
 
 export type WorktreeBootstrapLane = "posix-hooks" | "native-windows-mcp";
 export type WorktreeBootstrapValidation = "startup" | "adoption" | "full";
@@ -92,11 +93,6 @@ type WorktreeBootstrapStartupFacts = Pick<
   | "runtime"
   | "toolProfile"
   | "threadMcp"
->;
-
-type WorktreeBootstrapAdoptionFacts = Pick<
-  WorktreeBootstrapReceipt,
-  "distCliSha256" | "distRuntimeSha256" | "dependencyInventory"
 >;
 
 type WorktreeBootstrapCompletionFacts = Pick<
@@ -353,30 +349,6 @@ async function currentCompletionReceiptFacts(
   };
 }
 
-async function currentAdoptionReceiptFacts(
-  repoRoot: string
-): Promise<WorktreeBootstrapAdoptionFacts> {
-  const repo = path.resolve(repoRoot);
-  const packageLockPath = path.join(repo, "package-lock.json");
-  await assertSafeManagedDirectory(path.join(repo, "dist"));
-  const deadlineAt = Date.now() + ADOPTION_SCAN_TIMEOUT_MS;
-  return {
-    distRuntimeSha256: await hashBoundedRegularTree(
-      repo,
-      path.join(repo, "dist"),
-      createScanBudget(
-        "dist-runtime",
-        deadlineAt,
-        DIST_RUNTIME_MAX_ENTRIES,
-        DIST_RUNTIME_MAX_LOGICAL_BYTES,
-        DIST_RUNTIME_MAX_FILE_BYTES
-      )
-    ),
-    distCliSha256: await hashRegularFile(path.join(repo, "dist", "cli.js")),
-    dependencyInventory: await installedDependencyInventory(repo, packageLockPath, deadlineAt)
-  };
-}
-
 async function currentStartupReceiptFacts(repoRoot: string): Promise<WorktreeBootstrapStartupFacts> {
   const repo = path.resolve(repoRoot);
   const repoRootReal = await fs.realpath(repo);
@@ -394,7 +366,11 @@ async function currentStartupReceiptFacts(repoRoot: string): Promise<WorktreeBoo
     gitCommonDir,
     rootLockSha256: await hashNamedFiles(repo, ["package-lock.json", "uv.lock"]),
     packageJsonSha256: await hashRegularFile(path.join(repo, "package.json")),
-    packageLockSha256: await hashRegularFile(path.join(repo, "package-lock.json")),
+    packageLockSha256: sha256(await readBoundedStableRegularFile(
+      path.join(repo, "package-lock.json"),
+      STARTUP_INPUT_MAX_BYTES,
+      "package-lock"
+    )),
     startupInputSha256: await hashStartupInputs(repo),
     configSha256: await hashRegularFile(path.join(repo, ".codex", "config.toml")),
     hooksSha256: await hashOptionalRegularFile(path.join(repo, ".codex", "hooks.json")),
@@ -423,7 +399,13 @@ async function hashBuildInputs(repoRoot: string): Promise<string> {
 
 async function hashStartupInputs(repoRoot: string): Promise<string> {
   const wrapper = ".codex/worktree-bootstrap.sh";
-  const declared = parseBootstrapInputNames((await readRegularFile(path.join(repoRoot, wrapper))).toString("utf8"));
+  const declared = parseBootstrapInputNames(
+    (await readBoundedStableRegularFile(
+      path.join(repoRoot, wrapper),
+      STARTUP_INPUT_MAX_BYTES,
+      "bootstrap-wrapper"
+    )).toString("utf8")
+  );
   return hashNamedFiles(repoRoot, [...new Set([
     ".codex/environments/environment.toml",
     ".codex/worktree-bootstrap.ps1",
@@ -462,7 +444,11 @@ async function hashNamedFiles(repoRoot: string, names: string[]): Promise<string
     const filePath = path.join(repoRoot, name);
     hash.update(`\0${name}\0`, "utf8");
     try {
-      const contents = await readRegularFile(filePath);
+      const contents = await readBoundedStableRegularFile(
+        filePath,
+        STARTUP_INPUT_MAX_BYTES,
+        "startup-input"
+      );
       hash.update(`P\0${contents.length}\0`, "utf8");
       hash.update(contents);
     } catch (error) {
@@ -508,271 +494,6 @@ async function hashFileManifest(base: string, files: string[]): Promise<string> 
     hash.update(await readRegularFile(file));
   }
   return hash.digest("hex");
-}
-
-async function installedDependencyInventory(
-  repoRoot: string,
-  packageLockPath: string,
-  deadlineAt: number
-): Promise<{ sha256: string; count: number; fileCount: number; logicalBytes: number }> {
-  const repoReal = await fs.realpath(repoRoot);
-  const nodeModules = path.join(repoRoot, "node_modules");
-  const nodeModulesEntry = await fs.lstat(nodeModules);
-  if (!nodeModulesEntry.isDirectory() || nodeModulesEntry.isSymbolicLink()) {
-    throw new Error("dependency-root-invalid");
-  }
-  const nodeModulesReal = await fs.realpath(nodeModules);
-  if (!isContainedPath(repoReal, nodeModulesReal)) {
-    throw new Error("dependency-root-outside-repository");
-  }
-  const lock = JSON.parse((await readRegularFile(packageLockPath)).toString("utf8")) as {
-    packages?: Record<string, unknown>;
-  };
-  if (!lock.packages || typeof lock.packages !== "object") {
-    throw new Error("package-lock-packages-missing");
-  }
-  const installedPackagePaths: string[] = [];
-  for (const lockPath of Object.keys(lock.packages).filter((entry) => entry.startsWith("node_modules/")).sort()) {
-    assertAdoptionDeadline(deadlineAt);
-    const packageDir = path.resolve(repoRoot, ...lockPath.split("/"));
-    if (
-      !isContainedPath(nodeModules, packageDir) ||
-      path.relative(repoRoot, packageDir).replaceAll(path.sep, "/") !== lockPath
-    ) {
-      throw new Error(`package-lock-path-invalid:${lockPath.slice(0, 256)}`);
-    }
-    let entry;
-    try {
-      entry = await fs.lstat(packageDir);
-    } catch (error) {
-      if (isNodeError(error) && error.code === "ENOENT") continue;
-      throw error;
-    }
-    if (!entry.isDirectory() || entry.isSymbolicLink()) {
-      throw new Error(`dependency-directory-invalid:${lockPath}`);
-    }
-    if (!isContainedPath(nodeModulesReal, await fs.realpath(packageDir))) {
-      throw new Error(`dependency-directory-outside-repository:${lockPath}`);
-    }
-    installedPackagePaths.push(lockPath);
-  }
-
-  const tree = await hashDependencyTree(
-    repoRoot,
-    nodeModulesReal,
-    createScanBudget(
-      "dependency-inventory",
-      deadlineAt,
-      DEPENDENCY_MAX_ENTRIES,
-      DEPENDENCY_MAX_LOGICAL_BYTES,
-      DEPENDENCY_MAX_FILE_BYTES
-    )
-  );
-  return {
-    sha256: createHash("sha256")
-      .update(installedPackagePaths.join("\n"), "utf8")
-      .update(`\0${tree.sha256}`, "utf8")
-      .digest("hex"),
-    count: installedPackagePaths.length,
-    fileCount: tree.fileCount,
-    logicalBytes: tree.logicalBytes
-  };
-}
-
-interface AdoptionScanBudget {
-  label: string;
-  deadlineAt: number;
-  maxEntries: number;
-  maxLogicalBytes: number;
-  maxFileBytes: number;
-  entries: number;
-  logicalBytes: number;
-}
-
-function createScanBudget(
-  label: string,
-  deadlineAt: number,
-  maxEntries: number,
-  maxLogicalBytes: number,
-  maxFileBytes: number
-): AdoptionScanBudget {
-  return {
-    label,
-    deadlineAt,
-    maxEntries,
-    maxLogicalBytes,
-    maxFileBytes,
-    entries: 0,
-    logicalBytes: 0
-  };
-}
-
-async function hashBoundedRegularTree(
-  repoRoot: string,
-  directory: string,
-  budget: AdoptionScanBudget
-): Promise<string> {
-  const repoReal = await fs.realpath(repoRoot);
-  const directoryReal = await fs.realpath(directory);
-  if (!isContainedPath(repoReal, directoryReal)) throw new Error("tree-outside-repository");
-  const hash = createHash("sha256");
-  const scratch = Buffer.allocUnsafe(1024 * 1024);
-  const visit = async (current: string): Promise<void> => {
-    assertAdoptionDeadline(budget.deadlineAt);
-    const entries = await fs.readdir(current, { withFileTypes: true });
-    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-      const candidate = path.join(current, entry.name);
-      if (entry.isDirectory()) {
-        await assertSafeManagedDirectory(candidate);
-        consumeAdoptionEntry(budget, 0);
-        hash.update(`D\0${path.relative(directory, candidate).replaceAll(path.sep, "/")}\0`, "utf8");
-        await visit(candidate);
-      } else if (entry.isFile()) {
-        await assertSafeManagedFile(candidate);
-        const stat = await fs.lstat(candidate);
-        consumeAdoptionEntry(budget, stat.size);
-        hash.update(
-          `F\0${path.relative(directory, candidate).replaceAll(path.sep, "/")}` +
-          `\0${(stat.mode & 0o777).toString(8)}\0${stat.size}\0`,
-          "utf8"
-        );
-        await updateHashFromFile(hash, candidate, stat, scratch, budget.deadlineAt);
-      } else {
-        throw new Error(`non-regular-tree-entry:${path.relative(repoRoot, candidate)}`);
-      }
-    }
-  };
-  await visit(directory);
-  return hash.digest("hex");
-}
-
-async function hashDependencyTree(
-  repoRoot: string,
-  nodeModulesReal: string,
-  budget: AdoptionScanBudget
-): Promise<{ sha256: string; fileCount: number; logicalBytes: number }> {
-  const hash = createHash("sha256");
-  const scratch = Buffer.allocUnsafe(1024 * 1024);
-  let fileCount = 0;
-  const visit = async (current: string): Promise<void> => {
-    assertAdoptionDeadline(budget.deadlineAt);
-    const entries = await fs.readdir(current, { withFileTypes: true });
-    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-      const candidate = path.join(current, entry.name);
-      const relative = path.relative(nodeModulesReal, candidate).replaceAll(path.sep, "/");
-      if (entry.isDirectory()) {
-        const stat = await fs.lstat(candidate);
-        if (!stat.isDirectory() || stat.isSymbolicLink()) {
-          throw new Error(`dependency-directory-invalid:${relative}`);
-        }
-        if (!isContainedPath(nodeModulesReal, await fs.realpath(candidate))) {
-          throw new Error(`dependency-directory-outside-root:${relative}`);
-        }
-        consumeAdoptionEntry(budget, 0);
-        hash.update(`D\0${relative}\0${(stat.mode & 0o777).toString(8)}\0`, "utf8");
-        await visit(candidate);
-      } else if (entry.isFile()) {
-        const stat = await assertDependencyRegularFile(nodeModulesReal, candidate);
-        consumeAdoptionEntry(budget, stat.size);
-        fileCount += 1;
-        hash.update(`F\0${relative}\0${(stat.mode & 0o777).toString(8)}\0${stat.size}\0`, "utf8");
-        await updateHashFromFile(hash, candidate, stat, scratch, budget.deadlineAt);
-      } else if (entry.isSymbolicLink()) {
-        const target = await fs.readlink(candidate);
-        const resolved = await fs.realpath(candidate);
-        if (!isContainedPath(nodeModulesReal, resolved)) {
-          throw new Error(`dependency-symlink-outside-root:${relative}`);
-        }
-        consumeAdoptionEntry(budget, Buffer.byteLength(target));
-        hash.update(`L\0${relative}\0${target}\0`, "utf8");
-      } else {
-        throw new Error(`dependency-entry-invalid:${relative}`);
-      }
-    }
-  };
-  await visit(nodeModulesReal);
-  return {
-    sha256: hash.digest("hex"),
-    fileCount,
-    logicalBytes: budget.logicalBytes
-  };
-}
-
-async function updateHashFromFile(
-  hash: ReturnType<typeof createHash>,
-  filePath: string,
-  expected: Stats,
-  scratch: Buffer,
-  deadlineAt: number
-): Promise<void> {
-  const handle = await fs.open(filePath, "r");
-  try {
-    const opened = await handle.stat();
-    if (
-      !opened.isFile() ||
-      opened.dev !== expected.dev ||
-      opened.ino !== expected.ino ||
-      opened.size !== expected.size ||
-      opened.mode !== expected.mode
-    ) {
-      throw new Error("adoption-file-changed-during-scan");
-    }
-    let position = 0;
-    while (position < expected.size) {
-      assertAdoptionDeadline(deadlineAt);
-      const length = Math.min(scratch.length, expected.size - position);
-      const { bytesRead } = await handle.read(scratch, 0, length, position);
-      if (bytesRead <= 0) throw new Error("adoption-file-changed-during-scan");
-      hash.update(scratch.subarray(0, bytesRead));
-      position += bytesRead;
-    }
-    const final = await handle.stat();
-    if (
-      final.dev !== opened.dev ||
-      final.ino !== opened.ino ||
-      final.size !== opened.size ||
-      final.mode !== opened.mode ||
-      final.mtimeMs !== opened.mtimeMs
-    ) {
-      throw new Error("adoption-file-changed-during-scan");
-    }
-    assertAdoptionDeadline(deadlineAt);
-  } finally {
-    await handle.close();
-  }
-}
-
-function consumeAdoptionEntry(budget: AdoptionScanBudget, logicalBytes: number): void {
-  assertAdoptionDeadline(budget.deadlineAt);
-  budget.entries += 1;
-  budget.logicalBytes += logicalBytes;
-  if (budget.entries > budget.maxEntries) {
-    throw new Error(`${budget.label}-entry-limit-exceeded`);
-  }
-  if (logicalBytes > budget.maxFileBytes) {
-    throw new Error(`${budget.label}-file-size-limit-exceeded`);
-  }
-  if (budget.logicalBytes > budget.maxLogicalBytes) {
-    throw new Error(`${budget.label}-byte-limit-exceeded`);
-  }
-}
-
-function assertAdoptionDeadline(deadlineAt: number): void {
-  if (Date.now() > deadlineAt) throw new Error("adoption-scan-timeout");
-}
-
-async function assertDependencyRegularFile(
-  nodeModulesReal: string,
-  filePath: string
-) {
-  const stat = await fs.lstat(filePath);
-  if (!stat.isFile() || stat.isSymbolicLink()) {
-    throw new Error(`dependency-file-invalid:${path.relative(nodeModulesReal, filePath)}`);
-  }
-  if (!isContainedPath(nodeModulesReal, await fs.realpath(filePath))) {
-    throw new Error(`dependency-file-outside-root:${path.relative(nodeModulesReal, filePath)}`);
-  }
-  return stat;
 }
 
 async function hashRegularFile(filePath: string): Promise<string> {
