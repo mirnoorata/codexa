@@ -497,7 +497,8 @@ async function inspectSessionStartConfig(repoRoot: string): Promise<SessionStart
     if (serveIndexes.length !== 1) throw new Error("Codexa-managed MCP server args must contain exactly one serve command");
     const serveIndex = serveIndexes[0];
     if (serveIndex === undefined) throw new Error("Codexa-managed MCP server args do not contain serve");
-    const launcher = boundedReceiptValue(serveIndex === 0 ? commandValue : args[serveIndex - 1] ?? "", CONFIG_LAUNCHER_MAX);
+    const launcherValue = serveIndex === 0 ? commandValue : args[serveIndex - 1] ?? "";
+    const launcher = boundedReceiptValue(launcherValue, CONFIG_LAUNCHER_MAX);
     if (!isRecognizedCodexaLauncher(commandValue, args, serveIndex)) {
       return {
         state: "invalid",
@@ -514,7 +515,7 @@ async function inspectSessionStartConfig(repoRoot: string): Promise<SessionStart
       return { state: "invalid", path: configPath, serverName, command, launcher, toolProfile: "unknown", reason: commandError };
     }
     if (serveIndex === 1) {
-      const launcherError = await validateCodexaNodeLauncher(launcher);
+      const launcherError = await validateCodexaNodeLauncher(launcherValue);
       if (launcherError) {
         return { state: "invalid", path: configPath, serverName, command, launcher, toolProfile: "unknown", reason: launcherError };
       }

@@ -394,6 +394,33 @@ describe("Codexa versioned SessionStart receipt", () => {
     });
   });
 
+  it("validates a long Node launcher path before bounding its receipt value", async () => {
+    const repo = await createRepo("codexa-session-receipt-long-launcher-");
+    await initializeProject(repo, { cliPath: testCliPath });
+    const configPath = path.join(repo, ".codex/config.toml");
+    const config = await readFile(configPath, "utf8");
+    let packageRoot = await mkdtemp(path.join(os.tmpdir(), "codexa-long-package-"));
+    for (let index = 0; index < 4; index += 1) {
+      packageRoot = path.join(packageRoot, `nested-${index}-${"x".repeat(64)}`);
+    }
+    const longCli = path.join(packageRoot, "dist/cli.js");
+    expect(longCli.length).toBeGreaterThan(240);
+    await mkdir(path.dirname(longCli), { recursive: true });
+    await writeFile(
+      path.join(packageRoot, "package.json"),
+      `${JSON.stringify({ name: "@mirnoorata/codexa", version: CODEXA_VERSION, bin: { codexa: "dist/cli.js" } })}\n`,
+      "utf8"
+    );
+    await writeFile(longCli, "#!/usr/bin/env node\n", "utf8");
+    await writeFile(configPath, config.replaceAll(testCliPath, longCli), "utf8");
+
+    const receipt = await sessionStartReceipt(repo, false);
+    expect(receipt.config).toMatchObject({ state: "configured", toolProfile: "core" });
+    expect(receipt.config.launcher).toHaveLength(240);
+    expect(receipt.config.launcher).toMatch(/\.\.\.$/u);
+    expect(sessionStartStrictFailures(receipt)).toEqual([]);
+  });
+
   it("rejects a copied managed config that serves a different checkout", async () => {
     const repo = await createRepo("codexa-session-receipt-config-root-");
     const wrongRepo = await createRepo("codexa-session-receipt-wrong-root-");
