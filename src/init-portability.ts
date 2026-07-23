@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import type { Stats } from "node:fs";
 import { chmod, lstat, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -110,6 +111,10 @@ export function defaultServerName(repoRoot: string): string {
   return `codexa-${slugify(repoName)}`;
 }
 
+// This is an optimistic conflict guard, not a universal filesystem lock:
+// Codexa writers reject stale snapshots and changes observed before the final
+// atomic rename. Unrelated editors do not participate in a portable lock, so
+// callers must not claim serialization beyond those observable checks.
 export async function writeTextIfChanged(filePath: string, existing: string, contents: string): Promise<void> {
   const initial = await managedFileSnapshot(filePath);
   if (initial.contents !== existing) {
@@ -156,9 +161,12 @@ export async function assertSafeManagedDirectory(directoryPath: string): Promise
 
 interface ManagedFileSnapshot {
   contents: string;
+  changedMs?: number;
   device?: number;
   inode?: number;
   mode?: number;
+  modifiedMs?: number;
+  size?: number;
 }
 
 async function managedFileSnapshot(filePath: string): Promise<ManagedFileSnapshot> {
@@ -168,8 +176,8 @@ async function managedFileSnapshot(filePath: string): Promise<ManagedFileSnapsho
     const contents = await readFile(filePath, "utf8");
     const after = await lstat(filePath);
     assertSafeManagedFileEntry(filePath, after);
-    const beforeIdentity = { device: before.dev, inode: before.ino, mode: before.mode & 0o777 };
-    const afterIdentity = { device: after.dev, inode: after.ino, mode: after.mode & 0o777 };
+    const beforeIdentity = managedFileIdentity(before);
+    const afterIdentity = managedFileIdentity(after);
     if (!sameManagedFileIdentity(beforeIdentity, afterIdentity)) {
       throw new Error(`Cannot update ${filePath}: the file changed while Codexa was preparing the update`);
     }
@@ -180,17 +188,33 @@ async function managedFileSnapshot(filePath: string): Promise<ManagedFileSnapsho
   }
 }
 
-function assertSafeManagedFileEntry(filePath: string, entry: Awaited<ReturnType<typeof lstat>>): void {
+function assertSafeManagedFileEntry(filePath: string, entry: Stats): void {
   if (!entry.isFile() || entry.isSymbolicLink() || entry.nlink !== 1) {
     throw new Error(`Codexa refuses redirected or non-regular managed file: ${filePath}`);
   }
 }
 
+function managedFileIdentity(entry: Stats): Omit<ManagedFileSnapshot, "contents"> {
+  return {
+    changedMs: entry.ctimeMs,
+    device: entry.dev,
+    inode: entry.ino,
+    mode: entry.mode & 0o777,
+    modifiedMs: entry.mtimeMs,
+    size: entry.size
+  };
+}
+
 function sameManagedFileIdentity(
-  left: Pick<ManagedFileSnapshot, "device" | "inode" | "mode">,
-  right: Pick<ManagedFileSnapshot, "device" | "inode" | "mode">
+  left: Omit<ManagedFileSnapshot, "contents">,
+  right: Omit<ManagedFileSnapshot, "contents">
 ): boolean {
-  return left.device === right.device && left.inode === right.inode && left.mode === right.mode;
+  return left.changedMs === right.changedMs &&
+    left.device === right.device &&
+    left.inode === right.inode &&
+    left.mode === right.mode &&
+    left.modifiedMs === right.modifiedMs &&
+    left.size === right.size;
 }
 
 function runGit(cwd: string, args: string[]): string | null {

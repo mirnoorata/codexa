@@ -99,7 +99,7 @@ describe("Codexa managed startup files", () => {
     expect(await readFile(victim, "utf8")).toBe(original);
   });
 
-  it("does not overwrite an intervening managed-file edit", async () => {
+  it("rejects a stale caller snapshot before replacing a managed file", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "codexa-init-concurrent-write-"));
     const managedPath = path.join(root, "config.toml");
     await writeFile(managedPath, "original\n", "utf8");
@@ -116,6 +116,7 @@ describe("Codexa managed startup files", () => {
     const managedPath = path.join(root, "config.toml");
     await writeFile(managedPath, "original\n", "utf8");
     await chmod(managedPath, 0o664);
+    const expectedMode = (await stat(managedPath)).mode & 0o777;
     const originalUmask = process.umask(0o077);
     try {
       await writeTextIfChanged(managedPath, "original\n", "codexa update\n");
@@ -123,7 +124,7 @@ describe("Codexa managed startup files", () => {
       process.umask(originalUmask);
     }
 
-    expect((await stat(managedPath)).mode & 0o777).toBe(0o664);
+    expect((await stat(managedPath)).mode & 0o777).toBe(expectedMode);
     expect(await readFile(managedPath, "utf8")).toBe("codexa update\n");
   });
 
