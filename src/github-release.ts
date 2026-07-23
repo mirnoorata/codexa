@@ -482,7 +482,12 @@ function changedArea(file: string): string {
   ) {
     return "Codexa context engine";
   }
-  if (normalized.startsWith("tests/") || normalized === "vitest.config.ts" || normalized.startsWith("scripts/verify-")) {
+  if (
+    normalized.startsWith("tests/") ||
+    normalized === "vitest.config.ts" ||
+    normalized === "vitest.config.cts" ||
+    normalized.startsWith("scripts/verify-")
+  ) {
     return "Tests and verification";
   }
   if (
