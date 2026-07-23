@@ -299,6 +299,64 @@ describe("worktree bootstrap receipt", () => {
     );
   });
 
+  it("parses newline-heavy wrappers without materializing every line", async () => {
+    const repo = await createReceiptFixture("codexa-worktree-receipt-newline-heavy-");
+    const ignoredDeclarations = Array.from(
+      { length: 65 },
+      (_, index) => ` # focus-worktree-bootstrap-input: ignored/${index}.txt`
+    );
+    await writeFile(
+      path.join(repo, ".codex/worktree-bootstrap.sh"),
+      [
+        "#!/bin/sh",
+        "# focus-worktree-bootstrap-input: .npmrc",
+        "# focus-worktree-bootstrap-input: scripts/worktree-bootstrap.mjs",
+        ...ignoredDeclarations,
+        "not-a-declaration\r# focus-worktree-bootstrap-input: ignored/lone-cr.txt",
+        ""
+      ].join("\r\n") + "\n".repeat(6_000_000),
+      "utf8"
+    );
+
+    const producerResult = spawnSync(
+      process.execPath,
+      [
+        "--max-old-space-size=48",
+        path.resolve("scripts/worktree-bootstrap.mjs"),
+        "--inspect-inputs",
+        repo
+      ],
+      { encoding: "utf8" }
+    );
+    expect(producerResult.status, producerResult.stderr).toBe(0);
+    const producer = JSON.parse(producerResult.stdout) as {
+      buildInputSha256: string;
+      startupInputSha256: string;
+    };
+    await expect(worktreeBootstrapStartupInputSha256(repo)).resolves.toBe(
+      producer.startupInputSha256
+    );
+  }, 20_000);
+
+  it("enforces the declaration byte budget for multibyte names", async () => {
+    const repo = await createReceiptFixture("codexa-worktree-receipt-declaration-bytes-");
+    const oversizedName = `declared/${"é".repeat(17_000)}.txt`;
+    await writeFile(
+      path.join(repo, ".codex/worktree-bootstrap.sh"),
+      `#!/bin/sh\n# focus-worktree-bootstrap-input: ${oversizedName}\n`,
+      "utf8"
+    );
+
+    await expect(worktreeBootstrapStartupInputSha256(repo)).rejects.toThrow(
+      /bootstrap-input-declarations-invalid/u
+    );
+    const producer = runProducerInputInspection(repo);
+    expect(producer.status).not.toBe(0);
+    expect(producer.stderr).toContain(
+      "Codexa bootstrap input declarations are missing or duplicated."
+    );
+  });
+
   it.skipIf(process.platform === "win32")(
     "fails the production bootstrap before npm when declarations exceed the shared budget",
     async () => {

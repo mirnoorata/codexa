@@ -263,16 +263,47 @@ async function hashStartupInputs(repoRoot) {
 
 function parseBootstrapInputNames(wrapper) {
   const prefix = "# focus-worktree-bootstrap-input: ";
-  const names = wrapper.split(/\r?\n/u)
-    .filter((line) => line.startsWith(prefix))
-    .map((line) => line.slice(prefix.length));
-  const nameBytes = names.reduce((total, name) => total + Buffer.byteLength(name, "utf8"), 0);
-  if (
-    names.length === 0 ||
-    names.length > STARTUP_DECLARATION_MAX_COUNT ||
-    nameBytes > STARTUP_DECLARATION_MAX_NAME_BYTES ||
-    new Set(names).size !== names.length
-  ) {
+  const names = [];
+  const seen = new Set();
+  let nameBytes = 0;
+  let lineStart = 0;
+  while (lineStart <= wrapper.length) {
+    const newline = wrapper.indexOf("\n", lineStart);
+    let lineEnd = newline === -1 ? wrapper.length : newline;
+    if (
+      newline !== -1 &&
+      lineEnd > lineStart &&
+      wrapper.charCodeAt(lineEnd - 1) === 13
+    ) {
+      lineEnd -= 1;
+    }
+    if (
+      lineEnd - lineStart >= prefix.length &&
+      wrapper.startsWith(prefix, lineStart)
+    ) {
+      const nameStart = lineStart + prefix.length;
+      const nameLength = lineEnd - nameStart;
+      if (
+        names.length >= STARTUP_DECLARATION_MAX_COUNT ||
+        nameLength > STARTUP_DECLARATION_MAX_NAME_BYTES
+      ) {
+        throw new Error("Codexa bootstrap input declarations are missing or duplicated.");
+      }
+      const name = wrapper.slice(nameStart, lineEnd);
+      nameBytes += Buffer.byteLength(name, "utf8");
+      if (
+        nameBytes > STARTUP_DECLARATION_MAX_NAME_BYTES ||
+        seen.has(name)
+      ) {
+        throw new Error("Codexa bootstrap input declarations are missing or duplicated.");
+      }
+      names.push(name);
+      seen.add(name);
+    }
+    if (newline === -1) break;
+    lineStart = newline + 1;
+  }
+  if (names.length === 0) {
     throw new Error("Codexa bootstrap input declarations are missing or duplicated.");
   }
   for (const name of names) {
