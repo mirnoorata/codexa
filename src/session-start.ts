@@ -20,6 +20,10 @@ import {
   inspectWorktreeBootstrapReceipt,
   type WorktreeBootstrapInspection
 } from "./worktree-bootstrap-receipt.js";
+import {
+  readSessionStartConfig,
+  readSessionStartPackageJson
+} from "./session-start-file-read.js";
 
 const WORKSPACE_DIGEST_MAX_ROWS = 12;
 const WORKSPACE_DIGEST_MAX_FIELD = 180;
@@ -575,7 +579,12 @@ async function inspectSessionStartConfig(repoRoot: string): Promise<SessionStart
   } catch (error) {
     return { state: "invalid", path: configPath, toolProfile: "unknown", reason: boundedErrorMessage(error) };
   }
-  const contents = await readTextIfExists(configPath);
+  let contents: string;
+  try {
+    contents = await readSessionStartConfig(configPath, repoRoot);
+  } catch (error) {
+    return { state: "invalid", path: configPath, toolProfile: "unknown", reason: boundedErrorMessage(error) };
+  }
   const managed = extractManagedConfigBlock(contents);
   if (managed.error) return { state: "invalid", path: configPath, toolProfile: "unknown", reason: managed.error };
   if (!managed.block) return { state: "not-configured", path: configPath, toolProfile: "unknown", reason: "no Codexa-managed MCP server block" };
@@ -792,7 +801,7 @@ async function validateCodexaNodeLauncher(launcher: string): Promise<string | un
       throw new Error("not dist/cli.js");
     }
     const packageRoot = path.dirname(path.dirname(resolvedCli));
-    const packageJson = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8")) as unknown;
+    const packageJson = JSON.parse(await readSessionStartPackageJson(packageRoot)) as unknown;
     if (!isPlainObject(packageJson) || packageJson.name !== "@mirnoorata/codexa") throw new Error("package name mismatch");
     if (packageJson.version !== CODEXA_VERSION) throw new Error("package version mismatch");
     const bin = packageJson.bin;
@@ -964,21 +973,8 @@ function boundedReceiptValue(value: string, maxLength: number): string {
   return cleaned.length > maxLength ? `${cleaned.slice(0, Math.max(0, maxLength - 3))}...` : cleaned;
 }
 
-async function readTextIfExists(filePath: string): Promise<string> {
-  try {
-    return await readFile(filePath, "utf8");
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") return "";
-    throw error;
-  }
-}
-
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function isNodeError(error: unknown): error is NodeJS.ErrnoException {
-  return error instanceof Error && "code" in error;
 }
 
 function boundedErrorMessage(error: unknown): string {

@@ -1,8 +1,9 @@
-import { execFileSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { execFileSync, spawnSync } from "node:child_process";
+import { promises as nodeFs } from "node:fs";
+import { chmod, mkdir, mkdtemp, readFile, rename, rm, symlink, truncate, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { initializeProject, renderSessionStartJson, SESSION_START_JSON_MAX_BYTES, sessionStartReceipt, sessionStartStrictFailures, sessionStartSummary } from "../src/init.js";
 import { workspaceRepoProject } from "../src/session-start.js";
 import { executableCommandCandidates, trustedNpxCommandCandidates } from "../src/startup-launcher.js";
@@ -450,6 +451,45 @@ describe("Codexa versioned SessionStart receipt", () => {
     expect(sessionStartStrictFailures(invalid)).toContain("config invalid");
   });
 
+  it("rejects oversized config before parsing it", async () => {
+    const repo = await createRepo("codexa-session-receipt-oversized-config-");
+    await initializeProject(repo, { cliPath: testCliPath });
+    await truncate(path.join(repo, ".codex/config.toml"), 1024 * 1024 + 1);
+
+    expect((await sessionStartReceipt(repo, false)).config).toMatchObject({
+      state: "invalid",
+      reason: "session-start-config-size-limit-exceeded"
+    });
+  });
+
+  it("rejects config whose pathname is replaced while it is being read", async () => {
+    const repo = await createRepo("codexa-session-receipt-replaced-config-");
+    await initializeProject(repo, { cliPath: testCliPath });
+    const configPath = path.join(repo, ".codex/config.toml");
+    const replacement = path.join(repo, ".codex/config-replacement.toml");
+    const displaced = path.join(repo, ".codex/config-displaced.toml");
+    await writeFile(replacement, await readFile(configPath));
+    const originalOpen = nodeFs.open.bind(nodeFs);
+    let swapped = false;
+    vi.spyOn(nodeFs, "open").mockImplementation(async (file, flags, mode) => {
+      if (!swapped && path.resolve(String(file)) === configPath) {
+        swapped = true;
+        await rename(configPath, displaced);
+        await rename(replacement, configPath);
+      }
+      return originalOpen(file, flags, mode);
+    });
+    try {
+      expect((await sessionStartReceipt(repo, false)).config).toMatchObject({
+        state: "invalid",
+        reason: "session-start-config-changed-during-read"
+      });
+    } finally {
+      vi.restoreAllMocks();
+    }
+    expect(swapped).toBe(true);
+  });
+
   it("accepts a readable Codexa CLI from another package root and rejects a stale path", async () => {
     const repo = await createRepo("codexa-session-receipt-cross-checkout-");
     await initializeProject(repo, { cliPath: testCliPath });
@@ -463,6 +503,12 @@ describe("Codexa versioned SessionStart receipt", () => {
     await writeFile(configPath, config.replaceAll(testCliPath, otherCli), "utf8");
     expect((await sessionStartReceipt(repo, false)).config).toMatchObject({ state: "configured", launcher: otherCli });
 
+    await truncate(path.join(otherPackage, "package.json"), 1024 * 1024 + 1);
+    expect((await sessionStartReceipt(repo, false)).config).toMatchObject({
+      state: "invalid",
+      reason: `Codexa-managed Node launcher is not a readable @mirnoorata/codexa@${CODEXA_VERSION} dist/cli.js`
+    });
+
     await writeFile(path.join(otherPackage, "package.json"), `${JSON.stringify({ name: "@mirnoorata/codexa", version: "999.999.999", bin: { codexa: "dist/cli.js" } })}\n`, "utf8");
     expect((await sessionStartReceipt(repo, false)).config).toMatchObject({
       state: "invalid",
@@ -472,6 +518,34 @@ describe("Codexa versioned SessionStart receipt", () => {
     const missingCli = path.join(otherPackage, "missing", "dist/cli.js");
     await writeFile(configPath, config.replaceAll(testCliPath, missingCli), "utf8");
     expect((await sessionStartReceipt(repo, false)).config).toMatchObject({
+      state: "invalid",
+      reason: `Codexa-managed Node launcher is not a readable @mirnoorata/codexa@${CODEXA_VERSION} dist/cli.js`
+    });
+  });
+
+  it.skipIf(process.platform === "win32")("rejects FIFO launcher package metadata without blocking SessionStart", async () => {
+    const repo = await createRepo("codexa-session-receipt-fifo-package-");
+    await initializeProject(repo, { cliPath: testCliPath });
+    const configPath = path.join(repo, ".codex/config.toml");
+    const config = await readFile(configPath, "utf8");
+    const otherPackage = await mkdtemp(path.join(os.tmpdir(), "codexa-fifo-package-"));
+    const otherCli = path.join(otherPackage, "dist/cli.js");
+    const packageJsonPath = path.join(otherPackage, "package.json");
+    await mkdir(path.dirname(otherCli), { recursive: true });
+    await writeFile(otherCli, "#!/usr/bin/env node\n", "utf8");
+    await writeFile(configPath, config.replaceAll(testCliPath, otherCli), "utf8");
+    await rm(packageJsonPath, { force: true });
+    execFileSync("mkfifo", [packageJsonPath]);
+
+    const result = spawnSync(
+      process.execPath,
+      [testCliPath, "session-start", repo, "--json"],
+      { cwd: process.cwd(), encoding: "utf8", timeout: 2_000 }
+    );
+
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout).config).toMatchObject({
       state: "invalid",
       reason: `Codexa-managed Node launcher is not a readable @mirnoorata/codexa@${CODEXA_VERSION} dist/cli.js`
     });
