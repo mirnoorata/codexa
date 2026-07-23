@@ -267,6 +267,20 @@ describe("worktree bootstrap receipt", () => {
     expect(presentDigest).not.toBe(missingDigest);
   });
 
+  it("length-frames build manifest paths and contents", async () => {
+    const repo = await createReceiptFixture("codexa-worktree-receipt-build-frame-");
+    const firstPath = path.join(repo, "src/a.bin");
+    const injectedPath = path.join(repo, "src/evil.ts");
+    await writeFile(firstPath, Buffer.from("prefix\0src/evil.ts\0payload", "utf8"));
+    const unsplit = await worktreeBootstrapBuildInputSha256(repo);
+
+    await writeFile(firstPath, "prefix", "utf8");
+    await writeFile(injectedPath, "payload", "utf8");
+    const split = await worktreeBootstrapBuildInputSha256(repo);
+
+    expect(split).not.toBe(unsplit);
+  });
+
   it("derives lane readiness from installed Codexa hook state", async () => {
     const posixRepo = await createReceiptFixture("codexa-worktree-receipt-posix-lane-");
     await expect(issueReceipt(posixRepo, "native-windows-mcp")).rejects.toThrow(

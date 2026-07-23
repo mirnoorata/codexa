@@ -199,9 +199,13 @@ async function hashBuildInputs(repoRoot) {
     ...await regularTreeFiles(repoRoot, path.join(repoRoot, "src"))
   ];
   const hash = createHash("sha256");
+  hash.update("codexa-build-input-v2\0", "utf8");
   for (const filePath of files.sort()) {
-    hash.update(`\0${path.relative(repoRoot, filePath).replaceAll(path.sep, "/")}\0`, "utf8");
-    hash.update(await readRegularFile(filePath));
+    updateManifestRecord(
+      hash,
+      path.relative(repoRoot, filePath).replaceAll(path.sep, "/"),
+      await readRegularFile(filePath)
+    );
   }
   return hash.digest("hex");
 }
@@ -244,18 +248,28 @@ function parseBootstrapInputNames(wrapper) {
 
 async function hashNamedFiles(repoRoot, names) {
   const hash = createHash("sha256");
+  hash.update("codexa-startup-input-v2\0", "utf8");
   for (const name of names) {
-    hash.update(`\0${name}\0`, "utf8");
     try {
-      const contents = await readRegularFile(path.join(repoRoot, name));
-      hash.update(`P\0${contents.length}\0`, "utf8");
-      hash.update(contents);
+      updateManifestRecord(hash, name, await readRegularFile(path.join(repoRoot, name)));
     } catch (error) {
-      if (error?.code === "ENOENT") hash.update("M\0", "utf8");
+      if (error?.code === "ENOENT") updateManifestRecord(hash, name, null);
       else throw error;
     }
   }
   return hash.digest("hex");
+}
+
+function updateManifestRecord(hash, name, contents) {
+  const encodedName = Buffer.from(name, "utf8");
+  hash.update(`N${encodedName.length}:`, "utf8");
+  hash.update(encodedName);
+  if (contents === null) {
+    hash.update("M:", "utf8");
+    return;
+  }
+  hash.update(`P${contents.length}:`, "utf8");
+  hash.update(contents);
 }
 
 async function regularTreeFiles(repoRoot, directory) {

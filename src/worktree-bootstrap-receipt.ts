@@ -440,19 +440,18 @@ function parseBootstrapInputNames(wrapper: string): string[] {
 
 async function hashNamedFiles(repoRoot: string, names: string[]): Promise<string> {
   const hash = createHash("sha256");
+  hash.update("codexa-startup-input-v2\0", "utf8");
   for (const name of names) {
     const filePath = path.join(repoRoot, name);
-    hash.update(`\0${name}\0`, "utf8");
     try {
       const contents = await readBoundedStableRegularFile(
         filePath,
         STARTUP_INPUT_MAX_BYTES,
         "startup-input"
       );
-      hash.update(`P\0${contents.length}\0`, "utf8");
-      hash.update(contents);
+      updateManifestRecord(hash, name, contents);
     } catch (error) {
-      if (isNodeError(error) && error.code === "ENOENT") hash.update("M\0", "utf8");
+      if (isNodeError(error) && error.code === "ENOENT") updateManifestRecord(hash, name, null);
       else throw error;
     }
   }
@@ -489,11 +488,31 @@ async function regularTreeFiles(repoRoot: string, directory: string): Promise<st
 
 async function hashFileManifest(base: string, files: string[]): Promise<string> {
   const hash = createHash("sha256");
+  hash.update("codexa-build-input-v2\0", "utf8");
   for (const file of files.sort()) {
-    hash.update(`\0${path.relative(base, file).replaceAll(path.sep, "/")}\0`, "utf8");
-    hash.update(await readRegularFile(file));
+    updateManifestRecord(
+      hash,
+      path.relative(base, file).replaceAll(path.sep, "/"),
+      await readRegularFile(file)
+    );
   }
   return hash.digest("hex");
+}
+
+function updateManifestRecord(
+  hash: ReturnType<typeof createHash>,
+  name: string,
+  contents: Buffer | null
+): void {
+  const encodedName = Buffer.from(name, "utf8");
+  hash.update(`N${encodedName.length}:`, "utf8");
+  hash.update(encodedName);
+  if (contents === null) {
+    hash.update("M:", "utf8");
+    return;
+  }
+  hash.update(`P${contents.length}:`, "utf8");
+  hash.update(contents);
 }
 
 async function hashRegularFile(filePath: string): Promise<string> {
