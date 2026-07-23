@@ -165,6 +165,7 @@ async function writeDependencySeal(repoRoot, buildInputSha256) {
     kind: "codexa-dependency-install",
     packageJsonSha256: await hashFile(path.join(repoRoot, "package.json")),
     packageLockSha256: await hashFile(path.join(repoRoot, "package-lock.json")),
+    npmrcSha256: await hashFile(path.join(repoRoot, ".npmrc")),
     buildInputSha256,
     runtime: {
       nodeVersion: process.version,
@@ -241,6 +242,23 @@ async function runLockProbe(probeMode, repoInput) {
     return;
   }
 
+  const processIdentity = readProcessIdentity(process.pid);
+  const repeatedProcessIdentity = readProcessIdentity(process.pid);
+  if (
+    !isValidProcessIdentity(processIdentity) ||
+    repeatedProcessIdentity !== processIdentity
+  ) {
+    throw new Error(`Codexa bootstrap lock could not identify the current ${process.platform} process.`);
+  }
+  if (
+    process.platform === "linux" &&
+    linuxProcessStartTime(
+      `123 (probe name with ) characters) S ${Array.from({ length: 19 }, (_, index) => index + 1).join(" ")}`
+    ) !== "19"
+  ) {
+    throw new Error("Codexa bootstrap lock could not parse a Linux process name containing spaces and parentheses.");
+  }
+
   const lock = await acquireBootstrapLock(repoRoot);
   try {
     const contender = spawnSync(process.execPath, [fileURLPath(), "--try-lock", repoRoot], {
@@ -257,11 +275,93 @@ async function runLockProbe(probeMode, repoInput) {
   } finally {
     await releaseBootstrapLock(lock);
   }
-  const ownerlessLockDir = path.join(repoRoot, ".codex/tmp/worktree-bootstrap.lock");
-  await fs.mkdir(ownerlessLockDir, { mode: 0o700 });
+
+  const lockDir = path.join(repoRoot, ".codex/tmp/worktree-bootstrap.lock");
+  const ownerPath = path.join(lockDir, "owner.json");
+
+  await assertProbeOwnerBusy(
+    repoRoot,
+    lockDir,
+    ownerPath,
+    { schemaVersion: 2, pid: process.pid, token: randomUUID(), processIdentity },
+    "matching process identity"
+  );
+  await assertProbeOwnerBusy(
+    repoRoot,
+    lockDir,
+    ownerPath,
+    { schemaVersion: 1, pid: process.pid, token: randomUUID() },
+    "legacy live owner"
+  );
+  await assertProbeOwnerBusy(
+    repoRoot,
+    lockDir,
+    ownerPath,
+    { schemaVersion: 2, pid: process.pid, token: randomUUID(), processIdentity: "invalid" },
+    "malformed live owner"
+  );
+
+  await writeProbeOwner(lockDir, ownerPath, {
+    schemaVersion: 2,
+    pid: process.pid,
+    token: randomUUID(),
+    processIdentity: distinctProcessIdentity(processIdentity)
+  });
+  const reusedPidRecovery = await acquireBootstrapLock(repoRoot);
+  await releaseBootstrapLock(reusedPidRecovery);
+
+  const exitedChild = spawnSync(process.execPath, ["-e", "process.exit(0)"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    stdio: ["ignore", "pipe", "pipe"]
+  });
+  if (exitedChild.error || exitedChild.status !== 0 || !Number.isSafeInteger(exitedChild.pid)) {
+    throw new Error("Codexa bootstrap lock could not create a dead-owner recovery probe.");
+  }
+  await writeProbeOwner(lockDir, ownerPath, {
+    schemaVersion: 2,
+    pid: exitedChild.pid,
+    token: randomUUID(),
+    processIdentity
+  });
+  const deadOwnerRecovery = await acquireBootstrapLock(repoRoot);
+  await releaseBootstrapLock(deadOwnerRecovery);
+
+  await fs.mkdir(lockDir, { mode: 0o700 });
   const recovered = await acquireBootstrapLock(repoRoot);
   await releaseBootstrapLock(recovered);
-  process.stdout.write("Codexa bootstrap lock: contention and ownerless-crash recovery verified.\n");
+  process.stdout.write(
+    "Codexa bootstrap lock: contention, process-identity, PID-reuse, dead-owner, and ownerless-crash recovery verified.\n"
+  );
+}
+
+async function assertProbeOwnerBusy(repoRoot, lockDir, ownerPath, owner, label) {
+  await writeProbeOwner(lockDir, ownerPath, owner);
+  try {
+    const contender = spawnSync(process.execPath, [fileURLPath(), "--try-lock", repoRoot], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "pipe"]
+    });
+    if (contender.status !== 75) {
+      throw new Error(
+        `Codexa bootstrap lock reclaimed an unverifiable ${label} (exit ${contender.status}).` +
+        `${contender.stderr ? ` ${bound(contender.stderr)}` : ""}`
+      );
+    }
+  } finally {
+    await fs.rm(ownerPath, { force: true });
+    await fs.rmdir(lockDir).catch(() => undefined);
+  }
+}
+
+async function writeProbeOwner(lockDir, ownerPath, owner) {
+  await fs.mkdir(lockDir, { mode: 0o700 });
+  await fs.writeFile(ownerPath, `${JSON.stringify(owner)}\n`, {
+    encoding: "utf8",
+    flag: "wx",
+    mode: 0o600
+  });
 }
 
 async function acquireBootstrapLock(repoRoot) {
@@ -271,6 +371,7 @@ async function acquireBootstrapLock(repoRoot) {
   const lockDir = path.join(tmpDir, "worktree-bootstrap.lock");
   const ownerPath = path.join(lockDir, "owner.json");
   const token = randomUUID();
+  const processIdentity = readProcessIdentity(process.pid);
 
   for (let attempt = 0; attempt < 2; attempt += 1) {
     const stagingDir = path.join(tmpDir, `.worktree-bootstrap.lock.${process.pid}.${token}.tmp`);
@@ -279,11 +380,11 @@ async function acquireBootstrapLock(repoRoot) {
       await fs.mkdir(stagingDir, { mode: 0o700 });
       await fs.writeFile(
         stagingOwnerPath,
-        `${JSON.stringify({ schemaVersion: 1, pid: process.pid, token })}\n`,
+        `${JSON.stringify({ schemaVersion: 2, pid: process.pid, token, processIdentity })}\n`,
         { encoding: "utf8", flag: "wx", mode: 0o600 }
       );
       await fs.rename(stagingDir, lockDir);
-      return { lockDir, ownerPath, token };
+      return { lockDir, ownerPath, token, processIdentity };
     } catch (error) {
       await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
       if (!existsSync(lockDir)) throw error;
@@ -303,7 +404,20 @@ async function acquireBootstrapLock(repoRoot) {
         throw new BootstrapLockBusyError(`Codexa bootstrap lock is not safely reclaimable: ${lockDir}`);
       }
       if (isLivePid(owner?.pid)) {
-        throw new BootstrapLockBusyError(`Codexa bootstrap is already running for ${repoRoot} (pid ${owner.pid}).`);
+        const observedIdentity = readProcessIdentity(owner.pid);
+        if (
+          owner?.schemaVersion !== 2 ||
+          !isValidProcessIdentity(owner?.processIdentity) ||
+          !isValidProcessIdentity(observedIdentity)
+        ) {
+          throw new BootstrapLockBusyError(
+            `Codexa bootstrap lock owner ${owner.pid} is live but its process identity cannot be verified; ` +
+            `refusing recovery for ${repoRoot}.`
+          );
+        }
+        if (owner.processIdentity === observedIdentity) {
+          throw new BootstrapLockBusyError(`Codexa bootstrap is already running for ${repoRoot} (pid ${owner.pid}).`);
+        }
       }
       await fs.rm(ownerPath, { force: true });
       try {
@@ -319,7 +433,12 @@ async function acquireBootstrapLock(repoRoot) {
 async function releaseBootstrapLock(lock) {
   await assertSafeFile(lock.ownerPath);
   const owner = JSON.parse(await fs.readFile(lock.ownerPath, "utf8"));
-  if (owner?.token !== lock.token || owner?.pid !== process.pid) {
+  if (
+    owner?.schemaVersion !== 2 ||
+    owner?.token !== lock.token ||
+    owner?.pid !== process.pid ||
+    owner?.processIdentity !== lock.processIdentity
+  ) {
     throw new Error(`Codexa bootstrap lock ownership changed unexpectedly: ${lock.lockDir}`);
   }
   await fs.rm(lock.ownerPath);
@@ -334,6 +453,78 @@ function isLivePid(pid) {
   } catch (error) {
     return error?.code === "EPERM";
   }
+}
+
+function readProcessIdentity(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 0) return null;
+  try {
+    if (process.platform === "linux") {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const startTime = linuxProcessStartTime(stat);
+      const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim().toLowerCase();
+      if (!/^\d+$/u.test(startTime ?? "") || !/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/u.test(bootId)) {
+        return null;
+      }
+      return hashProcessIdentity("linux", `${bootId}:${startTime}`);
+    }
+
+    if (process.platform === "darwin") {
+      const result = spawnSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+        encoding: "utf8",
+        env: { ...process.env, LC_ALL: "C" },
+        stdio: ["ignore", "pipe", "ignore"],
+        timeout: 3_000
+      });
+      const startedAt = result.stdout?.trim().replace(/\s+/gu, " ");
+      if (result.error || result.status !== 0 || !startedAt) return null;
+      return hashProcessIdentity("darwin", startedAt);
+    }
+
+    if (process.platform === "win32") {
+      const result = spawnSync(
+        "powershell.exe",
+        [
+          "-NoLogo",
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`
+        ],
+        {
+          encoding: "utf8",
+          stdio: ["ignore", "pipe", "ignore"],
+          timeout: 3_000,
+          windowsHide: true
+        }
+      );
+      const startedAt = result.stdout?.trim();
+      if (result.error || result.status !== 0 || !/^\d+$/u.test(startedAt ?? "")) return null;
+      return hashProcessIdentity("win32", startedAt);
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+function linuxProcessStartTime(stat) {
+  const commandEnd = stat.lastIndexOf(")");
+  if (commandEnd < 0) return null;
+  const fieldsAfterCommand = stat.slice(commandEnd + 1).trim().split(/\s+/u);
+  return fieldsAfterCommand[19] ?? null;
+}
+
+function hashProcessIdentity(platform, value) {
+  return `${platform}:${createHash("sha256").update(value, "utf8").digest("hex")}`;
+}
+
+function isValidProcessIdentity(value) {
+  return /^(?:linux|darwin|win32):[0-9a-f]{64}$/u.test(value ?? "");
+}
+
+function distinctProcessIdentity(identity) {
+  const replacement = identity.endsWith("0") ? "1" : "0";
+  return `${identity.slice(0, -1)}${replacement}`;
 }
 
 async function resolveGitRoot(repoInput) {

@@ -44,5 +44,13 @@ describe("tracked Codex worktree environment", () => {
       scripts?: Record<string, string>;
     };
     expect(packageJson.scripts?.["benchmark:ci"]).toContain("--strict-session-start");
+    expect(packageJson.scripts?.["benchmark:ci"]).toContain("--verify-startup-contract");
+
+    const workflow = await readFile(path.join(repoRoot, ".github/workflows/check.yml"), "utf8");
+    expect(workflow).toContain("git worktree add --detach ../codexa-linked-worktree HEAD");
+    expect(workflow).toContain(
+      "powershell -NoProfile -ExecutionPolicy Bypass -File ./.codex/worktree-bootstrap.ps1"
+    );
+    expect(workflow).toContain("working-directory: ../codexa-linked-worktree");
   });
 });

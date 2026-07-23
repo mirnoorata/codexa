@@ -103,17 +103,44 @@ jobs:
           node-version: "22"
           cache: npm
 
+      - name: Create linked Git worktree
+        run: git worktree add --detach ../codexa-linked-worktree HEAD
+
       - name: Run POSIX worktree bootstrap
         if: runner.os != 'Windows'
+        working-directory: ../codexa-linked-worktree
         run: bash .codex/worktree-bootstrap.sh
 
-      - name: Run native Windows worktree bootstrap
+      - name: Run production Windows PowerShell bootstrap command
         if: runner.os == 'Windows'
         shell: pwsh
-        run: ./.codex/worktree-bootstrap.ps1
+        working-directory: ../codexa-linked-worktree
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ./.codex/worktree-bootstrap.ps1
 
       - name: Validate consumed setup receipt
+        working-directory: ../codexa-linked-worktree
         run: node dist/cli.js worktree-receipt validate . --json
+
+      - name: Verify bootstrap concurrency lock
+        working-directory: ../codexa-linked-worktree
+        run: node scripts/worktree-bootstrap.mjs --verify-lock .
+
+  worktree-bootstrap-macos-lock:
+    # macOS uses its native process start time to distinguish a live lock
+    # owner from an unrelated process that later reused the same PID.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: macos-latest
+    timeout-minutes: 5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Use Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
 
       - name: Verify bootstrap concurrency lock
         run: node scripts/worktree-bootstrap.mjs --verify-lock .
