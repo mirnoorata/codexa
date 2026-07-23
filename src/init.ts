@@ -1,10 +1,11 @@
 import path from "node:path";
-import { lstat, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { assertCiWorkflowWritable, writeCiWorkflow } from "./ci-workflow.js";
 import { buildIndexLocked } from "./indexer.js";
 import {
   defaultServerName,
   detectExistingServerName,
+  assertSafeManagedDirectory,
   assertSafeManagedFile,
   inspectClaudeMcpConfig,
   isCodexaMcpJsonEntry,
@@ -102,7 +103,7 @@ export async function initializeProject(repoInput: string | undefined, options: 
   await assertSafeManagedFile(hooksPath);
   // Parse requested shared JSON before touching any other wiring so a bad
   // tracked file cannot leave a one-time portability migration half-applied.
-  const existingClaudeMcp = claudeMcpPath ? inspectClaudeMcpConfig(await readTextIfExists(claudeMcpPath), claudeMcpPath) : null;
+  const existingClaudeMcp = claudeMcpPath ? inspectClaudeMcpConfig(await readManagedTextIfExists(claudeMcpPath), claudeMcpPath) : null;
   const serverName = validateServerName(
     options.serverName ?? detectExistingServerName(existingConfig) ?? existingClaudeMcp?.serverName ?? defaultServerName(repoRoot)
   );
@@ -741,18 +742,6 @@ async function readTextIfExists(filePath: string): Promise<string> {
 async function readManagedTextIfExists(filePath: string): Promise<string> {
   await assertSafeManagedFile(filePath);
   return readTextIfExists(filePath);
-}
-
-async function assertSafeManagedDirectory(directoryPath: string): Promise<void> {
-  try {
-    const entry = await lstat(directoryPath);
-    if (!entry.isDirectory() || entry.isSymbolicLink()) {
-      throw new Error(`Codexa init refuses redirected or non-directory managed state: ${directoryPath}`);
-    }
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") return;
-    throw error;
-  }
 }
 
 function trimTrailingBlankLines(value: string): string {

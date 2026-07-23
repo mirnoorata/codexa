@@ -4,7 +4,7 @@ import path from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { renderCodexUseContract } from "./codex-contract.js";
 import { buildIndexLocked } from "./indexer.js";
-import { assertSafeManagedFile, isRecognizedCodexaLauncher, isRecognizedNodeCommand } from "./init-portability.js";
+import { assertSafeManagedDirectory, assertSafeManagedFile, isRecognizedCodexaLauncher, isRecognizedNodeCommand } from "./init-portability.js";
 import { CORE_PROFILE_TOOL_NAMES, PRIMARY_CODEX_LOOP } from "./mcp-tool-catalog.js";
 import { isRoutableWorkspaceSessionStatus, resolveMcpRepoRoot, type McpRepoRootResolution } from "./mcp-repo-root.js";
 import { nodeSupported } from "./node-version.js";
@@ -456,8 +456,10 @@ function isIsoTimestamp(value: unknown): boolean {
 }
 
 async function inspectSessionStartConfig(repoRoot: string): Promise<SessionStartReceipt["config"]> {
-  const configPath = path.join(repoRoot, ".codex/config.toml");
+  const codexDir = path.join(repoRoot, ".codex");
+  const configPath = path.join(codexDir, "config.toml");
   try {
+    await assertSafeManagedDirectory(codexDir);
     await assertSafeManagedFile(configPath);
   } catch (error) {
     return { state: "invalid", path: configPath, toolProfile: "unknown", reason: boundedErrorMessage(error) };

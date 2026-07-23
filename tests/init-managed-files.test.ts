@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmod, link, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, mkdtemp, readFile, rename, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -125,6 +125,39 @@ describe("Codexa managed startup files", () => {
 
     expect((await stat(managedPath)).mode & 0o777).toBe(0o664);
     expect(await readFile(managedPath, "utf8")).toBe("codexa update\n");
+  });
+
+  it("refuses redirected and multi-link Claude MCP configuration", async () => {
+    for (const kind of ["symlink", "hardlink"] as const) {
+      const repo = await createRepo(`codexa-init-mcp-${kind}-`);
+      const externalRoot = await mkdtemp(path.join(os.tmpdir(), `codexa-init-mcp-${kind}-target-`));
+      const victim = path.join(externalRoot, ".mcp.json");
+      const original = "{}\n";
+      await writeFile(victim, original, "utf8");
+      if (kind === "symlink") await symlink(victim, path.join(repo, ".mcp.json"));
+      else await link(victim, path.join(repo, ".mcp.json"));
+
+      await expect(
+        initializeProject(repo, { cliPath, claude: true, hooks: false, index: false })
+      ).rejects.toThrow(/refuses redirected or non-regular managed file/u);
+      expect(await readFile(victim, "utf8")).toBe(original);
+    }
+  });
+
+  it("does not attest config through a redirected managed-state directory", async () => {
+    const repo = await createRepo("codexa-session-directory-link-");
+    await initializeProject(repo, { cliPath, hooks: false, index: false });
+    const externalRoot = await mkdtemp(path.join(os.tmpdir(), "codexa-session-directory-target-"));
+    const codexDir = path.join(repo, ".codex");
+    const movedCodexDir = path.join(externalRoot, "managed-state");
+    await rename(codexDir, movedCodexDir);
+    await symlink(movedCodexDir, codexDir, "dir");
+
+    const receipt = await sessionStartReceipt(repo, false);
+    expect(receipt.config).toMatchObject({
+      state: "invalid",
+      reason: expect.stringMatching(/refuses redirected or non-directory managed state/u)
+    });
   });
 });
 

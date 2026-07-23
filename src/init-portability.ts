@@ -142,6 +142,18 @@ export async function assertSafeManagedFile(filePath: string): Promise<void> {
   }
 }
 
+export async function assertSafeManagedDirectory(directoryPath: string): Promise<void> {
+  try {
+    const entry = await lstat(directoryPath);
+    if (!entry.isDirectory() || entry.isSymbolicLink()) {
+      throw new Error(`Codexa refuses redirected or non-directory managed state: ${directoryPath}`);
+    }
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return;
+    throw error;
+  }
+}
+
 interface ManagedFileSnapshot {
   contents: string;
   device?: number;
