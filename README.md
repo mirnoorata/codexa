@@ -176,19 +176,36 @@ wiring remains Git-clean while the worktree-local ignored index is refreshed.
 
 This repository also tracks a
 [Codex local-environment](https://learn.chatgpt.com/docs/environments/local-environment)
-definition at `.codex/environments/environment.toml`. When the Codex app
-creates a worktree for this saved project, the environment installs locked
-dependencies, builds Codexa, and initializes worktree-local `core` wiring
-automatically. In the desktop composer, select the saved Codexa project,
-`Worktree`, the intended starting branch (normally `main`), and the `Codexa`
-local environment before the first prompt. Create and configure that Worktree
-chat on desktop; Remote on mobile may continue a supported desktop Codex chat
-but cannot select or configure local setup. Once the app has created the linked
-worktree, adopt that checkout for the task instead of creating a second
-worktree. Successful setup writes an ignored, identity-bound bootstrap receipt
-so a host coordinator can validate the setup without rerunning it. The receipt
-binds the complete regular-file `dist/` runtime manifest, not only the CLI
-entry point, so a changed imported module invalidates readiness.
+definition at `.codex/environments/environment.toml`. On a local Linux/macOS
+host (or Windows through WSL), its Bash setup installs locked dependencies,
+builds Codexa, initializes worktree-local `core` wiring, and writes an ignored,
+identity-bound bootstrap receipt. Native Windows uses the tracked PowerShell
+override: it installs, builds, and proves `core` MCP config/index readiness with
+`--no-hooks`, but intentionally remains MCP-only and does not issue the POSIX
+bootstrap receipt.
+
+In the desktop composer, select the saved Codexa project, `Worktree`, the
+intended starting branch (normally `main`), and the `Codexa` local environment
+before the first prompt. Create and configure that Worktree chat on desktop;
+Remote on mobile may continue a supported desktop Codex chat but cannot select
+or configure local setup. Once the app has created the linked worktree, adopt
+that checkout for the task instead of creating a second worktree. A successful
+POSIX setup receipt binds the complete regular-file `dist/` runtime manifest,
+not only the CLI entry point, so a changed imported module invalidates
+readiness.
+
+If a Remote-SSH host creates the worktree without invoking local-environment
+setup, treat it as source-ready only. Repair the active remote worktree and
+verify its observable readiness there:
+
+```bash
+bash .codex/worktree-bootstrap.sh
+node dist/cli.js session-start "$PWD" --json --strict
+```
+
+Then start a new thread (or explicitly reload the project) so the host can
+initialize the repaired MCP server. Neither the bootstrap receipt nor
+SessionStart can prove an already-running thread's MCP handshake.
 That bootstrap receipt attests local dependency/build/init setup only. The
 SessionStart receipt separately validates managed config and index state and
 still cannot attest the host's current-thread MCP handshake.

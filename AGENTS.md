@@ -24,9 +24,13 @@ names, hostnames, or session memory to the public repository.
   intended starting branch (normally `main`), and the Codexa local environment
   before the first prompt. Mobile remote access may continue that desktop chat
   but does not configure or select local setup.
-- The tracked local environment runs `.codex/worktree-bootstrap.sh`, which
-  installs the locked dependencies, builds Codexa, and generates ignored
-  worktree-local Codexa wiring with the compact `core` tool profile.
+- On local Linux/macOS (and Windows through WSL), the tracked environment runs
+  `.codex/worktree-bootstrap.sh`, which installs locked dependencies, builds
+  Codexa, and generates ignored worktree-local `core` wiring plus an
+  identity-bound bootstrap receipt.
+- Native Windows uses the tracked PowerShell override. It installs, builds, and
+  proves `core` MCP config/index readiness with `--no-hooks`; it is deliberately
+  MCP-only and does not issue the POSIX bootstrap receipt.
 - Treat the app-created linked worktree as the task checkout. Do not create a
   second worktree for the same task. App worktrees may start detached; attach a
   named branch before committing. Let the app own cleanup of app-managed
@@ -36,6 +40,11 @@ names, hostnames, or session memory to the public repository.
   worktree so Codexa's workspace identity remains correct.
 - Treat the identity-bound bootstrap receipt as proof; a selected environment
   with no valid receipt is only source-ready and needs explicit repair/fallback.
+- If a Remote-SSH host creates the worktree without invoking local setup, run
+  `bash .codex/worktree-bootstrap.sh` inside that remote worktree, then run
+  `node dist/cli.js session-start "$PWD" --json --strict`. Start a new thread
+  after repair because SessionStart cannot prove the current thread's MCP
+  handshake.
 
 ## GitHub Change and Release Path
 
