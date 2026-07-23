@@ -237,6 +237,34 @@ describe("Codexa managed startup files", () => {
     expect(receipt.repoRoot).toBe(nestedRepo);
     expect(receipt.config.state).toBe("configured");
   });
+
+  it("refuses redirected default focus files before workspace routing", async () => {
+    for (const kind of ["symlink", "hardlink"] as const) {
+      const repo = await createRepo(`codexa-session-focus-${kind}-`);
+      const nestedRepo = path.join(repo, "nested-repo");
+      await mkdir(nestedRepo, { recursive: true });
+      execFileSync("git", ["init"], { cwd: nestedRepo, stdio: "ignore" });
+      await writeFile(path.join(nestedRepo, "README.md"), "# nested\n", "utf8");
+      execFileSync("git", ["add", "README.md"], { cwd: nestedRepo, stdio: "ignore" });
+      execFileSync(
+        "git",
+        ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "nested fixture"],
+        { cwd: nestedRepo, stdio: "ignore" }
+      );
+      await mkdir(path.join(repo, ".codex"), { recursive: true });
+      const externalRoot = await mkdtemp(path.join(os.tmpdir(), `codexa-session-focus-${kind}-target-`));
+      const victim = path.join(externalRoot, "WORKING.md");
+      await writeFile(victim, `Focused project: \`${nestedRepo}\`\n`, "utf8");
+      const focusPath = path.join(repo, ".codex/WORKING.md");
+      if (kind === "symlink") await symlink(victim, focusPath);
+      else await link(victim, focusPath);
+
+      const receipt = await sessionStartReceipt(repo, false);
+      expect(receipt.routing.state).toBe("unavailable");
+      expect(receipt.repoRoot).toBeNull();
+      expect(receipt.config.reason).toMatch(/refuses redirected or non-regular managed file/u);
+    }
+  });
 });
 
 async function createRepo(prefix: string): Promise<string> {

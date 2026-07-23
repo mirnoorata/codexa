@@ -103,8 +103,10 @@ export async function sessionStartReceipt(repoInput: string | undefined, include
   let routingFocusReason: McpRepoRootResolution["focusReason"];
   let workspaceSessionId: string | undefined;
   let configuredManagedStateError: string | undefined;
+  const configuredCodexDir = path.join(configuredRoot, ".codex");
   try {
-    await assertSafeManagedDirectory(path.join(configuredRoot, ".codex"));
+    await assertSafeManagedDirectory(configuredCodexDir);
+    await assertSafeManagedFile(path.join(configuredCodexDir, "WORKING.md"));
   } catch (error) {
     configuredManagedStateError = boundedErrorMessage(error);
   }
