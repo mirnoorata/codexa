@@ -278,7 +278,8 @@ async function updateHashFromFile(
       opened.dev !== expected.dev ||
       opened.ino !== expected.ino ||
       opened.size !== expected.size ||
-      opened.mode !== expected.mode
+      opened.mode !== expected.mode ||
+      opened.nlink !== expected.nlink
     ) {
       throw new Error("adoption-file-changed-during-scan");
     }
@@ -297,7 +298,28 @@ async function updateHashFromFile(
       final.ino !== opened.ino ||
       final.size !== opened.size ||
       final.mode !== opened.mode ||
-      final.mtimeMs !== opened.mtimeMs
+      final.nlink !== opened.nlink ||
+      final.mtimeMs !== opened.mtimeMs ||
+      final.ctimeMs !== opened.ctimeMs
+    ) {
+      throw new Error("adoption-file-changed-during-scan");
+    }
+    const named = await fs.lstat(filePath).catch((error: unknown) => {
+      if (isNodeError(error) && error.code === "ENOENT") {
+        throw new Error("adoption-file-changed-during-scan");
+      }
+      throw error;
+    });
+    if (
+      !named.isFile() ||
+      named.isSymbolicLink() ||
+      named.dev !== final.dev ||
+      named.ino !== final.ino ||
+      named.size !== final.size ||
+      named.mode !== final.mode ||
+      named.nlink !== final.nlink ||
+      named.mtimeMs !== final.mtimeMs ||
+      named.ctimeMs !== final.ctimeMs
     ) {
       throw new Error("adoption-file-changed-during-scan");
     }
@@ -343,7 +365,11 @@ async function readBoundedDirectoryEntries(
     await handle.close();
   }
   assertAdoptionDeadline(budget.deadlineAt);
-  return entries.sort((left, right) => left.name.localeCompare(right.name));
+  return entries.sort((left, right) => compareEntryNames(left.name, right.name));
+}
+
+function compareEntryNames(left: string, right: string): number {
+  return left < right ? -1 : left > right ? 1 : 0;
 }
 
 async function assertDependencyRegularFile(
