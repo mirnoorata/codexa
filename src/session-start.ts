@@ -20,6 +20,7 @@ const INDEX_HEAD_COMMIT_MAX = 80;
 const INDEX_INDEXED_AT_MAX = 64;
 const INDEX_COUNT_MAX = 1_000_000;
 const CONFIG_COMMAND_MAX = 240;
+const CONFIG_COMMAND_VALIDATION_MAX = 4096;
 const CONFIG_LAUNCHER_MAX = 240;
 const CONFIG_ARGS_MAX_ITEMS = 64;
 const CONFIG_ARGS_MAX_ITEM = 4096;
@@ -486,7 +487,7 @@ async function inspectSessionStartConfig(repoRoot: string): Promise<SessionStart
     validateManagedTimeout(serverConfig.startup_timeout_sec, "startup_timeout_sec");
     validateManagedTimeout(serverConfig.tool_timeout_sec, "tool_timeout_sec");
 
-    const commandValue = validatedConfigString(serverConfig.command, "command", CONFIG_COMMAND_MAX);
+    const commandValue = validatedConfigString(serverConfig.command, "command", CONFIG_COMMAND_VALIDATION_MAX);
     const command = boundedReceiptValue(commandValue, CONFIG_COMMAND_MAX);
     const args = validatedConfigStringArray(serverConfig.args, "args", true, {
       maxItems: CONFIG_ARGS_MAX_ITEMS,

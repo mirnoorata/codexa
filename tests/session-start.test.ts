@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -394,7 +394,7 @@ describe("Codexa versioned SessionStart receipt", () => {
     });
   });
 
-  it("validates a long Node launcher path before bounding its receipt value", async () => {
+  it("validates long Node command and launcher paths before bounding receipt values", async () => {
     const repo = await createRepo("codexa-session-receipt-long-launcher-");
     await initializeProject(repo, { cliPath: testCliPath });
     const configPath = path.join(repo, ".codex/config.toml");
@@ -404,18 +404,25 @@ describe("Codexa versioned SessionStart receipt", () => {
       packageRoot = path.join(packageRoot, `nested-${index}-${"x".repeat(64)}`);
     }
     const longCli = path.join(packageRoot, "dist/cli.js");
+    const longNode = path.join(packageRoot, "runtime/bin/node");
     expect(longCli.length).toBeGreaterThan(240);
+    expect(longNode.length).toBeGreaterThan(240);
     await mkdir(path.dirname(longCli), { recursive: true });
+    await mkdir(path.dirname(longNode), { recursive: true });
     await writeFile(
       path.join(packageRoot, "package.json"),
       `${JSON.stringify({ name: "@mirnoorata/codexa", version: CODEXA_VERSION, bin: { codexa: "dist/cli.js" } })}\n`,
       "utf8"
     );
     await writeFile(longCli, "#!/usr/bin/env node\n", "utf8");
-    await writeFile(configPath, config.replaceAll(testCliPath, longCli), "utf8");
+    await writeFile(longNode, "#!/usr/bin/env node\n", "utf8");
+    await chmod(longNode, 0o755);
+    await writeFile(configPath, config.replaceAll(process.execPath, longNode).replaceAll(testCliPath, longCli), "utf8");
 
     const receipt = await sessionStartReceipt(repo, false);
     expect(receipt.config).toMatchObject({ state: "configured", toolProfile: "core" });
+    expect(receipt.config.command).toHaveLength(240);
+    expect(receipt.config.command).toMatch(/\.\.\.$/u);
     expect(receipt.config.launcher).toHaveLength(240);
     expect(receipt.config.launcher).toMatch(/\.\.\.$/u);
     expect(sessionStartStrictFailures(receipt)).toEqual([]);
