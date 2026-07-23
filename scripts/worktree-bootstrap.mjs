@@ -51,6 +51,7 @@ async function runBootstrap(lane, repoInput) {
   let logHandle;
   let primaryError;
   try {
+    const expectedStartupInput = await hashStartupInputs(repoRoot);
     const expectedBuildInput = await hashBuildInputs(repoRoot);
     const preflight = spawnSync(
       process.execPath,
@@ -92,6 +93,8 @@ async function runBootstrap(lane, repoInput) {
         lane,
         "--expected-build-input",
         expectedBuildInput,
+        "--expected-startup-input",
+        expectedStartupInput,
         "--json"
       ]
     });
@@ -199,6 +202,56 @@ async function hashBuildInputs(repoRoot) {
   for (const filePath of files.sort()) {
     hash.update(`\0${path.relative(repoRoot, filePath).replaceAll(path.sep, "/")}\0`, "utf8");
     hash.update(await readRegularFile(filePath));
+  }
+  return hash.digest("hex");
+}
+
+async function hashStartupInputs(repoRoot) {
+  const wrapper = ".codex/worktree-bootstrap.sh";
+  const wrapperContents = (await readRegularFile(path.join(repoRoot, wrapper))).toString("utf8");
+  const declared = parseBootstrapInputNames(wrapperContents);
+  return hashNamedFiles(repoRoot, [...new Set([
+    ".codex/environments/environment.toml",
+    ".codex/worktree-bootstrap.ps1",
+    wrapper,
+    ...declared
+  ])].sort());
+}
+
+function parseBootstrapInputNames(wrapper) {
+  const prefix = "# focus-worktree-bootstrap-input: ";
+  const names = wrapper.split(/\r?\n/u)
+    .filter((line) => line.startsWith(prefix))
+    .map((line) => line.slice(prefix.length));
+  if (names.length === 0 || new Set(names).size !== names.length) {
+    throw new Error("Codexa bootstrap input declarations are missing or duplicated.");
+  }
+  for (const name of names) {
+    if (
+      name.length === 0 ||
+      name.length > 512 ||
+      name.includes("\\") ||
+      path.posix.isAbsolute(name) ||
+      path.posix.normalize(name) !== name ||
+      name.split("/").some((segment) => segment === "" || segment === "." || segment === "..") ||
+      /[\u0000-\u001f\u007f]/u.test(name)
+    ) {
+      throw new Error("Codexa bootstrap input declarations contain an unsafe path.");
+    }
+  }
+  return names;
+}
+
+async function hashNamedFiles(repoRoot, names) {
+  const hash = createHash("sha256");
+  for (const name of names) {
+    hash.update(`\0${name}\0`, "utf8");
+    try {
+      hash.update(await readRegularFile(path.join(repoRoot, name)));
+    } catch (error) {
+      if (error?.code === "ENOENT") hash.update("missing", "utf8");
+      else throw error;
+    }
   }
   return hash.digest("hex");
 }

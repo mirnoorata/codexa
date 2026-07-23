@@ -113,6 +113,10 @@ export async function worktreeBootstrapBuildInputSha256(repoRoot: string): Promi
   return hashBuildInputs(path.resolve(repoRoot));
 }
 
+export async function worktreeBootstrapStartupInputSha256(repoRoot: string): Promise<string> {
+  return hashStartupInputs(path.resolve(repoRoot));
+}
+
 async function runNpmLs(repoRoot: string): Promise<Awaited<ReturnType<typeof runCommand>>> {
   const options = { cwd: repoRoot, timeoutMs: 60_000, maxBufferBytes: 8 * 1024 * 1024 };
   if (process.platform !== "win32") {
@@ -140,11 +144,15 @@ export async function isWorktreeBootstrapReceiptRequired(repoRoot: string): Prom
 export async function issueWorktreeBootstrapReceipt(
   repoRoot: string,
   lane: WorktreeBootstrapLane,
-  expectedBuildInputSha256: string
+  expectedBuildInputSha256: string,
+  expectedStartupInputSha256: string
 ): Promise<WorktreeBootstrapReceipt> {
   const repo = path.resolve(repoRoot);
   if (!isSha256(expectedBuildInputSha256)) {
     throw new Error("Cannot issue Codexa worktree receipt: expected build input must be a SHA-256 digest");
+  }
+  if (!isSha256(expectedStartupInputSha256)) {
+    throw new Error("Cannot issue Codexa worktree receipt: expected startup input must be a SHA-256 digest");
   }
   const platformReason = lanePlatformMismatch(lane, process.platform);
   if (platformReason) throw new Error(`Cannot issue Codexa worktree receipt: ${platformReason}`);
@@ -157,6 +165,9 @@ export async function issueWorktreeBootstrapReceipt(
     throw new Error(`Cannot issue Codexa worktree receipt: ${hookContract.reason}`);
   }
   const receipt = await currentReceiptFacts(repo, lane);
+  if (receipt.startupInputSha256 !== expectedStartupInputSha256) {
+    throw new Error("Cannot issue Codexa worktree receipt: startup-input-changed-during-bootstrap");
+  }
   if (receipt.buildInputSha256 !== expectedBuildInputSha256) {
     throw new Error("Cannot issue Codexa worktree receipt: build-input-changed-during-bootstrap");
   }
@@ -411,14 +422,38 @@ async function hashBuildInputs(repoRoot: string): Promise<string> {
 }
 
 async function hashStartupInputs(repoRoot: string): Promise<string> {
-  return hashNamedFiles(repoRoot, [
-    ".npmrc",
+  const wrapper = ".codex/worktree-bootstrap.sh";
+  const declared = parseBootstrapInputNames((await readRegularFile(path.join(repoRoot, wrapper))).toString("utf8"));
+  return hashNamedFiles(repoRoot, [...new Set([
     ".codex/environments/environment.toml",
     ".codex/worktree-bootstrap.ps1",
-    ".codex/worktree-bootstrap.sh",
-    "scripts/worktree-bootstrap-preflight.mjs",
-    "scripts/worktree-bootstrap.mjs"
-  ]);
+    wrapper,
+    ...declared
+  ])].sort());
+}
+
+function parseBootstrapInputNames(wrapper: string): string[] {
+  const prefix = "# focus-worktree-bootstrap-input: ";
+  const names = wrapper.split(/\r?\n/u)
+    .filter((line) => line.startsWith(prefix))
+    .map((line) => line.slice(prefix.length));
+  if (names.length === 0 || new Set(names).size !== names.length) {
+    throw new Error("bootstrap-input-declarations-invalid");
+  }
+  for (const name of names) {
+    if (
+      name.length === 0 ||
+      name.length > 512 ||
+      name.includes("\\") ||
+      path.posix.isAbsolute(name) ||
+      path.posix.normalize(name) !== name ||
+      name.split("/").some((segment) => segment === "" || segment === "." || segment === "..") ||
+      /[\u0000-\u001f\u007f]/u.test(name)
+    ) {
+      throw new Error("bootstrap-input-declarations-invalid");
+    }
+  }
+  return names;
 }
 
 async function hashNamedFiles(repoRoot: string, names: string[]): Promise<string> {

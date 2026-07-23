@@ -564,7 +564,7 @@ writes are allowed; source-file mutation is not exposed through MCP tools.
 | --- | --- |
 | `codexa init <repo>` | Write repo-local Codex MCP config/hooks and index the repo (`--claude` for Claude Code, `--ci` for a read-only PR workflow, `--tools full` for every tool, `--agents-md` for an AGENTS.md workflow block). |
 | `codexa session-start <repo>` | Print a cheap versioned receipt with separate config, index, required local setup, and current-thread MCP activation states (`--json` for structured output; `--strict` for observable readiness gating). |
-| `codexa worktree-receipt issue\|validate <repo>` | Issue bootstrap-bound setup evidence or validate it. Validation defaults to the full source/dist/dependency scope; `--scope startup` checks durable startup readiness and `--scope adoption` adds generated-runtime and installed-dependency integrity without binding source/HEAD. Issuance requires the orchestrator's pre-build input fingerprint. |
+| `codexa worktree-receipt issue\|validate <repo>` | Issue bootstrap-bound setup evidence or validate it. Validation defaults to the full source/dist/dependency scope; `--scope startup` checks durable startup readiness and `--scope adoption` adds generated-runtime and installed-dependency integrity without binding source/HEAD. Issuance requires the orchestrator's pre-install startup fingerprint and pre-build source fingerprint. |
 | `codexa index <repo>` | Build `.codex/codebase/` artifacts once. |
 | `codexa watch <repo>` | Keep artifacts fresh during active edit sessions. |
 | `codexa status <repo>` | Check freshness and parser errors without refreshing. |

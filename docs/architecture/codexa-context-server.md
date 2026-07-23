@@ -747,6 +747,11 @@ exceeds 10,000 entries or 256 MiB, dependencies exceed 100,000 entries or
 2 GiB, one file exceeds its bounded class, or the combined adoption scan takes
 more than 20 seconds. `benchmark:ci` separately requires the valid
 adoption-scope check to complete within five seconds.
+The orchestrator snapshots every setup input declared by the tracked wrapper,
+plus both wrappers and the environment contract, before `npm ci`; receipt
+issuance rejects any change to that fingerprint. Tool caches are directed to
+ignored `.codex/cache` state so normal test execution cannot mutate the
+install-owned `node_modules` manifest.
 
 Shared controllers delegate adoption-scope validation to a trusted canonical
 Codexa runtime before executing the validated `dist/` entry point. The ignored

@@ -173,8 +173,9 @@ worktreeReceipt
   .argument("<repo>", "repository root")
   .requiredOption("--lane <lane>", "setup lane: posix-hooks or native-windows-mcp", parseWorktreeBootstrapLane)
   .requiredOption("--expected-build-input <sha256>", "pre-build source fingerprint", parseSha256Option)
+  .requiredOption("--expected-startup-input <sha256>", "pre-install startup fingerprint", parseSha256Option)
   .option("--json", "emit machine-readable JSON", false)
-  .action(async (repo: string, opts: { expectedBuildInput: string; lane: WorktreeBootstrapLane; json: boolean }) => {
+  .action(async (repo: string, opts: { expectedBuildInput: string; expectedStartupInput: string; lane: WorktreeBootstrapLane; json: boolean }) => {
     const repoRoot = resolveRequiredGitRepo(repo, "worktree-receipt issue");
     const readiness = await sessionStartReceiptForBootstrapIssue(repoRoot);
     const failures = sessionStartStrictFailures(readiness);
@@ -182,7 +183,12 @@ worktreeReceipt
     if (failures.length > 0) {
       throw new Error(`Cannot issue Codexa worktree receipt: ${[...new Set(failures)].join("; ")}`);
     }
-    const receipt = await issueWorktreeBootstrapReceipt(repoRoot, opts.lane, opts.expectedBuildInput);
+    const receipt = await issueWorktreeBootstrapReceipt(
+      repoRoot,
+      opts.lane,
+      opts.expectedBuildInput,
+      opts.expectedStartupInput
+    );
     console.log(opts.json ? JSON.stringify(receipt, null, 2) : `Codexa worktree receipt: verified (${receipt.lane}).`);
   });
 

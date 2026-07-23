@@ -7,6 +7,7 @@ import {
   inspectWorktreeBootstrapReceipt,
   issueWorktreeBootstrapReceipt,
   worktreeBootstrapBuildInputSha256,
+  worktreeBootstrapStartupInputSha256,
   WORKTREE_BOOTSTRAP_DEPENDENCY_SEAL_RELATIVE_PATH,
   WORKTREE_BOOTSTRAP_RECEIPT_RELATIVE_PATH
 } from "../src/worktree-bootstrap-receipt.js";
@@ -175,9 +176,18 @@ describe("worktree bootstrap receipt", () => {
 
   it("rejects source races and invalidates durable setup-procedure drift", async () => {
     const repo = await createReceiptFixture("codexa-worktree-receipt-race-");
+    const startupInput = await worktreeBootstrapStartupInputSha256(repo);
     await expect(
-      issueWorktreeBootstrapReceipt(repo, "posix-hooks", "0".repeat(64))
+      issueWorktreeBootstrapReceipt(repo, "posix-hooks", "0".repeat(64), startupInput)
     ).rejects.toThrow(/build-input-changed-during-bootstrap/u);
+    await expect(
+      issueWorktreeBootstrapReceipt(
+        repo,
+        "posix-hooks",
+        await worktreeBootstrapBuildInputSha256(repo),
+        "0".repeat(64)
+      )
+    ).rejects.toThrow(/startup-input-changed-during-bootstrap/u);
 
     await issueReceipt(repo, "posix-hooks");
     await writeFile(path.join(repo, ".npmrc"), "audit=false\n", "utf8");
@@ -354,7 +364,16 @@ async function createReceiptFixture(
   await writeFile(path.join(repo, "src/index.ts"), "export const fixture = 1;\n", "utf8");
   await writeFile(path.join(repo, "dist/cli.js"), "#!/usr/bin/env node\n", "utf8");
   await writeFile(path.join(repo, "dist/runtime.js"), "export const runtime = 1;\n", "utf8");
-  await writeFile(path.join(repo, ".codex/worktree-bootstrap.sh"), "#!/bin/sh\n", "utf8");
+  await writeFile(
+    path.join(repo, ".codex/worktree-bootstrap.sh"),
+    [
+      "#!/bin/sh",
+      "# focus-worktree-bootstrap-input: .npmrc",
+      "# focus-worktree-bootstrap-input: scripts/worktree-bootstrap.mjs",
+      ""
+    ].join("\n"),
+    "utf8"
+  );
   const codexaHooks = options.codexaHooks ?? true;
   await writeFile(
     path.join(repo, ".codex/config.toml"),
@@ -457,7 +476,12 @@ async function issueReceipt(
   repoRoot: string,
   lane: "posix-hooks" | "native-windows-mcp"
 ): Promise<Awaited<ReturnType<typeof issueWorktreeBootstrapReceipt>>> {
-  return issueWorktreeBootstrapReceipt(repoRoot, lane, await worktreeBootstrapBuildInputSha256(repoRoot));
+  return issueWorktreeBootstrapReceipt(
+    repoRoot,
+    lane,
+    await worktreeBootstrapBuildInputSha256(repoRoot),
+    await worktreeBootstrapStartupInputSha256(repoRoot)
+  );
 }
 
 async function createGitRepo(prefix: string, commit = true): Promise<string> {
