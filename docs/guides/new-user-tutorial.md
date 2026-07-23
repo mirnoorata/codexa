@@ -8,7 +8,7 @@ repository without sending source code to a hosted indexing service.
 
 1. Install Codexa.
 2. Wire Codexa into one local repository, including optional local policy defaults.
-3. Check that the index and MCP server are ready.
+3. Check index freshness and static MCP configuration without claiming current-thread activation.
 4. Use the smallest source, search, plan, edit, and review sequence the task needs.
 5. Print a proof card for the final handoff.
 6. Know where to look when setup is not ready.
