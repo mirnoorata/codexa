@@ -78,7 +78,10 @@ export async function runDoctor(repoInput: string, options: DoctorOptions = {}):
   const routingOptions: McpRepoRootResolutionOptions = {
     workspaceFocusFile: options.workspaceFocusFile,
     workspaceSessionId: options.workspaceSessionId,
-    preferConfiguredRoot: !workspaceRoutingRequested && (await shouldPreferConfiguredRepoRoot(configuredRoot, options))
+    preferConfiguredRoot: !workspaceRoutingRequested && (await shouldPreferConfiguredRepoRoot(configuredRoot, {
+      ...options,
+      ignoreAmbientWorkspaceSelectors: true
+    }))
   };
   const mcpRouting = options.mcpReadiness ? await inspectMcpRouting(configuredRoot, routingOptions) : undefined;
   const repoRoot = mcpRouting?.resolution?.repoRoot ?? configuredRoot;

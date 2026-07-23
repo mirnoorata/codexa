@@ -16,7 +16,10 @@ export async function resolveQueryRepoRoot(repo: string, opts: CliQueryOptions =
   return (
     await resolveMcpRepoRoot(configuredRoot, {
       ...routingOptions,
-      preferConfiguredRoot: await shouldPreferConfiguredRepoRoot(configuredRoot, routingOptions)
+      preferConfiguredRoot: await shouldPreferConfiguredRepoRoot(configuredRoot, {
+        ...routingOptions,
+        ignoreAmbientWorkspaceSelectors: true
+      })
     })
   ).repoRoot;
 }

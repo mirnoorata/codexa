@@ -272,7 +272,9 @@ export async function recordAdvisoryHookEvent(repoRoot: string, event: CodexaHoo
 
 async function resolveHookRepoRoots(repo: string): Promise<{ configuredRoot: string; activeRepoRoot: string }> {
   const configuredRoot = path.resolve(repo);
-  const preferConfiguredRoot = await shouldPreferConfiguredRepoRoot(configuredRoot);
+  const preferConfiguredRoot = await shouldPreferConfiguredRepoRoot(configuredRoot, {
+    ignoreAmbientWorkspaceSelectors: true
+  });
   const resolution = await resolveMcpRepoRoot(configuredRoot, {
     preferConfiguredRoot,
     requireValidDeclaredFocus: !preferConfiguredRoot

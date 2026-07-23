@@ -6,11 +6,20 @@ import { renderCodexUseContract } from "./codex-contract.js";
 import { buildIndexLocked } from "./indexer.js";
 import { assertSafeManagedDirectory, assertSafeManagedFile, assertSafeManagedStateDirectory, isRecognizedCodexaLauncher } from "./init-portability.js";
 import { CORE_PROFILE_TOOL_NAMES, PRIMARY_CODEX_LOOP } from "./mcp-tool-catalog.js";
-import { isRoutableWorkspaceSessionStatus, resolveMcpRepoRoot, type McpRepoRootResolution } from "./mcp-repo-root.js";
+import {
+  isRoutableWorkspaceSessionStatus,
+  resolveMcpRepoRoot,
+  shouldPreferConfiguredRepoRoot,
+  type McpRepoRootResolution
+} from "./mcp-repo-root.js";
 import { statusQuery } from "./queries.js";
 import { validateLauncherCommand } from "./startup-launcher.js";
 import type { InitToolProfile } from "./types/init.js";
 import { CODEXA_VERSION } from "./version.js";
+import {
+  inspectWorktreeBootstrapReceipt,
+  type WorktreeBootstrapInspection
+} from "./worktree-bootstrap-receipt.js";
 
 const WORKSPACE_DIGEST_MAX_ROWS = 12;
 const WORKSPACE_DIGEST_MAX_FIELD = 180;
@@ -43,7 +52,7 @@ export type SessionStartToolProfile = InitToolProfile | "legacy" | "drift" | "un
 export type SessionStartIndexState = "fresh" | "stale" | "missing" | "parser-degraded" | "metadata-invalid" | "identity-blocked" | "not-selected" | "unavailable";
 
 export interface SessionStartReceipt {
-  schemaVersion: 1;
+  schemaVersion: 2;
   kind: "codexa-session-start";
   availability: "ok" | "unavailable";
   advisory: true;
@@ -87,12 +96,29 @@ export interface SessionStartReceipt {
     state: "unverified";
     reason: "session-start-cannot-observe-host-initialize";
   };
+  setup: Omit<WorktreeBootstrapInspection, "receipt">;
   cadence: string;
   context?: string[];
   hints: string[];
 }
 
 export async function sessionStartReceipt(repoInput: string | undefined, includeContext: boolean, options: boolean | SessionStartOptions = false): Promise<SessionStartReceipt> {
+  return sessionStartReceiptInternal(repoInput, includeContext, options, false);
+}
+
+// Receipt issuance has one deliberate exception to setup-receipt consumption:
+// the receipt does not exist yet. Keep that exception out of the public
+// SessionStart options so ordinary callers cannot bypass the setup facet.
+export async function sessionStartReceiptForBootstrapIssue(repoInput: string): Promise<SessionStartReceipt> {
+  return sessionStartReceiptInternal(repoInput, false, { autoRefresh: false }, true);
+}
+
+async function sessionStartReceiptInternal(
+  repoInput: string | undefined,
+  includeContext: boolean,
+  options: boolean | SessionStartOptions,
+  issuingSetupReceipt: boolean
+): Promise<SessionStartReceipt> {
   const configuredRoot = path.resolve(repoInput ?? process.cwd());
   const sessionOptions = typeof options === "boolean" ? { autoRefresh: options } : options;
   const autoRefresh = sessionOptions.autoRefresh ?? false;
@@ -124,10 +150,15 @@ export async function sessionStartReceipt(repoInput: string | undefined, include
     });
   }
   try {
-    const resolution = await resolveMcpRepoRoot(configuredRoot, {
+    const routingOptions = {
       skipDefaultFocusFile: configuredManagedStateError !== undefined,
       workspaceFocusFile: sessionOptions.workspaceFocusFile,
-      workspaceSessionId: sessionOptions.workspaceSessionId
+      workspaceSessionId: sessionOptions.workspaceSessionId,
+      ignoreAmbientWorkspaceSelectors: true
+    };
+    const resolution = await resolveMcpRepoRoot(configuredRoot, {
+      ...routingOptions,
+      preferConfiguredRoot: await shouldPreferConfiguredRepoRoot(configuredRoot, routingOptions)
     });
     repoRoot = resolution.repoRoot;
     routingSource = resolution.source;
@@ -172,10 +203,14 @@ export async function sessionStartReceipt(repoInput: string | undefined, include
     workspaceSessionId,
     note: resolutionNote
   };
+  let setup: SessionStartReceipt["setup"] = { state: "unavailable", reason: "setup-not-inspected" };
   try {
     await assertSafeManagedDirectory(path.join(repoRoot, ".codex"));
     await assertSafeManagedStateDirectory(repoRoot, "cache");
     await assertSafeManagedStateDirectory(repoRoot, "codebase");
+    setup = issuingSetupReceipt
+      ? { state: "not-required" }
+      : compactSetupInspection(await inspectWorktreeBootstrapReceipt(repoRoot, { validation: "startup" }));
   } catch (error) {
     const message = boundedErrorMessage(error);
     return unavailableSessionStartReceipt({
@@ -188,6 +223,7 @@ export async function sessionStartReceipt(repoInput: string | undefined, include
         reason: message
       },
       routing,
+      setup,
       indexError: `managed state is unsafe; status and refresh were not inspected: ${message}`
     });
   }
@@ -199,12 +235,16 @@ export async function sessionStartReceipt(repoInput: string | undefined, include
   }));
   let status: Awaited<ReturnType<typeof statusQuery>>;
   let refreshedDuringStartup = false;
+  let refreshBlockedBySetup = false;
   try {
     status = await statusQuery(repoRoot);
-    if (autoRefresh && (status.freshness.missing || status.freshness.stale)) {
+    const setupAllowsWrites = setup.state === "not-required" || setup.state === "verified";
+    if (autoRefresh && setupAllowsWrites && (status.freshness.missing || status.freshness.stale)) {
       await buildIndexLocked({ repoRoot, writeArtifacts: true });
       refreshedDuringStartup = true;
       status = await statusQuery(repoRoot);
+    } else if (autoRefresh && !setupAllowsWrites && (status.freshness.missing || status.freshness.stale)) {
+      refreshBlockedBySetup = true;
     }
   } catch (error) {
     return unavailableSessionStartReceipt({
@@ -212,6 +252,7 @@ export async function sessionStartReceipt(repoInput: string | undefined, include
       repoRoot,
       config,
       routing,
+      setup,
       indexError: boundedErrorMessage(error)
     });
   }
@@ -224,6 +265,8 @@ export async function sessionStartReceipt(repoInput: string | undefined, include
       `Session-start auto-refresh: ${autoRefresh
         ? refreshedDuringStartup
           ? "rebuilt the missing or stale index during this startup invocation"
+          : refreshBlockedBySetup
+            ? `skipped because setup is ${setup.state}`
           : "enabled; the index was already fresh during this startup invocation"
         : "disabled for this startup invocation"}.`
     );
@@ -237,7 +280,7 @@ export async function sessionStartReceipt(repoInput: string | undefined, include
     }
   }
   return {
-    ...sessionStartReceiptBase(configuredRoot, config),
+    ...sessionStartReceiptBase(configuredRoot, config, setup),
     availability: "ok",
     repoRoot,
     routing,
@@ -257,6 +300,9 @@ export function renderSessionStartReceipt(receipt: SessionStartReceipt): string 
   if (receipt.index.headCommit !== undefined) lines.push(`Commit: ${receipt.index.headCommit ?? "none"}`);
   lines.push(renderSessionStartConfig(receipt.config));
   lines.push(renderSessionStartIndex(receipt.index));
+  if (receipt.routing.state === "resolved" && receipt.setup.state !== "not-required") {
+    lines.push(`Setup: ${receipt.setup.state}${receipt.setup.lane ? ` (${receipt.setup.lane})` : receipt.setup.reason ? ` (${receipt.setup.reason})` : ""}.`);
+  }
   lines.push("Current-thread MCP: unverified (SessionStart cannot observe the host MCP initialize handshake).");
   if (receipt.availability === "unavailable") {
     const error = receipt.routing.error ?? receipt.index.error ?? receipt.index.reason;
@@ -301,7 +347,7 @@ export async function sessionStartSummary(repoInput: string | undefined, include
   return renderSessionStartReceipt(await sessionStartReceipt(repoInput, includeContext, options));
 }
 
-/** Strict mode checks only observable routing/config/index facts; host MCP activation remains explicitly unverified. */
+/** Strict mode checks observable routing/config/setup/index facts; host MCP activation remains explicitly unverified. */
 export function sessionStartStrictFailures(receipt: SessionStartReceipt): string[] {
   const failures: string[] = [];
   if (receipt.availability === "unavailable") failures.push(receipt.routing.error ?? receipt.index.error ?? "startup status unavailable");
@@ -309,21 +355,33 @@ export function sessionStartStrictFailures(receipt: SessionStartReceipt): string
   if (receipt.config.state !== "configured") failures.push(`config ${receipt.config.state}`);
   else if (receipt.config.toolProfile !== "core" && receipt.config.toolProfile !== "full") failures.push(`config profile ${receipt.config.toolProfile}`);
   if (receipt.index.state !== "fresh") failures.push(`index ${receipt.index.state}: ${receipt.index.reason}`);
+  if (
+    receipt.routing.state === "resolved" &&
+    receipt.setup.state !== "not-required" &&
+    receipt.setup.state !== "verified"
+  ) {
+    failures.push(`setup ${receipt.setup.state}${receipt.setup.reason ? `: ${receipt.setup.reason}` : ""}`);
+  }
   return [...new Set(failures)];
 }
 
-function sessionStartReceiptBase(configuredRoot: string, config: SessionStartReceipt["config"]): Pick<
+function sessionStartReceiptBase(
+  configuredRoot: string,
+  config: SessionStartReceipt["config"],
+  setup: SessionStartReceipt["setup"] = { state: "unavailable", reason: "setup-not-inspected" }
+): Pick<
   SessionStartReceipt,
-  "schemaVersion" | "kind" | "advisory" | "implementation" | "configuredRoot" | "config" | "threadMcp" | "cadence"
+  "schemaVersion" | "kind" | "advisory" | "implementation" | "configuredRoot" | "config" | "threadMcp" | "setup" | "cadence"
 > {
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     kind: "codexa-session-start",
     advisory: true,
     implementation: { name: "codexa", version: CODEXA_VERSION },
     configuredRoot,
     config,
     threadMcp: { state: "unverified", reason: "session-start-cannot-observe-host-initialize" },
+    setup,
     cadence: PRIMARY_CODEX_LOOP
   };
 }
@@ -335,16 +393,26 @@ function unavailableSessionStartReceipt(input: {
   routing?: SessionStartReceipt["routing"];
   routingError?: string;
   indexError?: string;
+  setup?: SessionStartReceipt["setup"];
   hints?: string[];
 }): SessionStartReceipt {
   const error = input.routingError ?? input.indexError ?? "unknown error";
   return {
-    ...sessionStartReceiptBase(input.configuredRoot, input.config),
+    ...sessionStartReceiptBase(input.configuredRoot, input.config, input.setup),
     availability: "unavailable",
     repoRoot: input.repoRoot ?? null,
     routing: input.routing ?? { state: "unavailable", error: input.routingError ?? error },
     index: { state: "unavailable", reason: input.routingError ? "routing-unavailable" : "status-unavailable", error },
     hints: input.hints ?? []
+  };
+}
+
+function compactSetupInspection(inspection: WorktreeBootstrapInspection): SessionStartReceipt["setup"] {
+  return {
+    state: inspection.state,
+    lane: inspection.lane,
+    validation: inspection.validation,
+    reason: inspection.reason ? boundedReceiptValue(inspection.reason, 160) : undefined
   };
 }
 
@@ -372,7 +440,7 @@ function selectionRequiredSessionStartReceipt(input: {
       path: path.join(input.configuredRoot, ".codex/config.toml"),
       toolProfile: "unknown",
       reason: "repo not selected; config not inspected"
-    }),
+    }, { state: "not-selected" }),
     availability: "ok",
     repoRoot: null,
     routing: {

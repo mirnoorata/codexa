@@ -172,7 +172,7 @@ it("routes workspace-root session-start hooks through the focused repository", a
 
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain(`Codexa context for ${repo} (startup receipt v1):`);
+    expect(result.stdout).toContain(`Codexa context for ${repo} (startup receipt v2):`);
     expect(result.stdout).toContain(`Repo: ${repo}`);
     expect(result.stdout).not.toContain("Codexa status unavailable:");
     expect(result.stdout).not.toContain("Failed to read git status");
@@ -202,7 +202,7 @@ it("keeps workspace-root SessionStart selection-required when only a default rep
 
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain(`Codexa context for ${workspace} (startup receipt v1):`);
+    expect(result.stdout).toContain(`Codexa context for ${workspace} (startup receipt v2):`);
     expect(result.stdout).toContain("Workspace selection required:");
     expect(result.stdout).toContain(`Repo: not selected (workspace=${workspace})`);
     expect(result.stdout).toContain("Index: not-selected");
@@ -246,7 +246,7 @@ it("does not let a lone implicit active row select a repo for SessionStart", asy
 
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain(`Codexa context for ${workspace} (startup receipt v1):`);
+    expect(result.stdout).toContain(`Codexa context for ${workspace} (startup receipt v2):`);
     expect(result.stdout).toContain("Workspace selection required:");
     expect(result.stdout).toContain(`Repo: not selected (workspace=${workspace})`);
     expect(result.stdout).toContain("Index: not-selected");
@@ -358,7 +358,7 @@ it("routes workspace-root session-start through an explicit workspace session fl
 
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain(`Codexa context for ${repoA} (startup receipt v1):`);
+    expect(result.stdout).toContain(`Codexa context for ${repoA} (startup receipt v2):`);
     expect(result.stdout).toContain(`Repo: ${repoA}`);
     expect(result.stdout).toContain("session-a");
     expect(result.stdout).not.toContain(repoB);

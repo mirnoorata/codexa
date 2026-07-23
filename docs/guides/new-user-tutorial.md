@@ -89,7 +89,8 @@ codexa session-start /path/to/project
 
 The versioned receipt reports the repo path and current commit, static MCP
 configuration and tool profile, index freshness, dirty-file and parser-error
-counts, current-thread MCP activation, and the selective-use cadence. Managed
+counts, required local worktree setup, current-thread MCP activation, and the
+selective-use cadence. Managed
 host hooks surface it automatically, so an agent does not need to call this
 command at the start of every turn. `fresh` means the stored Codexa index
 matches the current checkout. `stale` usually means the checkout changed since
@@ -100,6 +101,15 @@ actual MCP initialize handshake can prove that this thread loaded the server.
 valid, but a portable Node/npx shim cannot be tied statically to the trusted
 runtime without executing it. Strict readiness stays closed until the repo
 uses direct host-local wiring.
+For repositories with a tracked Codexa bootstrap, `Setup: verified` means the
+current SessionStart matched the durable worktree/Git, package/lock,
+startup-procedure, dependency-seal, config/hook, lane, and runtime identity
+recorded by setup. It deliberately does not rescan source, `dist/`, or all
+installed packages on every new conversation. Run
+`codexa worktree-receipt validate .` for that full completion check. A durable `missing`, `stale`, or
+`invalid` state means rerun the tracked bootstrap before strict startup or
+auto-refresh. Ordinary downstream repositories report no setup line because
+that receipt is not required.
 At a shared workspace root, `routing: selection-required` and `Index:
 not-selected` mean only a previous workspace default or unselected active row
 was available; select an active row with `--workspace-session <id>` before

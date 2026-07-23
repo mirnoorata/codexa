@@ -1,4 +1,4 @@
-import { readFile } from "node:fs/promises";
+import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { describe, expect, it } from "vitest";
@@ -19,10 +19,25 @@ describe("tracked Codex worktree environment", () => {
       "powershell -NoProfile -ExecutionPolicy Bypass -File ./.codex/worktree-bootstrap.ps1"
     );
 
+    const posixBootstrap = await readFile(path.join(repoRoot, ".codex/worktree-bootstrap.sh"), "utf8");
+    const posixBootstrapStat = await stat(path.join(repoRoot, ".codex/worktree-bootstrap.sh"));
+    expect(posixBootstrapStat.mode & 0o111).not.toBe(0);
+    expect(posixBootstrap).toContain('"$repo_root/scripts/worktree-bootstrap.mjs" posix-hooks "$repo_root"');
+    expect(posixBootstrap).not.toContain("npm ci");
+    expect(posixBootstrap).not.toContain("worktree-receipt issue");
+
     const windowsBootstrap = await readFile(path.join(repoRoot, ".codex/worktree-bootstrap.ps1"), "utf8");
-    expect(windowsBootstrap).toContain("npm ci --no-audit --no-fund");
-    expect(windowsBootstrap).toContain("node dist/cli.js init $repoRoot --tools core --no-hooks");
-    expect(windowsBootstrap).toContain("node dist/cli.js session-start $repoRoot --json --strict");
-    expect(windowsBootstrap).toContain("bootstrap-receipt=not-issued");
+    expect(windowsBootstrap).toContain('"scripts/worktree-bootstrap.mjs") native-windows-mcp $repoRoot');
+    expect(windowsBootstrap).not.toContain("npm ci");
+    expect(windowsBootstrap).not.toContain("worktree-receipt issue");
+
+    const orchestrator = await readFile(path.join(repoRoot, "scripts/worktree-bootstrap.mjs"), "utf8");
+    expect(orchestrator).toContain("acquireBootstrapLock");
+    expect(orchestrator).toContain("scripts/worktree-bootstrap-preflight.mjs");
+    expect(orchestrator).toContain('npmInvocation(["ci", "--no-audit", "--no-fund"])');
+    expect(orchestrator).toContain('"--expected-build-input"');
+    expect(orchestrator.indexOf('"Codexa worktree receipt"')).toBeLessThan(
+      orchestrator.indexOf('"Codexa strict startup check"')
+    );
   });
 });

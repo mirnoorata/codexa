@@ -19,8 +19,9 @@ node <codexa-checkout>/dist/cli.js session-start <repo>
 codebase you want Codexa to index.
 
 The helper is intentionally read-only for source files. By default it prints a
-versioned receipt with separate project-config, index, and current-thread MCP
-activation states plus the compact selective-use cadence. SessionStart cannot
+versioned receipt with separate project-config, index, local setup, and
+current-thread MCP activation states plus the compact selective-use cadence.
+SessionStart cannot
 observe the host's MCP initialize handshake, so it reports current-thread MCP
 activation as `unverified`; config presence alone is never called active or
 ready. Pass `--json` for the structured receipt. Set
@@ -53,9 +54,25 @@ transports, unrelated or stale launchers, copied wrong-root configs, and
 excessive tool lists are invalid. Init also refuses symlinked, hard-linked, or
 non-regular managed config/hook files instead of following them, and replaces
 changed managed files atomically.
+Repositories that track a Codexa worktree bootstrap also require a local setup
+receipt. SessionStart cheaply validates its durable worktree/Git identity,
+package and lock inputs, tracked startup procedure, dependency-install seal,
+config/hooks, lane, and Node runtime. Missing, stale, malformed, or redirected
+durable evidence is a separate strict failure and disables startup
+auto-refresh; repositories without a tracked bootstrap remain
+`setup.state=not-required`. The explicit `worktree-receipt validate` command
+defaults to the full completion gate: it additionally recomputes HEAD, build
+inputs, complete `dist/`, and installed dependency inventory. Those volatile
+fields do not make ordinary source edits or index refreshes fail startup.
+Shared startup controllers use the intermediate
+`worktree-receipt validate --scope adoption` through a trusted canonical
+Codexa CLI. Adoption validates the durable startup subset plus the complete
+runtime and installed dependency inventory while deliberately ignoring
+ordinary source/HEAD drift. This avoids duplicating the receipt schema or
+trusting generated code from the worktree before that code has been validated.
 When `--auto-refresh` is requested, a missing or stale index is rebuilt during
-that SessionStart invocation, before the receipt is returned; it is not
-deferred to a later MCP call.
+that SessionStart invocation only when setup is not required or currently
+verified; it is not deferred to a later MCP call.
 
 Every index-derived receipt string and count is validated, control-sanitized,
 and bounded before text or JSON rendering. Malformed metadata produces
@@ -68,7 +85,7 @@ still requires selection,
 the focused repo's managed config is missing, invalid, or
 `runtime-unverified`, its tool profile is not an internally consistent `core`
 or `full` profile, or its index is not `fresh` (including malformed metadata or
-parser degradation).
+parser degradation), or required local setup is not `verified`.
 Strict mode deliberately does not turn `Current-thread MCP: unverified` into a
 failure, because only the host handshake—not this subprocess—can attest that
 state.

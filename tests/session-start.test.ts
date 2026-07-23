@@ -27,7 +27,7 @@ describe("Codexa versioned SessionStart receipt", () => {
 
     const receipt = await sessionStartReceipt(repo, false);
     expect(receipt).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       kind: "codexa-session-start",
       availability: "ok",
       repoRoot: repo,
@@ -42,6 +42,7 @@ describe("Codexa versioned SessionStart receipt", () => {
         serverToolProfile: "core"
       },
       index: { state: "fresh", reason: "fresh", repoRoot: repo, parserErrorCount: 0 },
+      setup: { state: "not-required" },
       threadMcp: { state: "unverified", reason: "session-start-cannot-observe-host-initialize" }
     });
     expect(sessionStartStrictFailures(receipt)).toEqual([]);
@@ -57,6 +58,25 @@ describe("Codexa versioned SessionStart receipt", () => {
     const boundedJson = renderSessionStartJson(receipt);
     expect(Buffer.byteLength(boundedJson, "utf8")).toBeLessThanOrEqual(SESSION_START_JSON_MAX_BYTES);
     expect(JSON.parse(boundedJson)).not.toHaveProperty("context");
+  });
+
+  it("requires a consumed setup receipt when the repository tracks a bootstrap lane", async () => {
+    const repo = await createRepo("codexa-session-receipt-required-");
+    await mkdir(path.join(repo, ".codex"), { recursive: true });
+    await writeFile(path.join(repo, ".codex/worktree-bootstrap.sh"), "#!/bin/sh\n", "utf8");
+    execFileSync("git", ["add", ".codex/worktree-bootstrap.sh"], { cwd: repo, stdio: "ignore" });
+    execFileSync(
+      "git",
+      ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "track bootstrap"],
+      { cwd: repo, stdio: "ignore" }
+    );
+    await initializeProject(repo, { cliPath: testCliPath });
+
+    const receipt = await sessionStartReceipt(repo, false);
+
+    expect(receipt.setup).toEqual({ state: "missing", validation: "startup", reason: "receipt-missing" });
+    expect(sessionStartStrictFailures(receipt)).toContain("setup missing: receipt-missing");
+    expect(await sessionStartSummary(repo, false)).toContain("Setup: missing (receipt-missing).");
   });
 
   it("keeps config, index, and active root aligned after workspace routing", async () => {
@@ -113,6 +133,7 @@ describe("Codexa versioned SessionStart receipt", () => {
       routing: { state: "selection-required", source: "workspace-focus-file", focusReason: "workspace-default" },
       config: { state: "unavailable", toolProfile: "unknown", reason: "repo not selected; config not inspected" },
       index: { state: "not-selected", reason: "workspace-session-not-selected" },
+      setup: { state: "not-selected" },
       threadMcp: { state: "unverified" }
     });
     expect(sessionStartStrictFailures(receipt)).toEqual(expect.arrayContaining([
@@ -124,12 +145,13 @@ describe("Codexa versioned SessionStart receipt", () => {
     expect(receipt.hints.join("\n")).not.toContain("session-env.sh");
 
     const summary = await sessionStartSummary(workspace, false);
-    expect(summary).toContain(`Codexa context for ${workspace} (startup receipt v1):`);
+    expect(summary).toContain(`Codexa context for ${workspace} (startup receipt v2):`);
     expect(summary).toContain("Workspace selection required:");
     expect(summary).toContain(`Repo: not selected (workspace=${workspace})`);
     expect(summary).toContain("Index: not-selected");
     expect(summary).not.toContain(previousRepo);
     expect(summary).not.toContain("indexed=");
+    expect(summary).not.toContain("Setup:");
     expect(Buffer.byteLength(summary, "utf8")).toBeLessThanOrEqual(800);
   });
 
@@ -162,18 +184,78 @@ describe("Codexa versioned SessionStart receipt", () => {
     expect(receipt.hints.join("\n")).not.toContain("session-env.sh");
   });
 
-  it("does not treat even a local workspace default as an explicit SessionStart selection", async () => {
+  it("keeps an explicitly wired Git checkout despite a same-repo local workspace default", async () => {
     const repo = await createRepo("codexa-session-receipt-local-default-");
     await initializeProject(repo, { cliPath: testCliPath });
     await writeFile(path.join(repo, ".codex/WORKING.md"), `## Workspace Default\n\n- Default repo: \`${repo}\`.\n`, "utf8");
 
     const receipt = await sessionStartReceipt(repo, false);
     expect(receipt).toMatchObject({
-      repoRoot: null,
-      routing: { state: "selection-required", focusReason: "workspace-default" },
-      config: { state: "unavailable" },
-      index: { state: "not-selected" }
+      repoRoot: repo,
+      routing: { state: "resolved", source: "configured-root" },
+      config: { state: "configured" },
+      index: { state: "fresh" }
     });
+  });
+
+  it("ignores ambient workspace selectors for an explicitly wired Git checkout", async () => {
+    const repo = await createRepo("codexa-session-receipt-ambient-configured-");
+    const otherRepo = await createRepo("codexa-session-receipt-ambient-other-");
+    await initializeProject(repo, { cliPath: testCliPath });
+    const focusFile = path.join(await mkdtemp(path.join(os.tmpdir(), "codexa-session-receipt-ambient-focus-")), "WORKING.md");
+    await writeFile(focusFile, `Focused project: \`${otherRepo}\`\n`, "utf8");
+    const previousFocus = process.env.CODEXA_WORKSPACE_FOCUS_FILE;
+    const previousSession = process.env.CODEXA_WORKSPACE_SESSION;
+    process.env.CODEXA_WORKSPACE_FOCUS_FILE = focusFile;
+    process.env.CODEXA_WORKSPACE_SESSION = "ambient-session";
+    try {
+      const receipt = await sessionStartReceipt(repo, false);
+      expect(receipt).toMatchObject({
+        repoRoot: repo,
+        routing: { state: "resolved", source: "configured-root" },
+        config: { state: "configured" },
+        index: { state: "fresh" }
+      });
+    } finally {
+      if (previousFocus === undefined) delete process.env.CODEXA_WORKSPACE_FOCUS_FILE;
+      else process.env.CODEXA_WORKSPACE_FOCUS_FILE = previousFocus;
+      if (previousSession === undefined) delete process.env.CODEXA_WORKSPACE_SESSION;
+      else process.env.CODEXA_WORKSPACE_SESSION = previousSession;
+    }
+  });
+
+  it("uses a local workspace override without inheriting stale ambient selectors", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-session-receipt-local-override-"));
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const nestedRepo = await createRepoAt(workspace, "focused-repo");
+    await initializeProject(nestedRepo, { cliPath: testCliPath });
+    await mkdir(path.join(workspace, ".codex"), { recursive: true });
+    const localFocus = path.join(workspace, ".codex/WORKING.md");
+    await writeFile(localFocus, `Focused project: \`${nestedRepo}\`\n`, "utf8");
+    const staleAmbientFocus = path.join(workspace, "missing-ambient-focus.md");
+    const previousFocus = process.env.CODEXA_WORKSPACE_FOCUS_FILE;
+    const previousSession = process.env.CODEXA_WORKSPACE_SESSION;
+    process.env.CODEXA_WORKSPACE_FOCUS_FILE = staleAmbientFocus;
+    process.env.CODEXA_WORKSPACE_SESSION = "stale-ambient-session";
+    try {
+      const receipt = await sessionStartReceipt(workspace, false);
+      expect(receipt).toMatchObject({
+        repoRoot: nestedRepo,
+        routing: {
+          state: "resolved",
+          source: "workspace-focus-file",
+          focusFile: localFocus,
+          focusReason: "explicit-focus"
+        },
+        config: { state: "configured" },
+        index: { state: "fresh" }
+      });
+    } finally {
+      if (previousFocus === undefined) delete process.env.CODEXA_WORKSPACE_FOCUS_FILE;
+      else process.env.CODEXA_WORKSPACE_FOCUS_FILE = previousFocus;
+      if (previousSession === undefined) delete process.env.CODEXA_WORKSPACE_SESSION;
+      else process.env.CODEXA_WORKSPACE_SESSION = previousSession;
+    }
   });
 
   it("keeps parked and unknown composite workspace rows explicitly selectable", async () => {

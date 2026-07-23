@@ -396,9 +396,16 @@ async function upsertHooksConfig(hooksPath: string, options: { cliPath: string; 
   const existing = await readManagedTextIfExists(hooksPath);
   const parsed = existing.trim() ? parseHooksJson(existing, hooksPath) : {};
   const hooks = isPlainObject(parsed.hooks) ? parsed.hooks : {};
-  const cleanedSessionStart = cleanHookList(hooks.SessionStart, options);
-  const cleanedPreToolUse = cleanHookList(hooks.PreToolUse, options);
-  const cleanedPostToolUse = cleanHookList(hooks.PostToolUse, options);
+  const cleanedHooks: Record<string, unknown> = { ...hooks };
+  for (const [event, value] of Object.entries(hooks)) {
+    if (!Array.isArray(value)) continue;
+    const cleaned = cleanHookList(value, options);
+    if (cleaned.length > 0) cleanedHooks[event] = cleaned;
+    else delete cleanedHooks[event];
+  }
+  const cleanedSessionStart = cleanHookList(cleanedHooks.SessionStart, options);
+  const cleanedPreToolUse = cleanHookList(cleanedHooks.PreToolUse, options);
+  const cleanedPostToolUse = cleanHookList(cleanedHooks.PostToolUse, options);
   // Quote a pinned interpreter path only when it needs it; a bare command
   // name must stay unquoted so legacy entry matching keeps working.
   const launchCommand = /[\s'"\\]/u.test(options.launch.command) ? shellQuote(options.launch.command) : options.launch.command;
@@ -447,7 +454,7 @@ async function upsertHooksConfig(hooksPath: string, options: { cliPath: string; 
   const next = {
     ...parsed,
     hooks: {
-      ...hooks,
+      ...cleanedHooks,
       SessionStart: cleanedSessionStart,
       PreToolUse: cleanedPreToolUse,
       PostToolUse: cleanedPostToolUse
@@ -474,8 +481,9 @@ async function planCodexaManagedHooksRemoval(hooksPath: string, options: { cliPa
   const parsed = parseHooksJson(existing, hooksPath);
   const hooks = isPlainObject(parsed.hooks) ? parsed.hooks : {};
   const cleanedHooks: Record<string, unknown> = { ...hooks };
-  for (const key of ["SessionStart", "PreToolUse", "PostToolUse"]) {
-    const cleaned = cleanHookList(hooks[key], options);
+  for (const [key, value] of Object.entries(hooks)) {
+    if (!Array.isArray(value)) continue;
+    const cleaned = cleanHookList(value, options);
     if (cleaned.length > 0) {
       cleanedHooks[key] = cleaned;
     } else {

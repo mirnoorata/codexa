@@ -181,8 +181,10 @@ host (or Windows through WSL), its Bash setup installs locked dependencies,
 builds Codexa, initializes worktree-local `core` wiring, and writes an ignored,
 identity-bound bootstrap receipt. Native Windows uses the tracked PowerShell
 override: it installs, builds, and proves `core` MCP config/index readiness with
-`--no-hooks`, but intentionally remains MCP-only and does not issue the POSIX
-bootstrap receipt.
+`--no-hooks`, then issues a receipt scoped to the native-Windows MCP-only lane.
+Both wrappers delegate to one Node orchestrator, which holds a cross-platform
+lock across clean dependency installation, build, init, receipt issuance, and
+strict startup validation.
 
 In the desktop composer, select the saved Codexa project, `Worktree`, the
 intended starting branch (normally `main`), and the `Codexa` local environment
@@ -191,8 +193,19 @@ Remote on mobile may continue a supported desktop Codex chat but cannot select
 or configure local setup. Once the app has created the linked worktree, adopt
 that checkout for the task instead of creating a second worktree. A successful
 POSIX setup receipt binds the complete regular-file `dist/` runtime manifest,
-not only the CLI entry point, so a changed imported module invalidates
-readiness.
+not only the CLI entry point, so a changed imported module invalidates full
+validation. SessionStart consumes a lightweight durable subset: worktree and
+Git identity, package/lock and startup-procedure inputs, dependency-install
+seal, managed config/hooks, and Node runtime. Ordinary source, HEAD, index, or
+build-output evolution therefore does not force a complete bootstrap rerun or
+block a safe index refresh. The explicit `worktree-receipt validate` completion
+gate still recomputes source, complete `dist/`, HEAD, and installed dependency
+inventory.
+Shared adoption uses a trusted canonical Codexa CLI with `--scope adoption`.
+That scope validates durable startup inputs, the complete generated runtime,
+and the installed dependency inventory while permitting ordinary source/HEAD
+evolution. The receipt is local freshness evidence and never authorizes a
+controller to execute generated code from the worktree before validation.
 
 If a Remote-SSH host creates the worktree without invoking local-environment
 setup, treat it as source-ready only. Repair the active remote worktree and
@@ -208,9 +221,11 @@ its MCP server. Do not start a generic new Worktree chat: it may create a
 replacement checkout, abandon the repair, and repeat the skipped-setup path.
 Neither the bootstrap receipt nor SessionStart can prove an already-running
 thread's MCP handshake.
-That bootstrap receipt attests local dependency/build/init setup only. The
-SessionStart receipt separately validates managed config and index state and
-still cannot attest the host's current-thread MCP handshake.
+That bootstrap receipt records local dependency/build/init setup only, scoped
+to either POSIX hooks or native-Windows MCP-only setup. It is locally validated
+freshness evidence, not a signature or hostile-repository attestation.
+SessionStart validates the durable startup subset together with managed config
+and index state and still cannot attest the host's current-thread MCP handshake.
 
 Codexa binds an index to the canonical worktree root, Git top-level root,
 HEAD commit, and workspace-state digest. Context and review queries fail closed
@@ -545,7 +560,8 @@ writes are allowed; source-file mutation is not exposed through MCP tools.
 | Command | Use it for |
 | --- | --- |
 | `codexa init <repo>` | Write repo-local Codex MCP config/hooks and index the repo (`--claude` for Claude Code, `--ci` for a read-only PR workflow, `--tools full` for every tool, `--agents-md` for an AGENTS.md workflow block). |
-| `codexa session-start <repo>` | Print a cheap versioned receipt with separate config, index, and current-thread MCP activation states (`--json` for structured output; `--strict` for observable config/index gating). |
+| `codexa session-start <repo>` | Print a cheap versioned receipt with separate config, index, required local setup, and current-thread MCP activation states (`--json` for structured output; `--strict` for observable readiness gating). |
+| `codexa worktree-receipt issue\|validate <repo>` | Issue bootstrap-bound setup evidence or validate it. Validation defaults to the full source/dist/dependency scope; `--scope startup` checks durable startup readiness and `--scope adoption` adds generated-runtime and installed-dependency integrity without binding source/HEAD. Issuance requires the orchestrator's pre-build input fingerprint. |
 | `codexa index <repo>` | Build `.codex/codebase/` artifacts once. |
 | `codexa watch <repo>` | Keep artifacts fresh during active edit sessions. |
 | `codexa status <repo>` | Check freshness and parser errors without refreshing. |
@@ -959,6 +975,11 @@ npm run security:check
 snapshot verification, package hygiene, and installed-package smoke test. The
 public snapshot check intentionally refuses a dirty tree so the verified archive
 matches `HEAD`.
+
+`benchmark:ci` is self-preparing: it runs the same serialized clean-install,
+build, core-wiring, receipt, and strict-startup bootstrap used by a fresh
+worktree before measuring hot paths. This avoids benchmarking an accidentally
+stale local build.
 
 ## Public Proof
 

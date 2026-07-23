@@ -702,7 +702,8 @@ than a cache-backed full resolver pass.
 `codexa init` wires repos with `.codex/hooks.json` and the Codex hooks feature
 flag in `.codex/config.toml`. The hook runs `codexa session-start <repo>` on
 startup/resume. The helper prints a cheap versioned receipt with independent
-configuration, index, and current-thread activation states; `--json` exposes
+configuration, index, local setup, and current-thread activation states;
+`--json` exposes
 the same facts structurally. Because the hook cannot observe the host MCP
 initialize handshake, activation remains `unverified` rather than being inferred
 from config presence. Setting `CODEXA_SESSIONSTART_CONTEXT=1` also prints the
@@ -726,14 +727,26 @@ Init refuses redirected or multi-link managed config/hook files and uses
 atomic replacement for changed wiring. Index receipt metadata is validated and
 bounded before rendering;
 `metadata-invalid` and `parser-degraded` are distinct nonfresh states. If
-`--auto-refresh` is enabled, SessionStart itself rebuilds a missing or stale
-index before returning its receipt.
+the repo tracks a worktree bootstrap, SessionStart also consumes its
+identity-bound setup receipt. Its startup scope checks durable Git/worktree,
+package/lock, setup-procedure, dependency-seal, runtime, config, hook, and lane
+facts without rescanning source, `dist/`, or every installed package. The
+intermediate adoption scope adds complete `dist/` and dependency-inventory
+integrity without binding ordinary source/HEAD evolution. Explicit full
+receipt validation additionally owns HEAD and source/build-input drift. If
+`--auto-refresh` is enabled, SessionStart rebuilds a missing or stale
+index when durable setup is not required or verified; normal source evolution
+does not force a bootstrap rerun.
+Shared controllers delegate adoption-scope validation to a trusted canonical
+Codexa runtime before executing the validated `dist/` entry point. The ignored
+receipt is not a signature and cannot authorize unvalidated worktree code.
 
 `session-start --strict` is the controller-facing observable-state gate. It
 fails unresolved or selection-required routing/status, missing, invalid, or
 `runtime-unverified` focused-repo config, legacy/drifted tool profiles, and
 every index state other than `fresh`. It does not fail solely because
-current-thread activation is unverified.
+current-thread activation is unverified. Required setup in any state other than
+`verified` is also a strict failure.
 
 The Codex plugin bundle does not ship hooks. `codexa init` can add edit-scoped
 Codex hooks, but they run before later shell verification and do not claim

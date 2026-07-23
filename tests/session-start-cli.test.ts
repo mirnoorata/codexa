@@ -1,4 +1,4 @@
-import { spawnSync } from "node:child_process";
+import { execFileSync, spawnSync } from "node:child_process";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rename, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -30,7 +30,7 @@ describe("Codexa SessionStart CLI receipt", () => {
       threadMcp: { state: string; reason: string };
     };
     expect(receipt).toMatchObject({
-      schemaVersion: 1,
+      schemaVersion: 2,
       kind: "codexa-session-start",
       availability: "ok",
       repoRoot: repo,
@@ -71,6 +71,39 @@ describe("Codexa SessionStart CLI receipt", () => {
       config: { state: "configured", toolProfile: "core" },
       index: { state: "fresh" },
       threadMcp: { state: "unverified" }
+    });
+
+    await writeFile(path.join(repo, "src/main.ts"), "export function main() { return 2 }\n", "utf8");
+    execFileSync("git", ["add", "src/main.ts"], { cwd: repo, stdio: "ignore" });
+    execFileSync(
+      "git",
+      ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "advance source"],
+      { cwd: repo, stdio: "ignore" }
+    );
+    const strictStale = spawnSync(process.execPath, [cli, "session-start", repo, "--json", "--strict"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: testEnv()
+    });
+    expect(strictStale.status).toBe(1);
+    expect(JSON.parse(strictStale.stdout)).toMatchObject({
+      index: { state: "identity-blocked", reason: "head-commit-changed" }
+    });
+
+    const strictRefreshed = spawnSync(
+      process.execPath,
+      [cli, "session-start", repo, "--auto-refresh", "--json", "--strict"],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: testEnv()
+      }
+    );
+    expect(strictRefreshed.status).toBe(0);
+    expect(strictRefreshed.stderr).toBe("");
+    expect(JSON.parse(strictRefreshed.stdout)).toMatchObject({
+      config: { state: "configured", toolProfile: "core" },
+      index: { state: "fresh" }
     });
   });
 

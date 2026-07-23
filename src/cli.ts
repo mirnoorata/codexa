@@ -8,6 +8,7 @@ import { checkGithubSync } from "./github-sync.js";
 import { publishProjectGithubRelease } from "./github-release.js";
 import { runDoctor } from "./doctor.js";
 import { initializeProject, renderSessionStartJson, renderSessionStartReceipt, sessionStartReceipt, sessionStartStrictFailures } from "./init.js";
+import { sessionStartReceiptForBootstrapIssue } from "./session-start.js";
 import { resolveImplicitGitRepoRoot } from "./init-portability.js";
 import { runLiveIndexer } from "./live-index.js";
 import { serveMcp, serveMcpHttp, type McpTransportKind } from "./mcp.js";
@@ -40,6 +41,13 @@ import {
 } from "./cli/options.js";
 import { CODEXA_VERSION } from "./version.js";
 import { nodeSupported, nodeVersionComplaint } from "./node-version.js";
+import {
+  inspectWorktreeBootstrapReceipt,
+  issueWorktreeBootstrapReceipt,
+  parseWorktreeBootstrapLane,
+  type WorktreeBootstrapLane,
+  type WorktreeBootstrapValidation
+} from "./worktree-bootstrap-receipt.js";
 
 const program = new Command();
 
@@ -155,6 +163,50 @@ program
       console.log(`Next Codex sessions only need: focus on ${result.repoRoot}`);
     }
   );
+
+const worktreeReceipt = program
+  .command("worktree-receipt")
+  .description("Issue or validate the local, identity-bound Codexa worktree setup receipt.");
+
+worktreeReceipt
+  .command("issue")
+  .argument("<repo>", "repository root")
+  .requiredOption("--lane <lane>", "setup lane: posix-hooks or native-windows-mcp", parseWorktreeBootstrapLane)
+  .requiredOption("--expected-build-input <sha256>", "pre-build source fingerprint", parseSha256Option)
+  .option("--json", "emit machine-readable JSON", false)
+  .action(async (repo: string, opts: { expectedBuildInput: string; lane: WorktreeBootstrapLane; json: boolean }) => {
+    const repoRoot = resolveRequiredGitRepo(repo, "worktree-receipt issue");
+    const readiness = await sessionStartReceiptForBootstrapIssue(repoRoot);
+    const failures = sessionStartStrictFailures(readiness);
+    if (readiness.config.toolProfile !== "core") failures.push(`config profile ${readiness.config.toolProfile}`);
+    if (failures.length > 0) {
+      throw new Error(`Cannot issue Codexa worktree receipt: ${[...new Set(failures)].join("; ")}`);
+    }
+    const receipt = await issueWorktreeBootstrapReceipt(repoRoot, opts.lane, opts.expectedBuildInput);
+    console.log(opts.json ? JSON.stringify(receipt, null, 2) : `Codexa worktree receipt: verified (${receipt.lane}).`);
+  });
+
+worktreeReceipt
+  .command("validate")
+  .argument("<repo>", "repository root")
+  .option("--scope <scope>", "validation scope: startup, adoption, or full", parseWorktreeReceiptValidation, "full")
+  .option("--json", "emit machine-readable JSON", false)
+  .action(async (repo: string, opts: { json: boolean; scope: WorktreeBootstrapValidation }) => {
+    const inspection = await inspectWorktreeBootstrapReceipt(
+      resolveRequiredGitRepo(repo, "worktree-receipt validate"),
+      { validation: opts.scope }
+    );
+    const details = [
+      `validation=${inspection.validation ?? opts.scope}`,
+      ...(inspection.lane ? [`lane=${inspection.lane}`] : [])
+    ];
+    console.log(
+      opts.json
+        ? JSON.stringify(inspection, null, 2)
+        : `Codexa worktree receipt: ${inspection.state} (${details.join("; ")}).`
+    );
+    if (inspection.state !== "verified") process.exitCode = 1;
+  });
 
 program
   .command("autonomy")
@@ -579,7 +631,7 @@ program
   .option("--auto-refresh", "refresh a stale or missing index during this startup invocation", false)
   .option("--no-auto-refresh", "do not refresh a stale or missing index during this startup invocation")
   .option("--json", "emit the versioned structured startup receipt")
-  .option("--strict", "exit nonzero when observable routing, config/profile, or index checks are not usable; MCP activation remains unverified", false)
+  .option("--strict", "exit nonzero when observable routing, config/profile, durable setup, or index checks are not usable; MCP activation remains unverified", false)
   .option("--workspace-focus-file <path>", "workspace focus file to consult when <repo> is a workspace launch root")
   .option("--workspace-session <id>", "active WORKING.md session row to prefer when <repo> is a workspace launch root")
   .description("Print the lightweight Codexa SessionStart summary used by Codex hooks.")
@@ -657,6 +709,16 @@ function resolveRequiredGitRepo(repo: string | undefined, command: string): stri
     throw new Error(`Codexa ${command} requires a git repository: ${candidate}`);
   }
   return gitRoot;
+}
+
+function parseSha256Option(value: string): string {
+  if (!/^[a-f0-9]{64}$/u.test(value)) throw new Error("expected a lowercase SHA-256 digest");
+  return value;
+}
+
+function parseWorktreeReceiptValidation(value: string): WorktreeBootstrapValidation {
+  if (value === "startup" || value === "adoption" || value === "full") return value;
+  throw new Error("worktree receipt validation scope must be startup, adoption, or full");
 }
 
 program.parseAsync(process.argv).catch((error) => {

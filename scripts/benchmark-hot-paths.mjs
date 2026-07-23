@@ -43,6 +43,7 @@ recordArtifact("facts.ndjson", ".codex/codebase/facts.ndjson");
 recordArtifact("repo-map.md", ".codex/codebase/repo-map.md");
 
 benchmark.metrics.push(
+  runCliBenchmark("cli.session_start", ["session-start", repoRoot, "--json", "--strict"], 1_000),
   runCliBenchmark("cli.status", ["status", repoRoot], 2_000),
   runCliBenchmark("cli.repo_map", ["repo-map", repoRoot, "--no-auto-refresh", "--budget", "1200", "--limit", "10"], 3_000),
   runCliBenchmark(

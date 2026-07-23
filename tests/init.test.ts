@@ -86,7 +86,7 @@ describe("Codexa project init", () => {
     await expect(readFile(path.join(repo, ".codex/policies/verification.json"), "utf8")).rejects.toThrow();
 
     const summary = await sessionStartSummary(repo, false);
-    expect(summary).toContain(`Codexa context for ${repo} (startup receipt v1)`);
+    expect(summary).toContain(`Codexa context for ${repo} (startup receipt v2)`);
     expect(summary).toContain("Config: configured");
     expect(summary).toContain("profile=core");
     expect(summary).toContain("Index: fresh");
@@ -487,6 +487,17 @@ describe("Codexa project init", () => {
                 matcher: "startup|resume",
                 hooks: [{ type: "command", command: "/opt/codexa/scripts/codexa-sessionstart-legacy.sh /opt/project", timeout: 5 }]
               }
+            ],
+            Stop: [
+              {
+                matcher: "",
+                hooks: [{ type: "command", command: "echo keep-stop", timeout: 1 }]
+              },
+              {
+                codexaManaged: true,
+                matcher: "",
+                hooks: [{ codexaManaged: true, type: "command", command: "echo stale-codexa-stop", timeout: 1 }]
+              }
             ]
           }
         },
@@ -514,13 +525,17 @@ describe("Codexa project init", () => {
     expect(config).not.toContain('command = "old"');
 
     const hooks = JSON.parse(await readFile(path.join(codexDir, "hooks.json"), "utf8")) as {
-      hooks: { SessionStart: Array<{ hooks: Array<{ command: string }> }> };
+      hooks: {
+        SessionStart: Array<{ hooks: Array<{ command: string }> }>;
+        Stop: Array<{ hooks: Array<{ command: string }> }>;
+      };
     };
     const commands = hooks.hooks.SessionStart.flatMap((entry) => entry.hooks.map((hook) => hook.command));
     expect(commands).toContain("echo keep");
     expect(commands).toContain("node ./scripts/session-start.js");
     expect(commands.filter((command) => command.includes(" session-start ") && command.includes("/opt/codexa/dist/cli.js"))).toHaveLength(1);
     expect(commands.some((command) => command.includes("codexa-sessionstart-legacy"))).toBe(false);
+    expect(hooks.hooks.Stop.flatMap((entry) => entry.hooks.map((hook) => hook.command))).toEqual(["echo keep-stop"]);
   });
 
   it("deduplicates managed hooks even when the CLI path is not named codexa", async () => {
@@ -640,6 +655,17 @@ describe("Codexa project init", () => {
                 matcher: "Edit",
                 hooks: [{ type: "command", command: "bash ./scripts/hook-post-edit-audit.sh /tmp/repo", timeout: 5 }]
               }
+            ],
+            Stop: [
+              {
+                matcher: "",
+                hooks: [{ type: "command", command: "echo keep-stop", timeout: 1 }]
+              },
+              {
+                codexaManaged: true,
+                matcher: "",
+                hooks: [{ codexaManaged: true, type: "command", command: "echo stale-codexa-stop", timeout: 1 }]
+              }
             ]
           }
         },
@@ -664,12 +690,15 @@ describe("Codexa project init", () => {
       hooks: {
         SessionStart: Array<{ hooks: Array<{ command: string }> }>;
         PostToolUse: Array<{ hooks: Array<{ command: string }> }>;
+        Stop: Array<{ hooks: Array<{ command: string }> }>;
       };
     };
     const sessionCommands = hooks.hooks.SessionStart.flatMap((entry) => entry.hooks.map((hook) => hook.command));
     const postToolCommands = hooks.hooks.PostToolUse.flatMap((entry) => entry.hooks.map((hook) => hook.command));
+    const stopCommands = hooks.hooks.Stop.flatMap((entry) => entry.hooks.map((hook) => hook.command));
     expect(sessionCommands).toEqual(["echo keep"]);
     expect(postToolCommands).toEqual(["bash ./scripts/hook-post-edit-audit.sh /tmp/repo"]);
+    expect(stopCommands).toEqual(["echo keep-stop"]);
 
     const hooksPath = path.join(repo, ".codex/hooks.json");
     const sentinel = new Date("2001-01-01T00:00:00.000Z");
@@ -732,7 +761,7 @@ describe("Codexa project init", () => {
     await writeFile(path.join(workspace, ".codex", "WORKING.md"), `## Active Focus\n\n- Project: \`${repo}\`\n`, "utf8");
 
     const summary = await sessionStartSummary(workspace, false);
-    expect(summary).toContain(`Codexa context for ${repo} (startup receipt v1):`);
+    expect(summary).toContain(`Codexa context for ${repo} (startup receipt v2):`);
     expect(summary).toContain(`Workspace root: ${workspace} -> focused repo via workspace-focus-file:`);
     expect(summary).toContain(`Repo: ${repo}`);
     expect(summary).not.toContain("Codexa status unavailable:");
@@ -755,7 +784,7 @@ describe("Codexa project init", () => {
     await writeFile(path.join(workspace, ".codex", "WORKING.md"), `## Workspace Default\n\n- Default repo: \`${repo}\`.\n`, "utf8");
 
     const summary = await sessionStartSummary(workspace, false);
-    expect(summary).toContain(`Codexa context for ${workspace} (startup receipt v1):`);
+    expect(summary).toContain(`Codexa context for ${workspace} (startup receipt v2):`);
     expect(summary).toContain("Workspace selection required:");
     expect(summary).toContain(`Repo: not selected (workspace=${workspace})`);
     expect(summary).toContain("Index: not-selected");

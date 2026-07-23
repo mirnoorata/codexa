@@ -9,6 +9,7 @@ export interface McpRepoRootResolutionOptions {
   workspaceSessionId?: string;
   preferConfiguredRoot?: boolean;
   requireValidDeclaredFocus?: boolean;
+  ignoreAmbientWorkspaceSelectors?: boolean;
 }
 
 export interface McpRepoRootResolution {
@@ -71,7 +72,13 @@ const WORKSPACE_SESSION_ID_MAX = 128;
 
 export async function shouldPreferConfiguredRepoRoot(configuredRootInput: string, options: McpRepoRootResolutionOptions = {}): Promise<boolean> {
   const configuredRoot = path.resolve(configuredRootInput);
-  if (explicitFocusFile(options) || declaredWorkspaceSession(options)) {
+  if (options.workspaceFocusFile || options.workspaceSessionId) {
+    return false;
+  }
+  if (
+    !options.ignoreAmbientWorkspaceSelectors &&
+    (explicitFocusFile(options) || declaredWorkspaceSession(options))
+  ) {
     return false;
   }
   if ((await gitRootFor(configuredRoot)) === null) {
@@ -84,9 +91,11 @@ export async function resolveMcpRepoRoot(configuredRootInput: string, options: M
   const configuredRoot = path.resolve(configuredRootInput);
   const configuredRootIsGitRepo = (await gitRootFor(configuredRoot)) !== null;
   const declaredSession = declaredWorkspaceSession(options);
-  const workspaceRoutingRequested = Boolean(explicitFocusFile(options) || declaredSession);
+  const explicitRoutingRequested = Boolean(options.workspaceFocusFile || options.workspaceSessionId);
+  const workspaceRoutingRequested = explicitRoutingRequested ||
+    (!options.preferConfiguredRoot && Boolean(explicitFocusFile(options) || declaredSession));
 
-  if (configuredRootIsGitRepo && options.preferConfiguredRoot && !workspaceRoutingRequested && !options.requireValidDeclaredFocus) {
+  if (configuredRootIsGitRepo && options.preferConfiguredRoot && !explicitRoutingRequested && !options.requireValidDeclaredFocus) {
     if (!options.skipDefaultFocusFile) await assertSafeDefaultFocusFile(configuredRoot);
     return { configuredRoot, repoRoot: configuredRoot, source: "configured-root" };
   }
@@ -175,12 +184,15 @@ function focusFileCandidates(configuredRoot: string, options: McpRepoRootResolut
 
 function explicitFocusFile(options: McpRepoRootResolutionOptions): string | undefined {
   const candidate = options.workspaceFocusFile ??
-    (options.workspaceSessionId ? undefined : process.env.CODEXA_WORKSPACE_FOCUS_FILE);
+    (options.workspaceSessionId || options.ignoreAmbientWorkspaceSelectors
+      ? undefined
+      : process.env.CODEXA_WORKSPACE_FOCUS_FILE);
   return typeof candidate === "string" && candidate.trim().length > 0 ? candidate : undefined;
 }
 
 function declaredWorkspaceSession(options: McpRepoRootResolutionOptions): string | undefined {
-  const candidate = options.workspaceSessionId ?? process.env.CODEXA_WORKSPACE_SESSION;
+  const candidate = options.workspaceSessionId ??
+    (options.ignoreAmbientWorkspaceSelectors ? undefined : process.env.CODEXA_WORKSPACE_SESSION);
   return typeof candidate === "string" && candidate.trim().length > 0 ? candidate : undefined;
 }
 

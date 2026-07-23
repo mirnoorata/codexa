@@ -27,10 +27,11 @@ names, hostnames, or session memory to the public repository.
 - On local Linux/macOS (and Windows through WSL), the tracked environment runs
   `.codex/worktree-bootstrap.sh`, which installs locked dependencies, builds
   Codexa, and generates ignored worktree-local `core` wiring plus an
-  identity-bound bootstrap receipt.
+  identity-bound bootstrap receipt. The Bash and PowerShell wrappers share one
+  serialized Node orchestrator; do not duplicate setup logic in either wrapper.
 - Native Windows uses the tracked PowerShell override. It installs, builds, and
-  proves `core` MCP config/index readiness with `--no-hooks`; it is deliberately
-  MCP-only and does not issue the POSIX bootstrap receipt.
+  proves `core` MCP config/index readiness with `--no-hooks`; its receipt is
+  deliberately scoped to the native-Windows MCP-only lane.
 - Treat the app-created linked worktree as the task checkout. Do not create a
   second worktree for the same task. App worktrees may start detached; attach a
   named branch before committing. Let the app own cleanup of app-managed
@@ -38,8 +39,16 @@ names, hostnames, or session memory to the public repository.
 - Never copy `.codex/config.toml`, `.codex/hooks.json`, generated indexes, or
   absolute launch commands from another checkout. Generate them in the active
   worktree so Codexa's workspace identity remains correct.
-- Treat the identity-bound bootstrap receipt as proof; a selected environment
-  with no valid receipt is only source-ready and needs explicit repair/fallback.
+- Treat only a receipt whose durable subset the current SessionStart validates
+  as startup proof. A selected environment with missing, stale, or invalid
+  durable evidence is only source-ready and needs explicit repair/fallback.
+  Use `worktree-receipt validate` for the expensive full source, output, HEAD,
+  and dependency-inventory completion gate.
+- Shared adoption controllers must validate through their trusted canonical
+  Codexa CLI with `--scope adoption`. That scope binds the complete generated
+  runtime and dependency inventory while permitting ordinary source/HEAD
+  evolution; a receipt never authorizes executing the adopted worktree's
+  generated `dist/` code before this validation succeeds.
 - If a Remote-SSH host creates the worktree without invoking local setup, run
   `bash .codex/worktree-bootstrap.sh` inside that remote worktree, then run
   `node dist/cli.js session-start "$PWD" --json --strict`. Reload or reopen the
