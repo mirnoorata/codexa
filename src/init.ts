@@ -1,5 +1,5 @@
 import path from "node:path";
-import { mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { assertCiWorkflowWritable, writeCiWorkflow } from "./ci-workflow.js";
 import { buildIndexLocked } from "./indexer.js";
 import {
@@ -450,14 +450,14 @@ function renderHookCommand(launchShell: string, action: string, repoArg: string 
 
 interface CodexaManagedHooksRemoval {
   keepHooksFeature: boolean;
-  original?: string;
-  contents?: string;
+  original: string;
+  contents: string;
 }
 
 async function planCodexaManagedHooksRemoval(hooksPath: string, options: { cliPath: string; repoRoot: string }): Promise<CodexaManagedHooksRemoval> {
   const existing = await readManagedTextIfExists(hooksPath);
   if (!existing.trim()) {
-    return { keepHooksFeature: false };
+    return { keepHooksFeature: false, original: existing, contents: existing };
   }
   const parsed = parseHooksJson(existing, hooksPath);
   const hooks = isPlainObject(parsed.hooks) ? parsed.hooks : {};
@@ -471,22 +471,18 @@ async function planCodexaManagedHooksRemoval(hooksPath: string, options: { cliPa
     }
   }
   const hasRemainingHooks = Object.values(cleanedHooks).some((value) => Array.isArray(value) && value.length > 0);
-  if (!hasRemainingHooks) {
-    return { keepHooksFeature: false };
-  }
+  const next = { ...parsed };
+  if (Object.keys(cleanedHooks).length > 0) next.hooks = cleanedHooks;
+  else delete next.hooks;
   return {
-    keepHooksFeature: true,
+    keepHooksFeature: hasRemainingHooks,
     original: existing,
-    contents: `${JSON.stringify({ ...parsed, hooks: cleanedHooks }, null, 2)}\n`
+    contents: `${JSON.stringify(next, null, 2)}\n`
   };
 }
 
 async function applyCodexaManagedHooksRemoval(hooksPath: string, removal: CodexaManagedHooksRemoval): Promise<void> {
-  if (removal.contents === undefined) {
-    await rm(hooksPath, { force: true });
-    return;
-  }
-  await writeTextIfChanged(hooksPath, removal.original ?? "", removal.contents);
+  await writeTextIfChanged(hooksPath, removal.original, removal.contents);
 }
 
 function cleanHookList(value: unknown, options: { cliPath: string; repoRoot: string }): Record<string, unknown>[] {

@@ -603,6 +603,7 @@ describe("Codexa project init", () => {
       path.join(codexDir, "hooks.json"),
       JSON.stringify(
         {
+          custom: { keep: true },
           hooks: {
             SessionStart: [
               {
@@ -636,7 +637,9 @@ describe("Codexa project init", () => {
     expect(config).not.toContain("hooks = true");
     expect(config).not.toContain("codex_hooks");
     expect(config).not.toContain("CODEXA_MANAGED_POST_EDIT");
-    await expect(readFile(path.join(repo, ".codex/hooks.json"), "utf8")).rejects.toThrow();
+    expect(JSON.parse(await readFile(path.join(repo, ".codex/hooks.json"), "utf8"))).toEqual({
+      custom: { keep: true }
+    });
   });
 
   it("never claims completion ownership for edit-only hooks, including a failed refresh", async () => {
