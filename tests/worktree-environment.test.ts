@@ -39,5 +39,10 @@ describe("tracked Codex worktree environment", () => {
     expect(orchestrator.indexOf('"Codexa worktree receipt"')).toBeLessThan(
       orchestrator.indexOf('"Codexa strict startup check"')
     );
+
+    const packageJson = JSON.parse(await readFile(path.join(repoRoot, "package.json"), "utf8")) as {
+      scripts?: Record<string, string>;
+    };
+    expect(packageJson.scripts?.["benchmark:ci"]).toContain("--strict-session-start");
   });
 });

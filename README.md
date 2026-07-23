@@ -978,8 +978,11 @@ matches `HEAD`.
 
 `benchmark:ci` is self-preparing: it runs the same serialized clean-install,
 build, core-wiring, receipt, and strict-startup bootstrap used by a fresh
-worktree before measuring hot paths. This avoids benchmarking an accidentally
-stale local build.
+worktree before measuring hot paths, then opts the SessionStart metric into
+strict readiness with `--strict-session-start`. Direct uses of the benchmark
+remain advisory unless that flag is supplied, so an intentionally unwired
+fixture can still measure transport cost. This avoids benchmarking an
+accidentally stale local build without silently changing the benchmark target.
 
 ## Public Proof
 

@@ -14,6 +14,8 @@ const outputPath = args.output ? path.resolve(args.output) : undefined;
 const summaryPath = args.summary ? path.resolve(args.summary) : process.env.GITHUB_STEP_SUMMARY;
 const mcpToolProfile = "full";
 const requiredMcpTools = ["freshness", "repo_map", "task_brief"];
+const sessionStartArgs = ["session-start", repoRoot, "--json"];
+if (args.strictSessionStart) sessionStartArgs.push("--strict");
 
 if (!existsSync(cli)) {
   throw new Error("dist/cli.js is missing. Run `npm run build` before benchmark-hot-paths.");
@@ -43,7 +45,7 @@ recordArtifact("facts.ndjson", ".codex/codebase/facts.ndjson");
 recordArtifact("repo-map.md", ".codex/codebase/repo-map.md");
 
 benchmark.metrics.push(
-  runCliBenchmark("cli.session_start", ["session-start", repoRoot, "--json", "--strict"], 1_000),
+  runCliBenchmark("cli.session_start", sessionStartArgs, 1_000),
   runCliBenchmark("cli.status", ["status", repoRoot], 2_000),
   runCliBenchmark("cli.repo_map", ["repo-map", repoRoot, "--no-auto-refresh", "--budget", "1200", "--limit", "10"], 3_000),
   runCliBenchmark(
@@ -262,6 +264,8 @@ function parseArgs(argv) {
       parsed.summary = requireValue(argv, ++i, arg);
     } else if (arg === "--warn-only") {
       parsed.warnOnly = true;
+    } else if (arg === "--strict-session-start") {
+      parsed.strictSessionStart = true;
     } else {
       throw new Error(`Unknown benchmark option: ${arg}`);
     }
