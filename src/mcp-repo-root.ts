@@ -44,7 +44,22 @@ const ACTIVE_PROJECT_FOCUS_REPO_PATTERN = /\b(?:via\s+)?(?:repo|repository)\s*:?
 const ACTIVE_PROJECT_FOCUS_DIRECT_PATH_PATTERN = /\bactive\s+project\s+focus\s*:\s*(?:`(\/[^`]+)`|(\/[^\s#|.,;:]+))\s*$/iu;
 const COMPACT_PROJECT_LINE_PATTERN = /^\s*(?:[-*]\s*)?project\s*:\s*(?:`([^`]+)`|([^\r\n#]+))/iu;
 const HEADING_PATTERN = /^\s{0,3}#{1,6}\s+(.+?)\s*#*\s*$/u;
-const INACTIVE_SESSION_STATUSES = new Set(["merged-live-verified", "released+verified"]);
+const INACTIVE_SESSION_STATUSES = new Set([
+  "done",
+  "stale",
+  "merged",
+  "superseded",
+  "removed",
+  "shipped",
+  "shipped+live",
+  "live",
+  "released",
+  "closed",
+  "abandoned",
+  "cleaning",
+  "merged-live-verified",
+  "released+verified"
+]);
 const WORKSPACE_SESSION_ID_MAX = 128;
 
 export async function shouldPreferConfiguredRepoRoot(configuredRootInput: string, options: McpRepoRootResolutionOptions = {}): Promise<boolean> {
@@ -222,7 +237,7 @@ async function readFocusedRepoPaths(focusFile: string, options: McpRepoRootResol
       }
       if (activeSessionRepoColumn >= 0 && activeSessionRepoColumn < cells.length) {
         const status = activeSessionStatusColumn >= 0 ? cells[activeSessionStatusColumn]?.trim().toLowerCase() : "";
-        if (isActiveSessionStatus(status)) {
+        if (isRoutableWorkspaceSessionStatus(status)) {
           pushFocusedRepoPath(activeSessionPaths, cells[activeSessionRepoColumn] ?? "");
           if (workspaceSessionId && activeSessionSessionColumn >= 0 && normalizeWorkspaceSessionId(cells[activeSessionSessionColumn] ?? "") === workspaceSessionId) {
             pushFocusedRepoPath(selectedSessionPaths, cells[activeSessionRepoColumn] ?? "");
@@ -357,7 +372,7 @@ function isMarkdownSeparatorRow(cells: string[]): boolean {
   return cells.length > 0 && cells.every((cell) => /^:?-{3,}:?$/u.test(cell.trim()));
 }
 
-function isActiveSessionStatus(status: string | undefined): boolean {
+export function isRoutableWorkspaceSessionStatus(status: string | undefined): boolean {
   const normalized = String(status ?? "").trim().toLowerCase();
   if (!normalized || normalized === "status") {
     return false;

@@ -6,7 +6,7 @@ import { renderCodexUseContract } from "./codex-contract.js";
 import { buildIndexLocked } from "./indexer.js";
 import { isRecognizedCodexaLauncher } from "./init-portability.js";
 import { CORE_PROFILE_TOOL_NAMES, PRIMARY_CODEX_LOOP } from "./mcp-tool-catalog.js";
-import { resolveMcpRepoRoot, type McpRepoRootResolution } from "./mcp-repo-root.js";
+import { isRoutableWorkspaceSessionStatus, resolveMcpRepoRoot, type McpRepoRootResolution } from "./mcp-repo-root.js";
 import { statusQuery } from "./queries.js";
 import type { InitToolProfile } from "./types/init.js";
 import { CODEXA_VERSION } from "./version.js";
@@ -28,7 +28,6 @@ const CONFIG_ENABLED_TOOLS_MAX_ITEMS = 16;
 const CONFIG_ENABLED_TOOL_MAX = 64;
 const CONFIG_ENABLED_TOOLS_MAX_ENCODED_BYTES = 2048;
 export const SESSION_START_JSON_MAX_BYTES = 32_768;
-const DIGEST_INACTIVE_STATUSES = new Set(["merged-live-verified", "released+verified"]);
 const MANAGED_SERVER_KEYS = new Set(["command", "args", "startup_timeout_sec", "tool_timeout_sec", "enabled_tools"]);
 
 export interface SessionStartOptions {
@@ -829,9 +828,7 @@ function cellAt(cells: string[], columns: string[], name: string): string {
 }
 
 function isWorkspaceDigestTerminalStatus(status: string): boolean {
-  const normalized = status.trim().toLowerCase();
-  if (!normalized || normalized === "status") return true;
-  return DIGEST_INACTIVE_STATUSES.has(normalized);
+  return !isRoutableWorkspaceSessionStatus(status);
 }
 
 function workspaceRowProject(row: WorkspaceDigestRow | undefined): string | undefined {

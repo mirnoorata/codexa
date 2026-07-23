@@ -182,7 +182,7 @@ describe("Codexa versioned SessionStart receipt", () => {
     await mkdir(path.join(workspace, ".codex"), { recursive: true });
     const focusFile = path.join(workspace, ".codex/WORKING.md");
 
-    for (const status of ["parked-but-dirty", "not-done"]) {
+    for (const status of ["parked", "parked-but-dirty", "not-done"]) {
       await writeFile(
         focusFile,
         [
@@ -196,6 +196,42 @@ describe("Codexa versioned SessionStart receipt", () => {
       );
       const receipt = await sessionStartReceipt(workspace, false, { workspaceSessionId: "recoverable-session" });
       expect(receipt).toMatchObject({ repoRoot: repo, routing: { state: "resolved", focusReason: "selected-session" } });
+    }
+  });
+
+  it("rejects explicitly selected cleanup and legacy-terminal rows before config or index inspection", async () => {
+    const workspace = await mkdtemp(path.join(os.tmpdir(), "codexa-session-receipt-terminal-status-"));
+    execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
+    const repo = await createRepoAt(workspace, "finished-repo");
+    await initializeProject(repo, { cliPath: testCliPath });
+    await mkdir(path.join(workspace, ".codex"), { recursive: true });
+    const focusFile = path.join(workspace, ".codex/WORKING.md");
+
+    for (const status of ["cleaning", "done", "merged", "released"]) {
+      await writeFile(
+        focusFile,
+        [
+          "## Active Sessions",
+          "",
+          "| session | agent | repo | task | status | claims | last_seen | next |",
+          "| --- | --- | --- | --- | --- | --- | --- | --- |",
+          `| terminal-session | codex | ${repo} | finished task | ${status} | none | earlier | cleanup |`
+        ].join("\n"),
+        "utf8"
+      );
+      const receipt = await sessionStartReceipt(workspace, false, { workspaceSessionId: "terminal-session" });
+      expect(receipt).toMatchObject({
+        availability: "unavailable",
+        repoRoot: null,
+        routing: { state: "unavailable", error: expect.stringContaining("workspace session terminal-session is not active") },
+        config: {
+          state: "unavailable",
+          path: path.join(workspace, ".codex/config.toml"),
+          reason: "active repo unresolved; config not inspected"
+        },
+        index: { state: "unavailable", reason: "routing-unavailable" }
+      });
+      expect(receipt.config.path).not.toBe(path.join(repo, ".codex/config.toml"));
     }
   });
 
