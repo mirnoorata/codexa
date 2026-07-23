@@ -5,6 +5,7 @@ import path from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { runAutoVerifyForPostEdit, sanitizeAutoVerifyText } from "../src/autoverify.js";
 import { postEditHookNeedsAttention, postEditHookReviewPassPolicy } from "../src/cli/hooks.js";
+import { CODEXA_VERSION } from "../src/version.js";
 import { trackedTmpDir, testEnv, createHookFixtureRepo, createWorkspaceGitRepo, createAutoVerifyFixtureRepo, addFakeVitestBin, addFakeWindowsVitestCmdBin, createFakeCmdExe, createNestedAutoVerifyFixtureRepo } from "./cli-hooks-fixtures.js";
 describe("Codexa hook CLI", () => {
 it("coalesces read-only post-edit hooks to one persisted review and retains the full-access preview pass", () => {
@@ -183,6 +184,27 @@ it("fails strict startup for an unrelated launcher and bounds excessive enabled 
       config: { state: "invalid", command: "/bin/false", reason: "Codexa-managed command/args do not identify a recognized Codexa launcher" }
     });
     expect(Buffer.byteLength(badLauncher.stdout, "utf8")).toBeLessThanOrEqual(4096);
+
+    const mismatchedNpxConfig = config
+      .replace(/^command\s*=.*$/mu, 'command = "npx"')
+      .replace(
+        `args = [${JSON.stringify(cli)}, "serve",`,
+        'args = ["-y", "@mirnoorata/codexa@999.999.999", "serve",'
+      );
+    expect(mismatchedNpxConfig).not.toBe(config);
+    await writeFile(configPath, mismatchedNpxConfig, "utf8");
+    const mismatchedNpx = spawnSync(process.execPath, [cli, "session-start", repo, "--json", "--strict"], {
+      cwd: process.cwd(), encoding: "utf8", env: testEnv()
+    });
+    expect(mismatchedNpx.status).toBe(1);
+    expect(JSON.parse(mismatchedNpx.stdout)).toMatchObject({
+      implementation: { version: CODEXA_VERSION },
+      config: {
+        state: "invalid",
+        launcher: "@mirnoorata/codexa@999.999.999",
+        reason: "Codexa-managed command/args do not identify a recognized Codexa launcher"
+      }
+    });
 
     const excessiveTools = Array.from({ length: 5000 }, (_, index) => `tool-${index}`);
     await writeFile(configPath, config.replace(/^enabled_tools\s*=.*$/mu, `enabled_tools = ${JSON.stringify(excessiveTools)}`), "utf8");

@@ -3,6 +3,7 @@ import { writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { InitToolProfile } from "./types/init.js";
+import { CODEXA_VERSION } from "./version.js";
 
 const CURRENT_CODEXA_CLI_PATH = fileURLToPath(new URL("./cli.js", import.meta.url));
 
@@ -89,9 +90,12 @@ export function isCodexaMcpJsonEntry(entry: unknown): boolean {
 export function isRecognizedCodexaLauncher(command: string, args: string[], serveIndex = args.indexOf("serve")): boolean {
   if (serveIndex < 0) return false;
   const launcherToken = serveIndex === 0 ? command : args[serveIndex - 1];
-  if (serveIndex === 0) return command === "codexa";
+  // `init` no longer emits a bare PATH launcher. Accepting one here would let
+  // strict startup attest an executable whose package identity/version cannot
+  // be proven without running untrusted configuration.
+  if (serveIndex === 0) return false;
   if (command === "npx" || command === "npx.cmd") {
-    return serveIndex === 2 && args[0] === "-y" && isVersionedCodexaPackage(launcherToken);
+    return serveIndex === 2 && args[0] === "-y" && launcherToken === `@mirnoorata/codexa@${CODEXA_VERSION}`;
   }
   return serveIndex === 1 && isRecognizedNodeCommand(command) && isPotentialCodexaCliPath(launcherToken);
 }
@@ -147,16 +151,6 @@ function isPotentialCodexaCliPath(token: string | undefined): boolean {
   return Boolean(token && path.isAbsolute(token) && (
     isCodexaCliPath(token) || /[\\/]dist[\\/]cli\.js$/u.test(token)
   ));
-}
-
-function isVersionedCodexaPackage(token: string | undefined): boolean {
-  const prefix = "@mirnoorata/codexa@";
-  if (!token?.startsWith(prefix)) return false;
-  const version = token.slice(prefix.length);
-  const match = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?(?:\+([0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*))?$/u.exec(version);
-  if (!match) return false;
-  const prerelease = match[4];
-  return !prerelease || prerelease.split(".").every((identifier) => !/^\d+$/u.test(identifier) || identifier === "0" || !identifier.startsWith("0"));
 }
 
 function isRecognizedNodeCommand(command: string): boolean {

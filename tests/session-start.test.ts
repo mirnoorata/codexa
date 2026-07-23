@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { initializeProject, renderSessionStartJson, SESSION_START_JSON_MAX_BYTES, sessionStartReceipt, sessionStartStrictFailures, sessionStartSummary } from "../src/init.js";
 import { executableCommandCandidates, workspaceRepoProject } from "../src/session-start.js";
+import { CODEXA_VERSION } from "../src/version.js";
 
 const testCliPath = path.resolve(process.cwd(), "dist/cli.js");
 
@@ -262,7 +263,7 @@ describe("Codexa versioned SessionStart receipt", () => {
 
     const receipt = await sessionStartReceipt(repo, false);
     expect(receipt.config).toMatchObject({ state: "configured", command: "npx", toolProfile: "core" });
-    expect(receipt.config.launcher).toMatch(/^@mirnoorata\/codexa@/u);
+    expect(receipt.config.launcher).toBe(`@mirnoorata/codexa@${CODEXA_VERSION}`);
     expect(sessionStartStrictFailures(receipt)).toEqual([]);
   });
 
@@ -287,10 +288,21 @@ describe("Codexa versioned SessionStart receipt", () => {
     await writeFile(configPath, npxConfig.replace('"-y", "@mirnoorata/codexa@', '"--package", "@mirnoorata/codexa@'), "utf8");
     expect((await sessionStartReceipt(repo, false)).config).toMatchObject({ state: "invalid" });
 
-    for (const invalidVersion of ["01.2.3", "1.2.3-..", "file:/tmp/not-codexa"]) {
+    for (const invalidVersion of ["999.999.999", "01.2.3", "1.2.3-..", "file:/tmp/not-codexa"]) {
       await writeFile(configPath, npxConfig.replace(/@mirnoorata\/codexa@[^"\]]+/u, `@mirnoorata/codexa@${invalidVersion}`), "utf8");
       expect((await sessionStartReceipt(repo, false)).config).toMatchObject({ state: "invalid" });
     }
+
+    await writeFile(
+      configPath,
+      nodeConfig
+        .replace(/^command\s*=.*$/mu, 'command = "codexa"')
+        .replace(`args = [${JSON.stringify(testCliPath)}, "serve",`, 'args = ["serve",')
+    );
+    expect((await sessionStartReceipt(repo, false)).config).toMatchObject({
+      state: "invalid",
+      reason: "Codexa-managed command/args do not identify a recognized Codexa launcher"
+    });
   });
 
   it("rejects non-stdio args, invalid TOML scope, and an unavailable Node command", async () => {
@@ -363,16 +375,22 @@ describe("Codexa versioned SessionStart receipt", () => {
     const otherPackage = await mkdtemp(path.join(os.tmpdir(), "codexa-other-package-"));
     const otherCli = path.join(otherPackage, "dist/cli.js");
     await mkdir(path.dirname(otherCli), { recursive: true });
-    await writeFile(path.join(otherPackage, "package.json"), `${JSON.stringify({ name: "@mirnoorata/codexa", bin: { codexa: "dist/cli.js" } })}\n`, "utf8");
+    await writeFile(path.join(otherPackage, "package.json"), `${JSON.stringify({ name: "@mirnoorata/codexa", version: CODEXA_VERSION, bin: { codexa: "dist/cli.js" } })}\n`, "utf8");
     await writeFile(otherCli, "#!/usr/bin/env node\n", "utf8");
     await writeFile(configPath, config.replaceAll(testCliPath, otherCli), "utf8");
     expect((await sessionStartReceipt(repo, false)).config).toMatchObject({ state: "configured", launcher: otherCli });
+
+    await writeFile(path.join(otherPackage, "package.json"), `${JSON.stringify({ name: "@mirnoorata/codexa", version: "999.999.999", bin: { codexa: "dist/cli.js" } })}\n`, "utf8");
+    expect((await sessionStartReceipt(repo, false)).config).toMatchObject({
+      state: "invalid",
+      reason: `Codexa-managed Node launcher is not a readable @mirnoorata/codexa@${CODEXA_VERSION} dist/cli.js`
+    });
 
     const missingCli = path.join(otherPackage, "missing", "dist/cli.js");
     await writeFile(configPath, config.replaceAll(testCliPath, missingCli), "utf8");
     expect((await sessionStartReceipt(repo, false)).config).toMatchObject({
       state: "invalid",
-      reason: "Codexa-managed Node launcher is not a readable @mirnoorata/codexa dist/cli.js"
+      reason: `Codexa-managed Node launcher is not a readable @mirnoorata/codexa@${CODEXA_VERSION} dist/cli.js`
     });
   });
 

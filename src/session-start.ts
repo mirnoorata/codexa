@@ -664,12 +664,13 @@ async function validateCodexaNodeLauncher(launcher: string): Promise<string | un
     const packageRoot = path.dirname(path.dirname(resolvedCli));
     const packageJson = JSON.parse(await readFile(path.join(packageRoot, "package.json"), "utf8")) as unknown;
     if (!isPlainObject(packageJson) || packageJson.name !== "@mirnoorata/codexa") throw new Error("package name mismatch");
+    if (packageJson.version !== CODEXA_VERSION) throw new Error("package version mismatch");
     const bin = packageJson.bin;
     const binPath = typeof bin === "string" ? bin : isPlainObject(bin) && typeof bin.codexa === "string" ? bin.codexa : undefined;
     if (binPath?.replace(/^[.][\\/]/u, "").replace(/[\\]+/gu, "/") !== "dist/cli.js") throw new Error("package bin mismatch");
     return undefined;
   } catch {
-    return "Codexa-managed Node launcher is not a readable @mirnoorata/codexa dist/cli.js";
+    return `Codexa-managed Node launcher is not a readable @mirnoorata/codexa@${CODEXA_VERSION} dist/cli.js`;
   }
 }
 
