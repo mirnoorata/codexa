@@ -93,7 +93,8 @@ export function executableCommandCandidates(
   command: string,
   searchPath = process.env.PATH ?? "",
   platform: NodeJS.Platform = process.platform,
-  pathExt = process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD"
+  pathExt = process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD",
+  currentDirectory = process.cwd()
 ): string[] {
   const pathApi = platform === "win32" ? path.win32 : path.posix;
   if (pathApi.isAbsolute(command)) return [command];
@@ -101,5 +102,9 @@ export function executableCommandCandidates(
   const names = platform === "win32" && pathApi.extname(command) === ""
     ? pathExt.split(";").filter(Boolean).map((extension) => `${command}${extension.toLowerCase()}`)
     : [command];
-  return searchPath.split(delimiter).filter(Boolean).flatMap((directory) => names.map((name) => pathApi.join(directory, name)));
+  const searchDirectories = searchPath
+    .split(delimiter)
+    .map((directory) => directory || currentDirectory);
+  if (platform === "win32") searchDirectories.unshift(currentDirectory);
+  return searchDirectories.flatMap((directory) => names.map((name) => pathApi.join(directory, name)));
 }

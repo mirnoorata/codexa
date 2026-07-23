@@ -564,8 +564,12 @@ describe("Codexa versioned SessionStart receipt", () => {
   });
 
   it("resolves bare launcher commands with Windows PATHEXT semantics", () => {
-    expect(executableCommandCandidates("node", "C:\\one;D:\\two", "win32", ".EXE;.CMD")).toEqual([
+    expect(executableCommandCandidates("node", "C:\\one;D:\\two", "win32", ".EXE;.CMD", "C:\\cwd")).toEqual([
+      "C:\\cwd\\node.exe", "C:\\cwd\\node.cmd",
       "C:\\one\\node.exe", "C:\\one\\node.cmd", "D:\\two\\node.exe", "D:\\two\\node.cmd"
+    ]);
+    expect(executableCommandCandidates("node", ":/one::/two:", "linux", "", "/cwd")).toEqual([
+      "/cwd/node", "/one/node", "/cwd/node", "/two/node", "/cwd/node"
     ]);
     expect(trustedNpxCommandCandidates("C:\\runtime\\node.exe", "win32")).toEqual([
       "C:\\runtime\\npx.cmd",

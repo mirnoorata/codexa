@@ -197,6 +197,41 @@ describe("Codexa SessionStart CLI receipt", () => {
     }
   });
 
+  it.skipIf(process.platform === "win32")("attests an empty PATH segment as the current directory without executing it", async () => {
+    const repo = await createHookFixtureRepo();
+    expect(
+      spawnSync(process.execPath, [cli, "init", repo], {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: testEnv()
+      }).status
+    ).toBe(0);
+    const configPath = path.join(repo, ".codex/config.toml");
+    const config = await readFile(configPath, "utf8");
+    await writeFile(configPath, config.replace(/^command\s*=.*$/mu, 'command = "node"'), "utf8");
+
+    const sentinel = path.join(repo, "hostile-node-executed");
+    const hostileNode = path.join(repo, "node");
+    await writeFile(hostileNode, `#!/bin/sh\nprintf executed >${JSON.stringify(sentinel)}\n`, "utf8");
+    await chmod(hostileNode, 0o755);
+    const env = testEnv();
+    env.PATH = `:${env.PATH ?? ""}`;
+    const result = spawnSync(process.execPath, [cli, "session-start", repo, "--json", "--strict"], {
+      cwd: repo,
+      encoding: "utf8",
+      env
+    });
+
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      config: {
+        state: "runtime-unverified",
+        reason: "Codexa-managed Node command resolves through a runtime shim that cannot be statically attested; strict readiness requires direct host-local wiring"
+      }
+    });
+    await expect(readFile(sentinel, "utf8")).rejects.toThrow();
+  });
+
   it("sanitizes hostile freshness metadata and treats parser errors as nonfresh", async () => {
     const repo = await createHookFixtureRepo();
     expect(
