@@ -4,6 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 
+type InitPortabilityModule = typeof import("../src/init-portability.js");
+
 const concurrentWrite = vi.hoisted(() => ({
   hooksPath: "",
   replacement: "",
@@ -11,7 +13,7 @@ const concurrentWrite = vi.hoisted(() => ({
 }));
 
 vi.mock("../src/init-portability.js", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("../src/init-portability.js")>();
+  const actual = await importOriginal() as InitPortabilityModule;
   return {
     ...actual,
     writeTextIfChanged: async (filePath: string, existing: string, contents: string) => {
