@@ -13,12 +13,15 @@ export function printQuery(result: { text: string }) {
 export async function resolveQueryRepoRoot(repo: string, opts: CliQueryOptions = {}): Promise<string> {
   const configuredRoot = path.resolve(repo);
   const routingOptions = workspaceRoutingOptionsFromCli(opts);
+  const ignoreAmbientWorkspaceSelectors =
+    !routingOptions.workspaceFocusFile && !routingOptions.workspaceSessionId;
   return (
     await resolveMcpRepoRoot(configuredRoot, {
       ...routingOptions,
+      ignoreAmbientWorkspaceSelectors,
       preferConfiguredRoot: await shouldPreferConfiguredRepoRoot(configuredRoot, {
         ...routingOptions,
-        ignoreAmbientWorkspaceSelectors: true
+        ignoreAmbientWorkspaceSelectors
       })
     })
   ).repoRoot;

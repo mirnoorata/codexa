@@ -150,11 +150,13 @@ async function sessionStartReceiptInternal(
     });
   }
   try {
+    const ignoreAmbientWorkspaceSelectors =
+      !sessionOptions.workspaceFocusFile && !sessionOptions.workspaceSessionId;
     const routingOptions = {
       skipDefaultFocusFile: configuredManagedStateError !== undefined,
       workspaceFocusFile: sessionOptions.workspaceFocusFile,
       workspaceSessionId: sessionOptions.workspaceSessionId,
-      ignoreAmbientWorkspaceSelectors: true
+      ignoreAmbientWorkspaceSelectors
     };
     const resolution = await resolveMcpRepoRoot(configuredRoot, {
       ...routingOptions,

@@ -277,6 +277,7 @@ async function resolveHookRepoRoots(repo: string): Promise<{ configuredRoot: str
   });
   const resolution = await resolveMcpRepoRoot(configuredRoot, {
     preferConfiguredRoot,
+    ignoreAmbientWorkspaceSelectors: true,
     requireValidDeclaredFocus: !preferConfiguredRoot
   });
   return { configuredRoot, activeRepoRoot: resolution.repoRoot };

@@ -72,16 +72,20 @@ const WORKSPACE_SESSION_ID_MAX = 128;
 
 export async function shouldPreferConfiguredRepoRoot(configuredRootInput: string, options: McpRepoRootResolutionOptions = {}): Promise<boolean> {
   const configuredRoot = path.resolve(configuredRootInput);
-  if (options.workspaceFocusFile || options.workspaceSessionId) {
+  const configuredRootIsGitRepo = (await gitRootFor(configuredRoot)) !== null;
+  const effectiveOptions = configuredRootIsGitRepo && await hasLocalCodexaConfigPath(configuredRoot)
+    ? { ...options, ignoreAmbientWorkspaceSelectors: true }
+    : options;
+  if (effectiveOptions.workspaceFocusFile || effectiveOptions.workspaceSessionId) {
     return false;
   }
   if (
-    !options.ignoreAmbientWorkspaceSelectors &&
-    (explicitFocusFile(options) || declaredWorkspaceSession(options))
+    !effectiveOptions.ignoreAmbientWorkspaceSelectors &&
+    (explicitFocusFile(effectiveOptions) || declaredWorkspaceSession(effectiveOptions))
   ) {
     return false;
   }
-  if ((await gitRootFor(configuredRoot)) === null) {
+  if (!configuredRootIsGitRepo) {
     return false;
   }
   return !(await localWorkspaceFocusOverridesConfiguredRoot(configuredRoot));
@@ -90,17 +94,20 @@ export async function shouldPreferConfiguredRepoRoot(configuredRootInput: string
 export async function resolveMcpRepoRoot(configuredRootInput: string, options: McpRepoRootResolutionOptions = {}): Promise<McpRepoRootResolution> {
   const configuredRoot = path.resolve(configuredRootInput);
   const configuredRootIsGitRepo = (await gitRootFor(configuredRoot)) !== null;
-  const declaredSession = declaredWorkspaceSession(options);
-  const explicitRoutingRequested = Boolean(options.workspaceFocusFile || options.workspaceSessionId);
+  const effectiveOptions = configuredRootIsGitRepo && await hasLocalCodexaConfigPath(configuredRoot)
+    ? { ...options, ignoreAmbientWorkspaceSelectors: true }
+    : options;
+  const declaredSession = declaredWorkspaceSession(effectiveOptions);
+  const explicitRoutingRequested = Boolean(effectiveOptions.workspaceFocusFile || effectiveOptions.workspaceSessionId);
   const workspaceRoutingRequested = explicitRoutingRequested ||
-    (!options.preferConfiguredRoot && Boolean(explicitFocusFile(options) || declaredSession));
+    (!effectiveOptions.preferConfiguredRoot && Boolean(explicitFocusFile(effectiveOptions) || declaredSession));
 
-  if (configuredRootIsGitRepo && options.preferConfiguredRoot && !explicitRoutingRequested && !options.requireValidDeclaredFocus) {
-    if (!options.skipDefaultFocusFile) await assertSafeDefaultFocusFile(configuredRoot);
+  if (configuredRootIsGitRepo && effectiveOptions.preferConfiguredRoot && !explicitRoutingRequested && !effectiveOptions.requireValidDeclaredFocus) {
+    if (!effectiveOptions.skipDefaultFocusFile) await assertSafeDefaultFocusFile(configuredRoot);
     return { configuredRoot, repoRoot: configuredRoot, source: "configured-root" };
   }
 
-  for await (const candidate of focusFileRepoCandidates(configuredRoot, options)) {
+  for await (const candidate of focusFileRepoCandidates(configuredRoot, effectiveOptions)) {
     const repoRoot = await validatedRepoRoot(candidate);
     const insideConfiguredRoot = repoRoot ? await isInsideOrSamePath(repoRoot, configuredRoot) : false;
     if (repoRoot && insideConfiguredRoot) {
@@ -114,7 +121,7 @@ export async function resolveMcpRepoRoot(configuredRootInput: string, options: M
         warnings: candidate.warnings
       };
     }
-    if (candidate.strict || options.requireValidDeclaredFocus) {
+    if (candidate.strict || effectiveOptions.requireValidDeclaredFocus) {
       throw new Error(
         `Codexa MCP workspace session${candidate.workspaceSessionId ? ` ${candidate.workspaceSessionId}` : ""} resolved to an invalid or out-of-workspace repo in ${candidate.focusFile ?? "workspace focus"}: ${candidate.path}`
       );
@@ -140,7 +147,7 @@ export async function resolveMcpRepoRoot(configuredRootInput: string, options: M
     }
   }
 
-  const focusFiles = focusFileCandidates(configuredRoot, options).map((candidate) => candidate.path);
+  const focusFiles = focusFileCandidates(configuredRoot, effectiveOptions).map((candidate) => candidate.path);
   const focusHint =
     focusFiles.length > 0
       ? ` Add an "Active Focus" project line or "Focused project: /absolute/path/to/repo" to ${focusFiles.join(" or ")}.`
@@ -148,6 +155,15 @@ export async function resolveMcpRepoRoot(configuredRootInput: string, options: M
   throw new Error(
     `Codexa MCP configured root is not a git repository and no focused git repository could be resolved: ${configuredRoot}. Set CODEXA_REPO or CODEXA_FOCUSED_REPO to a git repository.${focusHint}`
   );
+}
+
+async function hasLocalCodexaConfigPath(configuredRoot: string): Promise<boolean> {
+  try {
+    await fs.lstat(path.join(configuredRoot, ".codex", "config.toml"));
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 function environmentRepoCandidates(): CandidateRepoRoot[] {
