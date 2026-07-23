@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { parse as parseToml } from "smol-toml";
@@ -7,9 +7,9 @@ import {
   assertSafeManagedDirectory,
   assertSafeManagedFile,
   assertSafeManagedStateDirectory,
-  ensureSafeManagedStateDirectory,
   isGitTrackedAsync
 } from "./init-portability.js";
+import { publishManagedStateFile } from "./managed-file-publication.js";
 import {
   currentAdoptionReceiptFacts,
   readBoundedStableRegularFile,
@@ -201,23 +201,15 @@ export async function issueWorktreeBootstrapReceipt(
   if (receipt.buildInputSha256 !== expectedBuildInputSha256) {
     throw new Error("Cannot issue Codexa worktree receipt: build-input-changed-during-bootstrap");
   }
-  const receiptPath = path.join(repo, WORKTREE_BOOTSTRAP_RECEIPT_RELATIVE_PATH);
-  const receiptDir = await ensureSafeManagedStateDirectory(repo, "tmp");
-  await assertSafeManagedFile(receiptPath);
-  const temporaryPath = path.join(receiptDir, `.worktree-bootstrap-receipt.${process.pid}.${randomUUID()}.tmp`);
-  try {
-    await fs.writeFile(temporaryPath, `${JSON.stringify(receipt, null, 2)}\n`, {
-      encoding: "utf8",
-      flag: "wx",
-      mode: 0o600
-    });
-    await fs.rename(temporaryPath, receiptPath);
-  } finally {
-    await fs.rm(temporaryPath, { force: true }).catch(() => undefined);
-  }
+  await publishManagedStateFile(
+    repo,
+    ["tmp"],
+    path.basename(WORKTREE_BOOTSTRAP_RECEIPT_RELATIVE_PATH),
+    `${JSON.stringify(receipt, null, 2)}\n`,
+    "receipt-publication"
+  );
   const inspection = await inspectWorktreeBootstrapReceipt(repo, { validation: "full" });
   if (inspection.state !== "verified" || inspection.validation !== "full") {
-    await fs.rm(receiptPath, { force: true }).catch(() => undefined);
     throw new Error(`Codexa worktree receipt failed immediate validation: ${inspection.reason ?? inspection.state}`);
   }
   return receipt;

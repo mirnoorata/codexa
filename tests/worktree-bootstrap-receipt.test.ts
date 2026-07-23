@@ -715,6 +715,45 @@ describe("worktree bootstrap receipt", () => {
     expect(swapped).toBe(true);
   });
 
+  it("does not publish or clean up a receipt through a replaced parent", async () => {
+    const repo = await createReceiptFixture("codexa-worktree-receipt-publish-race-");
+    const receiptDir = path.join(repo, ".codex/tmp");
+    const displaced = path.join(repo, ".codex/tmp-displaced");
+    const outside = await trackedTmp("codexa-worktree-receipt-publish-race-target-");
+    await mkdir(receiptDir);
+    await writeFile(
+      path.join(outside, path.basename(WORKTREE_BOOTSTRAP_RECEIPT_RELATIVE_PATH)),
+      "outside-sentinel\n"
+    );
+    const originalOpen = nodeFs.open.bind(nodeFs);
+    let swapped = false;
+    vi.spyOn(nodeFs, "open").mockImplementation(async (file, flags, mode) => {
+      if (
+        !swapped &&
+        path.basename(String(file)).startsWith(".worktree-bootstrap-receipt.json.")
+      ) {
+        swapped = true;
+        await rename(receiptDir, displaced);
+        await symlink(outside, receiptDir, "dir");
+      }
+      return originalOpen(file, flags, mode);
+    });
+    try {
+      await expect(issueReceipt(repo, "posix-hooks")).rejects.toThrow(
+        /receipt-publication-directory-(?:invalid|changed-during-publication)/u
+      );
+      await expect(readFile(
+        path.join(outside, path.basename(WORKTREE_BOOTSTRAP_RECEIPT_RELATIVE_PATH)),
+        "utf8"
+      )).resolves.toBe("outside-sentinel\n");
+    } finally {
+      vi.restoreAllMocks();
+      await rm(receiptDir, { recursive: true, force: true });
+      await rename(displaced, receiptDir);
+    }
+    expect(swapped).toBe(true);
+  });
+
   it("refuses redirected receipt state without touching the target", async () => {
     const repo = await createGitRepo("codexa-worktree-receipt-link-");
     const outside = await trackedTmp("codexa-worktree-receipt-link-target-");
