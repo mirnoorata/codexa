@@ -207,6 +207,18 @@ describe("worktree bootstrap receipt", () => {
     });
   });
 
+  it("distinguishes a missing startup input from a present file containing the old sentinel text", async () => {
+    const repo = await createReceiptFixture("codexa-worktree-receipt-missing-frame-");
+    const npmrcPath = path.join(repo, ".npmrc");
+    await rm(npmrcPath);
+    const missingDigest = await worktreeBootstrapStartupInputSha256(repo);
+
+    await writeFile(npmrcPath, "missing", "utf8");
+    const presentDigest = await worktreeBootstrapStartupInputSha256(repo);
+
+    expect(presentDigest).not.toBe(missingDigest);
+  });
+
   it("derives lane readiness from installed Codexa hook state", async () => {
     const posixRepo = await createReceiptFixture("codexa-worktree-receipt-posix-lane-");
     await expect(issueReceipt(posixRepo, "native-windows-mcp")).rejects.toThrow(

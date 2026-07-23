@@ -247,9 +247,11 @@ async function hashNamedFiles(repoRoot, names) {
   for (const name of names) {
     hash.update(`\0${name}\0`, "utf8");
     try {
-      hash.update(await readRegularFile(path.join(repoRoot, name)));
+      const contents = await readRegularFile(path.join(repoRoot, name));
+      hash.update(`P\0${contents.length}\0`, "utf8");
+      hash.update(contents);
     } catch (error) {
-      if (error?.code === "ENOENT") hash.update("missing", "utf8");
+      if (error?.code === "ENOENT") hash.update("M\0", "utf8");
       else throw error;
     }
   }
