@@ -256,6 +256,41 @@ describe("worktree bootstrap receipt", () => {
     });
   });
 
+  it("rejects a HEAD change during the full build-input scan", async () => {
+    const repo = await createReceiptFixture("codexa-worktree-receipt-head-race-");
+    const expectedBuild = await worktreeBootstrapBuildInputSha256(repo);
+    const expectedStartup = await worktreeBootstrapStartupInputSha256(repo);
+    const racedSource = path.join(repo, "src/index.ts");
+    const originalOpen = nodeFs.open.bind(nodeFs);
+    let committed = false;
+    vi.spyOn(nodeFs, "open").mockImplementation(async (file, flags, mode) => {
+      if (!committed && path.resolve(String(file)) === racedSource) {
+        committed = true;
+        execFileSync(
+          "git",
+          [
+            "-c", "user.name=Codexa",
+            "-c", "user.email=codexa@example.invalid",
+            "commit", "--allow-empty", "-m", "race HEAD"
+          ],
+          { cwd: repo, stdio: "ignore" }
+        );
+      }
+      return originalOpen(file, flags, mode);
+    });
+    try {
+      await expect(issueWorktreeBootstrapReceipt(
+        repo,
+        "posix-hooks",
+        expectedBuild,
+        expectedStartup
+      )).rejects.toThrow(/git-head-changed-during-build-scan/u);
+    } finally {
+      vi.restoreAllMocks();
+    }
+    expect(committed).toBe(true);
+  });
+
   it("rejects a source entry added after its directory was enumerated", async () => {
     const repo = await createReceiptFixture("codexa-worktree-receipt-source-entry-race-");
     const earlyDirectory = path.join(repo, "src/a");

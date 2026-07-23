@@ -366,18 +366,21 @@ async function currentCompletionReceiptFacts(
   repoRoot: string
 ): Promise<WorktreeBootstrapCompletionFacts> {
   const repo = path.resolve(repoRoot);
-  const headResult = await runCommand(
-    "git",
-    ["-C", repo, "rev-parse", "HEAD"],
-    { timeoutMs: 2_500, maxBufferBytes: 64 * 1024 }
-  );
-  if (!headResult.ok) throw new Error("git-head-unavailable");
-  const head = headResult.stdout.trim();
-  if (!/^[0-9a-f]{40,64}$/u.test(head)) throw new Error("git-head-invalid");
-  return {
-    head,
-    buildInputSha256: await hashBuildInputs(repo)
+  const readHead = async (): Promise<string> => {
+    const result = await runCommand(
+      "git",
+      ["-C", repo, "rev-parse", "HEAD"],
+      { timeoutMs: 2_500, maxBufferBytes: 64 * 1024 }
+    );
+    if (!result.ok) throw new Error("git-head-unavailable");
+    const value = result.stdout.trim();
+    if (!/^[0-9a-f]{40,64}$/u.test(value)) throw new Error("git-head-invalid");
+    return value;
   };
+  const head = await readHead();
+  const buildInputSha256 = await hashBuildInputs(repo);
+  if (await readHead() !== head) throw new Error("git-head-changed-during-build-scan");
+  return { head, buildInputSha256 };
 }
 
 async function currentStartupReceiptSnapshot(
