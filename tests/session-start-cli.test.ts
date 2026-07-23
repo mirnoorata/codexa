@@ -1,10 +1,10 @@
 import { spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rename, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { CODEXA_VERSION } from "../src/version.js";
-import { createHookFixtureRepo, testEnv } from "./cli-hooks-fixtures.js";
+import { createHookFixtureRepo, testEnv, trackedTmpDir } from "./cli-hooks-fixtures.js";
 
 const cli = path.resolve(process.cwd(), "dist/cli.js");
 
@@ -72,6 +72,43 @@ describe("Codexa SessionStart CLI receipt", () => {
       index: { state: "fresh" },
       threadMcp: { state: "unverified" }
     });
+  });
+
+  it("does not record advisory telemetry through redirected managed state", async () => {
+    const repo = await createHookFixtureRepo();
+    expect(
+      spawnSync(process.execPath, [cli, "init", repo], {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: testEnv()
+      }).status
+    ).toBe(0);
+    const externalRoot = await trackedTmpDir("codexa-session-start-redirected-state-");
+    const redirectedState = path.join(externalRoot, "managed-state");
+    await rename(path.join(repo, ".codex"), redirectedState);
+    await symlink(redirectedState, path.join(repo, ".codex"), "dir");
+
+    const result = spawnSync(process.execPath, [cli, "session-start", repo, "--json", "--strict"], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: testEnv()
+    });
+
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      availability: "unavailable",
+      routing: { state: "unavailable" },
+      config: {
+        state: "invalid",
+        reason: expect.stringMatching(/refuses redirected or non-directory managed state/u)
+      }
+    });
+    await expect(
+      readFile(path.join(redirectedState, "cache/codexa-hooks/events.ndjson"), "utf8")
+    ).rejects.toThrow();
+    await expect(
+      readFile(path.join(redirectedState, "cache/codexa-hooks/latest.json"), "utf8")
+    ).rejects.toThrow();
   });
 
   it("rejects unrelated launchers and bounds excessive enabled tools", async () => {
