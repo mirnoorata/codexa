@@ -36,6 +36,10 @@ describe("tracked Codex worktree environment", () => {
     expect(orchestrator).toContain("scripts/worktree-bootstrap-preflight.mjs");
     expect(orchestrator).toContain('npmInvocation(["ci", "--no-audit", "--no-fund"])');
     expect(orchestrator).toContain('"--expected-build-input"');
+    expect(orchestrator).toContain('"--expected-startup-input"');
+    expect(orchestrator.indexOf("expectedStartupInput = await hashStartupInputs")).toBeLessThan(
+      orchestrator.indexOf('npmInvocation(["ci", "--no-audit", "--no-fund"])')
+    );
     expect(orchestrator.indexOf('"Codexa worktree receipt"')).toBeLessThan(
       orchestrator.indexOf('"Codexa strict startup check"')
     );
@@ -52,5 +56,11 @@ describe("tracked Codex worktree environment", () => {
       "powershell -NoProfile -ExecutionPolicy Bypass -File ./.codex/worktree-bootstrap.ps1"
     );
     expect(workflow).toContain("working-directory: ../codexa-linked-worktree");
+    expect(workflow.indexOf("Run post-bootstrap test smoke")).toBeLessThan(
+      workflow.indexOf("Validate consumed setup receipt")
+    );
+
+    const vitestConfig = await readFile(path.join(repoRoot, "vitest.config.cts"), "utf8");
+    expect(vitestConfig).toContain('cacheDir: ".codex/cache/vite"');
   });
 });

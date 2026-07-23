@@ -117,6 +117,10 @@ jobs:
         working-directory: ../codexa-linked-worktree
         run: powershell -NoProfile -ExecutionPolicy Bypass -File ./.codex/worktree-bootstrap.ps1
 
+      - name: Run post-bootstrap test smoke
+        working-directory: ../codexa-linked-worktree
+        run: npx vitest run tests/worktree-environment.test.ts
+
       - name: Validate consumed setup receipt
         working-directory: ../codexa-linked-worktree
         run: node dist/cli.js worktree-receipt validate . --json
