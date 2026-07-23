@@ -96,6 +96,10 @@ matches the current checkout. `stale` usually means the checkout changed since
 the last index, and most context commands can refresh it automatically.
 `Current-thread MCP: unverified` is expected from SessionStart: only the host's
 actual MCP initialize handshake can prove that this thread loaded the server.
+`Config: runtime-unverified` is different: the managed command is structurally
+valid, but a portable Node/npx shim cannot be tied statically to the trusted
+runtime without executing it. Strict readiness stays closed until the repo
+uses direct host-local wiring.
 At a shared workspace root, `routing: selection-required` and `Index:
 not-selected` mean only a previous workspace default or unselected active row
 was available; select an active row with `--workspace-session <id>` before

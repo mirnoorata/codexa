@@ -718,17 +718,22 @@ facets and skips config inspection and `statusQuery` for that repo. Explicit
 query commands retain their fallback routing. The config facet parses and
 bounds the managed command, recognizable Codexa launcher, arguments,
 enabled-tool exposure, and `serve` repo operand. It rejects unrelated launchers,
-excessive config arrays, and targets that resolve to another checkout. Index
-receipt metadata is validated and bounded before rendering;
+excessive config arrays, and targets that resolve to another checkout. Direct
+runtime identity and version-pinned npx provenance are checked without
+executing configuration-supplied commands. Portable shims that cannot be
+statically attested produce the distinct `runtime-unverified` config state.
+Init refuses redirected or multi-link managed config/hook files and uses
+atomic replacement for changed wiring. Index receipt metadata is validated and
+bounded before rendering;
 `metadata-invalid` and `parser-degraded` are distinct nonfresh states. If
 `--auto-refresh` is enabled, SessionStart itself rebuilds a missing or stale
 index before returning its receipt.
 
 `session-start --strict` is the controller-facing observable-state gate. It
-fails unresolved or selection-required routing/status, missing or invalid
-focused-repo config, legacy/drifted tool profiles, and every index state other
-than `fresh`. It does not fail solely because current-thread activation is
-unverified.
+fails unresolved or selection-required routing/status, missing, invalid, or
+`runtime-unverified` focused-repo config, legacy/drifted tool profiles, and
+every index state other than `fresh`. It does not fail solely because
+current-thread activation is unverified.
 
 The Codex plugin bundle does not ship hooks. `codexa init` can add edit-scoped
 Codex hooks, but they run before later shell verification and do not claim

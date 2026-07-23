@@ -39,12 +39,20 @@ Focus` continues to route directly.
 
 The config facet parses the complete TOML document, selects the managed server
 table, and bounds its `command`, launcher token, arguments, enabled-tool list,
-and `serve` operand. The command must resolve to an executable; Node launchers
-must be a readable `dist/cli.js` under a package named `@mirnoorata/codexa`;
-and the post-`serve` arguments must match init's stdio shape. The configured
-repo must resolve to the receipt's active `repoRoot`. Malformed TOML, nested or
-duplicate server tables, non-stdio transports, unrelated or stale launchers,
-copied wrong-root configs, and excessive tool lists are invalid.
+and `serve` operand. The command must resolve to an executable. Direct Node
+launchers must use the current trusted runtime and a readable `dist/cli.js`
+under a package named `@mirnoorata/codexa`; version-pinned npx launchers must
+resolve inside that runtime's npm installation. A portable runtime shim that
+cannot be proven without executing repository-supplied configuration is
+reported as `runtime-unverified`, not mislabeled as either configured or
+broken. It is a strict-readiness failure; use direct host-local wiring when
+identity attestation is required. The post-`serve` arguments must match init's
+stdio shape, and the configured repo must resolve to the receipt's active
+`repoRoot`. Malformed TOML, nested or duplicate server tables, non-stdio
+transports, unrelated or stale launchers, copied wrong-root configs, and
+excessive tool lists are invalid. Init also refuses symlinked, hard-linked, or
+non-regular managed config/hook files instead of following them, and replaces
+changed managed files atomically.
 When `--auto-refresh` is requested, a missing or stale index is rebuilt during
 that SessionStart invocation, before the receipt is returned; it is not
 deferred to a later MCP call.
@@ -57,9 +65,10 @@ Both are nonfresh strict failures rather than a successful `fresh` receipt.
 The generated hook remains advisory and exits successfully. Explicit callers
 can pass `--strict`: it exits nonzero when repo routing/status is unavailable or
 still requires selection,
-the focused repo's managed config is missing or invalid, its tool profile is not
-an internally consistent `core` or `full` profile, or its index is not `fresh`
-(including malformed metadata or parser degradation).
+the focused repo's managed config is missing, invalid, or
+`runtime-unverified`, its tool profile is not an internally consistent `core`
+or `full` profile, or its index is not `fresh` (including malformed metadata or
+parser degradation).
 Strict mode deliberately does not turn `Current-thread MCP: unverified` into a
 failure, because only the host handshake—not this subprocess—can attest that
 state.
