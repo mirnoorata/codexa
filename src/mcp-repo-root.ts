@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { runCommand } from "./command.js";
+import { assertSafeManagedDirectory, assertSafeManagedFile } from "./init-portability.js";
 
 export interface McpRepoRootResolutionOptions {
   skipDefaultFocusFile?: boolean;
@@ -38,6 +39,11 @@ interface FocusFileRepoSelection {
   warnings: string[];
 }
 
+interface FocusFileCandidate {
+  path: string;
+  managedDefault: boolean;
+}
+
 const FOCUSED_REPO_LINE_PATTERN = /\bfocused\s+(?:project|repo|repository)\s*:\s*(?:`([^`]+)`|([^\r\n#]+))/iu;
 const DEFAULT_REPO_LINE_PATTERN = /\bdefault\s+(?:repo|repository)\s*:\s*(?:`([^`]+)`|([^\r\n#|]+))/iu;
 const ACTIVE_PROJECT_FOCUS_LINE_PATTERN = /\bactive\s+project\s+focus\s*:/iu;
@@ -65,7 +71,7 @@ const WORKSPACE_SESSION_ID_MAX = 128;
 
 export async function shouldPreferConfiguredRepoRoot(configuredRootInput: string, options: McpRepoRootResolutionOptions = {}): Promise<boolean> {
   const configuredRoot = path.resolve(configuredRootInput);
-  if (options.workspaceFocusFile || options.workspaceSessionId) {
+  if (explicitFocusFile(options) || options.workspaceSessionId) {
     return false;
   }
   if ((await gitRootFor(configuredRoot)) === null) {
@@ -80,6 +86,7 @@ export async function resolveMcpRepoRoot(configuredRootInput: string, options: M
   const workspaceRoutingRequested = Boolean(options.workspaceFocusFile || options.workspaceSessionId);
 
   if (configuredRootIsGitRepo && options.preferConfiguredRoot && !workspaceRoutingRequested && !options.requireValidDeclaredFocus) {
+    if (!options.skipDefaultFocusFile) await assertSafeDefaultFocusFile(configuredRoot);
     return { configuredRoot, repoRoot: configuredRoot, source: "configured-root" };
   }
 
@@ -123,7 +130,7 @@ export async function resolveMcpRepoRoot(configuredRootInput: string, options: M
     }
   }
 
-  const focusFiles = focusFileCandidates(configuredRoot, options).map((file) => path.resolve(file));
+  const focusFiles = focusFileCandidates(configuredRoot, options).map((candidate) => candidate.path);
   const focusHint =
     focusFiles.length > 0
       ? ` Add an "Active Focus" project line or "Focused project: /absolute/path/to/repo" to ${focusFiles.join(" or ")}.`
@@ -141,7 +148,8 @@ function environmentRepoCandidates(): CandidateRepoRoot[] {
 
 async function* focusFileRepoCandidates(configuredRoot: string, options: McpRepoRootResolutionOptions): AsyncGenerator<CandidateRepoRoot> {
   for (const focusFile of focusFileCandidates(configuredRoot, options)) {
-    const focusFilePath = path.resolve(focusFile);
+    if (focusFile.managedDefault) await assertSafeDefaultFocusFile(configuredRoot);
+    const focusFilePath = focusFile.path;
     const selection = await readFocusedRepoPaths(focusFilePath, options, configuredRoot);
     for (const repoPath of selection.paths) {
       yield {
@@ -157,13 +165,27 @@ async function* focusFileRepoCandidates(configuredRoot: string, options: McpRepo
   }
 }
 
-function focusFileCandidates(configuredRoot: string, options: McpRepoRootResolutionOptions): string[] {
-  const candidates = [
-    options.workspaceFocusFile,
-    options.workspaceSessionId ? undefined : process.env.CODEXA_WORKSPACE_FOCUS_FILE,
-    options.skipDefaultFocusFile ? undefined : path.join(configuredRoot, ".codex", "WORKING.md")
-  ].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
-  return [...new Set(candidates.map((candidate) => path.resolve(candidate)))];
+function focusFileCandidates(configuredRoot: string, options: McpRepoRootResolutionOptions): FocusFileCandidate[] {
+  const explicit = explicitFocusFile(options);
+  if (explicit) return [{ path: path.resolve(explicit), managedDefault: false }];
+  if (options.skipDefaultFocusFile) return [];
+  return [{ path: defaultFocusFile(configuredRoot), managedDefault: true }];
+}
+
+function explicitFocusFile(options: McpRepoRootResolutionOptions): string | undefined {
+  const candidate = options.workspaceFocusFile ??
+    (options.workspaceSessionId ? undefined : process.env.CODEXA_WORKSPACE_FOCUS_FILE);
+  return typeof candidate === "string" && candidate.trim().length > 0 ? candidate : undefined;
+}
+
+function defaultFocusFile(configuredRoot: string): string {
+  return path.join(configuredRoot, ".codex", "WORKING.md");
+}
+
+async function assertSafeDefaultFocusFile(configuredRoot: string): Promise<void> {
+  const codexDir = path.join(configuredRoot, ".codex");
+  await assertSafeManagedDirectory(codexDir);
+  await assertSafeManagedFile(path.join(codexDir, "WORKING.md"));
 }
 
 async function readFocusedRepoPaths(focusFile: string, options: McpRepoRootResolutionOptions, configuredRoot?: string): Promise<FocusFileRepoSelection> {
@@ -441,7 +463,8 @@ async function realPathOrResolved(candidate: string): Promise<string> {
 }
 
 async function localWorkspaceFocusOverridesConfiguredRoot(configuredRoot: string): Promise<boolean> {
-  const focusFile = path.join(configuredRoot, ".codex", "WORKING.md");
+  const focusFile = defaultFocusFile(configuredRoot);
+  await assertSafeDefaultFocusFile(configuredRoot);
   try {
     await fs.access(focusFile);
   } catch {
