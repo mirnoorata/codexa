@@ -56,6 +56,51 @@ describe("MCP default focus-file safety", () => {
       focusReason: "explicit-focus"
     });
   });
+
+  it.each(["missing", "empty", "outside"] as const)(
+    "fails closed when an environment-selected focus file is %s",
+    async (state) => {
+      const workspace = await createRepo(`codexa-mcp-env-focus-${state}-`);
+      const focusFile = path.join(workspace, `${state}-focus.md`);
+      if (state === "empty") await writeFile(focusFile, "", "utf8");
+      if (state === "outside") {
+        const outside = await createRepo(`codexa-mcp-env-focus-${state}-target-`);
+        await writeFile(focusFile, `Focused project: \`${outside}\`\n`, "utf8");
+      }
+      const previous = process.env.CODEXA_WORKSPACE_FOCUS_FILE;
+      process.env.CODEXA_WORKSPACE_FOCUS_FILE = focusFile;
+      try {
+        const runtime = createMcpRuntime({
+          configuredRepoRoot: workspace,
+          queryOptions: { autoRefresh: true }
+        });
+        await expect(runtime.resolveActiveRepoRootResolution()).rejects.toThrow(
+          /workspace routing requested.*no focus row matched.*refusing to serve the configured root/u
+        );
+      } finally {
+        if (previous === undefined) delete process.env.CODEXA_WORKSPACE_FOCUS_FILE;
+        else process.env.CODEXA_WORKSPACE_FOCUS_FILE = previous;
+      }
+    }
+  );
+
+  it("fails closed when an environment-selected session has no managed focus file", async () => {
+    const workspace = await createRepo("codexa-mcp-env-session-missing-");
+    const previous = process.env.CODEXA_WORKSPACE_SESSION;
+    process.env.CODEXA_WORKSPACE_SESSION = "codex-missing";
+    try {
+      const runtime = createMcpRuntime({
+        configuredRepoRoot: workspace,
+        queryOptions: { autoRefresh: true }
+      });
+      await expect(runtime.resolveActiveRepoRootResolution()).rejects.toThrow(
+        /workspace routing requested.*codex-missing.*no focus row matched.*refusing to serve the configured root/u
+      );
+    } finally {
+      if (previous === undefined) delete process.env.CODEXA_WORKSPACE_SESSION;
+      else process.env.CODEXA_WORKSPACE_SESSION = previous;
+    }
+  });
 });
 
 async function createRepo(prefix: string): Promise<string> {

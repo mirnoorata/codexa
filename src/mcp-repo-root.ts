@@ -71,7 +71,7 @@ const WORKSPACE_SESSION_ID_MAX = 128;
 
 export async function shouldPreferConfiguredRepoRoot(configuredRootInput: string, options: McpRepoRootResolutionOptions = {}): Promise<boolean> {
   const configuredRoot = path.resolve(configuredRootInput);
-  if (explicitFocusFile(options) || options.workspaceSessionId) {
+  if (explicitFocusFile(options) || declaredWorkspaceSession(options)) {
     return false;
   }
   if ((await gitRootFor(configuredRoot)) === null) {
@@ -83,7 +83,8 @@ export async function shouldPreferConfiguredRepoRoot(configuredRootInput: string
 export async function resolveMcpRepoRoot(configuredRootInput: string, options: McpRepoRootResolutionOptions = {}): Promise<McpRepoRootResolution> {
   const configuredRoot = path.resolve(configuredRootInput);
   const configuredRootIsGitRepo = (await gitRootFor(configuredRoot)) !== null;
-  const workspaceRoutingRequested = Boolean(options.workspaceFocusFile || options.workspaceSessionId);
+  const declaredSession = declaredWorkspaceSession(options);
+  const workspaceRoutingRequested = Boolean(explicitFocusFile(options) || declaredSession);
 
   if (configuredRootIsGitRepo && options.preferConfiguredRoot && !workspaceRoutingRequested && !options.requireValidDeclaredFocus) {
     if (!options.skipDefaultFocusFile) await assertSafeDefaultFocusFile(configuredRoot);
@@ -117,7 +118,7 @@ export async function resolveMcpRepoRoot(configuredRootInput: string, options: M
     // evidence, so fail before any index or query is selected.
     if (workspaceRoutingRequested) {
       throw new Error(
-        `Codexa MCP workspace routing requested${options.workspaceSessionId ? ` (session ${options.workspaceSessionId})` : ""} but no focus row matched; refusing to serve the configured root ${configuredRoot}`
+        `Codexa MCP workspace routing requested${declaredSession ? ` (session ${declaredSession})` : ""} but no focus row matched; refusing to serve the configured root ${configuredRoot}`
       );
     }
     return { configuredRoot, repoRoot: configuredRoot, source: "configured-root" };
@@ -178,6 +179,11 @@ function explicitFocusFile(options: McpRepoRootResolutionOptions): string | unde
   return typeof candidate === "string" && candidate.trim().length > 0 ? candidate : undefined;
 }
 
+function declaredWorkspaceSession(options: McpRepoRootResolutionOptions): string | undefined {
+  const candidate = options.workspaceSessionId ?? process.env.CODEXA_WORKSPACE_SESSION;
+  return typeof candidate === "string" && candidate.trim().length > 0 ? candidate : undefined;
+}
+
 function defaultFocusFile(configuredRoot: string): string {
   return path.join(configuredRoot, ".codex", "WORKING.md");
 }
@@ -196,7 +202,7 @@ async function readFocusedRepoPaths(focusFile: string, options: McpRepoRootResol
     return emptyFocusFileSelection();
   }
 
-  const workspaceSessionId = normalizeWorkspaceSessionId(options.workspaceSessionId ?? process.env.CODEXA_WORKSPACE_SESSION, true);
+  const workspaceSessionId = normalizeWorkspaceSessionId(declaredWorkspaceSession(options), true);
   const selectedSessionPaths: string[] = [];
   const explicitPaths: string[] = [];
   const activeSessionPaths: string[] = [];
