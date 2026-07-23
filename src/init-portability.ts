@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import type { Stats } from "node:fs";
-import { chmod, lstat, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { InitToolProfile } from "./types/init.js";
@@ -157,6 +157,70 @@ export async function assertSafeManagedDirectory(directoryPath: string): Promise
     if (isNodeError(error) && error.code === "ENOENT") return;
     throw error;
   }
+}
+
+export async function assertSafeManagedStateDirectory(repoRoot: string, ...childSegments: string[]): Promise<string> {
+  const repo = path.resolve(repoRoot);
+  const repoReal = await realpath(repo);
+  const components = [".codex", ...validatedManagedStateSegments(childSegments)];
+  let current = repo;
+  for (const component of components) {
+    current = path.join(current, component);
+    await assertSafeManagedDirectory(current);
+    try {
+      const currentReal = await realpath(current);
+      if (!isContainedPath(repoReal, currentReal)) {
+        throw new Error(`Codexa refuses managed state outside the repository: ${current}`);
+      }
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") continue;
+      throw error;
+    }
+  }
+  return path.join(repo, ...components);
+}
+
+export async function ensureSafeManagedStateDirectory(repoRoot: string, ...childSegments: string[]): Promise<string> {
+  const repo = path.resolve(repoRoot);
+  const repoReal = await realpath(repo);
+  const components = [".codex", ...validatedManagedStateSegments(childSegments)];
+  let current = repo;
+  for (const component of components) {
+    current = path.join(current, component);
+    await assertSafeManagedDirectory(current);
+    try {
+      await mkdir(current, { mode: 0o700 });
+    } catch (error) {
+      if (!isNodeError(error) || error.code !== "EEXIST") throw error;
+    }
+    await assertSafeManagedDirectory(current);
+    const currentReal = await realpath(current);
+    if (!isContainedPath(repoReal, currentReal)) {
+      throw new Error(`Codexa refuses managed state outside the repository: ${current}`);
+    }
+  }
+  return path.join(repo, ...components);
+}
+
+function validatedManagedStateSegments(segments: string[]): string[] {
+  for (const segment of segments) {
+    if (
+      !segment ||
+      segment === "." ||
+      segment === ".." ||
+      path.isAbsolute(segment) ||
+      segment.includes("/") ||
+      segment.includes("\\")
+    ) {
+      throw new Error(`Invalid Codexa managed-state path segment: ${segment || "<empty>"}`);
+    }
+  }
+  return segments;
+}
+
+function isContainedPath(parent: string, candidate: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
 }
 
 interface ManagedFileSnapshot {

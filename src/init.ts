@@ -7,6 +7,7 @@ import {
   detectExistingServerName,
   assertSafeManagedDirectory,
   assertSafeManagedFile,
+  ensureSafeManagedStateDirectory,
   inspectClaudeMcpConfig,
   isCodexaMcpJsonEntry,
   isGitTracked,
@@ -119,6 +120,7 @@ export async function initializeProject(repoInput: string | undefined, options: 
   }
   await mkdir(codexDir, { recursive: true });
   await assertSafeManagedDirectory(codexDir);
+  await ensureSafeManagedStateDirectory(repoRoot, "cache");
   const hookOptions = {
     cliPath,
     launch: pinNodeLaunch(launch, repoRoot, path.join(".codex", "hooks.json")),

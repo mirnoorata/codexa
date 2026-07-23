@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { assertSafeManagedDirectory, assertSafeManagedFile } from "./init-portability.js";
+import { assertSafeManagedDirectory, assertSafeManagedFile, ensureSafeManagedStateDirectory } from "./init-portability.js";
 import { CURRENT_VERIFICATION_PROVENANCE } from "./types.js";
 import type { AutoVerifyReportRunner } from "./autoverify.js";
 import type {
@@ -296,11 +296,13 @@ export async function savePostEditOutcome(input: PostEditOutcomeInput): Promise<
   // exactly. The legacy content-only digest remains useful for ordinary outcome
   // records, but completion probes will never trust it as a skip authority.
   outcome.workspaceStateDigest = (await exactWorkspaceStateDigest(repoRoot, input.freshness)) ?? outcome.workspaceStateDigest;
-  const dir = path.join(repoRoot, OUTCOME_DIR);
-  await fs.mkdir(dir, { recursive: true });
+  const dir = await ensureSafeManagedStateDirectory(repoRoot, "cache", "codexa-outcomes");
   const outcomePath = path.join(dir, `${outcome.outcomeId}.json`);
+  const latestPath = path.join(dir, LATEST_FILE);
+  await assertSafeManagedFile(outcomePath);
+  await assertSafeManagedFile(latestPath);
   await atomicJsonWrite(outcomePath, outcome);
-  await atomicJsonWrite(path.join(dir, LATEST_FILE), {
+  await atomicJsonWrite(latestPath, {
     schemaVersion: 1,
     outcomeId: outcome.outcomeId,
     path: path.basename(outcomePath),
@@ -421,9 +423,10 @@ export async function loadPostEditHookReviewState(repoRoot: string): Promise<Pos
 
 export async function savePostEditHookReviewState(repoRoot: string, input: { signature: string; outcome?: PostEditOutcome; autoVerifyStatus?: PostEditHookReviewState["autoVerifyStatus"] }): Promise<void> {
   const repo = path.resolve(repoRoot);
-  const dir = path.join(repo, OUTCOME_DIR);
-  await fs.mkdir(dir, { recursive: true });
-  await atomicJsonWrite(path.join(dir, LATEST_HOOK_REVIEW_FILE), {
+  const dir = await ensureSafeManagedStateDirectory(repo, "cache", "codexa-outcomes");
+  const reviewPath = path.join(dir, LATEST_HOOK_REVIEW_FILE);
+  await assertSafeManagedFile(reviewPath);
+  await atomicJsonWrite(reviewPath, {
     schemaVersion: 1,
     signature: input.signature,
     createdAt: new Date().toISOString(),
@@ -588,21 +591,7 @@ async function prepareHookEventDirectory(repoRoot: string): Promise<string | nul
     throw error;
   }
   await assertSafeManagedDirectory(codexDir);
-  const cacheDir = path.join(codexDir, "cache");
-  await ensureSafeManagedDirectory(cacheDir);
-  const hookDir = path.join(cacheDir, "codexa-hooks");
-  await ensureSafeManagedDirectory(hookDir);
-  return hookDir;
-}
-
-async function ensureSafeManagedDirectory(directoryPath: string): Promise<void> {
-  await assertSafeManagedDirectory(directoryPath);
-  try {
-    await fs.mkdir(directoryPath);
-  } catch (error) {
-    if (!isNodeError(error) || error.code !== "EEXIST") throw error;
-  }
-  await assertSafeManagedDirectory(directoryPath);
+  return ensureSafeManagedStateDirectory(repoRoot, "cache", "codexa-hooks");
 }
 
 function isNodeError(error: unknown): error is NodeJS.ErrnoException {

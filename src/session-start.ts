@@ -4,7 +4,7 @@ import path from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { renderCodexUseContract } from "./codex-contract.js";
 import { buildIndexLocked } from "./indexer.js";
-import { assertSafeManagedDirectory, assertSafeManagedFile, isRecognizedCodexaLauncher } from "./init-portability.js";
+import { assertSafeManagedDirectory, assertSafeManagedFile, assertSafeManagedStateDirectory, isRecognizedCodexaLauncher } from "./init-portability.js";
 import { CORE_PROFILE_TOOL_NAMES, PRIMARY_CODEX_LOOP } from "./mcp-tool-catalog.js";
 import { isRoutableWorkspaceSessionStatus, resolveMcpRepoRoot, type McpRepoRootResolution } from "./mcp-repo-root.js";
 import { statusQuery } from "./queries.js";
@@ -174,6 +174,8 @@ export async function sessionStartReceipt(repoInput: string | undefined, include
   };
   try {
     await assertSafeManagedDirectory(path.join(repoRoot, ".codex"));
+    await assertSafeManagedStateDirectory(repoRoot, "cache");
+    await assertSafeManagedStateDirectory(repoRoot, "codebase");
   } catch (error) {
     const message = boundedErrorMessage(error);
     return unavailableSessionStartReceipt({

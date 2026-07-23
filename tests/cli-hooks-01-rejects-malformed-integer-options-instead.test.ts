@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmod, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { runAutoVerifyForPostEdit, sanitizeAutoVerifyText } from "../src/autoverify.js";
@@ -100,8 +100,56 @@ it("keeps session-start advisory when query setup fails", async () => {
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.stdout).toContain("Codexa status unavailable:");
-    expect(result.stdout).toContain("Codexa startup hook is advisory");
-  });
+  expect(result.stdout).toContain("Codexa startup hook is advisory");
+});
+
+it.each(["cache", "codexa-outcomes"] as const)(
+  "does not run hook writers through a redirected %s directory",
+  async (redirectedChild) => {
+    const repo = await createHookFixtureRepo();
+    const cli = path.resolve(process.cwd(), "dist/cli.js");
+    expect(
+      spawnSync(process.execPath, [cli, "init", repo], {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: testEnv()
+      }).status
+    ).toBe(0);
+    const externalRoot = await trackedTmpDir(`codexa-hook-${redirectedChild}-target-`);
+    const redirectedPath = redirectedChild === "cache"
+      ? path.join(repo, ".codex/cache")
+      : path.join(repo, ".codex/cache/codexa-outcomes");
+    await rename(redirectedPath, `${redirectedPath}-before-redirect`).catch(() => undefined);
+    await symlink(externalRoot, redirectedPath, "dir");
+    await writeFile(path.join(repo, "src/main.ts"), "export function main() { return 2 }\n", "utf8");
+
+    const postEdit = spawnSync(process.execPath, [cli, "hook-post-edit", repo], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: testEnv()
+    });
+    expect(postEdit.status).toBe(0);
+    expect(postEdit.stdout).toContain("Codexa: post-edit review unavailable:");
+    expect(postEdit.stdout).toContain("Codexa: hook is advisory; continuing without blocking the edit.");
+
+    const preEdit = spawnSync(process.execPath, [cli, "hook-pre-edit", repo], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: testEnv()
+    });
+    expect(preEdit.status).not.toBe(0);
+    expect(preEdit.stdout).toContain("Codexa: edit blocked because task lifecycle state could not be validated");
+
+    const reviewState = spawnSync(process.execPath, [cli, "hook-review-state", repo], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: testEnv()
+    });
+    expect(reviewState.status).toBe(0);
+    expect(reviewState.stdout.trim()).toBe("review");
+    expect(await readdir(externalRoot)).toEqual([]);
+  }
+);
 
 it("routes workspace-root session-start hooks through the focused repository", async () => {
     const workspace = await trackedTmpDir("codexa-session-start-focused-");

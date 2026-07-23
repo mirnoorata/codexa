@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { chmod, link, mkdir, mkdtemp, readFile, rename, stat, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, mkdtemp, readFile, readdir, rename, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -108,6 +108,20 @@ describe("Codexa managed startup files", () => {
     await expect(
       initializeProject(repo, { cliPath, hooks: false, index: false })
     ).rejects.toThrow(/refuses redirected or non-directory managed state/u);
+  });
+
+  it("refuses a redirected managed cache before writing init state", async () => {
+    const repo = await createRepo("codexa-init-cache-link-");
+    const externalRoot = await mkdtemp(path.join(os.tmpdir(), "codexa-init-cache-target-"));
+    await mkdir(path.join(repo, ".codex"), { recursive: true });
+    await symlink(externalRoot, path.join(repo, ".codex/cache"), "dir");
+
+    await expect(
+      initializeProject(repo, { cliPath, index: false })
+    ).rejects.toThrow(/refuses redirected or non-directory managed state/u);
+    await expect(readFile(path.join(repo, ".codex/config.toml"), "utf8")).rejects.toThrow();
+    await expect(readFile(path.join(repo, ".codex/hooks.json"), "utf8")).rejects.toThrow();
+    expect(await readdir(externalRoot)).toEqual([]);
   });
 
   it("refuses a redirected AGENTS.md without changing its target", async () => {

@@ -1,5 +1,5 @@
 import { spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, rename, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rename, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -109,6 +109,40 @@ describe("Codexa SessionStart CLI receipt", () => {
     await expect(
       readFile(path.join(redirectedState, "cache/codexa-hooks/latest.json"), "utf8")
     ).rejects.toThrow();
+  });
+
+  it("does not auto-refresh through a redirected managed cache", async () => {
+    const repo = await createHookFixtureRepo();
+    expect(
+      spawnSync(process.execPath, [cli, "init", repo, "--no-index"], {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: testEnv()
+      }).status
+    ).toBe(0);
+    const externalRoot = await trackedTmpDir("codexa-session-start-cache-target-");
+    await rename(path.join(repo, ".codex/cache"), path.join(repo, ".codex/cache-before-redirect"));
+    await symlink(externalRoot, path.join(repo, ".codex/cache"), "dir");
+
+    const result = spawnSync(
+      process.execPath,
+      [cli, "session-start", repo, "--auto-refresh", "--json", "--strict"],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: testEnv()
+      }
+    );
+
+    expect(result.status).toBe(1);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      availability: "unavailable",
+      index: {
+        state: "unavailable",
+        error: expect.stringMatching(/managed state is unsafe.*refuses redirected or non-directory managed state/u)
+      }
+    });
+    expect(await readdir(externalRoot)).toEqual([]);
   });
 
   it("rejects unrelated launchers and bounds excessive enabled tools", async () => {

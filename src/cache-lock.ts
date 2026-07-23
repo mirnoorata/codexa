@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { assertSafeManagedDirectory, ensureSafeManagedStateDirectory } from "./init-portability.js";
 
 export interface CacheLockOwner {
   pid: number;
@@ -45,10 +46,24 @@ export async function acquireCacheLock(options: CacheLockOptions): Promise<() =>
     repoRoot
   };
 
-  await fs.mkdir(path.dirname(lockDir), { recursive: true });
+  const relativeLockPath = path.relative(repoRoot, lockDir);
+  const lockSegments = relativeLockPath.split(path.sep);
+  if (
+    lockSegments[0] === ".codex" &&
+    lockSegments[1] === "cache" &&
+    lockSegments.length >= 3 &&
+    !relativeLockPath.startsWith("..") &&
+    !path.isAbsolute(relativeLockPath)
+  ) {
+    await ensureSafeManagedStateDirectory(repoRoot, ...lockSegments.slice(1, -1));
+  } else {
+    await fs.mkdir(path.dirname(lockDir), { recursive: true });
+  }
   while (true) {
+    await assertSafeManagedDirectory(lockDir);
     try {
       await fs.mkdir(lockDir, { recursive: false });
+      await assertSafeManagedDirectory(lockDir);
       await writeLockOwner(ownerPath, owner);
       const heartbeat = setInterval(() => {
         void renewLockOwner(ownerPath, owner).catch(() => undefined);
@@ -62,6 +77,7 @@ export async function acquireCacheLock(options: CacheLockOptions): Promise<() =>
       if (!isNodeError(error) || error.code !== "EEXIST") {
         throw error;
       }
+      await assertSafeManagedDirectory(lockDir);
       if (await removeStaleLock(lockDir, staleMs)) {
         continue;
       }
