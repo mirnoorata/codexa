@@ -144,8 +144,18 @@ export async function initializeProject(repoInput: string | undefined, options: 
     await upsertCodexConfig(configPath, { ...configOptions, hooksFeature: true });
   } else {
     const removal = await planCodexaManagedHooksRemoval(hooksPath, hookOptions);
-    await upsertCodexConfig(configPath, { ...configOptions, hooksFeature: removal.keepHooksFeature });
-    await applyCodexaManagedHooksRemoval(hooksPath, removal);
+    if (removal.keepHooksFeature) {
+      // Preserve host hook execution before removing only Codexa entries.
+      // A later hooks-file conflict leaves user hooks enabled.
+      await upsertCodexConfig(configPath, { ...configOptions, hooksFeature: true });
+      await applyCodexaManagedHooksRemoval(hooksPath, removal);
+    } else {
+      // Disabling hooks is safe only after the guarded removal commits. If a
+      // concurrent writer adds a user hook, the stale snapshot rejects before
+      // config.toml can make that unchanged hook inert.
+      await applyCodexaManagedHooksRemoval(hooksPath, removal);
+      await upsertCodexConfig(configPath, { ...configOptions, hooksFeature: false });
+    }
   }
 
   const agentsMdPath = options.agentsMd ? await upsertManagedDoc(repoRoot, "AGENTS.md", serverName) : null;
