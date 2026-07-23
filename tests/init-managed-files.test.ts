@@ -1,9 +1,10 @@
 import { execFileSync } from "node:child_process";
-import { link, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
+import { chmod, link, mkdir, mkdtemp, readFile, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { initializeProject, sessionStartReceipt } from "../src/init.js";
+import { writeTextIfChanged } from "../src/init-portability.js";
 
 const cliPath = path.resolve(process.cwd(), "dist/cli.js");
 
@@ -96,6 +97,34 @@ describe("Codexa managed startup files", () => {
       initializeProject(repo, { cliPath, claudeMd: true, hooks: false, index: false })
     ).rejects.toThrow(/refuses redirected or non-regular managed file/u);
     expect(await readFile(victim, "utf8")).toBe(original);
+  });
+
+  it("does not overwrite an intervening managed-file edit", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codexa-init-concurrent-write-"));
+    const managedPath = path.join(root, "config.toml");
+    await writeFile(managedPath, "original\n", "utf8");
+    await writeFile(managedPath, "user edit\n", "utf8");
+
+    await expect(
+      writeTextIfChanged(managedPath, "original\n", "codexa update\n")
+    ).rejects.toThrow(/file changed while Codexa was preparing the update/u);
+    expect(await readFile(managedPath, "utf8")).toBe("user edit\n");
+  });
+
+  it("preserves an existing managed file mode across atomic replacement", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "codexa-init-file-mode-"));
+    const managedPath = path.join(root, "config.toml");
+    await writeFile(managedPath, "original\n", "utf8");
+    await chmod(managedPath, 0o664);
+    const originalUmask = process.umask(0o077);
+    try {
+      await writeTextIfChanged(managedPath, "original\n", "codexa update\n");
+    } finally {
+      process.umask(originalUmask);
+    }
+
+    expect((await stat(managedPath)).mode & 0o777).toBe(0o664);
+    expect(await readFile(managedPath, "utf8")).toBe("codexa update\n");
   });
 });
 

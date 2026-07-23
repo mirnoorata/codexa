@@ -1,6 +1,6 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { lstat, rename, rm, writeFile } from "node:fs/promises";
+import { chmod, lstat, readFile, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { InitToolProfile } from "./types/init.js";
@@ -111,17 +111,19 @@ export function defaultServerName(repoRoot: string): string {
 }
 
 export async function writeTextIfChanged(filePath: string, existing: string, contents: string): Promise<void> {
-  if (existing === contents) return;
-  await assertSafeManagedFile(filePath);
-  let mode = 0o666;
-  try {
-    mode = (await lstat(filePath)).mode & 0o777;
-  } catch (error) {
-    if (!isNodeError(error) || error.code !== "ENOENT") throw error;
+  const initial = await managedFileSnapshot(filePath);
+  if (initial.contents !== existing) {
+    throw new Error(`Cannot update ${filePath}: the file changed while Codexa was preparing the update`);
   }
+  if (existing === contents) return;
   const temporaryPath = `${filePath}.codexa-${process.pid}-${randomUUID()}.tmp`;
   try {
-    await writeFile(temporaryPath, contents, { encoding: "utf8", flag: "wx", mode });
+    await writeFile(temporaryPath, contents, { encoding: "utf8", flag: "wx", mode: initial.mode ?? 0o666 });
+    if (initial.mode !== undefined) await chmod(temporaryPath, initial.mode);
+    const current = await managedFileSnapshot(filePath);
+    if (current.contents !== existing || !sameManagedFileIdentity(initial, current)) {
+      throw new Error(`Cannot update ${filePath}: the file changed while Codexa was preparing the update`);
+    }
     await rename(temporaryPath, filePath);
   } finally {
     await rm(temporaryPath, { force: true });
@@ -138,6 +140,45 @@ export async function assertSafeManagedFile(filePath: string): Promise<void> {
     if (isNodeError(error) && error.code === "ENOENT") return;
     throw error;
   }
+}
+
+interface ManagedFileSnapshot {
+  contents: string;
+  device?: number;
+  inode?: number;
+  mode?: number;
+}
+
+async function managedFileSnapshot(filePath: string): Promise<ManagedFileSnapshot> {
+  try {
+    const before = await lstat(filePath);
+    assertSafeManagedFileEntry(filePath, before);
+    const contents = await readFile(filePath, "utf8");
+    const after = await lstat(filePath);
+    assertSafeManagedFileEntry(filePath, after);
+    const beforeIdentity = { device: before.dev, inode: before.ino, mode: before.mode & 0o777 };
+    const afterIdentity = { device: after.dev, inode: after.ino, mode: after.mode & 0o777 };
+    if (!sameManagedFileIdentity(beforeIdentity, afterIdentity)) {
+      throw new Error(`Cannot update ${filePath}: the file changed while Codexa was preparing the update`);
+    }
+    return { contents, ...afterIdentity };
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return { contents: "" };
+    throw error;
+  }
+}
+
+function assertSafeManagedFileEntry(filePath: string, entry: Awaited<ReturnType<typeof lstat>>): void {
+  if (!entry.isFile() || entry.isSymbolicLink() || entry.nlink !== 1) {
+    throw new Error(`Codexa refuses redirected or non-regular managed file: ${filePath}`);
+  }
+}
+
+function sameManagedFileIdentity(
+  left: Pick<ManagedFileSnapshot, "device" | "inode" | "mode">,
+  right: Pick<ManagedFileSnapshot, "device" | "inode" | "mode">
+): boolean {
+  return left.device === right.device && left.inode === right.inode && left.mode === right.mode;
 }
 
 function runGit(cwd: string, args: string[]): string | null {
