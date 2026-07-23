@@ -4,7 +4,8 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { initializeProject, renderSessionStartJson, SESSION_START_JSON_MAX_BYTES, sessionStartReceipt, sessionStartStrictFailures, sessionStartSummary } from "../src/init.js";
-import { executableCommandCandidates, trustedNpxCommandCandidates, workspaceRepoProject } from "../src/session-start.js";
+import { workspaceRepoProject } from "../src/session-start.js";
+import { executableCommandCandidates, trustedNpxCommandCandidates } from "../src/startup-launcher.js";
 import { CODEXA_VERSION } from "../src/version.js";
 
 const testCliPath = path.resolve(process.cwd(), "dist/cli.js");

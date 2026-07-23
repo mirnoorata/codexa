@@ -3,6 +3,7 @@ import path from "node:path";
 import { runCommand } from "./command.js";
 
 export interface McpRepoRootResolutionOptions {
+  skipDefaultFocusFile?: boolean;
   workspaceFocusFile?: string;
   workspaceSessionId?: string;
   preferConfiguredRoot?: boolean;
@@ -160,7 +161,7 @@ function focusFileCandidates(configuredRoot: string, options: McpRepoRootResolut
   const candidates = [
     options.workspaceFocusFile,
     options.workspaceSessionId ? undefined : process.env.CODEXA_WORKSPACE_FOCUS_FILE,
-    path.join(configuredRoot, ".codex", "WORKING.md")
+    options.skipDefaultFocusFile ? undefined : path.join(configuredRoot, ".codex", "WORKING.md")
   ].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
   return [...new Set(candidates.map((candidate) => path.resolve(candidate)))];
 }

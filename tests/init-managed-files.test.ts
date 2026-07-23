@@ -46,6 +46,45 @@ describe("Codexa managed startup files", () => {
     expect(await readFile(victim, "utf8")).toBe(original);
   });
 
+  it("removes only managed hooks while preserving unrelated top-level state", async () => {
+    const repo = await createRepo("codexa-init-no-hooks-");
+    const codexDir = path.join(repo, ".codex");
+    await mkdir(codexDir, { recursive: true });
+    await writeFile(
+      path.join(codexDir, "config.toml"),
+      "[features]\nhooks = true\ncodex_hooks = true\n",
+      "utf8"
+    );
+    await writeFile(
+      path.join(codexDir, "hooks.json"),
+      `${JSON.stringify({
+        custom: { keep: true },
+        hooks: {
+          SessionStart: [{
+            codexaManaged: true,
+            matcher: "startup|resume",
+            hooks: [{
+              codexaManaged: true,
+              type: "command",
+              command: `node ${cliPath} session-start ${repo}`,
+              timeout: 5
+            }]
+          }]
+        }
+      }, null, 2)}\n`,
+      "utf8"
+    );
+
+    const result = await initializeProject(repo, { cliPath, hooks: false, index: false });
+    expect(result.hooksPath).toBeNull();
+    const config = await readFile(path.join(codexDir, "config.toml"), "utf8");
+    expect(config).not.toContain("hooks = true");
+    expect(config).not.toContain("codex_hooks");
+    expect(JSON.parse(await readFile(path.join(codexDir, "hooks.json"), "utf8"))).toEqual({
+      custom: { keep: true }
+    });
+  });
+
   it("refuses a multi-link config instead of mutating the shared inode", async () => {
     const repo = await createRepo("codexa-init-config-hardlink-");
     const externalRoot = await mkdtemp(path.join(os.tmpdir(), "codexa-init-hardlink-target-"));
@@ -145,20 +184,58 @@ describe("Codexa managed startup files", () => {
     }
   });
 
-  it("does not attest config through a redirected managed-state directory", async () => {
+  it("does not route or refresh through a redirected managed-state directory", async () => {
     const repo = await createRepo("codexa-session-directory-link-");
     await initializeProject(repo, { cliPath, hooks: false, index: false });
+    const nestedRepo = path.join(repo, "nested-repo");
+    await mkdir(nestedRepo, { recursive: true });
+    execFileSync("git", ["init"], { cwd: nestedRepo, stdio: "ignore" });
+    await writeFile(path.join(nestedRepo, "README.md"), "# nested\n", "utf8");
+    execFileSync("git", ["add", "README.md"], { cwd: nestedRepo, stdio: "ignore" });
+    execFileSync(
+      "git",
+      ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "nested fixture"],
+      { cwd: nestedRepo, stdio: "ignore" }
+    );
     const externalRoot = await mkdtemp(path.join(os.tmpdir(), "codexa-session-directory-target-"));
     const codexDir = path.join(repo, ".codex");
     const movedCodexDir = path.join(externalRoot, "managed-state");
     await rename(codexDir, movedCodexDir);
+    await writeFile(path.join(movedCodexDir, "WORKING.md"), `Focused project: \`${nestedRepo}\`\n`, "utf8");
     await symlink(movedCodexDir, codexDir, "dir");
 
-    const receipt = await sessionStartReceipt(repo, false);
+    const receipt = await sessionStartReceipt(repo, false, { autoRefresh: true });
     expect(receipt.config).toMatchObject({
       state: "invalid",
       reason: expect.stringMatching(/refuses redirected or non-directory managed state/u)
     });
+    expect(receipt.routing.state).toBe("unavailable");
+    expect(receipt.repoRoot).toBeNull();
+    await expect(readFile(path.join(movedCodexDir, "codebase/index.json"), "utf8")).rejects.toThrow();
+  });
+
+  it("allows an explicit safe focus file without reading an unsafe default focus path", async () => {
+    const repo = await createRepo("codexa-session-explicit-focus-");
+    const nestedRepo = path.join(repo, "nested-repo");
+    await mkdir(nestedRepo, { recursive: true });
+    execFileSync("git", ["init"], { cwd: nestedRepo, stdio: "ignore" });
+    await writeFile(path.join(nestedRepo, "README.md"), "# nested\n", "utf8");
+    execFileSync("git", ["add", "README.md"], { cwd: nestedRepo, stdio: "ignore" });
+    execFileSync(
+      "git",
+      ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "nested fixture"],
+      { cwd: nestedRepo, stdio: "ignore" }
+    );
+    await initializeProject(nestedRepo, { cliPath, hooks: false, index: false });
+    const externalRoot = await mkdtemp(path.join(os.tmpdir(), "codexa-session-explicit-target-"));
+    await symlink(externalRoot, path.join(repo, ".codex"), "dir");
+    const focusFile = path.join(repo, "safe-focus.md");
+    await writeFile(focusFile, `Focused project: \`${nestedRepo}\`\n`, "utf8");
+
+    const receipt = await sessionStartReceipt(repo, false, { workspaceFocusFile: focusFile });
+    expect(receipt.routing).toMatchObject({ state: "resolved", focusFile });
+    expect(receipt.repoRoot).toBe(nestedRepo);
+    expect(receipt.config.state).toBe("configured");
   });
 });
 

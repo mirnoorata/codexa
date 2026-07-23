@@ -4,11 +4,11 @@ import path from "node:path";
 import { parse as parseToml } from "smol-toml";
 import { renderCodexUseContract } from "./codex-contract.js";
 import { buildIndexLocked } from "./indexer.js";
-import { assertSafeManagedDirectory, assertSafeManagedFile, isRecognizedCodexaLauncher, isRecognizedNodeCommand } from "./init-portability.js";
+import { assertSafeManagedDirectory, assertSafeManagedFile, isRecognizedCodexaLauncher } from "./init-portability.js";
 import { CORE_PROFILE_TOOL_NAMES, PRIMARY_CODEX_LOOP } from "./mcp-tool-catalog.js";
 import { isRoutableWorkspaceSessionStatus, resolveMcpRepoRoot, type McpRepoRootResolution } from "./mcp-repo-root.js";
-import { nodeSupported } from "./node-version.js";
 import { statusQuery } from "./queries.js";
+import { validateLauncherCommand } from "./startup-launcher.js";
 import type { InitToolProfile } from "./types/init.js";
 import { CODEXA_VERSION } from "./version.js";
 
@@ -102,8 +102,28 @@ export async function sessionStartReceipt(repoInput: string | undefined, include
   let routingSource: string | undefined;
   let routingFocusReason: McpRepoRootResolution["focusReason"];
   let workspaceSessionId: string | undefined;
+  let configuredManagedStateError: string | undefined;
+  try {
+    await assertSafeManagedDirectory(path.join(configuredRoot, ".codex"));
+  } catch (error) {
+    configuredManagedStateError = boundedErrorMessage(error);
+  }
+  const explicitWorkspaceFocusFile = sessionOptions.workspaceFocusFile ?? process.env.CODEXA_WORKSPACE_FOCUS_FILE;
+  if (configuredManagedStateError && !explicitWorkspaceFocusFile) {
+    return unavailableSessionStartReceipt({
+      configuredRoot,
+      config: {
+        state: "invalid",
+        path: path.join(configuredRoot, ".codex/config.toml"),
+        toolProfile: "unknown",
+        reason: configuredManagedStateError
+      },
+      routingError: configuredManagedStateError
+    });
+  }
   try {
     const resolution = await resolveMcpRepoRoot(configuredRoot, {
+      skipDefaultFocusFile: configuredManagedStateError !== undefined,
       workspaceFocusFile: sessionOptions.workspaceFocusFile,
       workspaceSessionId: sessionOptions.workspaceSessionId
     });
@@ -142,12 +162,6 @@ export async function sessionStartReceipt(repoInput: string | undefined, include
     });
   }
 
-  const config = await inspectSessionStartConfig(repoRoot).catch((error): SessionStartReceipt["config"] => ({
-    state: "unavailable",
-    path: path.join(repoRoot, ".codex/config.toml"),
-    toolProfile: "unknown",
-    reason: boundedErrorMessage(error)
-  }));
   const routing: SessionStartReceipt["routing"] = {
     state: "resolved",
     source: routingSource,
@@ -156,6 +170,29 @@ export async function sessionStartReceipt(repoInput: string | undefined, include
     workspaceSessionId,
     note: resolutionNote
   };
+  try {
+    await assertSafeManagedDirectory(path.join(repoRoot, ".codex"));
+  } catch (error) {
+    const message = boundedErrorMessage(error);
+    return unavailableSessionStartReceipt({
+      configuredRoot,
+      repoRoot,
+      config: {
+        state: "invalid",
+        path: path.join(repoRoot, ".codex/config.toml"),
+        toolProfile: "unknown",
+        reason: message
+      },
+      routing,
+      indexError: `managed state is unsafe; status and refresh were not inspected: ${message}`
+    });
+  }
+  const config = await inspectSessionStartConfig(repoRoot).catch((error): SessionStartReceipt["config"] => ({
+    state: "unavailable",
+    path: path.join(repoRoot, ".codex/config.toml"),
+    toolProfile: "unknown",
+    reason: boundedErrorMessage(error)
+  }));
   let status: Awaited<ReturnType<typeof statusQuery>>;
   let refreshedDuringStartup = false;
   try {
@@ -691,106 +728,6 @@ async function validateCodexaNodeLauncher(launcher: string): Promise<string | un
   } catch {
     return `Codexa-managed Node launcher is not a readable @mirnoorata/codexa@${CODEXA_VERSION} dist/cli.js`;
   }
-}
-
-type LauncherCommandValidation =
-  | { state: "verified" }
-  | { state: "unverified"; reason: string }
-  | { state: "invalid"; reason: string };
-
-async function validateLauncherCommand(command: string): Promise<LauncherCommandValidation> {
-  const nodeCommand = isRecognizedNodeCommand(command);
-  const npxCommand = command === "npx" || command === "npx.cmd";
-  let currentNode: string | undefined;
-  if (nodeCommand || npxCommand) {
-    try {
-      currentNode = await realpath(process.execPath);
-    } catch {
-      return { state: "invalid", reason: "Codexa cannot resolve the current trusted Node runtime" };
-    }
-    if (!nodeSupported()) return { state: "invalid", reason: "Codexa is not running under a supported Node runtime" };
-  }
-  for (const candidate of executableCommandCandidates(command)) {
-    try {
-      const resolved = await realpath(candidate);
-      const commandStat = await stat(resolved);
-      if (!commandStat.isFile()) continue;
-      await access(resolved, fsConstants.R_OK | fsConstants.X_OK);
-      if (nodeCommand && currentNode && !sameResolvedExecutable(resolved, currentNode)) {
-        if (path.isAbsolute(command)) {
-          return {
-            state: "invalid",
-            reason: "Codexa-managed Node command is not the current trusted runtime; re-run codexa init"
-          };
-        }
-        return {
-          state: "unverified",
-          reason: "Codexa-managed Node command resolves through a runtime shim that cannot be statically attested; strict readiness requires direct host-local wiring"
-        };
-      }
-      if (npxCommand && currentNode && !(await npxCandidateBelongsToCurrentRuntime(resolved, currentNode))) {
-        return {
-          state: "unverified",
-          reason: "Codexa-managed npx wrapper is not part of the current trusted Node installation; strict readiness requires trusted host-local wiring"
-        };
-      }
-      return { state: "verified" };
-    } catch {
-      // Try the next PATH entry. The receipt reports only the aggregate failure.
-    }
-  }
-  return { state: "invalid", reason: "Codexa-managed launcher command does not resolve to an executable file" };
-}
-
-async function npxCandidateBelongsToCurrentRuntime(resolvedCandidate: string, currentNode: string): Promise<boolean> {
-  for (const trustedCandidate of trustedNpxCommandCandidates(currentNode)) {
-    try {
-      if (sameResolvedExecutable(await realpath(trustedCandidate), resolvedCandidate)) return true;
-    } catch {
-      // Missing installation layouts are simply not candidates for attestation.
-    }
-  }
-  return false;
-}
-
-export function trustedNpxCommandCandidates(
-  currentNode: string,
-  platform: NodeJS.Platform = process.platform
-): string[] {
-  const pathApi = platform === "win32" ? path.win32 : path.posix;
-  const nodeDirectory = pathApi.dirname(currentNode);
-  if (platform === "win32") {
-    return [
-      pathApi.join(nodeDirectory, "npx.cmd"),
-      pathApi.join(nodeDirectory, "npx.exe"),
-      pathApi.join(nodeDirectory, "node_modules", "npm", "bin", "npx-cli.js")
-    ];
-  }
-  const prefix = pathApi.dirname(nodeDirectory);
-  return [
-    pathApi.join(prefix, "lib", "node_modules", "npm", "bin", "npx-cli.js"),
-    pathApi.join(prefix, "share", "nodejs", "npm", "bin", "npx-cli.js"),
-    pathApi.join(nodeDirectory, "node_modules", "npm", "bin", "npx-cli.js")
-  ];
-}
-
-function sameResolvedExecutable(left: string, right: string): boolean {
-  return process.platform === "win32" ? left.toLowerCase() === right.toLowerCase() : left === right;
-}
-
-export function executableCommandCandidates(
-  command: string,
-  searchPath = process.env.PATH ?? "",
-  platform: NodeJS.Platform = process.platform,
-  pathExt = process.env.PATHEXT ?? ".COM;.EXE;.BAT;.CMD"
-): string[] {
-  const pathApi = platform === "win32" ? path.win32 : path.posix;
-  if (pathApi.isAbsolute(command)) return [command];
-  const delimiter = platform === "win32" ? ";" : ":";
-  const names = platform === "win32" && pathApi.extname(command) === ""
-    ? pathExt.split(";").filter(Boolean).map((extension) => `${command}${extension.toLowerCase()}`)
-    : [command];
-  return searchPath.split(delimiter).filter(Boolean).flatMap((directory) => names.map((name) => pathApi.join(directory, name)));
 }
 
 function sameStringSet(left: string[], right: string[]): boolean {

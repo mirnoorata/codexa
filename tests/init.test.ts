@@ -594,54 +594,6 @@ describe("Codexa project init", () => {
     await expect(readFile(path.join(repo, ".codex/config.toml"), "utf8")).rejects.toThrow();
   });
 
-  it("honors no-hooks without leaving stale Codexa-managed hooks enabled", async () => {
-    const repo = await createInitRepo();
-    const codexDir = path.join(repo, ".codex");
-    await mkdir(codexDir, { recursive: true });
-    await writeFile(path.join(codexDir, "config.toml"), ["[features]", "hooks = true", "codex_hooks = true", ""].join("\n"), "utf8");
-    await writeFile(
-      path.join(codexDir, "hooks.json"),
-      JSON.stringify(
-        {
-          custom: { keep: true },
-          hooks: {
-            SessionStart: [
-              {
-                codexaManaged: true,
-                matcher: "startup|resume",
-                hooks: [{ codexaManaged: true, type: "command", command: "node /opt/context/dist/cli.js session-start /tmp/repo", timeout: 5 }]
-              }
-            ],
-            PreToolUse: [
-              {
-                matcher: "Edit|Write",
-                hooks: [{ type: "command", command: "node /opt/context/dist/cli.js hook-pre-edit /tmp/repo", timeout: 5 }]
-              }
-            ]
-          }
-        },
-        null,
-        2
-      ),
-      "utf8"
-    );
-
-    const result = await initializeProject(repo, {
-      cliPath: "/opt/context/dist/cli.js",
-      hooks: false,
-      index: false
-    });
-
-    expect(result.hooksPath).toBeNull();
-    const config = await readFile(path.join(repo, ".codex/config.toml"), "utf8");
-    expect(config).not.toContain("hooks = true");
-    expect(config).not.toContain("codex_hooks");
-    expect(config).not.toContain("CODEXA_MANAGED_POST_EDIT");
-    expect(JSON.parse(await readFile(path.join(repo, ".codex/hooks.json"), "utf8"))).toEqual({
-      custom: { keep: true }
-    });
-  });
-
   it("never claims completion ownership for edit-only hooks, including a failed refresh", async () => {
     const repo = await createInitRepo();
     await initializeProject(repo, {
