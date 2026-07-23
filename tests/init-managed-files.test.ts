@@ -69,6 +69,34 @@ describe("Codexa managed startup files", () => {
       initializeProject(repo, { cliPath, hooks: false, index: false })
     ).rejects.toThrow(/refuses redirected or non-directory managed state/u);
   });
+
+  it("refuses a redirected AGENTS.md without changing its target", async () => {
+    const repo = await createRepo("codexa-init-agents-link-");
+    const externalRoot = await mkdtemp(path.join(os.tmpdir(), "codexa-init-agents-target-"));
+    const victim = path.join(externalRoot, "AGENTS.md");
+    const original = "# External instructions\n";
+    await writeFile(victim, original, "utf8");
+    await symlink(victim, path.join(repo, "AGENTS.md"));
+
+    await expect(
+      initializeProject(repo, { cliPath, agentsMd: true, hooks: false, index: false })
+    ).rejects.toThrow(/refuses redirected or non-regular managed file/u);
+    expect(await readFile(victim, "utf8")).toBe(original);
+  });
+
+  it("refuses a multi-link CLAUDE.md without changing its shared inode", async () => {
+    const repo = await createRepo("codexa-init-claude-hardlink-");
+    const externalRoot = await mkdtemp(path.join(os.tmpdir(), "codexa-init-claude-target-"));
+    const victim = path.join(externalRoot, "CLAUDE.md");
+    const original = "# External instructions\n";
+    await writeFile(victim, original, "utf8");
+    await link(victim, path.join(repo, "CLAUDE.md"));
+
+    await expect(
+      initializeProject(repo, { cliPath, claudeMd: true, hooks: false, index: false })
+    ).rejects.toThrow(/refuses redirected or non-regular managed file/u);
+    expect(await readFile(victim, "utf8")).toBe(original);
+  });
 });
 
 async function createRepo(prefix: string): Promise<string> {

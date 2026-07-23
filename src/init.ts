@@ -312,7 +312,7 @@ const MANAGED_DOC_END = "<!-- <<< codexa managed -->";
 // marker handling are identical for both.
 async function upsertManagedDoc(repoRoot: string, fileName: string, serverName: string): Promise<string> {
   const docPath = path.join(repoRoot, fileName);
-  const existing = await readTextIfExists(docPath);
+  const existing = await readManagedTextIfExists(docPath);
   assertBalancedManagedDocMarkers(existing, docPath);
   const block = [
     MANAGED_DOC_START,
@@ -333,7 +333,7 @@ async function upsertManagedDoc(repoRoot: string, fileName: string, serverName: 
   ].join("\n");
   const stripped = stripManagedDocBlock(existing).replace(/\s+$/u, "");
   const next = stripped ? `${stripped}\n\n${block}\n` : `${block}\n`;
-  await writeFile(docPath, next, "utf8");
+  await writeTextIfChanged(docPath, existing, next);
   return docPath;
 }
 
