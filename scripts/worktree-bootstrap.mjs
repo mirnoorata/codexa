@@ -26,6 +26,7 @@ const BUILD_SCAN_MAX_FILES = 10_000;
 const BUILD_SCAN_MAX_ENTRIES = 10_000;
 const BUILD_SCAN_MAX_LOGICAL_BYTES = 256 * 1024 * 1024;
 const LOCK_OWNER_MAX_BYTES = 64 * 1024;
+const BOOTSTRAP_LOCK_MAX_ATTEMPTS = 32;
 
 try {
   const mode = process.argv[2] ?? "";
@@ -483,10 +484,27 @@ async function runLockProbe(probeMode, repoInput) {
   await releaseBootstrapLock(deadOwnerRecovery);
 
   await fs.mkdir(lockDir, { mode: 0o700 });
+  await fs.writeFile(
+    path.join(
+      lockDir,
+      `.owner.recovery.${exitedChild.pid}.unknown.${randomUUID()}.0.json`
+    ),
+    `${JSON.stringify({
+      schemaVersion: 2,
+      pid: exitedChild.pid,
+      token: randomUUID(),
+      processIdentity
+    })}\n`,
+    { encoding: "utf8", flag: "wx", mode: 0o600 }
+  );
+  const interruptedRecovery = await acquireBootstrapLock(repoRoot);
+  await releaseBootstrapLock(interruptedRecovery);
+
+  await fs.mkdir(lockDir, { mode: 0o700 });
   const recovered = await acquireBootstrapLock(repoRoot);
   await releaseBootstrapLock(recovered);
   process.stdout.write(
-    "Codexa bootstrap lock: contention, process-identity, PID-reuse, dead-owner, and ownerless-crash recovery verified.\n"
+    "Codexa bootstrap lock: contention, process-identity, PID-reuse, dead-owner, interrupted-recovery, and ownerless-crash recovery verified.\n"
   );
 }
 
@@ -527,39 +545,75 @@ async function acquireBootstrapLock(repoRoot) {
   const ownerPath = path.join(lockDir, "owner.json");
   const token = randomUUID();
   const processIdentity = readProcessIdentity(process.pid);
+  const ownerRecord = { schemaVersion: 2, pid: process.pid, token, processIdentity };
 
-  for (let attempt = 0; attempt < 2; attempt += 1) {
-    const stagingDir = path.join(tmpDir, `.worktree-bootstrap.lock.${process.pid}.${token}.tmp`);
+  for (let attempt = 0; attempt < BOOTSTRAP_LOCK_MAX_ATTEMPTS; attempt += 1) {
+    const stagingDir = path.join(
+      tmpDir,
+      `.worktree-bootstrap.lock.${process.pid}.${token}.${attempt}.tmp`
+    );
     const stagingOwnerPath = path.join(stagingDir, "owner.json");
     try {
       await fs.mkdir(stagingDir, { mode: 0o700 });
       await fs.writeFile(
         stagingOwnerPath,
-        `${JSON.stringify({ schemaVersion: 2, pid: process.pid, token, processIdentity })}\n`,
+        `${JSON.stringify(ownerRecord)}\n`,
         { encoding: "utf8", flag: "wx", mode: 0o600 }
       );
+    } catch (error) {
+      await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
+      throw error;
+    }
+    try {
       await fs.rename(stagingDir, lockDir);
       return { lockDir, ownerPath, token, processIdentity };
     } catch (error) {
       await fs.rm(stagingDir, { recursive: true, force: true }).catch(() => undefined);
-      if (!existsSync(lockDir)) throw error;
-      await assertContainedDirectory(repoReal, lockDir);
+      if (!isLockContentionError(error) && !existsSync(lockDir)) throw error;
+      try {
+        await assertContainedDirectory(repoReal, lockDir);
+      } catch (containmentError) {
+        if (containmentError?.code === "ENOENT") continue;
+        throw new BootstrapLockBusyError(`Codexa bootstrap lock is not safely reclaimable: ${lockDir}`);
+      }
       let owner;
       try {
-        await assertSafeFile(ownerPath);
-        owner = JSON.parse((await readBudgetedStableRegularFile(
-          ownerPath,
-          LOCK_OWNER_MAX_BYTES,
-          "bootstrap-lock-owner",
-          createStartupScanBudget(),
-          repoRoot
-        )).toString("utf8"));
+        owner = await readBootstrapLockOwner(ownerPath, repoRoot);
       } catch (ownerError) {
         if (ownerError?.code === "ENOENT") {
-          const entries = await fs.readdir(lockDir);
+          let entries;
+          try {
+            entries = await fs.readdir(lockDir);
+          } catch (directoryError) {
+            if (directoryError?.code === "ENOENT") continue;
+            throw new BootstrapLockBusyError(`Codexa bootstrap lock is not safely reclaimable: ${lockDir}`);
+          }
           if (entries.length === 0) {
-            await fs.rmdir(lockDir);
-            continue;
+            try {
+              await fs.writeFile(ownerPath, `${JSON.stringify(ownerRecord)}\n`, {
+                encoding: "utf8",
+                flag: "wx",
+                mode: 0o600
+              });
+              return { lockDir, ownerPath, token, processIdentity };
+            } catch (claimError) {
+              if (isLockHandoffRaceError(claimError)) continue;
+              throw claimError;
+            }
+          }
+          const abandonedRecovery = entries.length === 1
+            ? parseBootstrapLockRecovery(entries[0])
+            : null;
+          if (abandonedRecovery && !recoveryOwnerIsLive(abandonedRecovery)) {
+            try {
+              await fs.rename(path.join(lockDir, entries[0]), ownerPath);
+              continue;
+            } catch (recoveryError) {
+              if (isLockHandoffRaceError(recoveryError)) continue;
+              throw new BootstrapLockBusyError(
+                `Codexa bootstrap lock recovery marker changed unexpectedly: ${lockDir}`
+              );
+            }
           }
         }
         throw new BootstrapLockBusyError(`Codexa bootstrap lock is not safely reclaimable: ${lockDir}`);
@@ -580,27 +634,112 @@ async function acquireBootstrapLock(repoRoot) {
           throw new BootstrapLockBusyError(`Codexa bootstrap is already running for ${repoRoot} (pid ${owner.pid}).`);
         }
       }
-      await fs.rm(ownerPath, { force: true });
+      let confirmedOwner;
       try {
-        await fs.rmdir(lockDir);
-      } catch {
-        throw new BootstrapLockBusyError(`Codexa bootstrap found a stale non-empty lock: ${lockDir}`);
+        confirmedOwner = await readBootstrapLockOwner(ownerPath, repoRoot);
+      } catch (confirmationError) {
+        if (confirmationError?.code === "ENOENT") continue;
+        throw new BootstrapLockBusyError(`Codexa bootstrap lock changed during recovery: ${lockDir}`);
       }
+      if (!sameBootstrapLockOwner(owner, confirmedOwner)) continue;
+      const recoveryPath = path.join(
+        lockDir,
+        `.owner.recovery.${process.pid}.${recoveryIdentitySegment(processIdentity)}.${token}.${attempt}.json`
+      );
+      try {
+        await fs.rename(ownerPath, recoveryPath);
+      } catch (claimError) {
+        if (isLockHandoffRaceError(claimError)) continue;
+        throw new BootstrapLockBusyError(`Codexa bootstrap lock changed during recovery: ${lockDir}`);
+      }
+      let recoveredOwner;
+      try {
+        recoveredOwner = await readBootstrapLockOwner(recoveryPath, repoRoot);
+      } catch {
+        await fs.rename(recoveryPath, ownerPath).catch(() => undefined);
+        throw new BootstrapLockBusyError(`Codexa bootstrap lock changed during recovery: ${lockDir}`);
+      }
+      if (!sameBootstrapLockOwner(confirmedOwner, recoveredOwner)) {
+        await fs.rename(recoveryPath, ownerPath).catch(() => undefined);
+        continue;
+      }
+      try {
+        await fs.writeFile(ownerPath, `${JSON.stringify(ownerRecord)}\n`, {
+          encoding: "utf8",
+          flag: "wx",
+          mode: 0o600
+        });
+      } catch (claimError) {
+        if (isLockHandoffRaceError(claimError)) {
+          await fs.rm(recoveryPath, { force: true }).catch(() => undefined);
+          continue;
+        }
+        await fs.rename(recoveryPath, ownerPath).catch(() => undefined);
+        throw claimError;
+      }
+      await fs.rm(recoveryPath);
+      return { lockDir, ownerPath, token, processIdentity };
     }
   }
   throw new BootstrapLockBusyError(`Codexa bootstrap could not acquire its lock: ${lockDir}`);
 }
 
-async function releaseBootstrapLock(lock) {
-  await assertSafeFile(lock.ownerPath);
-  const repoRoot = path.dirname(path.dirname(path.dirname(lock.lockDir)));
-  const owner = JSON.parse((await readBudgetedStableRegularFile(
-    lock.ownerPath,
+async function readBootstrapLockOwner(ownerPath, repoRoot) {
+  await assertSafeFile(ownerPath);
+  return JSON.parse((await readBudgetedStableRegularFile(
+    ownerPath,
     LOCK_OWNER_MAX_BYTES,
     "bootstrap-lock-owner",
     createStartupScanBudget(),
     repoRoot
   )).toString("utf8"));
+}
+
+function sameBootstrapLockOwner(left, right) {
+  return left?.schemaVersion === right?.schemaVersion &&
+    left?.pid === right?.pid &&
+    left?.token === right?.token &&
+    left?.processIdentity === right?.processIdentity;
+}
+
+function isLockContentionError(error) {
+  return error?.code === "EEXIST" ||
+    error?.code === "ENOTEMPTY" ||
+    error?.code === "EPERM";
+}
+
+function isLockHandoffRaceError(error) {
+  return isLockContentionError(error) || error?.code === "ENOENT";
+}
+
+function recoveryIdentitySegment(processIdentity) {
+  return isValidProcessIdentity(processIdentity)
+    ? processIdentity.replace(":", "-")
+    : "unknown";
+}
+
+function parseBootstrapLockRecovery(entry) {
+  const match = /^\.owner\.recovery\.(\d+)\.((?:linux|darwin|win32)-[0-9a-f]{64}|unknown)\.[0-9a-f-]{36}\.\d+\.json$/u.exec(entry);
+  if (!match) return null;
+  const pid = Number(match[1]);
+  if (!Number.isSafeInteger(pid) || pid <= 0) return null;
+  const processIdentity = match[2] === "unknown"
+    ? null
+    : match[2].replace("-", ":");
+  return { pid, processIdentity };
+}
+
+function recoveryOwnerIsLive(recovery) {
+  if (!isLivePid(recovery.pid)) return false;
+  if (!isValidProcessIdentity(recovery.processIdentity)) return true;
+  const observedIdentity = readProcessIdentity(recovery.pid);
+  return !isValidProcessIdentity(observedIdentity) ||
+    observedIdentity === recovery.processIdentity;
+}
+
+async function releaseBootstrapLock(lock) {
+  const repoRoot = path.dirname(path.dirname(path.dirname(lock.lockDir)));
+  const owner = await readBootstrapLockOwner(lock.ownerPath, repoRoot);
   if (
     owner?.schemaVersion !== 2 ||
     owner?.token !== lock.token ||
@@ -610,7 +749,12 @@ async function releaseBootstrapLock(lock) {
     throw new Error(`Codexa bootstrap lock ownership changed unexpectedly: ${lock.lockDir}`);
   }
   await fs.rm(lock.ownerPath);
-  await fs.rmdir(lock.lockDir);
+  try {
+    await fs.rmdir(lock.lockDir);
+  } catch (error) {
+    if (isLockHandoffRaceError(error)) return;
+    throw error;
+  }
 }
 
 function isLivePid(pid) {
