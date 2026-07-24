@@ -2,7 +2,7 @@ import path from "node:path";
 import { parseAutonomyMode } from "../autonomy.js";
 import type { LiveIndexEvent } from "../live-index.js";
 import type { McpTransportKind } from "../mcp.js";
-import { resolveMcpRepoRoot, shouldPreferConfiguredRepoRoot, type McpRepoRootResolutionOptions } from "../mcp-repo-root.js";
+import { resolveMcpRepoRootOnce, type McpRepoRootResolutionOptions } from "../mcp-repo-root.js";
 import { semanticProviderFromValue, type SemanticProviderKind } from "../semantic-retrieval.js";
 import type { ChangeType, QueryOptions, SessionMemoryInput, VerificationCommandReport, VerificationWaiver } from "../types.js";
 
@@ -16,13 +16,9 @@ export async function resolveQueryRepoRoot(repo: string, opts: CliQueryOptions =
   const ignoreAmbientWorkspaceSelectors =
     !routingOptions.workspaceFocusFile && !routingOptions.workspaceSessionId;
   return (
-    await resolveMcpRepoRoot(configuredRoot, {
+    await resolveMcpRepoRootOnce(configuredRoot, {
       ...routingOptions,
-      ignoreAmbientWorkspaceSelectors,
-      preferConfiguredRoot: await shouldPreferConfiguredRepoRoot(configuredRoot, {
-        ...routingOptions,
-        ignoreAmbientWorkspaceSelectors
-      })
+      ignoreAmbientWorkspaceSelectors
     })
   ).repoRoot;
 }

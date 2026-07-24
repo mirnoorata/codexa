@@ -1,6 +1,6 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { getFreshness } from "../indexer.js";
-import { resolveMcpRepoRoot, shouldPreferConfiguredRepoRoot, type McpRepoRootResolution } from "../mcp-repo-root.js";
+import { resolveMcpRepoRootOnce, type McpRepoRootResolution } from "../mcp-repo-root.js";
 import { requireIndex } from "../query/runtime.js";
 import { createQuerySessionFromIndexState, type QuerySession, type QuerySessionIndexState } from "../query/session.js";
 import type { QueryOptions, QueryResult } from "../types.js";
@@ -29,14 +29,9 @@ export function createMcpRuntime({ configuredRepoRoot, queryOptions }: CreateMcp
     // started before any focus row existed must still route to a repo the
     // operator focuses LATER in the server's lifetime. Freezing this at
     // startup pinned long-lived servers to the workspace monorepo forever.
-    const preferConfiguredRoot = await shouldPreferConfiguredRepoRoot(configuredRepoRoot, {
+    const resolution = await resolveMcpRepoRootOnce(configuredRepoRoot, {
       workspaceFocusFile: queryOptions.workspaceFocusFile,
       workspaceSessionId: queryOptions.workspaceSessionId
-    });
-    const resolution = await resolveMcpRepoRoot(configuredRepoRoot, {
-      workspaceFocusFile: queryOptions.workspaceFocusFile,
-      workspaceSessionId: queryOptions.workspaceSessionId,
-      preferConfiguredRoot
     });
     if (activeResolution?.repoRoot !== resolution.repoRoot) {
       if (activeResolution) {

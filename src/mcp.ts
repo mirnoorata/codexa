@@ -9,7 +9,7 @@ import { statusQuery } from "./queries.js";
 import type { QueryOptions, QueryResult } from "./types.js";
 import type { QuerySession } from "./query/session.js";
 import { semanticMayUseOpenWorldProvider } from "./semantic-retrieval.js";
-import { resolveMcpRepoRoot, shouldPreferConfiguredRepoRoot } from "./mcp-repo-root.js";
+import { resolveMcpRepoRootOnce } from "./mcp-repo-root.js";
 import { canonicalMcpDetailedProjection, compactMcpResult } from "./mcp/compaction.js";
 import { mcpAutoEscalationReason, renderMcpConciseText, withMcpDelivery, type McpResponseFormat } from "./mcp/decision-kernel.js";
 import { createMcpOutputSchema, safeQuery, toToolResult, type McpToolPolicyOptions } from "./mcp/envelope.js";
@@ -198,10 +198,9 @@ async function createCodexaMcpServer(
   const queryOptions: QueryOptions = { ...options, autoRefresh: options.autoRefresh ?? true };
   const sessionMemoryMode = queryOptions.sessionMemory ?? "auto";
   const autoRecordSessionMemory = sessionMemoryMode !== "off";
-  const annotationRepoRoot = await resolveMcpRepoRoot(configuredRepoRoot, {
+  const annotationRepoRoot = await resolveMcpRepoRootOnce(configuredRepoRoot, {
     workspaceFocusFile: queryOptions.workspaceFocusFile,
-    workspaceSessionId: queryOptions.workspaceSessionId,
-    preferConfiguredRoot: await shouldPreferConfiguredRepoRoot(configuredRepoRoot, queryOptions)
+    workspaceSessionId: queryOptions.workspaceSessionId
   })
     .then((resolution) => resolution.repoRoot)
     .catch(() => configuredRepoRoot);

@@ -1,11 +1,42 @@
 import { execFileSync } from "node:child_process";
+import { promises as nodeFs } from "node:fs";
 import { link, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createMcpRuntime } from "../src/mcp/runtime.js";
 
+afterEach(() => {
+  vi.restoreAllMocks();
+});
+
 describe("MCP default focus-file safety", () => {
+  it("resolves an implicit focus from one stable file snapshot", async () => {
+    const workspace = await createRepo("codexa-mcp-focus-single-read-");
+    const nestedRepo = await createNestedRepo(workspace);
+    const focusFile = path.join(workspace, ".codex", "WORKING.md");
+    await mkdir(path.dirname(focusFile), { recursive: true });
+    await writeFile(focusFile, `Focused project: \`${nestedRepo}\`\n`, "utf8");
+    const originalOpen = nodeFs.open.bind(nodeFs);
+    let focusReads = 0;
+    vi.spyOn(nodeFs, "open").mockImplementation(async (file, flags, mode) => {
+      if (path.resolve(String(file)) === focusFile) focusReads += 1;
+      return originalOpen(file, flags, mode);
+    });
+
+    const runtime = createMcpRuntime({
+      configuredRepoRoot: workspace,
+      queryOptions: { autoRefresh: false }
+    });
+
+    await expect(runtime.resolveActiveRepoRootResolution()).resolves.toMatchObject({
+      repoRoot: nestedRepo,
+      focusFile,
+      focusReason: "explicit-focus"
+    });
+    expect(focusReads).toBe(1);
+  });
+
   it.each(["symlink", "hardlink"] as const)(
     "refuses a redirected %s default focus file in the production MCP runtime",
     async (kind) => {

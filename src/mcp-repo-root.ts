@@ -1,4 +1,5 @@
 import { promises as fs } from "node:fs";
+import { AsyncLocalStorage } from "node:async_hooks";
 import path from "node:path";
 import { runCommand } from "./command.js";
 import { assertSafeManagedDirectory, assertSafeManagedFile } from "./init-portability.js";
@@ -49,6 +50,15 @@ interface FocusFileCandidate {
   managedDefault: boolean;
 }
 
+interface RoutingSnapshot {
+  focusSelections: Map<string, Promise<FocusFileRepoSelection>>;
+  gitRoots: Map<string, Promise<string | null>>;
+  localConfigPaths: Map<string, Promise<boolean>>;
+  realPaths: Map<string, Promise<string>>;
+}
+
+const routingSnapshotContext = new AsyncLocalStorage<RoutingSnapshot>();
+
 const FOCUSED_REPO_LINE_PATTERN = /\bfocused\s+(?:project|repo|repository)\s*:\s*(?:`([^`]+)`|([^\r\n#]+))/iu;
 const DEFAULT_REPO_LINE_PATTERN = /\bdefault\s+(?:repo|repository)\s*:\s*(?:`([^`]+)`|([^\r\n#|]+))/iu;
 const ACTIVE_PROJECT_FOCUS_LINE_PATTERN = /\bactive\s+project\s+focus\s*:/iu;
@@ -93,6 +103,28 @@ export async function shouldPreferConfiguredRepoRoot(configuredRootInput: string
     return false;
   }
   return !(await localWorkspaceFocusOverridesConfiguredRoot(configuredRoot));
+}
+
+export async function resolveMcpRepoRootOnce(
+  configuredRootInput: string,
+  options: McpRepoRootResolutionOptions = {}
+): Promise<McpRepoRootResolution> {
+  return routingSnapshotContext.run(
+    {
+      focusSelections: new Map(),
+      gitRoots: new Map(),
+      localConfigPaths: new Map(),
+      realPaths: new Map()
+    },
+    async () => {
+      const preferConfiguredRoot = options.preferConfiguredRoot ??
+        await shouldPreferConfiguredRepoRoot(configuredRootInput, options);
+      return resolveMcpRepoRoot(configuredRootInput, {
+        ...options,
+        preferConfiguredRoot
+      });
+    }
+  );
 }
 
 export async function resolveMcpRepoRoot(configuredRootInput: string, options: McpRepoRootResolutionOptions = {}): Promise<McpRepoRootResolution> {
@@ -163,12 +195,22 @@ export async function resolveMcpRepoRoot(configuredRootInput: string, options: M
 }
 
 async function hasLocalCodexaConfigPath(configuredRoot: string): Promise<boolean> {
-  try {
-    await fs.lstat(path.join(configuredRoot, ".codex", "config.toml"));
-    return true;
-  } catch {
-    return false;
-  }
+  const key = path.resolve(configuredRoot);
+  const snapshot = routingSnapshotContext.getStore();
+  const inspect = async (): Promise<boolean> => {
+    try {
+      await fs.lstat(path.join(configuredRoot, ".codex", "config.toml"));
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (!snapshot) return inspect();
+  const existing = snapshot.localConfigPaths.get(key);
+  if (existing) return existing;
+  const pending = inspect();
+  snapshot.localConfigPaths.set(key, pending);
+  return pending;
 }
 
 function environmentRepoCandidates(): CandidateRepoRoot[] {
@@ -229,6 +271,27 @@ async function assertSafeDefaultFocusFile(configuredRoot: string): Promise<void>
 }
 
 async function readFocusedRepoPaths(focusFile: string, options: McpRepoRootResolutionOptions, configuredRoot?: string): Promise<FocusFileRepoSelection> {
+  const snapshot = routingSnapshotContext.getStore();
+  if (!snapshot) {
+    return readFocusedRepoPathsUncached(focusFile, options, configuredRoot);
+  }
+  const key = JSON.stringify([
+    path.resolve(focusFile),
+    normalizeWorkspaceSessionId(declaredWorkspaceSession(options)),
+    configuredRoot ? path.resolve(configuredRoot) : null
+  ]);
+  const existing = snapshot.focusSelections.get(key);
+  if (existing) return existing;
+  const pending = readFocusedRepoPathsUncached(focusFile, options, configuredRoot);
+  snapshot.focusSelections.set(key, pending);
+  return pending;
+}
+
+async function readFocusedRepoPathsUncached(
+  focusFile: string,
+  options: McpRepoRootResolutionOptions,
+  configuredRoot?: string
+): Promise<FocusFileRepoSelection> {
   let text: string;
   try {
     text = await readSessionStartFocusFile(focusFile);
@@ -473,6 +536,16 @@ async function validatedRepoRoot(candidate: CandidateRepoRoot): Promise<string |
 }
 
 async function gitRootFor(candidate: string): Promise<string | null> {
+  const key = path.resolve(candidate);
+  const snapshot = routingSnapshotContext.getStore();
+  const existing = snapshot?.gitRoots.get(key);
+  if (existing) return existing;
+  const pending = gitRootForUncached(candidate);
+  snapshot?.gitRoots.set(key, pending);
+  return pending;
+}
+
+async function gitRootForUncached(candidate: string): Promise<string | null> {
   try {
     const stat = await fs.stat(candidate);
     if (!stat.isDirectory()) {
@@ -501,11 +574,19 @@ async function isSamePath(left: string, right: string): Promise<boolean> {
 }
 
 async function realPathOrResolved(candidate: string): Promise<string> {
-  try {
-    return await fs.realpath(candidate);
-  } catch {
-    return path.resolve(candidate);
-  }
+  const key = path.resolve(candidate);
+  const snapshot = routingSnapshotContext.getStore();
+  const existing = snapshot?.realPaths.get(key);
+  if (existing) return existing;
+  const pending = (async (): Promise<string> => {
+    try {
+      return await fs.realpath(candidate);
+    } catch {
+      return path.resolve(candidate);
+    }
+  })();
+  snapshot?.realPaths.set(key, pending);
+  return pending;
 }
 
 async function localWorkspaceFocusOverridesConfiguredRoot(configuredRoot: string): Promise<boolean> {
