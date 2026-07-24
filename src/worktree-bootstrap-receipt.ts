@@ -153,6 +153,7 @@ async function runNpmLs(repoRoot: string): Promise<Awaited<ReturnType<typeof run
   const options = {
     cwd: repoRoot,
     discardStdout: true,
+    killProcessGroup: true,
     timeoutMs: 60_000,
     maxBufferBytes: 1024 * 1024
   };

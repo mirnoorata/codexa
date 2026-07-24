@@ -39,6 +39,9 @@ export interface CommandBudget {
 
 const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_BUFFER_BYTES = 1024 * 1024;
+const TERMINATION_GRACE_MS = 2_000;
+const TERMINAL_SETTLE_MS = 250;
+const WINDOWS_TREE_TERMINATION_TIMEOUT_MS = 10_000;
 const commandBudgetContext = new AsyncLocalStorage<CommandBudget>();
 
 export function createCommandBudget(
@@ -64,10 +67,10 @@ export async function runCommand(command: string, args: string[], options: RunCo
   const maxBufferBytes = Math.max(1024, options.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES);
   const okExitCodes = new Set(options.okExitCodes ?? [0]);
   const startedAt = Date.now();
-  const detached = Boolean(
-    (options.killProcessGroup || (budget && options.killProcessGroup !== false)) &&
-    process.platform !== "win32"
+  const terminateTree = Boolean(
+    options.killProcessGroup || (budget && options.killProcessGroup !== false)
   );
+  const detached = terminateTree && process.platform !== "win32";
 
   if (timeoutMs <= 0) {
     const result: CommandResult = {
@@ -99,18 +102,26 @@ export async function runCommand(command: string, args: string[], options: RunCo
     let bufferedBytes = 0;
     let timedOut = false;
     let truncated = false;
-    let killTimer: NodeJS.Timeout | undefined;
+    let directKillTimer: NodeJS.Timeout | undefined;
+    let terminalTimer: NodeJS.Timeout | undefined;
+    let treeTermination: Promise<Error | undefined> | undefined;
+    let terminating = false;
     let settled = false;
 
-    const finish = (partial: Omit<CommandResult, "command" | "args" | "cwd" | "stdout" | "stderr" | "ok" | "timedOut" | "truncated">) => {
+    const finish = async (
+      partial: Omit<CommandResult, "command" | "args" | "cwd" | "stdout" | "stderr" | "ok" | "timedOut" | "truncated">
+    ): Promise<void> => {
+      if (settled) {
+        return;
+      }
+      const terminationError = treeTermination ? await treeTermination : undefined;
       if (settled) {
         return;
       }
       settled = true;
       clearTimeout(timer);
-      if (killTimer) {
-        clearTimeout(killTimer);
-      }
+      if (directKillTimer) clearTimeout(directKillTimer);
+      if (terminalTimer) clearTimeout(terminalTimer);
       const exitCode = partial.exitCode;
       const result: CommandResult = {
         command,
@@ -123,22 +134,29 @@ export async function runCommand(command: string, args: string[], options: RunCo
         ok: !timedOut && !truncated && exitCode !== null && okExitCodes.has(exitCode),
         timedOut,
         truncated,
-        error: partial.error
+        error: partial.error ?? terminationError
       };
       budget?.record(result, Math.max(0, Date.now() - startedAt));
       resolve(result);
     };
 
     const terminate = () => {
-      if (child.killed) {
+      if (terminating) return;
+      terminating = true;
+      if (!terminateTree) {
+        killChild(child, false, "SIGTERM");
+        directKillTimer = setTimeout(() => {
+          if (!settled) killChild(child, false, "SIGKILL");
+        }, TERMINATION_GRACE_MS);
         return;
       }
-      killChild(child, detached, "SIGTERM");
-      killTimer = setTimeout(() => {
-        if (!settled) {
-          killChild(child, detached, "SIGKILL");
-        }
-      }, 2_000);
+      treeTermination = terminateCommandTree(child, detached);
+      void treeTermination.then((error) => {
+        if (settled) return;
+        terminalTimer = setTimeout(() => {
+          void finish({ exitCode: null, signal: "SIGKILL", error });
+        }, TERMINAL_SETTLE_MS);
+      });
     };
 
     const collect = (chunks: Buffer[], chunk: Buffer) => {
@@ -172,11 +190,58 @@ export async function runCommand(command: string, args: string[], options: RunCo
     });
     child.stderr?.on("data", (chunk: Buffer) => collect(stderr, chunk));
     child.stdin?.on("error", () => undefined);
-    child.on("error", (error) => finish({ exitCode: null, signal: null, error }));
-    child.on("close", (exitCode, signal) => finish({ exitCode, signal }));
+    child.on("error", (error) => {
+      void finish({ exitCode: null, signal: null, error });
+    });
+    child.on("close", (exitCode, signal) => {
+      void finish({ exitCode, signal });
+    });
     if (options.input !== undefined) {
       child.stdin?.end(options.input, "utf8");
     }
+  });
+}
+
+async function terminateCommandTree(
+  child: ReturnType<typeof spawn>,
+  detached: boolean
+): Promise<Error | undefined> {
+  if (process.platform === "win32" && child.pid !== undefined) {
+    const error = await terminateWindowsProcessTree(child.pid);
+    if (error) killChild(child, false, "SIGKILL");
+    return error;
+  }
+  killChild(child, detached, "SIGTERM");
+  await new Promise((resolve) => setTimeout(resolve, TERMINATION_GRACE_MS));
+  killChild(child, detached, "SIGKILL");
+  return undefined;
+}
+
+function terminateWindowsProcessTree(pid: number): Promise<Error | undefined> {
+  return new Promise((resolve) => {
+    const killer = spawn("taskkill", ["/pid", String(pid), "/t", "/f"], {
+      stdio: "ignore",
+      windowsHide: true
+    });
+    let settled = false;
+    const finish = (error?: Error): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(error);
+    };
+    const timeout = setTimeout(() => {
+      killChild(killer, false, "SIGKILL");
+      finish(new Error("Windows process-tree termination exceeded its terminal bound"));
+    }, WINDOWS_TREE_TERMINATION_TIMEOUT_MS);
+    killer.once("error", (error) => {
+      finish(new Error(`Windows process-tree termination failed: ${error.message}`));
+    });
+    killer.once("close", (status) => {
+      finish(status === 0
+        ? undefined
+        : new Error(`Windows process-tree termination failed with exit ${status}`));
+    });
   });
 }
 
@@ -189,7 +254,11 @@ function killChild(child: ReturnType<typeof spawn>, detached: boolean, signal: N
       // Fall back to killing the direct child if process-group signaling is unavailable.
     }
   }
-  child.kill(signal);
+  try {
+    child.kill(signal);
+  } catch {
+    // Completion is owned by the close event or terminal fallback.
+  }
 }
 
 class MutableCommandBudget implements CommandBudget {
