@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
@@ -28,6 +28,17 @@ const BUILD_SCAN_MAX_ENTRIES = 10_000;
 const BUILD_SCAN_MAX_LOGICAL_BYTES = 256 * 1024 * 1024;
 const LOCK_OWNER_MAX_BYTES = 64 * 1024;
 const BOOTSTRAP_LOCK_MAX_ATTEMPTS = 32;
+const BOOTSTRAP_LOG_MAX_BYTES = 8 * 1024 * 1024;
+const BOOTSTRAP_PREFLIGHT_MAX_OUTPUT_BYTES = 256 * 1024;
+const BOOTSTRAP_TERMINATION_GRACE_MS = 2_000;
+const BOOTSTRAP_STAGE_TIMEOUTS_MS = Object.freeze({
+  preflight: 30_000,
+  install: 10 * 60_000,
+  build: 5 * 60_000,
+  init: 2 * 60_000,
+  receipt: 3 * 60_000,
+  strictStartup: 60_000
+});
 const STABLE_REGULAR_READ_FLAGS =
   fsConstants.O_RDONLY | fsConstants.O_NONBLOCK | fsConstants.O_NOFOLLOW;
 
@@ -74,14 +85,19 @@ async function runBootstrap(lane, repoInput) {
       startupInputSha256: expectedStartupInput,
       buildInputSha256: expectedBuildInput
     } = await snapshotBootstrapInputs(repoRoot);
-    const preflight = spawnSync(
+    const preflight = await runBoundedChild(
       process.execPath,
       [path.join(repoRoot, "scripts/worktree-bootstrap-preflight.mjs"), repoRoot],
-      { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] }
+      {
+        cwd: repoRoot,
+        timeoutMs: bootstrapStageTimeout(BOOTSTRAP_STAGE_TIMEOUTS_MS.preflight),
+        maxOutputBytes: BOOTSTRAP_PREFLIGHT_MAX_OUTPUT_BYTES,
+        terminationGraceMs: bootstrapTerminationGrace()
+      }
     );
-    if (preflight.error || preflight.status !== 0) {
+    if (preflight.error || preflight.status !== 0 || preflight.timedOut || preflight.outputExceeded) {
       throw new Error(
-        `Codexa bootstrap preflight failed${preflight.error ? `: ${preflight.error.message}` : ` (exit ${preflight.status})`}` +
+        `Codexa bootstrap preflight failed${boundedChildFailure(preflight)}` +
         `${preflight.stderr ? `\n${bound(preflight.stderr)}` : ""}`
       );
     }
@@ -91,19 +107,27 @@ async function runBootstrap(lane, repoInput) {
     await fs.rm(logPath, { force: true });
     logHandle = openSync(logPath, "wx", 0o600);
     chmodSync(logPath, 0o600);
-    writeSync(logHandle, `== path preflight ==\n${preflight.stdout}`);
+    const log = { handle: logHandle, remainingBytes: bootstrapLogMaximumBytes() };
+    writeBoundedBootstrapLog(log, `== path preflight ==\n${preflight.stdout}`);
 
-    runLogged(logHandle, repoRoot, "npm ci", npmInvocation(["ci", "--no-audit", "--no-fund"]));
+    await runLogged(log, repoRoot, "npm ci", {
+      ...npmInvocation(["ci", "--no-audit", "--no-fund"]),
+      timeoutMs: bootstrapStageTimeout(BOOTSTRAP_STAGE_TIMEOUTS_MS.install)
+    });
     await writeDependencySeal(repoRoot, expectedBuildInput);
-    runLogged(logHandle, repoRoot, "build", commandInvocation("npm", ["run", "build"]));
+    await runLogged(log, repoRoot, "build", {
+      ...commandInvocation("npm", ["run", "build"]),
+      timeoutMs: bootstrapStageTimeout(BOOTSTRAP_STAGE_TIMEOUTS_MS.build)
+    });
 
     const initArgs = ["dist/cli.js", "init", repoRoot, "--tools", "core"];
     if (lane === "native-windows-mcp") initArgs.push("--no-hooks");
-    runLogged(logHandle, repoRoot, `Codexa ${lane === "posix-hooks" ? "core" : "MCP-only"} init`, {
+    await runLogged(log, repoRoot, `Codexa ${lane === "posix-hooks" ? "core" : "MCP-only"} init`, {
       command: process.execPath,
-      args: initArgs
+      args: initArgs,
+      timeoutMs: bootstrapStageTimeout(BOOTSTRAP_STAGE_TIMEOUTS_MS.init)
     });
-    runLogged(logHandle, repoRoot, "Codexa worktree receipt", {
+    await runLogged(log, repoRoot, "Codexa worktree receipt", {
       command: process.execPath,
       args: [
         "dist/cli.js",
@@ -117,11 +141,13 @@ async function runBootstrap(lane, repoInput) {
         "--expected-startup-input",
         expectedStartupInput,
         "--json"
-      ]
+      ],
+      timeoutMs: bootstrapStageTimeout(BOOTSTRAP_STAGE_TIMEOUTS_MS.receipt)
     });
-    runLogged(logHandle, repoRoot, "Codexa strict startup check", {
+    await runLogged(log, repoRoot, "Codexa strict startup check", {
       command: process.execPath,
-      args: ["dist/cli.js", "session-start", repoRoot, "--json", "--strict"]
+      args: ["dist/cli.js", "session-start", repoRoot, "--json", "--strict"],
+      timeoutMs: bootstrapStageTimeout(BOOTSTRAP_STAGE_TIMEOUTS_MS.strictStartup)
     });
 
     process.stdout.write(
@@ -146,19 +172,156 @@ async function runBootstrap(lane, repoInput) {
   }
 }
 
-function runLogged(logHandle, cwd, label, invocation) {
-  writeSync(logHandle, `== ${label} ==\n`);
-  const result = spawnSync(invocation.command, invocation.args, {
+async function runLogged(log, cwd, label, invocation) {
+  writeBoundedBootstrapLog(log, `== ${label} ==\n`);
+  const result = await runBoundedChild(invocation.command, invocation.args, {
     cwd,
-    stdio: ["ignore", logHandle, logHandle]
+    timeoutMs: invocation.timeoutMs,
+    maxOutputBytes: log.remainingBytes,
+    terminationGraceMs: bootstrapTerminationGrace()
   });
-  if (result.error || result.status !== 0) {
+  writeBoundedBootstrapLog(log, result.stdout);
+  writeBoundedBootstrapLog(log, result.stderr);
+  if (result.error || result.status !== 0 || result.timedOut || result.outputExceeded) {
     throw new Error(
       `Codexa bootstrap failed during ${label}` +
-      `${result.error ? `: ${result.error.message}` : ` (exit ${result.status})`}; ` +
+      `${boundedChildFailure(result)}; ` +
       `log: ${path.join(cwd, ".codex/tmp/worktree-bootstrap.log")}`
     );
   }
+}
+
+function runBoundedChild(command, args, options) {
+  return new Promise((resolve) => {
+    const child = spawn(command, args, {
+      cwd: options.cwd,
+      detached: process.platform !== "win32",
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true
+    });
+    const stdout = [];
+    const stderr = [];
+    let capturedBytes = 0;
+    let spawnError;
+    let timedOut = false;
+    let outputExceeded = false;
+    let terminating = false;
+    let forceTimer;
+    const capture = (target, chunk) => {
+      if (outputExceeded) return;
+      const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      const remaining = Math.max(0, options.maxOutputBytes - capturedBytes);
+      if (bytes.length > remaining) {
+        if (remaining > 0) target.push(bytes.subarray(0, remaining));
+        capturedBytes += remaining;
+        outputExceeded = true;
+        terminate();
+        return;
+      }
+      target.push(bytes);
+      capturedBytes += bytes.length;
+    };
+    const signal = (requestedSignal) => {
+      if (child.pid === undefined) return;
+      if (process.platform !== "win32") {
+        try {
+          process.kill(-child.pid, requestedSignal);
+          return;
+        } catch {
+          // The child may have exited between the timeout and signal.
+        }
+      }
+      try {
+        child.kill(requestedSignal);
+      } catch {
+        // The close event remains the single completion boundary.
+      }
+    };
+    const terminate = () => {
+      if (terminating) return;
+      terminating = true;
+      signal("SIGTERM");
+      forceTimer = setTimeout(() => {
+        if (process.platform === "win32" && child.pid !== undefined) {
+          const killer = spawn(
+            "taskkill",
+            ["/pid", String(child.pid), "/t", "/f"],
+            { stdio: "ignore", windowsHide: true }
+          );
+          killer.unref();
+        }
+        signal("SIGKILL");
+      }, options.terminationGraceMs);
+    };
+    child.stdout.on("data", (chunk) => capture(stdout, chunk));
+    child.stderr.on("data", (chunk) => capture(stderr, chunk));
+    child.once("error", (error) => {
+      spawnError = error;
+    });
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      terminate();
+    }, options.timeoutMs);
+    child.once("close", (status, closeSignal) => {
+      clearTimeout(timeout);
+      if (forceTimer !== undefined) clearTimeout(forceTimer);
+      resolve({
+        status,
+        signal: closeSignal,
+        error: spawnError,
+        timedOut,
+        outputExceeded,
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8")
+      });
+    });
+  });
+}
+
+function writeBoundedBootstrapLog(log, value) {
+  const bytes = Buffer.isBuffer(value) ? value : Buffer.from(value, "utf8");
+  if (bytes.length > log.remainingBytes) {
+    throw new Error("Codexa bootstrap log exceeded its bounded output limit.");
+  }
+  if (bytes.length === 0) return;
+  writeSync(log.handle, bytes);
+  log.remainingBytes -= bytes.length;
+}
+
+function boundedChildFailure(result) {
+  if (result.timedOut) return " (stage deadline exceeded)";
+  if (result.outputExceeded) return " (bounded log output limit exceeded)";
+  if (result.error) return `: ${result.error.message}`;
+  if (result.signal) return ` (signal ${result.signal})`;
+  return ` (exit ${result.status})`;
+}
+
+function bootstrapStageTimeout(defaultMs) {
+  return boundedTestOverride("CODEXA_BOOTSTRAP_TEST_STAGE_TIMEOUT_MS", defaultMs, 50);
+}
+
+function bootstrapTerminationGrace() {
+  return boundedTestOverride(
+    "CODEXA_BOOTSTRAP_TEST_TERMINATION_GRACE_MS",
+    BOOTSTRAP_TERMINATION_GRACE_MS,
+    25
+  );
+}
+
+function bootstrapLogMaximumBytes() {
+  return boundedTestOverride(
+    "CODEXA_BOOTSTRAP_TEST_LOG_MAX_BYTES",
+    BOOTSTRAP_LOG_MAX_BYTES,
+    1_024
+  );
+}
+
+function boundedTestOverride(name, defaultValue, minimum) {
+  if (process.env.CODEXA_BOOTSTRAP_TESTING !== "1") return defaultValue;
+  const requested = Number(process.env[name]);
+  return Number.isSafeInteger(requested) && requested >= minimum
+    ? Math.min(defaultValue, requested)
+    : defaultValue;
 }
 
 function commandInvocation(command, args) {
