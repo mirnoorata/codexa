@@ -223,9 +223,35 @@ async function terminateCommandTree(
     return error;
   }
   killChild(child, detached, "SIGTERM");
-  await new Promise((resolve) => setTimeout(resolve, TERMINATION_GRACE_MS));
+  if (
+    detached &&
+    child.pid !== undefined &&
+    await waitForPosixProcessGroupExit(child.pid, TERMINATION_GRACE_MS)
+  ) {
+    return undefined;
+  }
+  if (!detached || child.pid === undefined) {
+    await new Promise((resolve) => setTimeout(resolve, TERMINATION_GRACE_MS));
+  }
   killChild(child, detached, "SIGKILL");
   return undefined;
+}
+
+async function waitForPosixProcessGroupExit(
+  processGroupId: number,
+  timeoutMs: number
+): Promise<boolean> {
+  const deadlineAt = Date.now() + timeoutMs;
+  while (Date.now() < deadlineAt) {
+    try {
+      process.kill(-processGroupId, 0);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ESRCH") return true;
+      if ((error as NodeJS.ErrnoException).code !== "EPERM") return false;
+    }
+    await new Promise((resolve) => setTimeout(resolve, Math.min(25, Math.max(1, deadlineAt - Date.now()))));
+  }
+  return false;
 }
 
 function terminateWindowsProcessTree(pid: number): Promise<Error | undefined> {

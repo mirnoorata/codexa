@@ -11,6 +11,37 @@ afterAll(async () => {
 });
 
 describe("runCommand process-tree termination", () => {
+  it("returns promptly when the process group accepts SIGTERM", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "codexa-command-cooperative-tree-"));
+    fixtures.push(directory);
+    const pidPath = path.join(directory, "processes.pid");
+    const script = path.join(directory, "spawn-cooperative-child.mjs");
+    await writeFile(
+      script,
+      [
+        'import { spawn } from "node:child_process";',
+        'import { writeFileSync } from "node:fs";',
+        'const child = spawn(process.execPath, ["-e", "setInterval(() => undefined, 1000)"], { stdio: "ignore" });',
+        `writeFileSync(${JSON.stringify(pidPath)}, \`\${process.pid}\\n\${child.pid}\\n\`);`,
+        "setInterval(() => undefined, 1000);"
+      ].join("\n"),
+      "utf8"
+    );
+
+    const startedAt = Date.now();
+    const result = await runCommand(process.execPath, [script], {
+      killProcessGroup: true,
+      timeoutMs: 150,
+      maxBufferBytes: 16 * 1024
+    });
+    expect(result.ok).toBe(false);
+    expect(result.timedOut).toBe(true);
+    expect(Date.now() - startedAt).toBeLessThan(1_500);
+
+    const pids = (await readFile(pidPath, "utf8")).trim().split("\n").map(Number);
+    await Promise.all(pids.map(expectProcessExit));
+  }, 5_000);
+
   it("forces a resistant descendant to exit after the direct child closes", async () => {
     const directory = await mkdtemp(path.join(os.tmpdir(), "codexa-command-tree-"));
     fixtures.push(directory);
