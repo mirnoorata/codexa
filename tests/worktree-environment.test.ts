@@ -25,11 +25,13 @@ describe("tracked Codex worktree environment", () => {
     expect(posixBootstrap).toContain('"$repo_root/scripts/worktree-bootstrap.mjs" posix-hooks "$repo_root"');
     expect(posixBootstrap).not.toContain("npm ci");
     expect(posixBootstrap).not.toContain("worktree-receipt issue");
+    expect(posixBootstrap).not.toContain("git rev-parse");
 
     const windowsBootstrap = await readFile(path.join(repoRoot, ".codex/worktree-bootstrap.ps1"), "utf8");
     expect(windowsBootstrap).toContain('"scripts/worktree-bootstrap.mjs") native-windows-mcp $repoRoot');
     expect(windowsBootstrap).not.toContain("npm ci");
     expect(windowsBootstrap).not.toContain("worktree-receipt issue");
+    expect(windowsBootstrap).not.toContain("git rev-parse");
 
     const orchestrator = await readFile(path.join(repoRoot, "scripts/worktree-bootstrap.mjs"), "utf8");
     expect(orchestrator).toContain("acquireBootstrapLock");
@@ -37,6 +39,7 @@ describe("tracked Codex worktree environment", () => {
     expect(orchestrator).toContain('npmInvocation(["ci", "--no-audit", "--no-fund"])');
     expect(orchestrator).toContain('"--expected-build-input"');
     expect(orchestrator).toContain('"--expected-startup-input"');
+    expect(orchestrator).toContain("receipt: 5 * 60_000");
     expect(orchestrator.indexOf("expectedStartupInput = await hashStartupInputs")).toBeLessThan(
       orchestrator.indexOf('npmInvocation(["ci", "--no-audit", "--no-fund"])')
     );

@@ -36,7 +36,7 @@ const BOOTSTRAP_STAGE_TIMEOUTS_MS = Object.freeze({
   install: 10 * 60_000,
   build: 5 * 60_000,
   init: 2 * 60_000,
-  receipt: 3 * 60_000,
+  receipt: 5 * 60_000,
   strictStartup: 60_000
 });
 const STABLE_REGULAR_READ_FLAGS =
@@ -206,7 +206,7 @@ function runBoundedChild(command, args, options) {
     let timedOut = false;
     let outputExceeded = false;
     let terminating = false;
-    let forceTimer;
+    let treeTermination;
     const capture = (target, chunk) => {
       if (outputExceeded) return;
       const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
@@ -240,18 +240,21 @@ function runBoundedChild(command, args, options) {
     const terminate = () => {
       if (terminating) return;
       terminating = true;
+      if (process.platform === "win32" && child.pid !== undefined) {
+        treeTermination = terminateWindowsProcessTree(child.pid).then((result) => {
+          if (result.ok) return;
+          spawnError ??= new Error(result.error);
+          signal("SIGKILL");
+        });
+        return;
+      }
       signal("SIGTERM");
-      forceTimer = setTimeout(() => {
-        if (process.platform === "win32" && child.pid !== undefined) {
-          const killer = spawn(
-            "taskkill",
-            ["/pid", String(child.pid), "/t", "/f"],
-            { stdio: "ignore", windowsHide: true }
-          );
-          killer.unref();
-        }
-        signal("SIGKILL");
-      }, options.terminationGraceMs);
+      treeTermination = new Promise((resolveTermination) => {
+        setTimeout(() => {
+          signal("SIGKILL");
+          resolveTermination();
+        }, options.terminationGraceMs);
+      });
     };
     child.stdout.on("data", (chunk) => capture(stdout, chunk));
     child.stderr.on("data", (chunk) => capture(stderr, chunk));
@@ -262,9 +265,9 @@ function runBoundedChild(command, args, options) {
       timedOut = true;
       terminate();
     }, options.timeoutMs);
-    child.once("close", (status, closeSignal) => {
+    child.once("close", async (status, closeSignal) => {
       clearTimeout(timeout);
-      if (forceTimer !== undefined) clearTimeout(forceTimer);
+      if (treeTermination !== undefined) await treeTermination;
       resolve({
         status,
         signal: closeSignal,
@@ -274,6 +277,40 @@ function runBoundedChild(command, args, options) {
         stdout: Buffer.concat(stdout).toString("utf8"),
         stderr: Buffer.concat(stderr).toString("utf8")
       });
+    });
+  });
+}
+
+function terminateWindowsProcessTree(pid) {
+  return new Promise((resolve) => {
+    const killer = spawn(
+      "taskkill",
+      ["/pid", String(pid), "/t", "/f"],
+      { stdio: "ignore", windowsHide: true }
+    );
+    let settled = false;
+    const finish = (ok, error) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve({ ok, error });
+    };
+    const timeout = setTimeout(() => {
+      try {
+        killer.kill("SIGKILL");
+      } catch {
+        // The taskkill process may have exited at the timeout boundary.
+      }
+      finish(false, "Windows process-tree termination exceeded its terminal bound");
+    }, 10_000);
+    killer.once("error", (error) => finish(false, `Windows process-tree termination failed: ${error.message}`));
+    killer.once("close", (status) => {
+      finish(
+        status === 0,
+        status === 0
+          ? ""
+          : `Windows process-tree termination failed with exit ${status}`
+      );
     });
   });
 }
@@ -1025,11 +1062,23 @@ function distinctProcessIdentity(identity) {
 
 async function resolveGitRoot(repoInput) {
   const candidate = path.resolve(repoInput);
-  const result = spawnSync("git", ["-C", candidate, "rev-parse", "--show-toplevel"], {
-    encoding: "utf8",
-    stdio: ["ignore", "pipe", "pipe"]
-  });
-  if (result.error || result.status !== 0 || !result.stdout.trim()) {
+  const result = await runBoundedChild(
+    "git",
+    ["-C", candidate, "rev-parse", "--show-toplevel"],
+    {
+      cwd: candidate,
+      timeoutMs: bootstrapStageTimeout(5_000),
+      maxOutputBytes: 64 * 1024,
+      terminationGraceMs: bootstrapTerminationGrace()
+    }
+  );
+  if (
+    result.error ||
+    result.status !== 0 ||
+    result.timedOut ||
+    result.outputExceeded ||
+    !result.stdout.trim()
+  ) {
     throw new Error(`Codexa bootstrap must run inside a Git worktree: ${candidate}.`);
   }
   return fs.realpath(result.stdout.trim());

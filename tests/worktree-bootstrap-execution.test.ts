@@ -19,7 +19,7 @@ afterAll(async () => {
 });
 
 describe("worktree bootstrap stage execution", () => {
-  it.skipIf(process.platform === "win32")(
+  it(
     "terminates a stalled stage after its deadline and releases the bootstrap lock",
     async () => {
       const fixture = await createBootstrapExecutionFixture("stall");
@@ -35,13 +35,16 @@ describe("worktree bootstrap stage execution", () => {
       await expect(stat(path.join(fixture.repo, ".codex/tmp/worktree-bootstrap.lock"))).rejects.toMatchObject({
         code: "ENOENT"
       });
-      const childPid = Number((await readFile(fixture.pidPath, "utf8")).trim());
-      await expectProcessExit(childPid);
+      const childPids = (await readFile(fixture.pidPath, "utf8"))
+        .trim()
+        .split("\n")
+        .map(Number);
+      await Promise.all(childPids.map(expectProcessExit));
     },
-    10_000
+      20_000
   );
 
-  it.skipIf(process.platform === "win32")(
+  it(
     "terminates a noisy stage before the bounded bootstrap log can grow past its cap",
     async () => {
       const fixture = await createBootstrapExecutionFixture("noisy");
@@ -55,10 +58,13 @@ describe("worktree bootstrap stage execution", () => {
       await expect(stat(path.join(fixture.repo, ".codex/tmp/worktree-bootstrap.lock"))).rejects.toMatchObject({
         code: "ENOENT"
       });
-      const childPid = Number((await readFile(fixture.pidPath, "utf8")).trim());
-      await expectProcessExit(childPid);
+      const childPids = (await readFile(fixture.pidPath, "utf8"))
+        .trim()
+        .split("\n")
+        .map(Number);
+      await Promise.all(childPids.map(expectProcessExit));
     },
-    10_000
+      20_000
   );
 });
 
@@ -97,13 +103,14 @@ async function createBootstrapExecutionFixture(
     await readFile(path.resolve("scripts/worktree-bootstrap-preflight.mjs"), "utf8"),
     "utf8"
   );
-  const fakeNpm = path.join(fakeBin, "npm");
+  const fakeNpmScript = path.join(fakeBin, "npm-probe.mjs");
   await writeFile(
-    fakeNpm,
+    fakeNpmScript,
     [
-      "#!/usr/bin/env node",
+      'import { spawn } from "node:child_process";',
       'import { writeFileSync } from "node:fs";',
-      'writeFileSync(process.env.CODEXA_BOOTSTRAP_TEST_PID_PATH, `${process.pid}\\n`);',
+      'const descendant = spawn(process.execPath, ["-e", "setInterval(() => undefined, 1000)"], { stdio: "ignore" });',
+      'writeFileSync(process.env.CODEXA_BOOTSTRAP_TEST_PID_PATH, `${process.pid}\\n${descendant.pid}\\n`);',
       'if (process.env.CODEXA_BOOTSTRAP_TEST_MODE === "stall") {',
       '  process.on("SIGTERM", () => undefined);',
       "  setInterval(() => undefined, 1_000);",
@@ -119,7 +126,14 @@ async function createBootstrapExecutionFixture(
     ].join("\n"),
     "utf8"
   );
+  const fakeNpm = path.join(fakeBin, "npm");
+  await writeFile(fakeNpm, `#!/bin/sh\nexec ${shellQuote(process.execPath)} ${shellQuote(fakeNpmScript)} "$@"\n`, "utf8");
   await chmod(fakeNpm, 0o700);
+  await writeFile(
+    path.join(fakeBin, "npm.cmd"),
+    `@echo off\r\n"${process.execPath}" "${fakeNpmScript}" %*\r\n`,
+    "utf8"
+  );
   return { repo, fakeBin, mode, pidPath };
 }
 
@@ -131,11 +145,15 @@ function runBootstrapProbe(fixture: {
 }): ReturnType<typeof spawnSync> {
   return spawnSync(
     process.execPath,
-    [path.resolve("scripts/worktree-bootstrap.mjs"), "posix-hooks", fixture.repo],
+    [
+      path.resolve("scripts/worktree-bootstrap.mjs"),
+      process.platform === "win32" ? "native-windows-mcp" : "posix-hooks",
+      fixture.repo
+    ],
     {
       cwd: fixture.repo,
       encoding: "utf8",
-      timeout: 5_000,
+      timeout: 15_000,
       env: {
         ...process.env,
         PATH: `${fixture.fakeBin}${path.delimiter}${process.env.PATH ?? ""}`,
@@ -152,7 +170,7 @@ function runBootstrapProbe(fixture: {
 
 async function expectProcessExit(pid: number): Promise<void> {
   expect(Number.isSafeInteger(pid) && pid > 0).toBe(true);
-  const deadline = Date.now() + 1_000;
+  const deadline = Date.now() + 3_000;
   while (Date.now() < deadline) {
     try {
       process.kill(pid, 0);
@@ -163,4 +181,8 @@ async function expectProcessExit(pid: number): Promise<void> {
     await new Promise((resolve) => setTimeout(resolve, 20));
   }
   throw new Error(`bootstrap stage process ${pid} remained alive after forced termination`);
+}
+
+function shellQuote(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
 }

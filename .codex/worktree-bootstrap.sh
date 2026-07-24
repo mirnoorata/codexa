@@ -8,11 +8,8 @@
 set -euo pipefail
 umask 077
 
-git_top="$(git rev-parse --show-toplevel 2>/dev/null)" || {
-  printf 'Codexa bootstrap must run inside a Git worktree.\n' >&2
-  exit 2
-}
-repo_root="$(cd "$git_top" && pwd -P)"
+script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd -P)"
+repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd -P)"
 
 if ! command -v node >/dev/null 2>&1; then
   printf 'Codexa bootstrap requires Node.js on PATH.\n' >&2
