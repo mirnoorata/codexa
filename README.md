@@ -996,6 +996,12 @@ supplied, so an intentionally unwired fixture can still measure transport cost.
 This avoids benchmarking an accidentally stale local build without silently
 changing the benchmark target.
 
+GitHub Actions passes `--threshold-scale 1.5` to give variable shared runners
+bounded headroom without changing the checked-in product targets. Benchmark
+JSON and the job summary report the base target and the effective gate
+separately, and identify target misses even when they remain inside that
+headroom. The scale is explicit, applies uniformly, and is capped at `2`.
+
 ## Public Proof
 
 Codexa has a structured eval harness:

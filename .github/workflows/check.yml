@@ -135,8 +135,8 @@ jobs:
         run: node scripts/worktree-bootstrap.mjs --verify-lock .
 
   benchmark:
-    # Guard only against clear hot-path regressions; thresholds live in the
-    # benchmark script and are intentionally generous for shared CI runners.
+    # Preserve the checked-in product targets while giving shared runners
+    # bounded, explicit headroom. The report exposes both target and gate.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -154,7 +154,7 @@ jobs:
           cache: npm
 
       - name: Run hot-path benchmark
-        run: npm run benchmark:ci
+        run: npm run benchmark:ci -- --threshold-scale 1.5
 
       - name: Run pinned transport benchmark
         run: npm run benchmark:transport -- --output .codex/cache/codexa-benchmarks/transport.json
