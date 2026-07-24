@@ -12,13 +12,11 @@ import {
   WORKTREE_BOOTSTRAP_DEPENDENCY_SEAL_RELATIVE_PATH,
   WORKTREE_BOOTSTRAP_RECEIPT_REF
 } from "../src/worktree-bootstrap-receipt.js";
-
 const fixtures: string[] = [];
 const testCliPath = path.resolve("dist/cli.js");
 afterAll(async () => {
   await Promise.all(fixtures.map((fixture) => rm(fixture, { recursive: true, force: true })));
 });
-
 describe("worktree bootstrap receipt", () => {
   it("validates immediately and detects source, runtime, config, dependency, and HEAD drift", async () => {
     const repo = await createReceiptFixture("codexa-worktree-receipt-");
@@ -34,11 +32,9 @@ describe("worktree bootstrap receipt", () => {
       lane: "posix-hooks",
       validation: "full"
     });
-
     await expectDrift(repo, "src/index.ts", "export const fixture = 2;\n", "build-input-drift");
     await expectDrift(repo, "dist/runtime.js", "export const runtime = 2;\n", "dist-runtime-drift");
     await expectDrift(repo, ".codex/config.toml", "# changed\n", "config-drift");
-
     const dependencyDir = path.join(repo, "node_modules/example-dependency");
     const movedDependency = path.join(repo, "node_modules/example-dependency-missing");
     await rename(dependencyDir, movedDependency);
@@ -89,10 +85,13 @@ describe("worktree bootstrap receipt", () => {
     });
   });
 
-  it("rejects startup drift introduced while the full completion scope is scanned", async () => {
-    const repo = await createReceiptFixture("codexa-worktree-receipt-cross-scope-startup-");
+  it.each([
+    { validation: "adoption" as const, trigger: "node_modules/example-dependency/index.js" },
+    { validation: "full" as const, trigger: "src/index.ts" }
+  ])("rejects startup drift introduced while the $validation scope is scanned", async ({ validation, trigger }) => {
+    const repo = await createReceiptFixture(`codexa-worktree-receipt-cross-scope-${validation}-`);
     await issueReceipt(repo, "posix-hooks");
-    const completionTrigger = path.join(repo, "src/index.ts");
+    const completionTrigger = path.join(repo, trigger);
     const configPath = path.join(repo, ".codex/config.toml");
     const originalOpen = nodeFs.open.bind(nodeFs);
     let mutated = false;
@@ -104,9 +103,9 @@ describe("worktree bootstrap receipt", () => {
       return originalOpen(file, flags, mode);
     });
     try {
-      await expect(inspectWorktreeBootstrapReceipt(repo)).resolves.toMatchObject({
+      await expect(inspectWorktreeBootstrapReceipt(repo, { validation })).resolves.toMatchObject({
         state: "stale",
-        validation: "full",
+        validation,
         reason: "config-drift"
       });
     } finally {

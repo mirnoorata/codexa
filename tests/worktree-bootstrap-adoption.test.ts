@@ -7,6 +7,7 @@ import path from "node:path";
 import { afterAll, afterEach, describe, expect, it, vi } from "vitest";
 import {
   currentAdoptionReceiptFacts,
+  currentAdoptionReceiptSnapshot,
   readBoundedStableRegularFile
 } from "../src/worktree-bootstrap-adoption.js";
 
@@ -138,6 +139,16 @@ describe("worktree bootstrap adoption integrity", () => {
       /dist-runtime-entry-changed-during-scan/u
     );
     expect(mutated).toBe(true);
+  });
+
+  it("revalidates the retained adoption snapshot after later scope work", async () => {
+    const repo = await createAdoptionFixture("codexa-adoption-retained-snapshot-");
+    const snapshot = await currentAdoptionReceiptSnapshot(repo);
+    await writeFile(path.join(repo, "dist/cli.js"), "export const cli = false;\n", "utf8");
+
+    await expect(snapshot.revalidate()).rejects.toThrow(
+      /dist-runtime-entry-changed-during-scan/u
+    );
   });
 
   it.skipIf(process.platform === "win32")(

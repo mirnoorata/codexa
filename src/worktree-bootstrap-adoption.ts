@@ -40,6 +40,11 @@ export interface WorktreeBootstrapAdoptionFacts {
   };
 }
 
+export interface WorktreeBootstrapAdoptionSnapshot {
+  facts: WorktreeBootstrapAdoptionFacts;
+  revalidate(): Promise<void>;
+}
+
 interface AdoptionScanBudget extends StableDirectoryBudget {
   deadlineAt: number;
   maxLogicalBytes: number;
@@ -57,6 +62,12 @@ interface AdoptionTreeSnapshot {
 export async function currentAdoptionReceiptFacts(
   repoRoot: string
 ): Promise<WorktreeBootstrapAdoptionFacts> {
+  return (await currentAdoptionReceiptSnapshot(repoRoot)).facts;
+}
+
+export async function currentAdoptionReceiptSnapshot(
+  repoRoot: string
+): Promise<WorktreeBootstrapAdoptionSnapshot> {
   const repo = path.resolve(repoRoot);
   const packageLockPath = path.join(repo, "package-lock.json");
   const dist = path.join(repo, "dist");
@@ -81,15 +92,30 @@ export async function currentAdoptionReceiptFacts(
     repo
   ));
   const dependency = await installedDependencyInventory(repo, packageLockPath, deadlineAt);
-  // Revalidate in reverse scan order so the oldest snapshot (dist/) is checked
-  // nearest the acceptance boundary. Both passes share the original deadline.
-  await revalidateDirectorySnapshots(dependency.tree);
-  await revalidateDirectorySnapshots(distRuntime.tree);
-  return {
-    distRuntimeSha256: distRuntime.sha256,
-    distCliSha256,
-    dependencyInventory: dependency.facts
+  const revalidateTrees = async (): Promise<void> => {
+    // Revalidate in reverse scan order so the oldest snapshot (dist/) is
+    // checked nearest this scope's acceptance boundary.
+    await revalidateDirectorySnapshots(dependency.tree);
+    await revalidateDirectorySnapshots(distRuntime.tree);
   };
+  await revalidateTrees();
+  return {
+    facts: {
+      distRuntimeSha256: distRuntime.sha256,
+      distCliSha256,
+      dependencyInventory: dependency.facts
+    },
+    revalidate: async () => {
+      prepareAdoptionRevalidation(dependency.tree);
+      prepareAdoptionRevalidation(distRuntime.tree);
+      await revalidateTrees();
+    }
+  };
+}
+
+function prepareAdoptionRevalidation(tree: AdoptionTreeSnapshot): void {
+  tree.budget.deadlineAt = sessionStartDeadlineAt(Date.now() + ADOPTION_SCAN_TIMEOUT_MS);
+  tree.budget.revalidatedDirectoryEntries = 0;
 }
 
 async function installedDependencyInventory(

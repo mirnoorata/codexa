@@ -40,9 +40,20 @@ interface BuildTreeSnapshot {
   files: string[];
 }
 
+export interface WorktreeBootstrapBuildInputSnapshot {
+  digest: string;
+  revalidate(): Promise<void>;
+}
+
 export async function worktreeBootstrapBuildInputDigest(
   repoRoot: string
 ): Promise<string> {
+  return (await worktreeBootstrapBuildInputSnapshot(repoRoot)).digest;
+}
+
+export async function worktreeBootstrapBuildInputSnapshot(
+  repoRoot: string
+): Promise<WorktreeBootstrapBuildInputSnapshot> {
   const repo = path.resolve(repoRoot);
   const budget = createBuildScanBudget();
   const tree = await regularTreeFiles(repo, path.join(repo, "src"), budget);
@@ -64,9 +75,19 @@ export async function worktreeBootstrapBuildInputDigest(
     );
   }
   const digest = hash.digest("hex");
-  await revalidateStableTreeEntries(tree, budget, () => assertDeadline(budget));
-  await revalidateStableDirectories(tree, budget, () => assertDeadline(budget));
-  return digest;
+  const revalidateTree = async (): Promise<void> => {
+    await revalidateStableTreeEntries(tree, budget, () => assertDeadline(budget));
+    await revalidateStableDirectories(tree, budget, () => assertDeadline(budget));
+  };
+  await revalidateTree();
+  return {
+    digest,
+    revalidate: async () => {
+      budget.deadlineAt = Date.now() + BUILD_SCAN_TIMEOUT_MS;
+      budget.revalidatedDirectoryEntries = 0;
+      await revalidateTree();
+    }
+  };
 }
 
 async function regularTreeFiles(

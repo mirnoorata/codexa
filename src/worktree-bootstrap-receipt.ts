@@ -1,7 +1,6 @@
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { parse as parseToml } from "smol-toml";
 import { runCommand } from "./command.js";
 import {
   assertSafeManagedStateDirectory,
@@ -9,11 +8,21 @@ import {
 } from "./init-portability.js";
 import {
   currentAdoptionReceiptFacts,
+  currentAdoptionReceiptSnapshot,
   readBoundedStableRegularFile,
   STARTUP_INPUT_MAX_BYTES,
-  type WorktreeBootstrapAdoptionFacts
+  type WorktreeBootstrapAdoptionFacts,
+  type WorktreeBootstrapAdoptionSnapshot
 } from "./worktree-bootstrap-adoption.js";
-import { worktreeBootstrapBuildInputDigest } from "./worktree-bootstrap-build-input.js";
+import {
+  worktreeBootstrapBuildInputDigest,
+  worktreeBootstrapBuildInputSnapshot
+} from "./worktree-bootstrap-build-input.js";
+import {
+  expectedCodexaHookState,
+  inspectHookLaneContract,
+  lanePlatformMismatch
+} from "./worktree-bootstrap-hook-contract.js";
 import { sessionStartDeadlineAt } from "./session-start-budget.js";
 import type { StableDirectoryBudget } from "./stable-directory-snapshot.js";
 
@@ -117,6 +126,11 @@ type WorktreeBootstrapCompletionFacts = Pick<
   "head" | "buildInputSha256"
 >;
 
+interface WorktreeBootstrapCompletionSnapshot {
+  facts: WorktreeBootstrapCompletionFacts;
+  revalidate(): Promise<void>;
+}
+
 interface WorktreeBootstrapStartupSnapshot {
   facts: WorktreeBootstrapStartupFacts;
   hookInputs: { configContents: Buffer; hooksContents: Buffer | null; hooksTracked: boolean };
@@ -136,14 +150,19 @@ export async function worktreeBootstrapStartupInputSha256(repoRoot: string): Pro
 }
 
 async function runNpmLs(repoRoot: string): Promise<Awaited<ReturnType<typeof runCommand>>> {
-  const options = { cwd: repoRoot, timeoutMs: 60_000, maxBufferBytes: 8 * 1024 * 1024 };
+  const options = {
+    cwd: repoRoot,
+    discardStdout: true,
+    timeoutMs: 60_000,
+    maxBufferBytes: 1024 * 1024
+  };
   if (process.platform !== "win32") {
-    return runCommand("npm", ["ls", "--all", "--json", "--silent"], options);
+    return runCommand("npm", ["ls", "--all", "--silent"], options);
   }
   const commandInterpreter = process.env.ComSpec?.trim() || process.env.COMSPEC?.trim() || "cmd.exe";
   return runCommand(
     commandInterpreter,
-    ["/d", "/s", "/c", "npm.cmd ls --all --json --silent"],
+    ["/d", "/s", "/c", "npm.cmd ls --all --silent"],
     options
   );
 }
@@ -176,7 +195,10 @@ export async function issueWorktreeBootstrapReceipt(
   if (platformReason) throw new Error(`Cannot issue Codexa worktree receipt: ${platformReason}`);
   const dependencyCheck = await runNpmLs(repo);
   if (!dependencyCheck.ok) {
-    throw new Error("Cannot issue Codexa worktree receipt: npm dependency tree is incomplete");
+    throw new Error(`Cannot issue Codexa worktree receipt: ${dependencyCheckFailure(
+      dependencyCheck,
+      "npm-dependency-tree-incomplete"
+    )}`);
   }
   const startup = await currentStartupReceiptSnapshot(repo);
   const hookContract = inspectHookLaneContract(repo, lane, startup);
@@ -192,7 +214,10 @@ export async function issueWorktreeBootstrapReceipt(
   }
   const finalDependencyCheck = await runNpmLs(repo);
   if (!finalDependencyCheck.ok) {
-    throw new Error("Cannot issue Codexa worktree receipt: dependency-tree-changed-during-capture");
+    throw new Error(`Cannot issue Codexa worktree receipt: ${dependencyCheckFailure(
+      finalDependencyCheck,
+      "dependency-tree-changed-during-capture"
+    )}`);
   }
   await publishWorktreeReceiptRef(repo, `${JSON.stringify(receipt, null, 2)}\n`);
   const inspection = await inspectWorktreeBootstrapReceipt(repo, { validation: "full" });
@@ -200,6 +225,16 @@ export async function issueWorktreeBootstrapReceipt(
     throw new Error(`Codexa worktree receipt failed immediate validation: ${inspection.reason ?? inspection.state}`);
   }
   return receipt;
+}
+
+function dependencyCheckFailure(
+  result: Awaited<ReturnType<typeof runCommand>>,
+  dependencyReason: string
+): string {
+  if (result.timedOut) return "dependency-completeness-check-timeout";
+  if (result.truncated) return "dependency-completeness-diagnostics-limit";
+  if (result.error) return "dependency-completeness-check-unavailable";
+  return dependencyReason;
 }
 
 export async function validateWorktreeBootstrapReceipt(
@@ -220,52 +255,101 @@ export async function validateWorktreeBootstrapReceipt(
   if (validation === "startup") {
     return { state: "verified", lane: receipt.lane, validation, receipt };
   }
-  let adoption: WorktreeBootstrapAdoptionFacts;
+  let adoptionSnapshot: WorktreeBootstrapAdoptionSnapshot;
   try {
-    adoption = await currentAdoptionReceiptFacts(repoRoot);
+    adoptionSnapshot = await currentAdoptionReceiptSnapshot(repoRoot);
   } catch (error) {
     return { state: "unavailable", lane: receipt.lane, validation, reason: boundedReason(error), receipt };
   }
+  const adoption = adoptionSnapshot.facts;
   const adoptionMismatch = adoptionReceiptMismatch(receipt, adoption);
   if (adoptionMismatch) {
     return { state: "stale", lane: receipt.lane, validation, reason: adoptionMismatch, receipt };
   }
   if (validation === "adoption") {
-    return { state: "verified", lane: receipt.lane, validation, receipt };
+    try {
+      await adoptionSnapshot.revalidate();
+      const finalStartup = await currentStartupReceiptSnapshot(repoRoot);
+      const finalStartupMismatch = startupReceiptMismatch(path.resolve(repoRoot), receipt, finalStartup);
+      return finalStartupMismatch
+        ? { state: "stale", lane: receipt.lane, validation, reason: finalStartupMismatch, receipt }
+        : { state: "verified", lane: receipt.lane, validation, receipt };
+    } catch (error) {
+      const drift = snapshotRevalidationDrift(error, "adoption");
+      return {
+        state: drift ? "stale" : "unavailable",
+        lane: receipt.lane,
+        validation,
+        reason: drift ?? boundedReason(error),
+        receipt
+      };
+    }
   }
-  let completion: WorktreeBootstrapCompletionFacts;
+  let completionSnapshot: WorktreeBootstrapCompletionSnapshot;
   try {
-    completion = await currentCompletionReceiptFacts(repoRoot);
+    completionSnapshot = await currentCompletionReceiptSnapshot(repoRoot);
   } catch (error) {
     return { state: "unavailable", lane: receipt.lane, validation, reason: boundedReason(error), receipt };
   }
+  const completion = completionSnapshot.facts;
   const completionMismatch = completionReceiptMismatch(receipt, completion);
   if (completionMismatch) {
     return { state: "stale", lane: receipt.lane, validation, reason: completionMismatch, receipt };
   }
 
-  // A full validation spans three independently stable scans. Re-read them in
-  // reverse order before acceptance so changes to an earlier scope while a
-  // later scope was being scanned cannot inherit a stale "verified" result.
-  // Each individual scanner still enforces its own stable-snapshot boundary.
-  let finalCompletion: WorktreeBootstrapCompletionFacts;
-  let finalAdoption: WorktreeBootstrapAdoptionFacts;
+  // Capture S/A/C, then revalidate the original C/A snapshots before S is read
+  // again. This detects observable cross-scope drift without claiming a
+  // filesystem transaction: mutation after a scope's closing check is
+  // post-validation drift and is rejected by the next validation.
   let finalStartup: WorktreeBootstrapStartupSnapshot;
   try {
-    finalCompletion = await currentCompletionReceiptFacts(repoRoot);
-    finalAdoption = await currentAdoptionReceiptFacts(repoRoot);
+    await completionSnapshot.revalidate();
+  } catch (error) {
+    const drift = snapshotRevalidationDrift(error, "completion");
+    return {
+      state: drift ? "stale" : "unavailable",
+      lane: receipt.lane,
+      validation,
+      reason: drift ?? boundedReason(error),
+      receipt
+    };
+  }
+  try {
+    await adoptionSnapshot.revalidate();
+  } catch (error) {
+    const drift = snapshotRevalidationDrift(error, "adoption");
+    return {
+      state: drift ? "stale" : "unavailable",
+      lane: receipt.lane,
+      validation,
+      reason: drift ?? boundedReason(error),
+      receipt
+    };
+  }
+  try {
     finalStartup = await currentStartupReceiptSnapshot(repoRoot);
   } catch (error) {
     return { state: "unavailable", lane: receipt.lane, validation, reason: boundedReason(error), receipt };
   }
-  const finalMismatch =
-    completionReceiptMismatch(receipt, finalCompletion) ??
-    adoptionReceiptMismatch(receipt, finalAdoption) ??
-    startupReceiptMismatch(path.resolve(repoRoot), receipt, finalStartup);
+  const finalMismatch = startupReceiptMismatch(path.resolve(repoRoot), receipt, finalStartup);
   return finalMismatch
     ? { state: "stale", lane: receipt.lane, validation, reason: finalMismatch, receipt }
     : { state: "verified", lane: receipt.lane, validation, receipt };
 }
+
+function snapshotRevalidationDrift(
+  error: unknown,
+  scope: "adoption" | "completion"
+): string | undefined {
+  const reason = boundedReason(error);
+  if (!/(?:changed-during|repository-changed)/u.test(reason)) return undefined;
+  if (scope === "completion") {
+    return reason.startsWith("git-head-") ? "head-drift" : "build-input-drift";
+  }
+  if (reason.startsWith("dependency-inventory-")) return "dependency-inventory-drift";
+  return reason.startsWith("dist-runtime-") ? "dist-runtime-drift" : undefined;
+}
+
 function startupReceiptMismatch(
   repoRoot: string,
   receipt: WorktreeBootstrapReceipt,
@@ -466,6 +550,12 @@ async function currentReceiptFacts(
 async function currentCompletionReceiptFacts(
   repoRoot: string
 ): Promise<WorktreeBootstrapCompletionFacts> {
+  return (await currentCompletionReceiptSnapshot(repoRoot)).facts;
+}
+
+async function currentCompletionReceiptSnapshot(
+  repoRoot: string
+): Promise<WorktreeBootstrapCompletionSnapshot> {
   const repo = path.resolve(repoRoot);
   const readHead = async (): Promise<string> => {
     const result = await runCommand(
@@ -479,9 +569,16 @@ async function currentCompletionReceiptFacts(
     return value;
   };
   const head = await readHead();
-  const buildInputSha256 = await worktreeBootstrapBuildInputDigest(repo);
+  const buildInput = await worktreeBootstrapBuildInputSnapshot(repo);
   if (await readHead() !== head) throw new Error("git-head-changed-during-build-scan");
-  return { head, buildInputSha256 };
+  return {
+    facts: { head, buildInputSha256: buildInput.digest },
+    revalidate: async () => {
+      if (await readHead() !== head) throw new Error("git-head-changed-during-build-scan");
+      await buildInput.revalidate();
+      if (await readHead() !== head) throw new Error("git-head-changed-during-build-scan");
+    }
+  };
 }
 
 async function currentStartupReceiptSnapshot(
@@ -862,104 +959,6 @@ function sameRuntime(
     left.arch === right.arch;
 }
 
-function expectedCodexaHookState(lane: WorktreeBootstrapLane): WorktreeBootstrapReceipt["codexaHooks"] {
-  return lane === "posix-hooks" ? "enabled" : "disabled";
-}
-
-function lanePlatformMismatch(lane: WorktreeBootstrapLane, platform: NodeJS.Platform): string | null {
-  if (lane === "native-windows-mcp") return platform === "win32" ? null : "lane-platform-drift";
-  return platform === "win32" ? "lane-platform-drift" : null;
-}
-
-function inspectHookLaneContract(
-  repoRoot: string,
-  lane: WorktreeBootstrapLane,
-  snapshot: WorktreeBootstrapStartupSnapshot
-): { ok: true } | { ok: false; reason: string } {
-  try {
-    const configContents = snapshot.hookInputs.configContents.toString("utf8");
-    const parsedConfig = parseToml(configContents) as unknown;
-    if (!isPlainObject(parsedConfig)) return { ok: false, reason: "hook-config-invalid" };
-    const hooksFeature = isPlainObject(parsedConfig.features) ? parsedConfig.features.hooks : undefined;
-    const hooksContents = snapshot.hookInputs.hooksContents;
-    const parsedHooks = hooksContents ? JSON.parse(hooksContents.toString("utf8")) as unknown : {};
-    const hooks = isPlainObject(parsedHooks) && isPlainObject(parsedHooks.hooks) ? parsedHooks.hooks : {};
-    const nodePath = snapshot.facts.runtime.nodePath;
-    const hooksTracked = snapshot.hookInputs.hooksTracked;
-    const expectedCommands = new Map([
-      ["session-start", expectedCodexaHookCommand(repoRoot, nodePath, hooksTracked, "session-start")],
-      ["hook-pre-edit", expectedCodexaHookCommand(repoRoot, nodePath, hooksTracked, "hook-pre-edit")],
-      ["hook-post-edit", expectedCodexaHookCommand(repoRoot, nodePath, hooksTracked, "hook-post-edit")]
-    ]);
-    const expectedCommandSet = new Set(expectedCommands.values());
-    const managedEntries = Object.values(hooks)
-      .flatMap((value) => Array.isArray(value) ? value : [])
-      .filter((entry) => hasCodexaHookSignal(entry, expectedCommandSet));
-
-    if (lane === "native-windows-mcp") {
-      return managedEntries.length === 0
-        ? { ok: true }
-        : { ok: false, reason: "hook-lane-drift" };
-    }
-    if (hooksFeature !== true) return { ok: false, reason: "hook-feature-disabled" };
-    const required = [
-      ["SessionStart", "startup|resume", "session-start"],
-      ["PreToolUse", "Edit|MultiEdit|Write|NotebookEdit|apply_patch", "hook-pre-edit"],
-      ["PostToolUse", "Edit|MultiEdit|Write|NotebookEdit|apply_patch", "hook-post-edit"]
-    ] as const;
-    if (managedEntries.length !== required.length) {
-      return { ok: false, reason: "hook-contract-drift:managed-set" };
-    }
-    for (const [event, matcher, action] of required) {
-      const entries = Array.isArray(hooks[event]) ? hooks[event] : [];
-      const expectedCommand = expectedCommands.get(action);
-      if (!expectedCommand) return { ok: false, reason: `hook-contract-drift:${event}` };
-      const matching = entries.filter((entry) => isExpectedManagedHookEntry(entry, matcher, expectedCommand));
-      if (matching.length !== 1) return { ok: false, reason: `hook-contract-drift:${event}` };
-    }
-    return { ok: true };
-  } catch {
-    return { ok: false, reason: "hook-contract-invalid" };
-  }
-}
-
-function isExpectedManagedHookEntry(value: unknown, matcher: string, expectedCommand: string): boolean {
-  if (!isPlainObject(value) || value.codexaManaged !== true || value.matcher !== matcher) return false;
-  if (!Array.isArray(value.hooks) || value.hooks.length !== 1) return false;
-  const hook = value.hooks[0];
-  return isPlainObject(hook) &&
-    hook.codexaManaged === true &&
-    hook.type === "command" &&
-    hook.command === expectedCommand;
-}
-
-function hasCodexaHookSignal(value: unknown, expectedCommands: Set<string>): boolean {
-  if (!isPlainObject(value)) return false;
-  if (value.codexaManaged === true) return true;
-  if (!Array.isArray(value.hooks)) return false;
-  return value.hooks.some((hook) => isPlainObject(hook) && (
-    hook.codexaManaged === true ||
-    (typeof hook.command === "string" && expectedCommands.has(hook.command))
-  ));
-}
-
-function expectedCodexaHookCommand(
-  repoRoot: string,
-  nodePath: string,
-  hooksTracked: boolean,
-  action: string
-): string {
-  const launchCommand = hooksTracked ? "node" : nodePath;
-  const printableCommand = /[\s'"\\]/u.test(launchCommand) ? shellQuote(launchCommand) : launchCommand;
-  const launch = `${printableCommand} ${shellQuote(path.join(repoRoot, "dist", "cli.js"))}`;
-  const repoArg = hooksTracked ? undefined : repoRoot;
-  return repoArg ? `${launch} ${action} ${shellQuote(repoArg)}` : `${launch} ${action}`;
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
-}
-
 async function readOptionalRegularFile(
   repoRoot: string,
   filePath: string,
@@ -978,10 +977,6 @@ async function readOptionalRegularFile(
     if (isNodeError(error) && error.code === "ENOENT") return null;
     throw error;
   }
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function isContainedPath(parent: string, candidate: string): boolean {
