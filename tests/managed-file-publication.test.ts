@@ -31,6 +31,34 @@ describe("managed file publication", () => {
     await expect(readFile(destination, "utf8")).resolves.toBe("new\n");
   });
 
+  it.skipIf(process.platform === "win32")(
+    "publishes through the native macOS directory-preopen lane",
+    async () => {
+      const originalPlatform = Object.getOwnPropertyDescriptor(process, "platform");
+      if (!originalPlatform) throw new Error("process-platform-descriptor-missing");
+      Object.defineProperty(process, "platform", {
+        ...originalPlatform,
+        value: "darwin"
+      });
+      try {
+        const repo = await fixture("codexa-managed-publish-darwin-");
+        await mkdir(path.join(repo, ".codex/tmp"), { recursive: true });
+        const destination = path.join(repo, ".codex/tmp/receipt.json");
+
+        await expect(publishManagedStateFile(
+          repo,
+          ["tmp"],
+          "receipt.json",
+          "darwin\n",
+          "receipt-publication"
+        )).resolves.toBe(destination);
+        await expect(readFile(destination, "utf8")).resolves.toBe("darwin\n");
+      } finally {
+        Object.defineProperty(process, "platform", originalPlatform);
+      }
+    }
+  );
+
   it("does not overwrite or remove an outside destination after a parent swap", async () => {
     const repo = await fixture("codexa-managed-publish-race-");
     const outside = await fixture("codexa-managed-publish-race-target-");

@@ -121,6 +121,11 @@ jobs:
         working-directory: ../codexa-linked-worktree
         run: npx vitest run tests/worktree-environment.test.ts
 
+      - name: Run native macOS managed-publication smoke
+        if: runner.os == 'macOS'
+        working-directory: ../codexa-linked-worktree
+        run: npx vitest run tests/managed-file-publication.test.ts -t "native macOS directory-preopen lane"
+
       - name: Validate consumed setup receipt
         working-directory: ../codexa-linked-worktree
         run: node dist/cli.js worktree-receipt validate . --json

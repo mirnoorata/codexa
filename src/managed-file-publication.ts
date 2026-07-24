@@ -51,7 +51,10 @@ export async function publishManagedStateFile(
   const destination = path.join(directory, destinationName);
   await assertSafeManagedFile(destination);
   const temporaryName = `.${destinationName}.${process.pid}.${randomUUID()}.tmp`;
-  if (process.platform === "win32") {
+  // Darwin exposes open descriptors through /dev/fd, but those entries are
+  // not traversable directory paths. Use the WASI preopen lane anywhere the
+  // Linux /proc/self/fd directory anchor is unavailable by contract.
+  if (process.platform === "win32" || process.platform === "darwin") {
     const expected = await publishThroughWasiDirectory(
       directory,
       identity,
