@@ -31,6 +31,7 @@ const BOOTSTRAP_LOCK_MAX_ATTEMPTS = 32;
 const BOOTSTRAP_LOG_MAX_BYTES = 8 * 1024 * 1024;
 const BOOTSTRAP_PREFLIGHT_MAX_OUTPUT_BYTES = 256 * 1024;
 const BOOTSTRAP_TERMINATION_GRACE_MS = 2_000;
+const BOOTSTRAP_TERMINAL_SETTLE_MS = 250;
 const BOOTSTRAP_STAGE_TIMEOUTS_MS = Object.freeze({
   preflight: 30_000,
   install: 10 * 60_000,
@@ -207,6 +208,8 @@ function runBoundedChild(command, args, options) {
     let outputExceeded = false;
     let terminating = false;
     let treeTermination;
+    let terminalTimer;
+    let settled = false;
     const capture = (target, chunk) => {
       if (outputExceeded) return;
       const bytes = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
@@ -246,6 +249,7 @@ function runBoundedChild(command, args, options) {
           spawnError ??= new Error(result.error);
           signal("SIGKILL");
         });
+        scheduleTerminalSettlement();
         return;
       }
       signal("SIGTERM");
@@ -255,19 +259,15 @@ function runBoundedChild(command, args, options) {
           resolveTermination();
         }, options.terminationGraceMs);
       });
+      scheduleTerminalSettlement();
     };
-    child.stdout.on("data", (chunk) => capture(stdout, chunk));
-    child.stderr.on("data", (chunk) => capture(stderr, chunk));
-    child.once("error", (error) => {
-      spawnError = error;
-    });
-    const timeout = setTimeout(() => {
-      timedOut = true;
-      terminate();
-    }, options.timeoutMs);
-    child.once("close", async (status, closeSignal) => {
-      clearTimeout(timeout);
+    const finish = async (status, closeSignal) => {
+      if (settled) return;
       if (treeTermination !== undefined) await treeTermination;
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      if (terminalTimer !== undefined) clearTimeout(terminalTimer);
       resolve({
         status,
         signal: closeSignal,
@@ -277,6 +277,29 @@ function runBoundedChild(command, args, options) {
         stdout: Buffer.concat(stdout).toString("utf8"),
         stderr: Buffer.concat(stderr).toString("utf8")
       });
+    };
+    function scheduleTerminalSettlement() {
+      void treeTermination.then(() => {
+        if (settled) return;
+        terminalTimer = setTimeout(() => {
+          child.stdout.destroy();
+          child.stderr.destroy();
+          child.unref();
+          void finish(null, "SIGKILL");
+        }, BOOTSTRAP_TERMINAL_SETTLE_MS);
+      });
+    }
+    child.stdout.on("data", (chunk) => capture(stdout, chunk));
+    child.stderr.on("data", (chunk) => capture(stderr, chunk));
+    child.once("error", (error) => {
+      spawnError = error;
+    });
+    const timeout = setTimeout(() => {
+      timedOut = true;
+      terminate();
+    }, options.timeoutMs);
+    child.once("close", (status, closeSignal) => {
+      void finish(status, closeSignal);
     });
   });
 }

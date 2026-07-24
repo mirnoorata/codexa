@@ -154,6 +154,10 @@ export async function runCommand(command: string, args: string[], options: RunCo
       void treeTermination.then((error) => {
         if (settled) return;
         terminalTimer = setTimeout(() => {
+          child.stdout?.destroy();
+          child.stderr?.destroy();
+          child.stdin?.destroy();
+          child.unref();
           void finish({ exitCode: null, signal: "SIGKILL", error });
         }, TERMINAL_SETTLE_MS);
       });

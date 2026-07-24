@@ -64,13 +64,36 @@ describe("worktree bootstrap stage execution", () => {
         .map(Number);
       await Promise.all(childPids.map(expectProcessExit));
     },
-      20_000
+    20_000
+  );
+
+  it(
+    "settles after an exited parent leaves an escaped descendant holding its pipes",
+    async () => {
+      const fixture = await createBootstrapExecutionFixture("escaped");
+      const startedAt = Date.now();
+      const result = runBootstrapProbe(fixture);
+      const childPids = (await readFile(fixture.pidPath, "utf8"))
+        .trim()
+        .split("\n")
+        .map(Number);
+      try {
+        expect(result.error).toBeUndefined();
+        expect(result.status).not.toBe(0);
+        expect(result.stderr).toContain("stage deadline exceeded");
+        expect(Date.now() - startedAt).toBeLessThan(3_000);
+        await Promise.all(childPids.slice(0, 2).map(expectProcessExit));
+      } finally {
+        await forceProcessExit(childPids[2]);
+      }
+    },
+    20_000
   );
 });
 
 async function createBootstrapExecutionFixture(
-  mode: "stall" | "noisy"
-): Promise<{ repo: string; fakeBin: string; mode: "stall" | "noisy"; pidPath: string }> {
+  mode: "stall" | "noisy" | "escaped"
+): Promise<{ repo: string; fakeBin: string; mode: "stall" | "noisy" | "escaped"; pidPath: string }> {
   const repo = await mkdtemp(path.join(os.tmpdir(), `codexa-bootstrap-${mode}-`));
   fixtures.push(repo);
   const fakeBin = path.join(repo, "fake-bin");
@@ -110,11 +133,15 @@ async function createBootstrapExecutionFixture(
       'import { spawn } from "node:child_process";',
       'import { writeFileSync } from "node:fs";',
       'const descendant = spawn(process.execPath, ["-e", "setInterval(() => undefined, 1000)"], { stdio: "ignore" });',
-      'writeFileSync(process.env.CODEXA_BOOTSTRAP_TEST_PID_PATH, `${process.pid}\\n${descendant.pid}\\n`);',
+      'const escaped = process.env.CODEXA_BOOTSTRAP_TEST_MODE === "escaped"',
+      '  ? spawn(process.execPath, ["-e", "setInterval(() => undefined, 1000)"], { detached: true, stdio: ["ignore", "inherit", "inherit"] })',
+      "  : undefined;",
+      "escaped?.unref();",
+      'writeFileSync(process.env.CODEXA_BOOTSTRAP_TEST_PID_PATH, `${process.pid}\\n${descendant.pid}\\n${escaped?.pid ?? ""}\\n`);',
       'if (process.env.CODEXA_BOOTSTRAP_TEST_MODE === "stall") {',
       '  process.on("SIGTERM", () => undefined);',
       "  setInterval(() => undefined, 1_000);",
-      "} else {",
+      '} else if (process.env.CODEXA_BOOTSTRAP_TEST_MODE === "noisy") {',
       '  const chunk = Buffer.alloc(16 * 1024, "x");',
       "  const pump = () => {",
       "    while (process.stdout.write(chunk)) {}",
@@ -140,7 +167,7 @@ async function createBootstrapExecutionFixture(
 function runBootstrapProbe(fixture: {
   repo: string;
   fakeBin: string;
-  mode: "stall" | "noisy";
+  mode: "stall" | "noisy" | "escaped";
   pidPath: string;
 }): ReturnType<typeof spawnSync> {
   return spawnSync(
@@ -185,4 +212,15 @@ async function expectProcessExit(pid: number): Promise<void> {
 
 function shellQuote(value: string): string {
   return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+async function forceProcessExit(pid: number | undefined): Promise<void> {
+  if (!pid) return;
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+    throw error;
+  }
+  await expectProcessExit(pid);
 }
