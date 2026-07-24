@@ -89,6 +89,58 @@ describe("worktree bootstrap receipt", () => {
     });
   });
 
+  it("rejects startup drift introduced while the full completion scope is scanned", async () => {
+    const repo = await createReceiptFixture("codexa-worktree-receipt-cross-scope-startup-");
+    await issueReceipt(repo, "posix-hooks");
+    const completionTrigger = path.join(repo, "src/index.ts");
+    const configPath = path.join(repo, ".codex/config.toml");
+    const originalOpen = nodeFs.open.bind(nodeFs);
+    let mutated = false;
+    vi.spyOn(nodeFs, "open").mockImplementation(async (file, flags, mode) => {
+      if (!mutated && path.resolve(String(file)) === completionTrigger) {
+        mutated = true;
+        await writeFile(configPath, "# changed during completion scan\n", "utf8");
+      }
+      return originalOpen(file, flags, mode);
+    });
+    try {
+      await expect(inspectWorktreeBootstrapReceipt(repo)).resolves.toMatchObject({
+        state: "stale",
+        validation: "full",
+        reason: "config-drift"
+      });
+    } finally {
+      vi.restoreAllMocks();
+    }
+    expect(mutated).toBe(true);
+  });
+
+  it("rejects dependency drift introduced while the full completion scope is scanned", async () => {
+    const repo = await createReceiptFixture("codexa-worktree-receipt-cross-scope-dependency-");
+    await issueReceipt(repo, "posix-hooks");
+    const completionTrigger = path.join(repo, "src/index.ts");
+    const dependencyPath = path.join(repo, "node_modules/example-dependency/index.js");
+    const originalOpen = nodeFs.open.bind(nodeFs);
+    let mutated = false;
+    vi.spyOn(nodeFs, "open").mockImplementation(async (file, flags, mode) => {
+      if (!mutated && path.resolve(String(file)) === completionTrigger) {
+        mutated = true;
+        await writeFile(dependencyPath, "export const dependencyFixture = 2;\n", "utf8");
+      }
+      return originalOpen(file, flags, mode);
+    });
+    try {
+      await expect(inspectWorktreeBootstrapReceipt(repo)).resolves.toMatchObject({
+        state: "stale",
+        validation: "full",
+        reason: "dependency-inventory-drift"
+      });
+    } finally {
+      vi.restoreAllMocks();
+    }
+    expect(mutated).toBe(true);
+  });
+
   it("binds extraneous installed packages and rejects an oversized dependency file", async () => {
     const repo = await createReceiptFixture("codexa-worktree-receipt-inventory-");
     await issueReceipt(repo, "posix-hooks");

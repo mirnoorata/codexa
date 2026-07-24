@@ -209,6 +209,65 @@ export async function validateWorktreeBootstrapReceipt(
   } catch (error) {
     return { state: "unavailable", lane: receipt.lane, validation, reason: boundedReason(error) };
   }
+  const startupMismatch = startupReceiptMismatch(path.resolve(repoRoot), receipt, startup);
+  if (startupMismatch) {
+    return { state: "stale", lane: receipt.lane, validation, reason: startupMismatch, receipt };
+  }
+  if (validation === "startup") {
+    return { state: "verified", lane: receipt.lane, validation, receipt };
+  }
+  let adoption: WorktreeBootstrapAdoptionFacts;
+  try {
+    adoption = await currentAdoptionReceiptFacts(repoRoot);
+  } catch (error) {
+    return { state: "unavailable", lane: receipt.lane, validation, reason: boundedReason(error), receipt };
+  }
+  const adoptionMismatch = adoptionReceiptMismatch(receipt, adoption);
+  if (adoptionMismatch) {
+    return { state: "stale", lane: receipt.lane, validation, reason: adoptionMismatch, receipt };
+  }
+  if (validation === "adoption") {
+    return { state: "verified", lane: receipt.lane, validation, receipt };
+  }
+  let completion: WorktreeBootstrapCompletionFacts;
+  try {
+    completion = await currentCompletionReceiptFacts(repoRoot);
+  } catch (error) {
+    return { state: "unavailable", lane: receipt.lane, validation, reason: boundedReason(error), receipt };
+  }
+  const completionMismatch = completionReceiptMismatch(receipt, completion);
+  if (completionMismatch) {
+    return { state: "stale", lane: receipt.lane, validation, reason: completionMismatch, receipt };
+  }
+
+  // A full validation spans three independently stable scans. Re-read them in
+  // reverse order before acceptance so changes to an earlier scope while a
+  // later scope was being scanned cannot inherit a stale "verified" result.
+  // Each individual scanner still enforces its own stable-snapshot boundary.
+  let finalCompletion: WorktreeBootstrapCompletionFacts;
+  let finalAdoption: WorktreeBootstrapAdoptionFacts;
+  let finalStartup: WorktreeBootstrapStartupSnapshot;
+  try {
+    finalCompletion = await currentCompletionReceiptFacts(repoRoot);
+    finalAdoption = await currentAdoptionReceiptFacts(repoRoot);
+    finalStartup = await currentStartupReceiptSnapshot(repoRoot);
+  } catch (error) {
+    return { state: "unavailable", lane: receipt.lane, validation, reason: boundedReason(error), receipt };
+  }
+  const finalMismatch =
+    completionReceiptMismatch(receipt, finalCompletion) ??
+    adoptionReceiptMismatch(receipt, finalAdoption) ??
+    startupReceiptMismatch(path.resolve(repoRoot), receipt, finalStartup);
+  return finalMismatch
+    ? { state: "stale", lane: receipt.lane, validation, reason: finalMismatch, receipt }
+    : { state: "verified", lane: receipt.lane, validation, receipt };
+}
+
+function startupReceiptMismatch(
+  repoRoot: string,
+  receipt: WorktreeBootstrapReceipt,
+  startup: WorktreeBootstrapStartupSnapshot
+): string | undefined {
   const current = startup.facts;
   const comparisons: Array<[boolean, string]> = [
     [receipt.repoRoot === current.repoRoot, "worktree-identity-drift"],
@@ -222,63 +281,42 @@ export async function validateWorktreeBootstrapReceipt(
     [receipt.dependencySealSha256 === current.dependencySealSha256, "dependency-seal-drift"],
     [sameRuntime(receipt.runtime, current.runtime), "runtime-drift"],
     [receipt.toolProfile === "core" && receipt.toolProfile === current.toolProfile, "tool-profile-drift"],
-    [
-      receipt.codexaHooks === expectedCodexaHookState(receipt.lane),
-      "hook-lane-drift"
-    ],
+    [receipt.codexaHooks === expectedCodexaHookState(receipt.lane), "hook-lane-drift"],
     [receipt.threadMcp === "unverified", "thread-mcp-claim-invalid"]
   ];
   const mismatch = comparisons.find(([matches]) => !matches);
-  if (mismatch) return { state: "stale", lane: receipt.lane, validation, reason: mismatch[1], receipt };
+  if (mismatch) return mismatch[1];
   const platformReason = lanePlatformMismatch(receipt.lane, current.runtime.platform);
-  if (platformReason) {
-    return { state: "stale", lane: receipt.lane, validation, reason: platformReason, receipt };
+  if (platformReason) return platformReason;
+  const hookContract = inspectHookLaneContract(repoRoot, receipt.lane, startup);
+  return hookContract.ok ? undefined : hookContract.reason;
+}
+
+function adoptionReceiptMismatch(
+  receipt: WorktreeBootstrapReceipt,
+  adoption: WorktreeBootstrapAdoptionFacts
+): string | undefined {
+  if (receipt.distCliSha256 !== adoption.distCliSha256) return "dist-cli-drift";
+  if (receipt.distRuntimeSha256 !== adoption.distRuntimeSha256) return "dist-runtime-drift";
+  if (
+    receipt.dependencyInventory.sha256 !== adoption.dependencyInventory.sha256 ||
+    receipt.dependencyInventory.count !== adoption.dependencyInventory.count ||
+    receipt.dependencyInventory.fileCount !== adoption.dependencyInventory.fileCount ||
+    receipt.dependencyInventory.logicalBytes !== adoption.dependencyInventory.logicalBytes
+  ) {
+    return "dependency-inventory-drift";
   }
-  const hookContract = inspectHookLaneContract(path.resolve(repoRoot), receipt.lane, startup);
-  if (!hookContract.ok) {
-    return { state: "stale", lane: receipt.lane, validation, reason: hookContract.reason, receipt };
-  }
-  if (validation === "startup") {
-    return { state: "verified", lane: receipt.lane, validation, receipt };
-  }
-  let adoption: WorktreeBootstrapAdoptionFacts;
-  try {
-    adoption = await currentAdoptionReceiptFacts(repoRoot);
-  } catch (error) {
-    return { state: "unavailable", lane: receipt.lane, validation, reason: boundedReason(error), receipt };
-  }
-  const adoptionComparisons: Array<[boolean, string]> = [
-    [receipt.distCliSha256 === adoption.distCliSha256, "dist-cli-drift"],
-    [receipt.distRuntimeSha256 === adoption.distRuntimeSha256, "dist-runtime-drift"],
-    [
-      receipt.dependencyInventory.sha256 === adoption.dependencyInventory.sha256 &&
-        receipt.dependencyInventory.count === adoption.dependencyInventory.count &&
-        receipt.dependencyInventory.fileCount === adoption.dependencyInventory.fileCount &&
-        receipt.dependencyInventory.logicalBytes === adoption.dependencyInventory.logicalBytes,
-      "dependency-inventory-drift"
-    ]
-  ];
-  const adoptionMismatch = adoptionComparisons.find(([matches]) => !matches);
-  if (adoptionMismatch) {
-    return { state: "stale", lane: receipt.lane, validation, reason: adoptionMismatch[1], receipt };
-  }
-  if (validation === "adoption") {
-    return { state: "verified", lane: receipt.lane, validation, receipt };
-  }
-  let completion: WorktreeBootstrapCompletionFacts;
-  try {
-    completion = await currentCompletionReceiptFacts(repoRoot);
-  } catch (error) {
-    return { state: "unavailable", lane: receipt.lane, validation, reason: boundedReason(error), receipt };
-  }
-  const completionComparisons: Array<[boolean, string]> = [
-    [receipt.head === completion.head, "head-drift"],
-    [receipt.buildInputSha256 === completion.buildInputSha256, "build-input-drift"]
-  ];
-  const completionMismatch = completionComparisons.find(([matches]) => !matches);
-  return completionMismatch
-    ? { state: "stale", lane: receipt.lane, validation, reason: completionMismatch[1], receipt }
-    : { state: "verified", lane: receipt.lane, validation, receipt };
+  return undefined;
+}
+
+function completionReceiptMismatch(
+  receipt: WorktreeBootstrapReceipt,
+  completion: WorktreeBootstrapCompletionFacts
+): string | undefined {
+  if (receipt.head !== completion.head) return "head-drift";
+  return receipt.buildInputSha256 === completion.buildInputSha256
+    ? undefined
+    : "build-input-drift";
 }
 
 export async function inspectWorktreeBootstrapReceipt(
