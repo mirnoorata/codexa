@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { AsyncLocalStorage } from "node:async_hooks";
 
 export interface RunCommandOptions {
   cwd?: string;
@@ -37,18 +38,30 @@ export interface CommandBudget {
 
 const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_BUFFER_BYTES = 1024 * 1024;
+const commandBudgetContext = new AsyncLocalStorage<CommandBudget>();
 
 export function createCommandBudget(totalMs: number, warnings: string[] = [], provenance: string[] = []): CommandBudget {
   return new MutableCommandBudget(totalMs, warnings, provenance);
 }
 
+export function withCommandBudget<T>(
+  budget: CommandBudget,
+  operation: () => Promise<T>
+): Promise<T> {
+  return commandBudgetContext.run(budget, operation);
+}
+
 export async function runCommand(command: string, args: string[], options: RunCommandOptions = {}): Promise<CommandResult> {
+  const budget = options.budget ?? commandBudgetContext.getStore();
   const requestedTimeoutMs = Math.max(1, options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-  const timeoutMs = options.budget?.reserveTimeout(requestedTimeoutMs) ?? requestedTimeoutMs;
+  const timeoutMs = budget?.reserveTimeout(requestedTimeoutMs) ?? requestedTimeoutMs;
   const maxBufferBytes = Math.max(1024, options.maxBufferBytes ?? DEFAULT_MAX_BUFFER_BYTES);
   const okExitCodes = new Set(options.okExitCodes ?? [0]);
   const startedAt = Date.now();
-  const detached = Boolean(options.killProcessGroup && process.platform !== "win32");
+  const detached = Boolean(
+    (options.killProcessGroup || (budget && options.killProcessGroup !== false)) &&
+    process.platform !== "win32"
+  );
 
   if (timeoutMs <= 0) {
     const result: CommandResult = {
@@ -64,7 +77,7 @@ export async function runCommand(command: string, args: string[], options: RunCo
       truncated: false,
       error: new Error(`Command budget exhausted before running ${command}`)
     };
-    options.budget?.record(result, 0);
+    budget?.record(result, 0);
     return result;
   }
 
@@ -106,7 +119,7 @@ export async function runCommand(command: string, args: string[], options: RunCo
         truncated,
         error: partial.error
       };
-      options.budget?.record(result, Math.max(0, Date.now() - startedAt));
+      budget?.record(result, Math.max(0, Date.now() - startedAt));
       resolve(result);
     };
 

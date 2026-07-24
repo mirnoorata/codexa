@@ -27,10 +27,10 @@ export { renderSessionStartJson, renderSessionStartReceipt, SESSION_START_JSON_M
 export type { SessionStartConfigState, SessionStartIndexState, SessionStartOptions, SessionStartReceipt, SessionStartToolProfile } from "./session-start.js";
 
 const EDIT_HOOK_MATCHER = "Edit|MultiEdit|Write|NotebookEdit|apply_patch";
-// SessionStart's normal p95 is gated below one second, but its fail-closed
-// routing, setup, and Git probes have independent bounded degradation windows.
-// Keep the host ceiling above their documented aggregate so the CLI can emit
-// an advisory unavailable receipt instead of being killed mid-diagnosis.
+// SessionStart's normal p95 is gated below one second and its advisory path has
+// a 15-second aggregate budget (configurable only within a 1-45 second clamp).
+// Keep the host ceiling above that budget plus child-process termination grace
+// so a degraded probe can emit a truthful unavailable receipt.
 const SESSION_START_HOOK_TIMEOUT_SECONDS = 60;
 
 interface LaunchSpec {

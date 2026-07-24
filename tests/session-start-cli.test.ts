@@ -262,6 +262,39 @@ describe("Codexa SessionStart CLI receipt", () => {
     }
   );
 
+  it.skipIf(process.platform === "win32")(
+    "emits an advisory receipt before the host ceiling when Git probes stall",
+    async () => {
+      const repo = await createHookFixtureRepo();
+      const fakeBin = await trackedTmpDir("codexa-session-start-slow-git-");
+      const fakeGit = path.join(fakeBin, "git");
+      await writeFile(fakeGit, "#!/bin/sh\nsleep 5\nexit 1\n", "utf8");
+      await chmod(fakeGit, 0o755);
+      const env = {
+        ...testEnv(),
+        CODEXA_SESSION_START_BUDGET_MS: "1000",
+        PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ""}`
+      };
+
+      const startedAt = Date.now();
+      const result = spawnSync(
+        process.execPath,
+        [cli, "session-start", repo, "--json"],
+        {
+          cwd: process.cwd(),
+          encoding: "utf8",
+          timeout: 4_000,
+          env
+        }
+      );
+      expect(result.error).toBeUndefined();
+      expect(Date.now() - startedAt).toBeLessThan(4_000);
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({ availability: "unavailable" });
+      expect(Buffer.byteLength(result.stdout, "utf8")).toBeLessThanOrEqual(4096);
+    }
+  );
+
   it("does not record advisory telemetry through redirected managed state", async () => {
     const repo = await createHookFixtureRepo();
     expect(

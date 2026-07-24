@@ -28,6 +28,14 @@ ready. Pass `--json` for the structured receipt. Set
 `CODEXA_SESSIONSTART_CONTEXT=1` in the hook environment if you want the bounded
 context preview and workspace-row digest as well.
 
+The advisory path has one 15-second wall-clock budget and a shared subprocess
+budget; it does not multiply a fresh timeout across every Git probe. The
+generated host hook keeps a 60-second ceiling so process-group termination
+grace still leaves time to emit the unavailable receipt. Operators may set
+`CODEXA_SESSION_START_BUDGET_MS` between 1,000 and 45,000 milliseconds; values
+outside that range are clamped. Auto-refresh is an explicit mutating operation
+and is not cut off by the advisory wall-clock race.
+
 At a shared workspace root, a `Workspace Default` or lone implicit `Active
 Sessions` row is only a fallback for explicit query commands; neither proves
 that the new session selected that project. SessionStart therefore returns
