@@ -2,8 +2,8 @@
 
 PR summary for
 `codex/general/codexa-20260722-210037-focus-orientation` against `main`.
-The final source-evidence head used for the measurements below is
-`f64409f84d675fe34558e0dabcbb66eb80179893`.
+The final source-evidence head used for the measurements and verification
+below is `d28d03c0ecacfc712715ad29164abfc5559c09e9`.
 
 ## Outcome
 
@@ -16,7 +16,9 @@ retrieval, not token reduction by itself:
 - One serialized Node bootstrap owns dependency installation, build, worktree
   wiring, indexing, and receipt publication for Bash and PowerShell launchers.
   Every stage has a deadline, termination grace, forced-stop fallback, and a
-  shared 8 MiB log ceiling. Terminal settlement also closes inherited pipes
+  shared 8 MiB log ceiling. POSIX process-group teardown returns as soon as a
+  cooperative tree has exited while retaining the grace and forced-stop path
+  for resistant descendants. Terminal settlement also closes inherited pipes
   when an escaped descendant prevents the direct child’s `close` event,
   including ordinary commands that do not request process-tree termination.
 - Setup proof is an immutable Git blob published through the per-worktree
@@ -72,7 +74,7 @@ prompt as a proxy for task success.
 | Decoded `tools/list` payload | full profile | 87.2% lower in core profile |
 | Startup advertisement plus discovery | full profile | 69.8% lower in core profile |
 | First/repeated tiny task result | full profile | 0% reduction |
-| SessionStart p95 | 1,000 ms target | 523 ms |
+| SessionStart p95 | 1,000 ms target | 534 ms |
 
 The automatic-policy token figure is only a four-bytes-per-token estimate
 (2,864), not an observed model-token count. The transport benchmark measures
@@ -111,14 +113,14 @@ quality, and latency. This PR does not fabricate that host-controlled result.
 
 - `npm run security:check`: passed.
   - 87 test files passed.
-  - 1,037 tests passed; 1 intentionally skipped.
+  - 1,038 tests passed; 1 intentionally skipped.
   - npm audit found 0 vulnerabilities.
   - Public snapshot, package hygiene, plugin hygiene, and the 31-check packaged
     install smoke passed.
 - `npm run benchmark:ci`: passed every threshold.
-  - SessionStart p50 502 ms, p95 523 ms.
-  - Adoption validation 938 ms against a 5,000 ms target.
-  - MCP startup 287 ms; MCP freshness p95 188 ms.
+  - SessionStart p50 530 ms, p95 534 ms.
+  - Adoption validation 959 ms against a 5,000 ms target.
+  - MCP startup 290 ms; MCP freshness p95 180 ms.
   - The default run passed every unscaled product target. GitHub Actions uses
     an explicit, capped 1.5x shared-runner gate while retaining each base
     target and reporting target misses separately.
@@ -126,6 +128,9 @@ quality, and latency. This PR does not fabricate that host-controlled result.
   logical-operation parity, 87.2% lower decoded tool-list payload, and 69.8%
   lower startup advertisement/discovery payload.
 - `npm run eval:ci`: passed 21 scenarios with score 1 and no raw-search win.
+- GitHub Actions at the final source-evidence head passed both duplicate full
+  checks, benchmarks, package smokes, and native Ubuntu, macOS, and Windows
+  bootstrap lanes.
 - The shared worktree controller self-test passed against this real Codexa
   checkout, including fresh bootstrap/adoption behavior.
 - `git diff --check`, source hygiene, release-path verification, public hygiene,
