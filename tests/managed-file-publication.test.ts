@@ -70,6 +70,62 @@ describe("managed file publication", () => {
     }
     expect(swapped).toBe(true);
   });
+
+  it.skipIf(process.platform === "win32")(
+    "keeps the final rename anchored when the named parent is swapped",
+    async () => {
+      const repo = await fixture("codexa-managed-publish-rename-race-");
+      const outside = await fixture("codexa-managed-publish-rename-target-");
+      const directory = path.join(repo, ".codex/tmp");
+      const displaced = path.join(repo, ".codex/tmp-displaced");
+      await mkdir(directory, { recursive: true });
+      await writeFile(path.join(directory, "receipt.json"), "inside-old\n");
+      await writeFile(path.join(outside, "receipt.json"), "outside-sentinel\n");
+      const originalRename = nodeFs.rename.bind(nodeFs);
+      let swapped = false;
+      let outsideTemporary = "";
+      vi.spyOn(nodeFs, "rename").mockImplementation(async (oldPath, newPath) => {
+        if (
+          !swapped &&
+          path.basename(String(oldPath)).startsWith(".receipt.json.") &&
+          path.basename(String(newPath)) === "receipt.json"
+        ) {
+          swapped = true;
+          outsideTemporary = path.join(outside, path.basename(String(oldPath)));
+          await writeFile(outsideTemporary, "outside-temporary-sentinel\n");
+          await originalRename(directory, displaced);
+          await symlink(outside, directory, "dir");
+        }
+        return originalRename(oldPath, newPath);
+      });
+
+      try {
+        await expect(publishManagedStateFile(
+          repo,
+          ["tmp"],
+          "receipt.json",
+          "new-receipt\n",
+          "receipt-publication"
+        )).rejects.toThrow(
+          /receipt-publication-directory-(?:invalid|changed-during-publication)/u
+        );
+        await expect(readFile(path.join(outside, "receipt.json"), "utf8")).resolves.toBe(
+          "outside-sentinel\n"
+        );
+        await expect(readFile(outsideTemporary, "utf8")).resolves.toBe(
+          "outside-temporary-sentinel\n"
+        );
+        await expect(readFile(path.join(displaced, "receipt.json"), "utf8")).resolves.toBe(
+          "new-receipt\n"
+        );
+      } finally {
+        vi.restoreAllMocks();
+        await rm(directory, { recursive: true, force: true });
+        await originalRename(displaced, directory);
+      }
+      expect(swapped).toBe(true);
+    }
+  );
 });
 
 async function fixture(prefix: string): Promise<string> {
