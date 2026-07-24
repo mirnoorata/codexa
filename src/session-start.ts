@@ -1,4 +1,4 @@
-import { access, readFile, realpath, stat } from "node:fs/promises";
+import { access, realpath, stat } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import path from "node:path";
 import { parse as parseToml } from "smol-toml";
@@ -129,6 +129,7 @@ async function sessionStartReceiptInternal(
   let repoRoot: string;
   let resolutionNote: string | undefined;
   let workspaceFocusFile: string | undefined;
+  let workspaceFocusContents: string | undefined;
   let routingSource: string | undefined;
   let routingFocusReason: McpRepoRootResolution["focusReason"];
   let workspaceSessionId: string | undefined;
@@ -170,6 +171,7 @@ async function sessionStartReceiptInternal(
     routingSource = resolution.source;
     routingFocusReason = resolution.focusReason;
     workspaceFocusFile = resolution.focusFile;
+    workspaceFocusContents = resolution.focusFileContents;
     workspaceSessionId = resolution.workspaceSessionId;
     if (resolution.focusReason === "workspace-default" || resolution.focusReason === "active-session") {
       return selectionRequiredSessionStartReceipt({
@@ -279,6 +281,7 @@ async function sessionStartReceiptInternal(
     if (resolutionNote) {
       const digest = await workspaceActiveRowsDigest({
         focusFile: workspaceFocusFile,
+        focusFileContents: workspaceFocusContents,
         selectedSessionId: sessionOptions.workspaceSessionId ?? process.env.CODEXA_WORKSPACE_SESSION ?? process.env.SESSION_ID,
         selectedRepoRoot: repoRoot
       });
@@ -838,15 +841,16 @@ function renderSessionStartIndex(index: SessionStartReceipt["index"]): string {
   return `Index: ${index.state} (${details.join(", ")}).`;
 }
 
-async function workspaceActiveRowsDigest(input: { focusFile?: string; selectedSessionId?: string; selectedRepoRoot: string }): Promise<string[]> {
+async function workspaceActiveRowsDigest(input: {
+  focusFile?: string;
+  focusFileContents?: string;
+  selectedSessionId?: string;
+  selectedRepoRoot: string;
+}): Promise<string[]> {
   const focusFile = input.focusFile;
   if (!focusFile?.endsWith("WORKING.md")) return [];
-  let text: string;
-  try {
-    text = await readFile(focusFile, "utf8");
-  } catch {
-    return [];
-  }
+  const text = input.focusFileContents;
+  if (text === undefined) return [];
   const activeRows = parseActiveSessionRows(text).filter((row) => !isWorkspaceDigestTerminalStatus(row.status));
   const selectedSession = input.selectedSessionId?.trim();
   const selectedRow = selectedSession ? activeRows.find((row) => row.session === selectedSession) : undefined;

@@ -2,6 +2,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { runCommand } from "./command.js";
 import { assertSafeManagedDirectory, assertSafeManagedFile } from "./init-portability.js";
+import { readSessionStartFocusFile } from "./session-start-file-read.js";
 
 export interface McpRepoRootResolutionOptions {
   skipDefaultFocusFile?: boolean;
@@ -20,6 +21,7 @@ export interface McpRepoRootResolution {
   focusReason?: "selected-session" | "explicit-focus" | "active-session" | "workspace-default" | "environment";
   workspaceSessionId?: string;
   warnings?: string[];
+  focusFileContents?: string;
 }
 
 interface CandidateRepoRoot {
@@ -30,6 +32,7 @@ interface CandidateRepoRoot {
   workspaceSessionId?: string;
   strict?: boolean;
   warnings?: string[];
+  focusFileContents?: string;
 }
 
 interface FocusFileRepoSelection {
@@ -38,6 +41,7 @@ interface FocusFileRepoSelection {
   workspaceSessionId?: string;
   strict: boolean;
   warnings: string[];
+  contents?: string;
 }
 
 interface FocusFileCandidate {
@@ -118,7 +122,8 @@ export async function resolveMcpRepoRoot(configuredRootInput: string, options: M
         focusFile: candidate.focusFile,
         focusReason: candidate.focusReason,
         workspaceSessionId: candidate.workspaceSessionId,
-        warnings: candidate.warnings
+        warnings: candidate.warnings,
+        focusFileContents: candidate.focusFileContents
       };
     }
     if (candidate.strict || effectiveOptions.requireValidDeclaredFocus) {
@@ -185,7 +190,8 @@ async function* focusFileRepoCandidates(configuredRoot: string, options: McpRepo
         focusReason: selection.focusReason,
         workspaceSessionId: selection.workspaceSessionId,
         strict: selection.strict,
-        warnings: selection.warnings
+        warnings: selection.warnings,
+        focusFileContents: selection.contents
       };
     }
   }
@@ -225,9 +231,10 @@ async function assertSafeDefaultFocusFile(configuredRoot: string): Promise<void>
 async function readFocusedRepoPaths(focusFile: string, options: McpRepoRootResolutionOptions, configuredRoot?: string): Promise<FocusFileRepoSelection> {
   let text: string;
   try {
-    text = await fs.readFile(focusFile, "utf8");
-  } catch {
-    return emptyFocusFileSelection();
+    text = await readSessionStartFocusFile(focusFile);
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return emptyFocusFileSelection();
+    throw error;
   }
 
   const workspaceSessionId = normalizeWorkspaceSessionId(declaredWorkspaceSession(options), true);
@@ -307,7 +314,7 @@ async function readFocusedRepoPaths(focusFile: string, options: McpRepoRootResol
     throw new Error(`Codexa MCP workspace session ${workspaceSessionId} is not active in ${path.resolve(focusFile)}`);
   }
   const defaultPathGroups = await partitionDefaultPaths(defaultPaths, configuredRoot);
-  return firstUnambiguousPriority(
+  const selection = await firstUnambiguousPriority(
     [
       { paths: selectedSessionPaths, focusReason: "selected-session", allowFallbackWhenAmbiguous: false, strict: true, workspaceSessionId },
       { paths: explicitPaths, focusReason: "explicit-focus", allowFallbackWhenAmbiguous: false, strict: false, conflictPaths: [...defaultPathGroups.focused, ...activeSessionPaths] },
@@ -319,6 +326,7 @@ async function readFocusedRepoPaths(focusFile: string, options: McpRepoRootResol
     focusFile,
     configuredRoot
   );
+  return { ...selection, contents: text };
 }
 
 function emptyFocusFileSelection(): FocusFileRepoSelection {
@@ -346,6 +354,10 @@ function pushFocusedRepoPath(paths: string[], raw: string): void {
 
 function uniquePaths(paths: string[]): string[] {
   return [...new Set(paths)];
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error;
 }
 
 async function firstUnambiguousPriority(

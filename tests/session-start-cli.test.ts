@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rename, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, readdir, rename, symlink, truncate, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -106,6 +106,97 @@ describe("Codexa SessionStart CLI receipt", () => {
       index: { state: "fresh" }
     });
   });
+
+  it("rejects an oversized workspace focus file with a bounded advisory receipt", async () => {
+    const workspace = await trackedTmpDir("codexa-session-start-large-focus-");
+    const sourceRepo = await createHookFixtureRepo();
+    const repo = path.join(workspace, "repo");
+    await rename(sourceRepo, repo);
+    const focusFile = path.join(workspace, "WORKING.md");
+    await writeFile(focusFile, `Focused project: \`${repo}\`\n`, "utf8");
+    await truncate(focusFile, 2 * 1024 * 1024 + 1);
+
+    const result = spawnSync(
+      process.execPath,
+      [cli, "session-start", workspace, "--json", "--workspace-focus-file", focusFile],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        timeout: 3_000,
+        env: testEnv()
+      }
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({ availability: "unavailable" });
+    expect(result.stdout).toContain("workspace-focus-file-size-limit-exceeded");
+    expect(Buffer.byteLength(result.stdout, "utf8")).toBeLessThanOrEqual(4096);
+  });
+
+  it.skipIf(process.platform === "win32")(
+    "rejects a workspace focus file swapped to a FIFO without blocking the production CLI",
+    async () => {
+      const workspace = await trackedTmpDir("codexa-session-start-fifo-focus-");
+      const focusFile = path.join(workspace, "WORKING.md");
+      const sourceRepo = await createHookFixtureRepo();
+      const repo = path.join(workspace, "repo");
+      await rename(sourceRepo, repo);
+      await writeFile(focusFile, `Focused project: \`${repo}\`\n`, "utf8");
+      const preload = path.join(workspace, "focus-fifo-race-preload.mjs");
+      const sentinel = path.join(workspace, "focus-fifo-race-observed");
+      await writeFile(
+        preload,
+        [
+          'import { execFileSync } from "node:child_process";',
+          'import { promises as fs } from "node:fs";',
+          'import path from "node:path";',
+          "const originalOpen = fs.open.bind(fs);",
+          "let swapped = false;",
+          "fs.open = async (file, flags, mode) => {",
+          "  if (!swapped && path.resolve(String(file)) === path.resolve(process.env.CODEXA_FIFO_TARGET)) {",
+          "    swapped = true;",
+          "    await fs.rm(file);",
+          '    execFileSync("mkfifo", [String(file)]);',
+          '    await fs.writeFile(process.env.CODEXA_FIFO_SENTINEL, "observed\\n");',
+          "  }",
+          "  return originalOpen(file, flags, mode);",
+          "};",
+          ""
+        ].join("\n"),
+        "utf8"
+      );
+
+      const result = spawnSync(
+        process.execPath,
+        [
+          "--import",
+          preload,
+          cli,
+          "session-start",
+          workspace,
+          "--json",
+          "--workspace-focus-file",
+          focusFile
+        ],
+        {
+          cwd: process.cwd(),
+          encoding: "utf8",
+          timeout: 3_000,
+          env: {
+            ...testEnv(),
+            CODEXA_FIFO_TARGET: focusFile,
+            CODEXA_FIFO_SENTINEL: sentinel
+          }
+        }
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({ availability: "unavailable" });
+      expect(result.stdout).toContain("workspace-focus-file-changed-during-read");
+      expect(Buffer.byteLength(result.stdout, "utf8")).toBeLessThanOrEqual(4096);
+      await expect(readFile(sentinel, "utf8")).resolves.toBe("observed\n");
+    }
+  );
 
   it("does not record advisory telemetry through redirected managed state", async () => {
     const repo = await createHookFixtureRepo();
