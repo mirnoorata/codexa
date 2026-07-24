@@ -324,7 +324,7 @@ async function updateHashFromFile(
   scratch: Buffer,
   deadlineAt: number
 ): Promise<void> {
-  const handle = await fs.open(filePath, "r");
+  const handle = await fs.open(filePath, STABLE_REGULAR_READ_FLAGS);
   try {
     const opened = await handle.stat();
     if (

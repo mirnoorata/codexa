@@ -4,6 +4,7 @@ import { createHash, randomUUID } from "node:crypto";
 import {
   chmodSync,
   closeSync,
+  constants as fsConstants,
   existsSync,
   openSync,
   promises as fs,
@@ -27,6 +28,8 @@ const BUILD_SCAN_MAX_ENTRIES = 10_000;
 const BUILD_SCAN_MAX_LOGICAL_BYTES = 256 * 1024 * 1024;
 const LOCK_OWNER_MAX_BYTES = 64 * 1024;
 const BOOTSTRAP_LOCK_MAX_ATTEMPTS = 32;
+const STABLE_REGULAR_READ_FLAGS =
+  fsConstants.O_RDONLY | fsConstants.O_NONBLOCK | fsConstants.O_NOFOLLOW;
 
 try {
   const mode = process.argv[2] ?? "";
@@ -920,7 +923,7 @@ async function readBudgetedStableRegularFile(filePath, maxBytes, label, budget, 
     throw new Error(`${label}-invalid`);
   }
   if (expected.size > maxBytes) throw new Error(`${label}-size-limit-exceeded`);
-  const handle = await fs.open(filePath, "r").catch((error) => {
+  const handle = await fs.open(filePath, STABLE_REGULAR_READ_FLAGS).catch((error) => {
     if (error?.code === "ENOENT") throw new Error(`${label}-changed-during-read`);
     throw error;
   });

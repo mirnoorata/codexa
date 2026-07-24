@@ -397,6 +397,61 @@ describe("worktree bootstrap receipt", () => {
     );
   });
 
+  it.skipIf(process.platform === "win32")(
+    "rejects a producer input replaced by a FIFO before open without blocking",
+    async () => {
+      const repo = await createReceiptFixture("codexa-worktree-producer-fifo-race-");
+      const target = path.join(repo, "src/index.ts");
+      const preload = path.join(repo, "fifo-open-race-preload.mjs");
+      const sentinel = path.join(repo, "fifo-open-race-observed");
+      await writeFile(
+        preload,
+        [
+          'import { execFileSync } from "node:child_process";',
+          'import { promises as fs } from "node:fs";',
+          'import path from "node:path";',
+          "const originalOpen = fs.open.bind(fs);",
+          "let swapped = false;",
+          "fs.open = async (file, flags, mode) => {",
+          "  if (!swapped && path.resolve(String(file)) === path.resolve(process.env.CODEXA_FIFO_TARGET)) {",
+          "    swapped = true;",
+          "    await fs.rm(file);",
+          '    execFileSync("mkfifo", [String(file)]);',
+          '    await fs.writeFile(process.env.CODEXA_FIFO_SENTINEL, "observed\\n");',
+          "  }",
+          "  return originalOpen(file, flags, mode);",
+          "};",
+          ""
+        ].join("\n"),
+        "utf8"
+      );
+
+      const producer = spawnSync(
+        process.execPath,
+        [
+          "--import",
+          preload,
+          path.resolve("scripts/worktree-bootstrap.mjs"),
+          "--inspect-inputs",
+          repo
+        ],
+        {
+          encoding: "utf8",
+          timeout: 3_000,
+          env: {
+            ...process.env,
+            CODEXA_FIFO_TARGET: target,
+            CODEXA_FIFO_SENTINEL: sentinel
+          }
+        }
+      );
+      expect(producer.error).toBeUndefined();
+      expect(producer.status).not.toBe(0);
+      expect(producer.stderr).toContain("build-input-changed-during-read");
+      await expect(readFile(sentinel, "utf8")).resolves.toBe("observed\n");
+    }
+  );
+
   it("parses newline-heavy wrappers without materializing every line", async () => {
     const repo = await createReceiptFixture("codexa-worktree-receipt-newline-heavy-");
     const ignoredDeclarations = Array.from(

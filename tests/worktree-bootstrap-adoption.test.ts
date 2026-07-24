@@ -142,6 +142,30 @@ describe("worktree bootstrap adoption integrity", () => {
     }
   );
 
+  it.skipIf(process.platform === "win32")(
+    "rejects a tree file replaced by a FIFO before the actual hasher opens it",
+    async () => {
+      const repo = await createAdoptionFixture("codexa-adoption-tree-fifo-race-");
+      const target = path.join(repo, "dist/runtime.js");
+      await writeFile(target, "export const runtime = true;\n", "utf8");
+      const originalOpen = nodeFs.open.bind(nodeFs);
+      let swapped = false;
+      vi.spyOn(nodeFs, "open").mockImplementation(async (file, flags, mode) => {
+        if (!swapped && path.resolve(String(file)) === target) {
+          await rm(target);
+          execFileSync("mkfifo", [target]);
+          swapped = true;
+        }
+        return originalOpen(file, flags, mode);
+      });
+
+      await expect(currentAdoptionReceiptFacts(repo)).rejects.toThrow(
+        /adoption-file-changed-during-scan/u
+      );
+      expect(swapped).toBe(true);
+    }
+  );
+
   it("orders non-ASCII manifest entries without the process locale", async () => {
     const repo = await createAdoptionFixture("codexa-adoption-deterministic-order-");
     const dist = path.join(repo, "dist");
