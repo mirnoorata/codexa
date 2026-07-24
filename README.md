@@ -192,15 +192,18 @@ before the first prompt. Create and configure that Worktree chat on desktop;
 Remote on mobile may continue a supported desktop Codex chat but cannot select
 or configure local setup. Once the app has created the linked worktree, adopt
 that checkout for the task instead of creating a second worktree. A successful
-POSIX setup receipt binds the complete regular-file `dist/` runtime manifest,
-not only the CLI entry point, so a changed imported module invalidates full
-validation. SessionStart consumes a lightweight durable subset: worktree and
-Git identity, package/lock and startup-procedure inputs, dependency-install
-seal, managed config/hooks, and Node runtime. Ordinary source, HEAD, index, or
-build-output evolution therefore does not force a complete bootstrap rerun or
-block a safe index refresh. The explicit `worktree-receipt validate` completion
-gate still recomputes source, complete `dist/`, HEAD, and installed dependency
-inventory.
+setup receipt is an immutable Git blob published through the worktree-local
+`refs/worktree/codexa/bootstrap-receipt` ref. Git provides the cross-platform
+atomic publication boundary and keeps linked-worktree receipts isolated; no
+mutable `.codex` pathname is treated as receipt authority. The receipt binds
+the complete regular-file `dist/` runtime manifest, not only the CLI entry
+point, so a changed imported module invalidates full validation. SessionStart
+consumes a lightweight durable subset: worktree and Git identity, package/lock
+and startup-procedure inputs, dependency-install seal, managed config/hooks,
+and Node runtime. Ordinary source, HEAD, index, or build-output evolution
+therefore does not force a complete bootstrap rerun or block a safe index
+refresh. The explicit `worktree-receipt validate` completion gate still
+recomputes source, complete `dist/`, HEAD, and installed dependency inventory.
 Shared adoption uses a trusted canonical Codexa CLI with `--scope adoption`.
 That scope validates durable startup inputs, the complete generated runtime,
 and a single-pass, bounded manifest of the complete installed dependency tree

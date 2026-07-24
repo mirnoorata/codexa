@@ -42,6 +42,9 @@ names, hostnames, or session memory to the public repository.
 - Treat only a receipt whose durable subset the current SessionStart validates
   as startup proof. A selected environment with missing, stale, or invalid
   durable evidence is only source-ready and needs explicit repair/fallback.
+  The receipt is an immutable Git blob behind the per-worktree
+  `refs/worktree/codexa/bootstrap-receipt` ref; do not treat an ignored
+  `.codex` file as receipt authority.
   Use `worktree-receipt validate` for the expensive full source, output, HEAD,
   and dependency-inventory completion gate.
 - Shared adoption controllers must validate through their trusted canonical

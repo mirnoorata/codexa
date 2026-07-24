@@ -124,10 +124,9 @@ async function runBootstrap(lane, repoInput) {
       args: ["dist/cli.js", "session-start", repoRoot, "--json", "--strict"]
     });
 
-    const receiptPath = path.join(repoRoot, ".codex/tmp/worktree-bootstrap-receipt.json");
     process.stdout.write(
       `Codexa bootstrap: dependencies=installed; build=ready; wiring=core; ` +
-      `lane=${lane}; receipt=${receiptPath}; log=${logPath}\n`
+      `lane=${lane}; receipt=git-ref:refs/worktree/codexa/bootstrap-receipt; log=${logPath}\n`
     );
     if (lane === "native-windows-mcp") {
       process.stderr.write(

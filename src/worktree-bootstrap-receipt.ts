@@ -7,7 +7,6 @@ import {
   assertSafeManagedStateDirectory,
   isGitTrackedAsync
 } from "./init-portability.js";
-import { publishManagedStateFile } from "./managed-file-publication.js";
 import {
   currentAdoptionReceiptFacts,
   readBoundedStableRegularFile,
@@ -17,9 +16,10 @@ import {
 import { worktreeBootstrapBuildInputDigest } from "./worktree-bootstrap-build-input.js";
 import type { StableDirectoryBudget } from "./stable-directory-snapshot.js";
 
-export const WORKTREE_BOOTSTRAP_RECEIPT_RELATIVE_PATH = ".codex/tmp/worktree-bootstrap-receipt.json";
+export const WORKTREE_BOOTSTRAP_RECEIPT_REF = "refs/worktree/codexa/bootstrap-receipt";
 export const WORKTREE_BOOTSTRAP_DEPENDENCY_SEAL_RELATIVE_PATH = "node_modules/.codexa-dependencies.json";
 const RECEIPT_MAX_BYTES = 128 * 1024;
+const GIT_OBJECT_ID_PATTERN = /^[0-9a-f]{40,64}$/u;
 const DEPENDENCY_MAX_ENTRIES = 100_000;
 const DEPENDENCY_MAX_LOGICAL_BYTES = 2 * 1024 * 1024 * 1024;
 const STARTUP_SCAN_TIMEOUT_MS = 5_000;
@@ -189,13 +189,7 @@ export async function issueWorktreeBootstrapReceipt(
   if (receipt.buildInputSha256 !== expectedBuildInputSha256) {
     throw new Error("Cannot issue Codexa worktree receipt: build-input-changed-during-bootstrap");
   }
-  await publishManagedStateFile(
-    repo,
-    ["tmp"],
-    path.basename(WORKTREE_BOOTSTRAP_RECEIPT_RELATIVE_PATH),
-    `${JSON.stringify(receipt, null, 2)}\n`,
-    "receipt-publication"
-  );
+  await publishWorktreeReceiptRef(repo, `${JSON.stringify(receipt, null, 2)}\n`);
   const inspection = await inspectWorktreeBootstrapReceipt(repo, { validation: "full" });
   if (inspection.state !== "verified" || inspection.validation !== "full") {
     throw new Error(`Codexa worktree receipt failed immediate validation: ${inspection.reason ?? inspection.state}`);
@@ -299,31 +293,111 @@ export async function inspectWorktreeBootstrapReceipt(
     return { state: "unavailable", validation, reason: boundedReason(error) };
   }
   if (!required) return { state: "not-required" };
-  const receiptPath = path.join(repo, WORKTREE_BOOTSTRAP_RECEIPT_RELATIVE_PATH);
   try {
-    await assertSafeManagedStateDirectory(repo, "tmp");
-    const parsed = JSON.parse((await readBoundedStableRegularFile(
-      receiptPath,
-      RECEIPT_MAX_BYTES,
-      "receipt",
-      Date.now() + STARTUP_SCAN_TIMEOUT_MS,
-      repo
-    )).toString("utf8")) as unknown;
+    const stored = await readWorktreeReceiptRef(repo);
+    if (stored.state === "missing") {
+      return { state: "missing", validation, reason: "receipt-missing" };
+    }
+    if (stored.state === "invalid") {
+      return { state: "invalid", validation, reason: stored.reason };
+    }
+    const parsed = JSON.parse(stored.contents) as unknown;
     if (!isWorktreeBootstrapReceipt(parsed)) {
       return { state: "invalid", validation, reason: "receipt-schema-invalid" };
     }
     return validateWorktreeBootstrapReceipt(repo, parsed, validation);
   } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") {
-      return required
-        ? { state: "missing", validation, reason: "receipt-missing" }
-        : { state: "not-required" };
-    }
-    if (error instanceof Error && error.message === "receipt-size-limit-exceeded") {
-      return { state: "invalid", validation, reason: "receipt-too-large" };
-    }
     return { state: "invalid", validation, reason: boundedReason(error) };
   }
+}
+
+async function publishWorktreeReceiptRef(
+  repoRoot: string,
+  contents: string
+): Promise<void> {
+  if (Buffer.byteLength(contents, "utf8") > RECEIPT_MAX_BYTES) {
+    throw new Error("Cannot issue Codexa worktree receipt: receipt-too-large");
+  }
+  const stored = await runCommand(
+    "git",
+    ["-C", repoRoot, "hash-object", "-w", "--stdin"],
+    {
+      input: contents,
+      timeoutMs: 2_500,
+      maxBufferBytes: 64 * 1024
+    }
+  );
+  const objectId = stored.stdout.trim();
+  if (!stored.ok || !GIT_OBJECT_ID_PATTERN.test(objectId)) {
+    throw new Error("Cannot issue Codexa worktree receipt: receipt-object-publication-failed");
+  }
+  const published = await runCommand(
+    "git",
+    ["-C", repoRoot, "update-ref", "--no-deref", WORKTREE_BOOTSTRAP_RECEIPT_REF, objectId],
+    {
+      timeoutMs: 2_500,
+      maxBufferBytes: 64 * 1024
+    }
+  );
+  if (!published.ok) {
+    throw new Error("Cannot issue Codexa worktree receipt: receipt-ref-publication-failed");
+  }
+}
+
+async function readWorktreeReceiptRef(
+  repoRoot: string
+): Promise<
+  | { state: "missing" }
+  | { state: "invalid"; reason: string }
+  | { state: "ok"; contents: string }
+> {
+  const resolved = await runCommand(
+    "git",
+    ["-C", repoRoot, "rev-parse", "--verify", "--end-of-options", WORKTREE_BOOTSTRAP_RECEIPT_REF],
+    {
+      timeoutMs: 2_500,
+      maxBufferBytes: 64 * 1024
+    }
+  );
+  if (!resolved.ok) {
+    if (resolved.timedOut || resolved.truncated || resolved.error) {
+      return { state: "invalid", reason: "receipt-ref-resolution-failed" };
+    }
+    return { state: "missing" };
+  }
+  const objectId = resolved.stdout.trim();
+  if (!GIT_OBJECT_ID_PATTERN.test(objectId)) {
+    return { state: "invalid", reason: "receipt-ref-object-invalid" };
+  }
+  const type = await runCommand(
+    "git",
+    ["-C", repoRoot, "cat-file", "-t", objectId],
+    {
+      timeoutMs: 2_500,
+      maxBufferBytes: 64 * 1024
+    }
+  );
+  if (!type.ok || type.stdout.trim() !== "blob") {
+    return { state: "invalid", reason: "receipt-ref-object-invalid" };
+  }
+  const contents = await runCommand(
+    "git",
+    ["-C", repoRoot, "cat-file", "blob", objectId],
+    {
+      timeoutMs: 2_500,
+      maxBufferBytes: RECEIPT_MAX_BYTES + 1
+    }
+  );
+  if (
+    contents.truncated ||
+    Buffer.byteLength(contents.stdout, "utf8") > RECEIPT_MAX_BYTES
+  ) {
+    return { state: "invalid", reason: "receipt-too-large" };
+  }
+  if (!contents.ok) {
+    return { state: "invalid", reason: "receipt-object-read-failed" };
+  }
+  return { state: "ok", contents: contents.stdout };
 }
 
 async function currentReceiptFacts(

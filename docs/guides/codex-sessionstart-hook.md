@@ -67,15 +67,17 @@ excessive tool lists are invalid. Init also refuses symlinked, hard-linked, or
 non-regular managed config/hook files instead of following them, and replaces
 changed managed files atomically.
 Repositories that track a Codexa worktree bootstrap also require a local setup
-receipt. SessionStart cheaply validates its durable worktree/Git identity,
-package and lock inputs, tracked startup procedure, dependency-install seal,
-config/hooks, lane, and Node runtime. Missing, stale, malformed, or redirected
-durable evidence is a separate strict failure and disables startup
-auto-refresh; repositories without a tracked bootstrap remain
-`setup.state=not-required`. The explicit `worktree-receipt validate` command
-defaults to the full completion gate: it additionally recomputes HEAD, build
-inputs, complete `dist/`, and installed dependency inventory. Those volatile
-fields do not make ordinary source edits or index refreshes fail startup.
+receipt. It is stored as an immutable Git blob behind the per-worktree
+`refs/worktree/codexa/bootstrap-receipt` ref instead of a mutable managed-state
+file. SessionStart cheaply validates its durable worktree/Git identity, package
+and lock inputs, tracked startup procedure, dependency-install seal,
+config/hooks, lane, and Node runtime. Missing, stale, or malformed durable
+evidence is a separate strict failure and disables startup auto-refresh;
+repositories without a tracked bootstrap remain `setup.state=not-required`.
+The explicit `worktree-receipt validate` command defaults to the full completion
+gate: it additionally recomputes HEAD, build inputs, complete `dist/`, and
+installed dependency inventory. Those volatile fields do not make ordinary
+source edits or index refreshes fail startup.
 Shared startup controllers use the intermediate
 `worktree-receipt validate --scope adoption` through a trusted canonical
 Codexa CLI. Adoption validates the durable startup subset plus the complete

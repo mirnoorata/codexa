@@ -9,15 +9,12 @@ const tmpDir = await ensureSafeDirectory(path.join(codexDir, "tmp"));
 await ensureSafeDirectory(path.join(codexDir, "cache"));
 await ensureSafeDirectory(path.join(repoRoot, "node_modules"));
 
-const receiptPath = path.join(tmpDir, "worktree-bootstrap-receipt.json");
 const logPath = path.join(tmpDir, "worktree-bootstrap.log");
 const dependencyMarkerPath = path.join(repoRoot, "node_modules", ".codexa-dependencies.sha256");
 const dependencySealPath = path.join(repoRoot, "node_modules", ".codexa-dependencies.json");
-await assertSafeFile(receiptPath);
 await assertSafeFile(logPath);
 await assertSafeFile(dependencyMarkerPath);
 await assertSafeFile(dependencySealPath);
-await fs.rm(receiptPath, { force: true });
 
 const distDir = path.join(repoRoot, "dist");
 await assertSafeDirectory(distDir);
