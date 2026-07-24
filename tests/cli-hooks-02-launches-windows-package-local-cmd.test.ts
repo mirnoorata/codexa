@@ -310,7 +310,7 @@ it("skips duplicate hook-post-edit reviews for an unchanged dirty tree", async (
     expect(latestHook).toMatchObject({ status: "skipped", reason: "duplicate-dirty-tree" });
   });
 
-it("reports doctor diagnostics for installed wiring and latest hook events", async () => {
+it("reports doctor diagnostics without inventing a SessionStart hook event", async () => {
     const repo = await createHookFixtureRepo();
     const cli = path.resolve(process.cwd(), "dist/cli.js");
 
@@ -347,7 +347,7 @@ it("reports doctor diagnostics for installed wiring and latest hook events", asy
     expect(data.config).toMatchObject({ mcpServerConfigured: true, codexHooksEnabled: true });
     expect(data.hooks).toMatchObject({ sessionStart: true, preEdit: true, postEdit: true });
     expect(data.index?.missing).toBe(false);
-    expect(data.latestHookEvent).toMatchObject({ hook: "session-start", status: "ok" });
+    expect(data.latestHookEvent).toBeNull();
     expect(data.hookEventsPath).toBe(".codex/cache/codexa-hooks/events.ndjson");
 
     const doctorText = spawnSync(process.execPath, [cli, "doctor", repo, "--mcp-readiness"], {
@@ -356,7 +356,8 @@ it("reports doctor diagnostics for installed wiring and latest hook events", asy
     });
     expect(doctorText.status).toBe(0);
     expect(doctorText.stdout).toContain("Codexa doctor");
-    expect(doctorText.stdout).toContain("Latest hook: session-start ok");
+    expect(doctorText.stdout).toContain("No Codexa hook event has been recorded yet.");
+    expect(doctorText.stdout).not.toContain("Latest hook:");
     expect(doctorText.stdout).toContain("MCP readiness:");
     expect(doctorText.stdout).toContain("typed envelope: yes");
     expect(doctorText.stdout).toContain("primary tools: session_context, search, task_brief, change_plan, post_edit_review, test_plan, proof_card, capabilities");

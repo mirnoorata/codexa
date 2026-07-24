@@ -151,7 +151,7 @@ it.each(["cache", "codexa-outcomes"] as const)(
   }
 );
 
-it("routes workspace-root session-start hooks through the focused repository", async () => {
+it("routes workspace-root session-start hooks through the focused repository without telemetry writes", async () => {
     const workspace = await trackedTmpDir("codexa-session-start-focused-");
     const repo = path.join(workspace, "repo");
     await mkdir(repo, { recursive: true });
@@ -176,8 +176,7 @@ it("routes workspace-root session-start hooks through the focused repository", a
     expect(result.stdout).toContain(`Repo: ${repo}`);
     expect(result.stdout).not.toContain("Codexa status unavailable:");
     expect(result.stdout).not.toContain("Failed to read git status");
-    const latest = JSON.parse(await readFile(path.join(workspace, ".codex/cache/codexa-hooks/latest.json"), "utf8")) as { status: string };
-    expect(latest.status).toBe("ok");
+    await expect(readFile(path.join(workspace, ".codex/cache/codexa-hooks/latest.json"), "utf8")).rejects.toThrow();
   });
 
 it("keeps workspace-root SessionStart selection-required when only a default repository exists", async () => {
@@ -209,8 +208,7 @@ it("keeps workspace-root SessionStart selection-required when only a default rep
     expect(result.stdout).not.toContain(repo);
     expect(result.stdout).not.toContain("Codexa status unavailable:");
     expect(result.stdout).not.toContain("Failed to read git status");
-    const latest = JSON.parse(await readFile(path.join(workspace, ".codex/cache/codexa-hooks/latest.json"), "utf8")) as { status: string };
-    expect(latest.status).toBe("ok");
+    await expect(readFile(path.join(workspace, ".codex/cache/codexa-hooks/latest.json"), "utf8")).rejects.toThrow();
   });
 
 it("does not let a lone implicit active row select a repo for SessionStart", async () => {
@@ -253,8 +251,7 @@ it("does not let a lone implicit active row select a repo for SessionStart", asy
     expect(result.stdout).not.toContain(activeRepo);
     expect(result.stdout).not.toContain("Codexa status unavailable:");
     expect(result.stdout).not.toContain("Failed to read git status");
-    const latest = JSON.parse(await readFile(path.join(workspace, ".codex/cache/codexa-hooks/latest.json"), "utf8")) as { status: string };
-    expect(latest.status).toBe("ok");
+    await expect(readFile(path.join(workspace, ".codex/cache/codexa-hooks/latest.json"), "utf8")).rejects.toThrow();
   });
 
 it("routes workspace-root query CLI commands through the default repository", async () => {
