@@ -757,7 +757,7 @@ ignored `.codex/cache` state so normal test execution cannot mutate the
 install-owned `node_modules` manifest.
 
 Shared controllers delegate adoption-scope validation to a trusted canonical
-Codexa runtime before executing the validated `dist/` entry point. The ignored
+Codexa runtime before executing the validated `dist/` entry point. The Git-ref
 receipt is not a signature and cannot authorize unvalidated worktree code.
 
 `session-start --strict` is the controller-facing observable-state gate. It

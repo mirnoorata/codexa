@@ -180,10 +180,11 @@ This repository also tracks a
 [Codex local-environment](https://learn.chatgpt.com/docs/environments/local-environment)
 definition at `.codex/environments/environment.toml`. On a local Linux/macOS
 host (or Windows through WSL), its Bash setup installs locked dependencies,
-builds Codexa, initializes worktree-local `core` wiring, and writes an ignored,
-identity-bound bootstrap receipt. Native Windows uses the tracked PowerShell
-override: it installs, builds, and proves `core` MCP config/index readiness with
-`--no-hooks`, then issues a receipt scoped to the native-Windows MCP-only lane.
+builds Codexa, initializes worktree-local `core` wiring, and publishes an
+identity-bound receipt through a worktree-local Git ref. Native Windows uses
+the tracked PowerShell override: it installs, builds, and proves `core` MCP
+config/index readiness with `--no-hooks`, then issues a receipt scoped to the
+native-Windows MCP-only lane.
 Both wrappers delegate to one Node orchestrator, which holds a cross-platform
 lock across clean dependency installation, build, init, receipt issuance, and
 strict startup validation.
