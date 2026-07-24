@@ -25,6 +25,7 @@ import {
   lanePlatformMismatch
 } from "./worktree-bootstrap-hook-contract.js";
 import {
+  isWorktreeBootstrapReceiptRequired,
   publishWorktreeReceiptRef,
   readWorktreeReceiptRef,
   WORKTREE_BOOTSTRAP_RECEIPT_REF
@@ -42,7 +43,7 @@ import {
   type StableTreeEntrySnapshot
 } from "./stable-directory-snapshot.js";
 
-export { WORKTREE_BOOTSTRAP_RECEIPT_REF };
+export { isWorktreeBootstrapReceiptRequired, WORKTREE_BOOTSTRAP_RECEIPT_REF };
 export const WORKTREE_BOOTSTRAP_DEPENDENCY_SEAL_RELATIVE_PATH = "node_modules/.codexa-dependencies.json";
 const DEPENDENCY_MAX_ENTRIES = 100_000;
 const DEPENDENCY_MAX_LOGICAL_BYTES = 2 * 1024 * 1024 * 1024;
@@ -178,17 +179,6 @@ async function runNpmLs(repoRoot: string): Promise<Awaited<ReturnType<typeof run
     ["/d", "/s", "/c", "npm.cmd ls --all --silent"],
     options
   );
-}
-
-export async function isWorktreeBootstrapReceiptRequired(repoRoot: string): Promise<boolean> {
-  const repo = path.resolve(repoRoot);
-  const tracked = await runCommand(
-    "git",
-    ["-C", repo, "ls-files", "--", ".codex/worktree-bootstrap.sh", ".codex/worktree-bootstrap.ps1"],
-    { timeoutMs: 2_500, maxBufferBytes: 16 * 1024 }
-  );
-  if (!tracked.ok) throw new Error("bootstrap-requirement-git-inspection-failed");
-  return tracked.stdout.trim().length > 0;
 }
 
 export async function issueWorktreeBootstrapReceipt(

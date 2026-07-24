@@ -1,9 +1,27 @@
+import path from "node:path";
 import { runCommand } from "./command.js";
 
 export const WORKTREE_BOOTSTRAP_RECEIPT_REF = "refs/worktree/codexa/bootstrap-receipt";
 
 const RECEIPT_MAX_BYTES = 128 * 1024;
 const GIT_OBJECT_ID_PATTERN = /^[0-9a-f]{40,64}$/u;
+
+export async function isWorktreeBootstrapReceiptRequired(repoRoot: string): Promise<boolean> {
+  const repo = path.resolve(repoRoot);
+  const tracked = await runCommand(
+    "git",
+    ["-C", repo, "ls-files", "--", ".codex/worktree-bootstrap.sh", ".codex/worktree-bootstrap.ps1"],
+    {
+      timeoutMs: 2_500,
+      maxBufferBytes: 16 * 1024,
+      // These plumbing-only Git probes do not launch hooks. Direct teardown is
+      // both sufficient and bounded by the adoption wall on every platform.
+      killProcessGroup: false
+    }
+  );
+  if (!tracked.ok) throw new Error("bootstrap-requirement-git-inspection-failed");
+  return tracked.stdout.trim().length > 0;
+}
 
 export async function publishWorktreeReceiptRef(
   repoRoot: string,

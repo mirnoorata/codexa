@@ -124,6 +124,7 @@ jobs:
           tests/worktree-environment.test.ts
           tests/worktree-bootstrap-execution.test.ts
           tests/command-process-tree.test.ts
+          tests/worktree-bootstrap-requirement.test.ts
 
       - name: Validate consumed setup receipt
         working-directory: ../codexa-linked-worktree
