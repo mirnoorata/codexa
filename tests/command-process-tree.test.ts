@@ -41,6 +41,37 @@ describe("runCommand process-tree termination", () => {
     const pids = (await readFile(pidPath, "utf8")).trim().split("\n").map(Number);
     await Promise.all(pids.map(expectProcessExit));
   }, 15_000);
+
+  it("settles a direct timeout when an escaped descendant retains its pipes", async () => {
+    const directory = await mkdtemp(path.join(os.tmpdir(), "codexa-command-pipe-"));
+    fixtures.push(directory);
+    const pidPath = path.join(directory, "processes.pid");
+    const script = path.join(directory, "escape-child.mjs");
+    await writeFile(
+      script,
+      [
+        'import { spawn } from "node:child_process";',
+        'import { writeFileSync } from "node:fs";',
+        'const child = spawn(process.execPath, ["-e", "setTimeout(() => {}, 6000)"], { detached: true, stdio: ["ignore", "inherit", "inherit"] });',
+        "child.unref();",
+        `writeFileSync(${JSON.stringify(pidPath)}, \`\${process.pid}\\n\${child.pid}\\n\`);`
+      ].join("\n"),
+      "utf8"
+    );
+
+    const startedAt = Date.now();
+    const result = await runCommand(process.execPath, [script], {
+      timeoutMs: 150,
+      maxBufferBytes: 16 * 1024
+    });
+    expect(result.ok).toBe(false);
+    expect(result.timedOut).toBe(true);
+    expect(Date.now() - startedAt).toBeLessThan(4_000);
+
+    const pids = (await readFile(pidPath, "utf8")).trim().split("\n").map(Number);
+    await expectProcessExit(pids[0]);
+    await forceProcessExit(pids[1]);
+  }, 10_000);
 });
 
 async function expectProcessExit(pid: number): Promise<void> {
@@ -61,4 +92,14 @@ async function expectProcessExit(pid: number): Promise<void> {
     // The process may have exited at the assertion boundary.
   }
   throw new Error(`command process ${pid} remained alive after forced tree termination`);
+}
+
+async function forceProcessExit(pid: number): Promise<void> {
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ESRCH") return;
+    throw error;
+  }
+  await expectProcessExit(pid);
 }

@@ -140,26 +140,33 @@ export async function runCommand(command: string, args: string[], options: RunCo
       resolve(result);
     };
 
+    const scheduleTerminalSettlement = (error?: Error): void => {
+      if (settled || terminalTimer) return;
+      terminalTimer = setTimeout(() => {
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        child.stdin?.destroy();
+        child.unref();
+        void finish({ exitCode: null, signal: "SIGKILL", error });
+      }, TERMINAL_SETTLE_MS);
+    };
+
     const terminate = () => {
       if (terminating) return;
       terminating = true;
       if (!terminateTree) {
         killChild(child, false, "SIGTERM");
         directKillTimer = setTimeout(() => {
-          if (!settled) killChild(child, false, "SIGKILL");
+          if (!settled) {
+            killChild(child, false, "SIGKILL");
+            scheduleTerminalSettlement();
+          }
         }, TERMINATION_GRACE_MS);
         return;
       }
       treeTermination = terminateCommandTree(child, detached);
       void treeTermination.then((error) => {
-        if (settled) return;
-        terminalTimer = setTimeout(() => {
-          child.stdout?.destroy();
-          child.stderr?.destroy();
-          child.stdin?.destroy();
-          child.unref();
-          void finish({ exitCode: null, signal: "SIGKILL", error });
-        }, TERMINAL_SETTLE_MS);
+        scheduleTerminalSettlement(error);
       });
     };
 
