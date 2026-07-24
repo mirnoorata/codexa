@@ -1,84 +1,52 @@
-# Codexa Project Runbook
+# Codexa Project Kernel
 
-Use this file for repository-local contributor guidance only. Do not add
-machine-specific paths, private project names, service URLs, credentials, user
-names, hostnames, or session memory to the public repository.
+Keep this automatic layer repository-local and compact. Detailed setup,
+recovery, architecture, and release procedures live in `README.md` and
+`docs/`; load them only when the task reaches that boundary.
 
 ## Development
 
-- Restore locked dependencies with `npm ci`; use `npm install` when deliberately
-  changing dependencies and the lockfile.
-- Run the full gate with `npm run check`.
-- Keep generated output out of git: `dist/`, `node_modules/`, `.codex/codebase/`,
-  `.codex/cache/`, local storage, project-local Codexa config, and hooks are
-  ignored. The repo-owned `.codex/environments/environment.toml` and
-  `.codex/worktree-bootstrap.sh` setup files are intentionally tracked.
-- Prefer small deterministic fixtures over references to private repositories or
-  local infrastructure.
-- When adding docs or examples, use placeholders such as `/path/to/project`,
-  `OWNER/REPO`, and `example.com`.
+- Restore locked dependencies with `npm ci`; use `npm install` only when
+  deliberately changing dependencies and `package-lock.json`.
+- Run `npm run check` for the normal full gate.
+- Keep generated or host-local state out of Git: `dist/`, `node_modules/`,
+  `.codex/codebase/`, `.codex/cache/`, local storage, config, and hooks are
+  ignored. The tracked environment and bootstrap launchers are intentional.
+- Use deterministic public fixtures and placeholders such as
+  `/path/to/project`, `OWNER/REPO`, and `example.com`. Do not commit private
+  paths, projects, hosts, credentials, logs, or session memory.
 
-## Codex Worktree Setup
+## Project Startup
 
 - In the desktop Codex composer, select this saved project, `Worktree`, the
-  intended starting branch (normally `main`), and the Codexa local environment
-  before the first prompt. Mobile remote access may continue that desktop chat
-  but does not configure or select local setup.
-- On local Linux/macOS (and Windows through WSL), the tracked environment runs
-  `.codex/worktree-bootstrap.sh`, which installs locked dependencies, builds
-  Codexa, and generates ignored worktree-local `core` wiring plus an
-  identity-bound bootstrap receipt. The Bash and PowerShell wrappers share one
-  serialized Node orchestrator; do not duplicate setup logic in either wrapper.
-- Native Windows uses the tracked PowerShell override. It installs, builds, and
-  proves `core` MCP config/index readiness with `--no-hooks`; its receipt is
-  deliberately scoped to the native-Windows MCP-only lane.
-- Treat the app-created linked worktree as the task checkout. Do not create a
-  second worktree for the same task. App worktrees may start detached; attach a
-  named branch before committing. Let the app own cleanup of app-managed
-  worktrees.
-- Never copy `.codex/config.toml`, `.codex/hooks.json`, generated indexes, or
-  absolute launch commands from another checkout. Generate them in the active
-  worktree so Codexa's workspace identity remains correct.
-- Treat only a receipt whose durable subset the current SessionStart validates
-  as startup proof. A selected environment with missing, stale, or invalid
-  durable evidence is only source-ready and needs explicit repair/fallback.
-  The receipt is an immutable Git blob behind the per-worktree
-  `refs/worktree/codexa/bootstrap-receipt` ref; do not treat an ignored
-  `.codex` file as receipt authority.
-  Use `worktree-receipt validate` for the expensive full source, output, HEAD,
-  and dependency-inventory completion gate.
-- Shared adoption controllers must validate through their trusted canonical
-  Codexa CLI with `--scope adoption`. That scope binds the complete generated
-  runtime and dependency inventory while permitting ordinary source/HEAD
-  evolution; a receipt never authorizes executing the adopted worktree's
-  generated `dist/` code before this validation succeeds.
-- If a Remote-SSH host creates the worktree without invoking local setup, run
-  `bash .codex/worktree-bootstrap.sh` inside that remote worktree, then run
-  `node dist/cli.js session-start "$PWD" --json --strict`. Reload or reopen the
-  exact repaired checkout so the host can initialize its MCP server; do not
-  start a generic new Worktree chat, which may create a replacement worktree.
-  SessionStart cannot prove the current thread's MCP handshake.
+  intended starting branch, and the Codexa local environment before the first
+  prompt. Mobile remote access may continue that chat but does not configure
+  its local setup.
+- Adopt the app-created linked worktree; never create a second checkout for the
+  same task. Attach a named branch before committing if the app starts
+  detached, and leave app-managed cleanup to the app.
+- The tracked Bash and PowerShell launchers delegate to one serialized Node
+  bootstrap. Generate dependencies, build output, `core` wiring, and the index
+  in the active worktree; never copy machine-local config, hooks, indexes, or
+  absolute launch commands from another checkout.
+- Setup proof is the immutable blob behind the per-worktree
+  `refs/worktree/codexa/bootstrap-receipt` ref. SessionStart validates its
+  durable subset; `worktree-receipt validate --scope adoption` additionally
+  binds generated runtime/dependencies for a trusted shared controller, and
+  the default `full` scope is the completion gate. A receipt never authorizes
+  executing unvalidated worktree output.
+- Missing, stale, or invalid setup evidence is source-ready, not edit-ready.
+  Follow README `Codex Project Worktrees And Local Setup` for repair. Neither
+  config nor a receipt proves current-thread MCP activation.
 
 ## GitHub Change and Release Path
 
-- Shipping changes finish on a named branch: push that branch to GitHub and use
-  the protected-`main` PR flow. Never tag a dirty or detached checkout.
-- Release Please is the normal lane and requires `RELEASE_PLEASE_TOKEN`; use
-  conventional `fix:`/`feat:` subjects. A requested manual release uses
-  `npm run release:github`, then verifies it with
-  `gh release view vX.Y.Z --repo OWNER/REPO`.
-- Before any release, run `npm run security:check`. The full source-first npm
-  procedure and rollback path are in README `Release Automation` and
-  `docs/PUBLIC_RELEASE_CHECKLIST.md`; load them only for a release task.
-
-## Privacy
-
-Before publishing or pushing release-oriented changes, run:
-
-```bash
-npm run privacy
-```
-
-The privacy scan checks tracked files for workspace-specific paths and owner
-identifiers. It is not a secret scanner; still avoid committing secrets, tokens,
-logs, generated indexes from private repositories, or machine-local runbooks.
+- Finish on a named branch through the protected `main` PR flow with
+  Conventional Commits; push that branch to GitHub. Do not tag dirty or
+  detached source.
+- Run `npm run security:check`. Release Please is the normal lane and requires
+  `RELEASE_PLEASE_TOKEN`; use `npm run release:github` only on explicit request
+  and verify with `gh release view`. At release time, load README `Release Automation`
+  and `docs/PUBLIC_RELEASE_CHECKLIST.md`.
+- Before release-oriented pushes, run `npm run privacy`; it checks repository
+  paths, not secrets.

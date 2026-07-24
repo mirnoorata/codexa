@@ -51,6 +51,7 @@
     "benchmark:ci": "node scripts/worktree-bootstrap.mjs auto . && node scripts/benchmark-hot-paths.mjs --strict-session-start --verify-startup-contract --output .codex/cache/codexa-benchmarks/latest.json",
     "benchmark:transport": "npm run build && node scripts/benchmark-mcp-transport.mjs --release-baseline v0.12.0",
     "benchmark:transport:exposure": "npm run build && node scripts/benchmark-mcp-transport.mjs --baseline-tools full --candidate-tools core",
+    "startup:context-check": "npm run build --silent && node scripts/verify-startup-context-budget.mjs",
     "eval:ci": "bash scripts/eval-ci.sh",
     "ci:extended": "npm run smoke:package && npm run benchmark:ci",
     "public:snapshot-check": "node scripts/verify-public-snapshot.mjs",
@@ -65,7 +66,7 @@
     "test": "npm run build && vitest run",
     "test:schema": "vitest run tests/schema.test.ts",
     "test:claude-code": "bash integrations/claude-code/tests/cmd-smoke.sh && bash integrations/claude-code/tests/hook-smoke.sh",
-    "check": "npm run typecheck && npm run lint && npm run privacy && npm run test:claude-code && npm test",
+    "check": "npm run typecheck && npm run lint && npm run privacy && npm run test:claude-code && npm test && npm run startup:context-check",
     "security:check": "npm run check && npm run audit && npm run public:snapshot-check && npm run package:hygiene && npm run smoke:package",
     "dev": "tsx src/cli.ts"
   },

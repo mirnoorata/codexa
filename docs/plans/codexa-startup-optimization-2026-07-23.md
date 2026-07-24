@@ -3,6 +3,12 @@
 This is the drift ledger for the Codexa project-start redesign. The target is
 truthful, low-noise readiness—not token reduction in isolation.
 
+The machine-readable measurement boundary, baseline observations, current
+budgets, pending external evaluation, and retain/conditional/remove
+classification are committed in
+[`codexa-startup-context-inventory.json`](./codexa-startup-context-inventory.json).
+`npm run startup:context-check` rejects drift in repository-controlled claims.
+
 ## Required sequence
 
 1. Measure startup inputs and classify each as essential evidence, conditional

@@ -158,6 +158,8 @@ are preserved, and malformed JSON aborts the write). When init runs from an
 evictable npx cache, generated configs pin `npx -y @mirnoorata/codexa@<version>`
 instead of the cache path so they keep working after a cache prune.
 
+## Codex Project Worktrees And Local Setup
+
 Linked git worktrees are wired the same way. Untracked `.codex/config.toml`
 and hook files stay host-local, so a fresh worktree is invisible to Codexa
 until you run init in it. If a team intentionally tracks those files, init
