@@ -266,7 +266,6 @@ export async function validateWorktreeBootstrapReceipt(
     ? { state: "stale", lane: receipt.lane, validation, reason: finalMismatch, receipt }
     : { state: "verified", lane: receipt.lane, validation, receipt };
 }
-
 function startupReceiptMismatch(
   repoRoot: string,
   receipt: WorktreeBootstrapReceipt,
@@ -312,15 +311,12 @@ function adoptionReceiptMismatch(
   }
   return undefined;
 }
-
 function completionReceiptMismatch(
   receipt: WorktreeBootstrapReceipt,
   completion: WorktreeBootstrapCompletionFacts
 ): string | undefined {
   if (receipt.head !== completion.head) return "head-drift";
-  return receipt.buildInputSha256 === completion.buildInputSha256
-    ? undefined
-    : "build-input-drift";
+  return receipt.buildInputSha256 === completion.buildInputSha256 ? undefined : "build-input-drift";
 }
 
 export async function inspectWorktreeBootstrapReceipt(

@@ -114,7 +114,6 @@ describe("worktree bootstrap receipt", () => {
     }
     expect(mutated).toBe(true);
   });
-
   it("rejects dependency drift introduced while the full completion scope is scanned", async () => {
     const repo = await createReceiptFixture("codexa-worktree-receipt-cross-scope-dependency-");
     await issueReceipt(repo, "posix-hooks");
@@ -140,7 +139,6 @@ describe("worktree bootstrap receipt", () => {
     }
     expect(mutated).toBe(true);
   });
-
   it("rejects a required dependency removed after the initial completeness check", async () => {
     const repo = await createReceiptFixture("codexa-worktree-receipt-dependency-completeness-race-");
     const expectedBuild = await worktreeBootstrapBuildInputSha256(repo);
@@ -157,12 +155,9 @@ describe("worktree bootstrap receipt", () => {
       return originalRealpath(candidate, options as never);
     });
     try {
-      await expect(issueWorktreeBootstrapReceipt(
-        repo,
-        "posix-hooks",
-        expectedBuild,
-        expectedStartup
-      )).rejects.toThrow(/dependency-tree-changed-during-capture/u);
+      await expect(
+        issueWorktreeBootstrapReceipt(repo, "posix-hooks", expectedBuild, expectedStartup)
+      ).rejects.toThrow(/dependency-tree-changed-during-capture/u);
     } finally {
       vi.restoreAllMocks();
     }
