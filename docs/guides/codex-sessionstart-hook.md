@@ -35,6 +35,10 @@ grace still leaves time to emit the unavailable receipt. Operators may set
 `CODEXA_SESSION_START_BUDGET_MS` between 1,000 and 45,000 milliseconds; values
 outside that range are clamped. Auto-refresh is an explicit mutating operation
 and is not cut off by the advisory wall-clock race.
+The ordinary SessionStart status path does not append hook telemetry or write
+managed cache state after rendering its receipt; this keeps the host-visible
+command boundary within the same budget and removes an optional write race
+from project startup.
 
 At a shared workspace root, a `Workspace Default` or lone implicit `Active
 Sessions` row is only a fallback for explicit query commands; neither proves

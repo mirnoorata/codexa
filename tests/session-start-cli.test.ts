@@ -38,11 +38,9 @@ describe("Codexa SessionStart CLI receipt", () => {
       index: { state: "missing" },
       threadMcp: { state: "unverified", reason: "session-start-cannot-observe-host-initialize" }
     });
-    const latest = JSON.parse(
-      await readFile(path.join(repo, ".codex/cache/codexa-hooks/latest.json"), "utf8")
-    ) as { status: string; error?: string };
-    expect(latest).toMatchObject({ status: "ok" });
-    expect(latest.error).toBeUndefined();
+    await expect(
+      readFile(path.join(repo, ".codex/cache/codexa-hooks/latest.json"), "utf8")
+    ).rejects.toThrow();
 
     const strictMissing = spawnSync(process.execPath, [cli, "session-start", repo, "--json", "--strict"], {
       cwd: process.cwd(),
@@ -292,6 +290,37 @@ describe("Codexa SessionStart CLI receipt", () => {
       expect(result.status).toBe(0);
       expect(JSON.parse(result.stdout)).toMatchObject({ availability: "unavailable" });
       expect(Buffer.byteLength(result.stdout, "utf8")).toBeLessThanOrEqual(4096);
+    }
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "does not block on or mutate advisory hook telemetry during SessionStart",
+    async () => {
+      const repo = await createHookFixtureRepo();
+      const hookDirectory = path.join(repo, ".codex/cache/codexa-hooks");
+      const eventsPath = path.join(hookDirectory, "events.ndjson");
+      const latestPath = path.join(hookDirectory, "latest.json");
+      await mkdir(hookDirectory, { recursive: true });
+      execFileSync("mkfifo", [eventsPath]);
+      await writeFile(latestPath, "latest-sentinel\n", "utf8");
+
+      const result = spawnSync(
+        process.execPath,
+        [cli, "session-start", repo, "--json"],
+        {
+          cwd: process.cwd(),
+          encoding: "utf8",
+          timeout: 3_000,
+          env: {
+            ...testEnv(),
+            CODEXA_SESSION_START_BUDGET_MS: "1000"
+          }
+        }
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({ kind: "codexa-session-start" });
+      await expect(readFile(latestPath, "utf8")).resolves.toBe("latest-sentinel\n");
     }
   );
 

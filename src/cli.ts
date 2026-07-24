@@ -19,7 +19,7 @@ import { proveQuery } from "./prove.js";
 import { createQuerySession } from "./query/session.js";
 import { ingestVerificationArtifact } from "./verification-artifacts.js";
 import { validateArtifactIds } from "./lifecycle-contract.js";
-import { postEditReviewStateIsCurrent, recordAdvisoryHookEvent, runPostEditHook, runPreEditHook } from "./cli/hooks.js";
+import { postEditReviewStateIsCurrent, runPostEditHook, runPreEditHook } from "./cli/hooks.js";
 import type { ChangeType } from "./types.js";
 import { runEval } from "./eval.js";
 import { registerQueryCommands } from "./cli/query-commands.js";
@@ -643,7 +643,6 @@ program
   .description("Print the lightweight Codexa SessionStart summary used by Codex hooks.")
   .action(async (repo: string | undefined, opts: { context: boolean; autoRefresh: boolean; json?: boolean; strict: boolean; workspaceFocusFile?: string; workspaceSession?: string }) => {
     const resolved = repo ? path.resolve(repo) : resolveImplicitGitRepoRoot() ?? process.cwd();
-    const startedAt = Date.now();
     const includeContext = opts.context || process.env.CODEXA_SESSIONSTART_CONTEXT === "1";
     const receipt = await sessionStartReceipt(resolved, includeContext, {
       autoRefresh: opts.autoRefresh,
@@ -651,16 +650,7 @@ program
       workspaceSessionId: opts.workspaceSession
     });
     console.log(opts.json ? renderSessionStartJson(receipt) : renderSessionStartReceipt(receipt));
-    const unavailable = receipt.availability === "unavailable";
     const strictFailures = opts.strict ? sessionStartStrictFailures(receipt) : [];
-    const failed = unavailable || strictFailures.length > 0;
-    await recordAdvisoryHookEvent(resolved, {
-      hook: "session-start",
-      status: failed ? "failed" : "ok",
-      durationMs: Date.now() - startedAt,
-      reason: opts.strict ? "strict-status" : includeContext ? "context-preview" : "status",
-      error: failed ? receipt.routing.error ?? receipt.index.error ?? strictFailures.join("; ") : undefined
-    });
     if (strictFailures.length > 0) {
       console.error(`Codexa strict startup check failed: ${strictFailures.join("; ")}`);
       process.exitCode = 1;
