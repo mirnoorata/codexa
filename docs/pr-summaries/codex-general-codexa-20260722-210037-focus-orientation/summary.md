@@ -3,7 +3,7 @@
 PR summary for
 `codex/general/codexa-20260722-210037-focus-orientation` against `main`.
 The final source-evidence head used for the measurements below is
-`6d2cd581c8f8afcc85d048c03e123f3cf978f8d1`.
+`9ace851f5744cc2e59befea7c9238168ec5bc5a3`.
 
 ## Outcome
 
@@ -58,7 +58,7 @@ prompt as a proxy for task success.
 | Decoded `tools/list` payload | full profile | 87.2% lower in core profile |
 | Startup advertisement plus discovery | full profile | 69.8% lower in core profile |
 | First/repeated tiny task result | full profile | 0% reduction |
-| SessionStart p95 | 1,000 ms limit | 597 ms |
+| SessionStart p95 | 1,000 ms limit | 524 ms |
 
 The automatic-policy token figure is only a four-bytes-per-token estimate
 (2,864), not an observed model-token count. The transport benchmark measures
@@ -96,13 +96,13 @@ quality, and latency. This PR does not fabricate that host-controlled result.
 
 - `npm run security:check`: passed.
   - 82 test files passed.
-  - 1,019 tests passed; 1 intentionally skipped.
+  - 1,020 tests passed; 1 intentionally skipped.
   - npm audit found 0 vulnerabilities.
   - Public snapshot, package hygiene, plugin hygiene, and the 31-check packaged
     install smoke passed.
 - `npm run benchmark:ci`: passed every threshold.
-  - SessionStart p50 536 ms, p95 597 ms.
-  - MCP startup 289 ms; MCP freshness p95 233 ms.
+  - SessionStart p50 481 ms, p95 524 ms.
+  - MCP startup 342 ms; MCP freshness p95 190 ms.
 - `npm run benchmark:transport:exposure`: passed with 3/23 direct tools,
   logical-operation parity, 87.2% lower decoded tool-list payload, and 69.8%
   lower startup advertisement/discovery payload.
@@ -111,6 +111,8 @@ quality, and latency. This PR does not fabricate that host-controlled result.
   checkout, including fresh bootstrap/adoption behavior.
 - `git diff --check`, source hygiene, release-path verification, public hygiene,
   and the startup-context gate passed.
+  - The context gate measured 717/1,433/1,448-byte SessionStart fixtures and
+    reran the full-versus-core transport comparison on a generated clean repo.
 
 ## Release Protocol
 

@@ -43,7 +43,7 @@
     "mcpExposure": {
       "currentMeasurementCommand": "npm run startup:context-check",
       "lastCleanCheckoutObservation": {
-        "commit": "6d2cd581c8f8afcc85d048c03e123f3cf978f8d1",
+        "commit": "9ace851f5744cc2e59befea7c9238168ec5bc5a3",
         "command": "npm run benchmark:transport:exposure",
         "passed": true,
         "unit": "decoded MCP application-payload bytes"
