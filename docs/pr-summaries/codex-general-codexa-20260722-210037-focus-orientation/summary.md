@@ -3,7 +3,7 @@
 PR summary for
 `codex/general/codexa-20260722-210037-focus-orientation` against `main`.
 The final source-evidence head used for the measurements below is
-`9ace851f5744cc2e59befea7c9238168ec5bc5a3`.
+`4b09e59fbe4f108cb964093ed943f7be90448dc3`.
 
 ## Outcome
 
@@ -111,7 +111,7 @@ quality, and latency. This PR does not fabricate that host-controlled result.
   checkout, including fresh bootstrap/adoption behavior.
 - `git diff --check`, source hygiene, release-path verification, public hygiene,
   and the startup-context gate passed.
-  - The context gate measured 717/1,433/1,448-byte SessionStart fixtures and
+  - The context gate measured 717/901/1,448-byte SessionStart fixtures and
     reran the full-versus-core transport comparison on a generated clean repo.
 
 ## Release Protocol
