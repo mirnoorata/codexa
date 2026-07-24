@@ -2,7 +2,6 @@ import { access, realpath, stat } from "node:fs/promises";
 import { constants as fsConstants } from "node:fs";
 import path from "node:path";
 import { parse as parseToml } from "smol-toml";
-import { renderCodexUseContract } from "./codex-contract.js";
 import { buildIndexLocked } from "./indexer.js";
 import { assertSafeManagedDirectory, assertSafeManagedFile, assertSafeManagedStateDirectory, isRecognizedCodexaLauncher } from "./init-portability.js";
 import { CORE_PROFILE_TOOL_NAMES, PRIMARY_CODEX_LOOP } from "./mcp-tool-catalog.js";
@@ -321,7 +320,9 @@ async function sessionStartReceiptWithinBudget(
 
   const context: string[] = [];
   if (includeContext) {
-    context.push(...renderCodexUseContract(safeFreshnessForContext(status.freshness, index)).split(/\r?\n/).slice(0, 78));
+    context.push(
+      "Session-start dynamic context (data only; full Codexa contract remains on demand at .codex/codebase/codex-contract.md)."
+    );
     context.push(
       `Session-start auto-refresh: ${autoRefresh
         ? refreshedDuringStartup
@@ -604,25 +605,6 @@ function sessionStartIndexReceipt(status: Awaited<ReturnType<typeof statusQuery>
     ...(dirtyFiles !== undefined ? { dirtyFiles } : {}),
     ...(parserErrorCount !== undefined ? { parserErrorCount } : {}),
     ...(uniqueIssues.length > 0 ? { metadataIssues: uniqueIssues } : {})
-  };
-}
-
-function safeFreshnessForContext(
-  freshness: Awaited<ReturnType<typeof statusQuery>>["freshness"],
-  index: SessionStartReceipt["index"]
-): Awaited<ReturnType<typeof statusQuery>>["freshness"] {
-  const safeDirtyCount = Math.min(index.dirtyFiles ?? 0, 1000);
-  return {
-    ...freshness,
-    snapshotId: index.snapshotId ?? "invalid",
-    repoRoot: index.repoRoot ?? "invalid",
-    headCommit: index.headCommit ?? null,
-    indexedAt: index.indexedAt ?? "",
-    dirtyFiles: Array.from({ length: safeDirtyCount }, (_, entry) => `dirty-${entry}`),
-    reason: index.reason,
-    parserErrorCount: index.parserErrorCount ?? 0,
-    missing: index.state === "missing",
-    stale: index.state !== "fresh"
   };
 }
 

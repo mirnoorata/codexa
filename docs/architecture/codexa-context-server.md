@@ -23,11 +23,14 @@ The first milestone used a private application repository as the acceptance proj
 - The current implementation also adds natural-language `focus_brief`/`session_context`, a small BM25/inverted-index retrieval layer, first-class typed graph edges, route/job/manifest workflow traces, generated architecture playbooks, proof-carrying symbol neighborhoods, change-plan packets with planned-test provenance, outcome-informed local ranking, external symbol report ingestion, and cross-process refresh locking. These are still local, deterministic, and dependency-light.
 - `session_memory` follows `docs/architecture/session-memory.md`: cache-only structured working memory, bounded auto-recorded `viewed` entries, one MCP tool with actions, no embeddings or learned similarity, and no promotion of agent assertions into the codebase fact graph.
 - The first competitive Codex-native differentiator is the generated
-  `.codex/codebase/codex-contract.md` plus SessionStart packet. It tells Codex
-  when to call `change_plan` directly, when ambiguity justifies `search` or
-  `task_brief`, and when formal proof or advanced graph inspection is actually
-  needed, avoiding a noisy fixed lifecycle at startup. It does not prescribe
-  automatic chaining after any result.
+  `.codex/codebase/codex-contract.md` plus a compact dynamic SessionStart
+  packet. The full contract stays on demand; startup carries only the primary
+  cadence, observable readiness facets, and bounded selected-session recovery
+  data. Together they tell Codex when to call `change_plan` directly, when
+  ambiguity justifies `search` or `task_brief`, and when formal proof or
+  advanced graph inspection is actually needed, avoiding a noisy fixed
+  lifecycle at startup. They do not prescribe automatic chaining after any
+  result.
 - The v1 graph is in-memory and serialized to JSON/NDJSON. No graph DB, vector
   DB, always-on LSP daemon, formal solver, web UI, or generated wiki subsystem
   ships in v1. Embeddings and LSP are optional side lanes that are disabled by
