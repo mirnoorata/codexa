@@ -17,7 +17,7 @@ import {
   type StableTreeEntrySnapshot
 } from "./stable-directory-snapshot.js";
 
-const ADOPTION_SCAN_TIMEOUT_MS = 20_000;
+export const ADOPTION_SCAN_TIMEOUT_MS = 20_000;
 const STABLE_REGULAR_READ_FLAGS =
   fsConstants.O_RDONLY | fsConstants.O_NONBLOCK | fsConstants.O_NOFOLLOW;
 const DIST_RUNTIME_MAX_ENTRIES = 10_000;
@@ -66,13 +66,14 @@ export async function currentAdoptionReceiptFacts(
 }
 
 export async function currentAdoptionReceiptSnapshot(
-  repoRoot: string
+  repoRoot: string,
+  aggregateDeadlineAt?: number
 ): Promise<WorktreeBootstrapAdoptionSnapshot> {
   const repo = path.resolve(repoRoot);
   const packageLockPath = path.join(repo, "package-lock.json");
   const dist = path.join(repo, "dist");
   await assertSafeManagedDirectory(dist);
-  const deadlineAt = sessionStartDeadlineAt(Date.now() + ADOPTION_SCAN_TIMEOUT_MS);
+  const deadlineAt = adoptionDeadlineAt(aggregateDeadlineAt);
   const distRuntime = await hashBoundedRegularTree(
     repo,
     dist,
@@ -106,15 +107,26 @@ export async function currentAdoptionReceiptSnapshot(
       dependencyInventory: dependency.facts
     },
     revalidate: async () => {
-      prepareAdoptionRevalidation(dependency.tree);
-      prepareAdoptionRevalidation(distRuntime.tree);
+      const deadlineAt = adoptionDeadlineAt(aggregateDeadlineAt);
+      prepareAdoptionRevalidation(dependency.tree, deadlineAt);
+      prepareAdoptionRevalidation(distRuntime.tree, deadlineAt);
       await revalidateTrees();
     }
   };
 }
 
-function prepareAdoptionRevalidation(tree: AdoptionTreeSnapshot): void {
-  tree.budget.deadlineAt = sessionStartDeadlineAt(Date.now() + ADOPTION_SCAN_TIMEOUT_MS);
+function adoptionDeadlineAt(aggregateDeadlineAt?: number): number {
+  return sessionStartDeadlineAt(Math.min(
+    Date.now() + ADOPTION_SCAN_TIMEOUT_MS,
+    aggregateDeadlineAt ?? Number.POSITIVE_INFINITY
+  ));
+}
+
+function prepareAdoptionRevalidation(
+  tree: AdoptionTreeSnapshot,
+  deadlineAt: number
+): void {
+  tree.budget.deadlineAt = deadlineAt;
   tree.budget.revalidatedDirectoryEntries = 0;
 }
 

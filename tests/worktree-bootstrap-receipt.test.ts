@@ -86,9 +86,10 @@ describe("worktree bootstrap receipt", () => {
   });
 
   it.each([
-    { validation: "adoption" as const, trigger: "node_modules/example-dependency/index.js" },
-    { validation: "full" as const, trigger: "src/index.ts" }
-  ])("rejects startup drift introduced while the $validation scope is scanned", async ({ validation, trigger }) => {
+    { validation: "startup" as const, trigger: ".npmrc", state: "unavailable", reason: "startup-input-entry-changed-during-scan" },
+    { validation: "adoption" as const, trigger: "node_modules/example-dependency/index.js", state: "stale", reason: "config-drift" },
+    { validation: "full" as const, trigger: "src/index.ts", state: "stale", reason: "config-drift" }
+  ])("rejects startup drift introduced while the $validation scope is scanned", async ({ validation, trigger, state, reason }) => {
     const repo = await createReceiptFixture(`codexa-worktree-receipt-cross-scope-${validation}-`);
     await issueReceipt(repo, "posix-hooks");
     const completionTrigger = path.join(repo, trigger);
@@ -104,9 +105,9 @@ describe("worktree bootstrap receipt", () => {
     });
     try {
       await expect(inspectWorktreeBootstrapReceipt(repo, { validation })).resolves.toMatchObject({
-        state: "stale",
+        state,
         validation,
-        reason: "config-drift"
+        reason
       });
     } finally {
       vi.restoreAllMocks();

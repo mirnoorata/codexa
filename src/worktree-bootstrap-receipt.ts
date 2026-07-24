@@ -7,9 +7,10 @@ import {
   isGitTrackedAsync
 } from "./init-portability.js";
 import {
+  ADOPTION_SCAN_TIMEOUT_MS,
   currentAdoptionReceiptFacts,
   currentAdoptionReceiptSnapshot,
-  readBoundedStableRegularFile,
+  readBoundedStableRegularFileWithSnapshot,
   STARTUP_INPUT_MAX_BYTES,
   type WorktreeBootstrapAdoptionFacts,
   type WorktreeBootstrapAdoptionSnapshot
@@ -18,13 +19,19 @@ import {
   worktreeBootstrapBuildInputDigest,
   worktreeBootstrapBuildInputSnapshot
 } from "./worktree-bootstrap-build-input.js";
+import { dependencyCheckFailure } from "./worktree-bootstrap-dependency-check.js";
 import {
   expectedCodexaHookState,
   inspectHookLaneContract,
   lanePlatformMismatch
 } from "./worktree-bootstrap-hook-contract.js";
+import { parseBootstrapInputNames } from "./worktree-bootstrap-startup-inputs.js";
 import { sessionStartDeadlineAt } from "./session-start-budget.js";
-import type { StableDirectoryBudget } from "./stable-directory-snapshot.js";
+import {
+  revalidateStableTreeEntries,
+  type StableDirectoryBudget,
+  type StableTreeEntrySnapshot
+} from "./stable-directory-snapshot.js";
 
 export const WORKTREE_BOOTSTRAP_RECEIPT_REF = "refs/worktree/codexa/bootstrap-receipt";
 export const WORKTREE_BOOTSTRAP_DEPENDENCY_SEAL_RELATIVE_PATH = "node_modules/.codexa-dependencies.json";
@@ -35,8 +42,6 @@ const DEPENDENCY_MAX_LOGICAL_BYTES = 2 * 1024 * 1024 * 1024;
 const STARTUP_SCAN_TIMEOUT_MS = 5_000;
 const STARTUP_SCAN_MAX_FILES = 128;
 const STARTUP_SCAN_MAX_LOGICAL_BYTES = 64 * 1024 * 1024;
-const STARTUP_DECLARATION_MAX_COUNT = 64;
-const STARTUP_DECLARATION_MAX_NAME_BYTES = 32 * 1024;
 
 interface InputScanBudget extends StableDirectoryBudget {
   deadlineAt: number;
@@ -228,24 +233,17 @@ export async function issueWorktreeBootstrapReceipt(
   return receipt;
 }
 
-function dependencyCheckFailure(
-  result: Awaited<ReturnType<typeof runCommand>>,
-  dependencyReason: string
-): string {
-  if (result.timedOut) return "dependency-completeness-check-timeout";
-  if (result.truncated) return "dependency-completeness-diagnostics-limit";
-  if (result.error) return "dependency-completeness-check-unavailable";
-  return dependencyReason;
-}
-
 export async function validateWorktreeBootstrapReceipt(
   repoRoot: string,
   receipt: WorktreeBootstrapReceipt,
   validation: WorktreeBootstrapValidation = "full"
 ): Promise<WorktreeBootstrapInspection> {
+  const aggregateDeadlineAt = validation === "adoption"
+    ? Date.now() + ADOPTION_SCAN_TIMEOUT_MS
+    : undefined;
   let startup: WorktreeBootstrapStartupSnapshot;
   try {
-    startup = await currentStartupReceiptSnapshot(repoRoot);
+    startup = await currentStartupReceiptSnapshot(repoRoot, aggregateDeadlineAt);
   } catch (error) {
     return { state: "unavailable", lane: receipt.lane, validation, reason: boundedReason(error) };
   }
@@ -256,9 +254,21 @@ export async function validateWorktreeBootstrapReceipt(
   if (validation === "startup") {
     return { state: "verified", lane: receipt.lane, validation, receipt };
   }
+  let completionSnapshot: WorktreeBootstrapCompletionSnapshot | undefined;
+  if (validation === "full") {
+    try {
+      completionSnapshot = await currentCompletionReceiptSnapshot(repoRoot);
+    } catch (error) {
+      return { state: "unavailable", lane: receipt.lane, validation, reason: boundedReason(error), receipt };
+    }
+    const completionMismatch = completionReceiptMismatch(receipt, completionSnapshot.facts);
+    if (completionMismatch) {
+      return { state: "stale", lane: receipt.lane, validation, reason: completionMismatch, receipt };
+    }
+  }
   let adoptionSnapshot: WorktreeBootstrapAdoptionSnapshot;
   try {
-    adoptionSnapshot = await currentAdoptionReceiptSnapshot(repoRoot);
+    adoptionSnapshot = await currentAdoptionReceiptSnapshot(repoRoot, aggregateDeadlineAt);
   } catch (error) {
     return { state: "unavailable", lane: receipt.lane, validation, reason: boundedReason(error), receipt };
   }
@@ -269,56 +279,27 @@ export async function validateWorktreeBootstrapReceipt(
   }
   if (validation === "adoption") {
     try {
-      await adoptionSnapshot.revalidate();
-      const finalStartup = await currentStartupReceiptSnapshot(repoRoot);
+      const finalStartup = await currentStartupReceiptSnapshot(repoRoot, aggregateDeadlineAt);
       const finalStartupMismatch = startupReceiptMismatch(path.resolve(repoRoot), receipt, finalStartup);
       return finalStartupMismatch
         ? { state: "stale", lane: receipt.lane, validation, reason: finalStartupMismatch, receipt }
         : { state: "verified", lane: receipt.lane, validation, receipt };
     } catch (error) {
-      const drift = snapshotRevalidationDrift(error, "adoption");
-      return {
-        state: drift ? "stale" : "unavailable",
-        lane: receipt.lane,
-        validation,
-        reason: drift ?? boundedReason(error),
-        receipt
-      };
+      return { state: "unavailable", lane: receipt.lane, validation, reason: boundedReason(error), receipt };
     }
   }
-  let completionSnapshot: WorktreeBootstrapCompletionSnapshot;
-  try {
-    completionSnapshot = await currentCompletionReceiptSnapshot(repoRoot);
-  } catch (error) {
-    return { state: "unavailable", lane: receipt.lane, validation, reason: boundedReason(error), receipt };
+  if (!completionSnapshot) {
+    return { state: "unavailable", lane: receipt.lane, validation, reason: "completion-snapshot-missing", receipt };
   }
-  const completion = completionSnapshot.facts;
-  const completionMismatch = completionReceiptMismatch(receipt, completion);
-  if (completionMismatch) {
-    return { state: "stale", lane: receipt.lane, validation, reason: completionMismatch, receipt };
-  }
-
-  // Capture S/A/C, then revalidate the original C/A snapshots before S is read
-  // again. This detects observable cross-scope drift without claiming a
-  // filesystem transaction: mutation after a scope's closing check is
-  // post-validation drift and is rejected by the next validation.
+  // Capture S/C/A, then close C again after the more expensive adoption scan
+  // before capturing final S. This detects cross-scope source and durable
+  // startup drift without repeating the 100k-entry adoption traversal or
+  // claiming a filesystem transaction.
   let finalStartup: WorktreeBootstrapStartupSnapshot;
   try {
     await completionSnapshot.revalidate();
   } catch (error) {
-    const drift = snapshotRevalidationDrift(error, "completion");
-    return {
-      state: drift ? "stale" : "unavailable",
-      lane: receipt.lane,
-      validation,
-      reason: drift ?? boundedReason(error),
-      receipt
-    };
-  }
-  try {
-    await adoptionSnapshot.revalidate();
-  } catch (error) {
-    const drift = snapshotRevalidationDrift(error, "adoption");
+    const drift = snapshotRevalidationDrift(error);
     return {
       state: drift ? "stale" : "unavailable",
       lane: receipt.lane,
@@ -339,16 +320,11 @@ export async function validateWorktreeBootstrapReceipt(
 }
 
 function snapshotRevalidationDrift(
-  error: unknown,
-  scope: "adoption" | "completion"
+  error: unknown
 ): string | undefined {
   const reason = boundedReason(error);
   if (!/(?:changed-during|repository-changed)/u.test(reason)) return undefined;
-  if (scope === "completion") {
-    return reason.startsWith("git-head-") ? "head-drift" : "build-input-drift";
-  }
-  if (reason.startsWith("dependency-inventory-")) return "dependency-inventory-drift";
-  return reason.startsWith("dist-runtime-") ? "dist-runtime-drift" : undefined;
+  return reason.startsWith("git-head-") ? "head-drift" : "build-input-drift";
 }
 
 function startupReceiptMismatch(
@@ -583,18 +559,15 @@ async function currentCompletionReceiptSnapshot(
 }
 
 async function currentStartupReceiptSnapshot(
-  repoRoot: string
+  repoRoot: string,
+  aggregateDeadlineAt?: number
 ): Promise<WorktreeBootstrapStartupSnapshot> {
   const repo = path.resolve(repoRoot);
-  const budget = createStartupScanBudget();
+  const budget = createStartupScanBudget(aggregateDeadlineAt);
+  const snapshots: StableTreeEntrySnapshot[] = [];
+  const missingPaths: string[] = [];
   const repoRootReal = await fs.realpath(repo);
-  const commonDirResult = await runCommand(
-    "git",
-    ["-C", repo, "rev-parse", "--path-format=absolute", "--git-common-dir"],
-    { timeoutMs: 2_500, maxBufferBytes: 64 * 1024 }
-  );
-  if (!commonDirResult.ok) throw new Error("git-identity-unavailable");
-  const gitCommonDir = await fs.realpath(commonDirResult.stdout.trim());
+  const gitCommonDir = await currentGitCommonDir(repo);
   await assertSafeManagedStateDirectory(repo);
   const nodePath = await fs.realpath(process.execPath);
   const packageJsonContents = await readBudgetedStableRegularFile(
@@ -602,43 +575,65 @@ async function currentStartupReceiptSnapshot(
     STARTUP_INPUT_MAX_BYTES,
     "package-json",
     budget,
-    repo
+    repo,
+    snapshots
   );
   const packageLockContents = await readBudgetedStableRegularFile(
     path.join(repo, "package-lock.json"),
     STARTUP_INPUT_MAX_BYTES,
     "package-lock",
     budget,
-    repo
+    repo,
+    snapshots
   );
   const uvLockContents = await readOptionalRegularFile(
     repo,
     path.join(repo, "uv.lock"),
     budget,
-    "uv-lock"
+    "uv-lock",
+    snapshots,
+    missingPaths
   );
   const configContents = await readBudgetedStableRegularFile(
     path.join(repo, ".codex", "config.toml"),
     STARTUP_INPUT_MAX_BYTES,
     "config",
     budget,
-    repo
+    repo,
+    snapshots
   );
   const hooksContents = await readOptionalRegularFile(
     repo,
     path.join(repo, ".codex", "hooks.json"),
     budget,
-    "hooks"
+    "hooks",
+    snapshots,
+    missingPaths
   );
   const dependencySealContents = await readBudgetedStableRegularFile(
     path.join(repo, WORKTREE_BOOTSTRAP_DEPENDENCY_SEAL_RELATIVE_PATH),
     STARTUP_INPUT_MAX_BYTES,
     "dependency-seal",
     budget,
-    repo
+    repo,
+    snapshots
   );
   const hooksTracked = await isGitTrackedAsync(repo, ".codex/hooks.json");
-  const startupInputSha256 = await hashStartupInputs(repo);
+  const startupInputSha256 = await hashStartupInputs(
+    repo,
+    budget,
+    snapshots,
+    missingPaths
+  );
+  await revalidateStartupSnapshot({
+    repo,
+    repoRootReal,
+    gitCommonDir,
+    hooksTracked,
+    budget,
+    snapshots,
+    missingPaths
+  });
   return {
     facts: {
       repoRoot: repoRootReal,
@@ -664,9 +659,57 @@ async function currentStartupReceiptSnapshot(
   };
 }
 
+async function currentGitCommonDir(repoRoot: string): Promise<string> {
+  const result = await runCommand(
+    "git",
+    ["-C", repoRoot, "rev-parse", "--path-format=absolute", "--git-common-dir"],
+    { timeoutMs: 2_500, maxBufferBytes: 64 * 1024 }
+  );
+  if (!result.ok) throw new Error("git-identity-unavailable");
+  return fs.realpath(result.stdout.trim());
+}
+
+async function revalidateStartupSnapshot(input: {
+  repo: string;
+  repoRootReal: string;
+  gitCommonDir: string;
+  hooksTracked: boolean;
+  budget: InputScanBudget;
+  snapshots: StableTreeEntrySnapshot[];
+  missingPaths: string[];
+}): Promise<void> {
+  if (await fs.realpath(input.repo) !== input.repoRootReal) {
+    throw new Error("startup-input-repository-changed");
+  }
+  if (await currentGitCommonDir(input.repo) !== input.gitCommonDir) {
+    throw new Error("git-identity-changed-during-scan");
+  }
+  if (await isGitTrackedAsync(input.repo, ".codex/hooks.json") !== input.hooksTracked) {
+    throw new Error("hooks-tracking-changed-during-scan");
+  }
+  for (const missingPath of input.missingPaths) {
+    await fs.lstat(missingPath).then(
+      () => {
+        throw new Error("startup-input-entry-changed-during-scan");
+      },
+      (error: unknown) => {
+        if (!isNodeError(error) || error.code !== "ENOENT") throw error;
+      }
+    );
+    assertInputScanDeadline(input.budget);
+  }
+  await revalidateStableTreeEntries(
+    { containmentRootReal: input.repoRootReal, entries: input.snapshots },
+    input.budget,
+    () => assertInputScanDeadline(input.budget)
+  );
+}
+
 async function hashStartupInputs(
   repoRoot: string,
-  budget: InputScanBudget = createStartupScanBudget()
+  budget: InputScanBudget = createStartupScanBudget(),
+  snapshots?: StableTreeEntrySnapshot[],
+  missingPaths?: string[]
 ): Promise<string> {
   const wrapper = ".codex/worktree-bootstrap.sh";
   const declared = parseBootstrapInputNames(
@@ -675,7 +718,8 @@ async function hashStartupInputs(
       STARTUP_INPUT_MAX_BYTES,
       "bootstrap-wrapper",
       budget,
-      repoRoot
+      repoRoot,
+      snapshots
     )).toString("utf8")
   );
   return hashNamedFiles(repoRoot, [...new Set([
@@ -683,74 +727,15 @@ async function hashStartupInputs(
     ".codex/worktree-bootstrap.ps1",
     wrapper,
     ...declared
-  ])].sort(), budget);
-}
-
-function parseBootstrapInputNames(wrapper: string): string[] {
-  const prefix = "# focus-worktree-bootstrap-input: ";
-  const names: string[] = [];
-  const seen = new Set<string>();
-  let nameBytes = 0;
-  let lineStart = 0;
-  while (lineStart <= wrapper.length) {
-    const newline = wrapper.indexOf("\n", lineStart);
-    let lineEnd = newline === -1 ? wrapper.length : newline;
-    if (
-      newline !== -1 &&
-      lineEnd > lineStart &&
-      wrapper.charCodeAt(lineEnd - 1) === 13
-    ) {
-      lineEnd -= 1;
-    }
-    if (
-      lineEnd - lineStart >= prefix.length &&
-      wrapper.startsWith(prefix, lineStart)
-    ) {
-      const nameStart = lineStart + prefix.length;
-      const nameLength = lineEnd - nameStart;
-      if (
-        names.length >= STARTUP_DECLARATION_MAX_COUNT ||
-        nameLength > STARTUP_DECLARATION_MAX_NAME_BYTES
-      ) {
-        throw new Error("bootstrap-input-declarations-invalid");
-      }
-      const name = wrapper.slice(nameStart, lineEnd);
-      nameBytes += Buffer.byteLength(name, "utf8");
-      if (
-        nameBytes > STARTUP_DECLARATION_MAX_NAME_BYTES ||
-        seen.has(name)
-      ) {
-        throw new Error("bootstrap-input-declarations-invalid");
-      }
-      names.push(name);
-      seen.add(name);
-    }
-    if (newline === -1) break;
-    lineStart = newline + 1;
-  }
-  if (names.length === 0) {
-    throw new Error("bootstrap-input-declarations-invalid");
-  }
-  for (const name of names) {
-    if (
-      name.length === 0 ||
-      name.length > 512 ||
-      name.includes("\\") ||
-      path.posix.isAbsolute(name) ||
-      path.posix.normalize(name) !== name ||
-      name.split("/").some((segment) => segment === "" || segment === "." || segment === "..") ||
-      /[\u0000-\u001f\u007f]/u.test(name)
-    ) {
-      throw new Error("bootstrap-input-declarations-invalid");
-    }
-  }
-  return names;
+  ])].sort(), budget, snapshots, missingPaths);
 }
 
 async function hashNamedFiles(
   repoRoot: string,
   names: string[],
-  budget: InputScanBudget = createStartupScanBudget()
+  budget: InputScanBudget = createStartupScanBudget(),
+  snapshots?: StableTreeEntrySnapshot[],
+  missingPaths?: string[]
 ): Promise<string> {
   const entries: Array<readonly [string, Buffer | null]> = [];
   for (const name of names) {
@@ -761,11 +746,15 @@ async function hashNamedFiles(
         STARTUP_INPUT_MAX_BYTES,
         "startup-input",
         budget,
-        repoRoot
+        repoRoot,
+        snapshots
       );
       entries.push([name, contents]);
     } catch (error) {
-      if (isNodeError(error) && error.code === "ENOENT") entries.push([name, null]);
+      if (isNodeError(error) && error.code === "ENOENT") {
+        entries.push([name, null]);
+        missingPaths?.push(filePath);
+      }
       else throw error;
     }
   }
@@ -800,20 +789,23 @@ async function readBudgetedStableRegularFile(
   maxBytes: number,
   label: string,
   budget: InputScanBudget,
-  repoRoot: string
+  repoRoot: string,
+  snapshots?: StableTreeEntrySnapshot[]
 ): Promise<Buffer> {
   assertInputScanDeadline(budget);
   budget.fileCount += 1;
   if (budget.fileCount > budget.maxFiles) {
     throw new Error(`${budget.label}-file-limit-exceeded`);
   }
-  const contents = await readBoundedStableRegularFile(
+  const read = await readBoundedStableRegularFileWithSnapshot(
     filePath,
     maxBytes,
     label,
     budget.deadlineAt,
     repoRoot
   );
+  const contents = read.contents;
+  snapshots?.push(read.snapshot);
   budget.logicalBytes += contents.length;
   if (budget.logicalBytes > budget.maxLogicalBytes) {
     throw new Error(`${budget.label}-byte-limit-exceeded`);
@@ -845,14 +837,19 @@ async function readBudgetedStableRegularFile(
   return contents;
 }
 
-function createStartupScanBudget(): InputScanBudget {
-  return createInputScanBudget(
+function createStartupScanBudget(aggregateDeadlineAt?: number): InputScanBudget {
+  const budget = createInputScanBudget(
     "startup-input",
     STARTUP_SCAN_MAX_FILES,
     STARTUP_SCAN_MAX_FILES,
     STARTUP_SCAN_MAX_LOGICAL_BYTES,
     STARTUP_SCAN_TIMEOUT_MS
   );
+  budget.deadlineAt = Math.min(
+    budget.deadlineAt,
+    aggregateDeadlineAt ?? Number.POSITIVE_INFINITY
+  );
+  return budget;
 }
 
 function createInputScanBudget(
@@ -964,7 +961,9 @@ async function readOptionalRegularFile(
   repoRoot: string,
   filePath: string,
   budget: InputScanBudget,
-  label: string
+  label: string,
+  snapshots?: StableTreeEntrySnapshot[],
+  missingPaths?: string[]
 ): Promise<Buffer | null> {
   try {
     return await readBudgetedStableRegularFile(
@@ -972,10 +971,14 @@ async function readOptionalRegularFile(
       STARTUP_INPUT_MAX_BYTES,
       label,
       budget,
-      repoRoot
+      repoRoot,
+      snapshots
     );
   } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") return null;
+    if (isNodeError(error) && error.code === "ENOENT") {
+      missingPaths?.push(filePath);
+      return null;
+    }
     throw error;
   }
 }
