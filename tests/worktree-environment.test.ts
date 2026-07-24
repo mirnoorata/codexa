@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { parse as parseToml } from "smol-toml";
@@ -20,8 +21,16 @@ describe("tracked Codex worktree environment", () => {
     );
 
     const posixBootstrap = await readFile(path.join(repoRoot, ".codex/worktree-bootstrap.sh"), "utf8");
-    const posixBootstrapStat = await stat(path.join(repoRoot, ".codex/worktree-bootstrap.sh"));
-    expect(posixBootstrapStat.mode & 0o111).not.toBe(0);
+    const trackedBootstrap = execFileSync(
+      "git",
+      ["ls-files", "--stage", "--", ".codex/worktree-bootstrap.sh"],
+      { cwd: repoRoot, encoding: "utf8" }
+    );
+    expect(trackedBootstrap).toMatch(/^100755 /u);
+    if (process.platform !== "win32") {
+      const posixBootstrapStat = await stat(path.join(repoRoot, ".codex/worktree-bootstrap.sh"));
+      expect(posixBootstrapStat.mode & 0o111).not.toBe(0);
+    }
     expect(posixBootstrap).toContain('"$repo_root/scripts/worktree-bootstrap.mjs" posix-hooks "$repo_root"');
     expect(posixBootstrap).not.toContain("npm ci");
     expect(posixBootstrap).not.toContain("worktree-receipt issue");
