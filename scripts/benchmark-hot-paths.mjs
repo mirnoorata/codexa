@@ -12,8 +12,11 @@ const iterations = args.runs ?? 5;
 const warmups = args.warmups ?? 1;
 const outputPath = args.output ? path.resolve(args.output) : undefined;
 const summaryPath = args.summary ? path.resolve(args.summary) : process.env.GITHUB_STEP_SUMMARY;
+const thresholdScale = args.thresholdScale ?? 1;
 const mcpToolProfile = "full";
 const requiredMcpTools = ["freshness", "repo_map", "task_brief"];
+const sessionStartArgs = ["session-start", repoRoot, "--json"];
+if (args.strictSessionStart) sessionStartArgs.push("--strict");
 
 if (!existsSync(cli)) {
   throw new Error("dist/cli.js is missing. Run `npm run build` before benchmark-hot-paths.");
@@ -27,6 +30,7 @@ const benchmark = {
   platform: `${process.platform}-${process.arch}`,
   iterations,
   warmups,
+  thresholdScale,
   mcp: {
     toolProfile: mcpToolProfile,
     requiredDirectTools: requiredMcpTools,
@@ -42,7 +46,18 @@ recordArtifact("index.json", ".codex/codebase/index.json");
 recordArtifact("facts.ndjson", ".codex/codebase/facts.ndjson");
 recordArtifact("repo-map.md", ".codex/codebase/repo-map.md");
 
+if (args.verifyStartupContract) {
+  const adoptionRun = timeCommand(
+    "worktree-receipt adoption",
+    [process.execPath, cli, "worktree-receipt", "validate", repoRoot, "--scope", "adoption", "--json"],
+    { timeoutMs: 20_000 }
+  );
+  assertAdoptionReceipt(adoptionRun.stdout);
+  benchmark.metrics.push(singleMetric("cli.worktree_receipt_adoption", adoptionRun.durationMs, 5_000));
+}
+
 benchmark.metrics.push(
+  runCliBenchmark("cli.session_start", sessionStartArgs, 1_000),
   runCliBenchmark("cli.status", ["status", repoRoot], 2_000),
   runCliBenchmark("cli.repo_map", ["repo-map", repoRoot, "--no-auto-refresh", "--budget", "1200", "--limit", "10"], 3_000),
   runCliBenchmark(
@@ -78,7 +93,9 @@ if (failures.length > 0 && !args.warnOnly) {
 function runCliBenchmark(name, cliArgs, thresholdMs) {
   const measurements = [];
   for (let i = 0; i < warmups + iterations; i += 1) {
-    const measurement = timeCommand(name, [process.execPath, cli, ...cliArgs], { timeoutMs: Math.max(20_000, thresholdMs * 4) });
+    const measurement = timeCommand(name, [process.execPath, cli, ...cliArgs], {
+      timeoutMs: Math.max(20_000, gateThreshold(thresholdMs) * 4)
+    });
     if (i >= warmups) {
       measurements.push(measurement.durationMs);
     }
@@ -133,7 +150,11 @@ async function runMcpToolBenchmark(client, metricName, toolName, toolArgs, thres
   const measurements = [];
   for (let i = 0; i < warmups + iterations; i += 1) {
     const startedAt = process.hrtime.bigint();
-    const result = await withTimeout(client.callTool({ name: toolName, arguments: toolArgs }), Math.max(15_000, thresholdMs * 4), `${metricName} timed out`);
+    const result = await withTimeout(
+      client.callTool({ name: toolName, arguments: toolArgs }),
+      Math.max(15_000, gateThreshold(thresholdMs) * 4),
+      `${metricName} timed out`
+    );
     assertSuccessfulMcpToolResult(result, metricName);
     if (i >= warmups) {
       measurements.push(elapsedMs(startedAt));
@@ -148,6 +169,21 @@ function assertSuccessfulMcpToolResult(result, label) {
   }
   if (!result.structuredContent || typeof result.structuredContent !== "object" || Array.isArray(result.structuredContent)) {
     throw new Error(`${label} returned no structured MCP payload`);
+  }
+}
+
+function assertAdoptionReceipt(stdout) {
+  let receipt;
+  try {
+    receipt = JSON.parse(stdout);
+  } catch {
+    throw new Error("worktree-receipt adoption returned invalid JSON");
+  }
+  if (receipt?.state !== "verified" || receipt?.validation !== "adoption") {
+    throw new Error(
+      `worktree-receipt adoption returned ${receipt?.state ?? "unknown"}` +
+      ` (validation=${receipt?.validation ?? "unknown"})`
+    );
   }
 }
 
@@ -174,6 +210,7 @@ function timeCommand(label, commandLine, options = {}) {
 function measurementMetric(name, kind, measurements, thresholdMs) {
   const sorted = [...measurements].sort((a, b) => a - b);
   const p95 = percentile(sorted, 0.95);
+  const effectiveThresholdMs = gateThreshold(thresholdMs);
   return {
     name,
     kind,
@@ -183,12 +220,15 @@ function measurementMetric(name, kind, measurements, thresholdMs) {
     p95Ms: Math.round(p95),
     maxMs: Math.round(sorted[sorted.length - 1] ?? 0),
     avgMs: Math.round(measurements.reduce((sum, measurement) => sum + measurement, 0) / Math.max(1, measurements.length)),
-    thresholdMs,
-    passed: p95 <= thresholdMs
+    targetMs: thresholdMs,
+    thresholdMs: effectiveThresholdMs,
+    targetPassed: p95 <= thresholdMs,
+    passed: p95 <= effectiveThresholdMs
   };
 }
 
 function singleMetric(name, durationMs, thresholdMs, kind = "cli") {
+  const effectiveThresholdMs = gateThreshold(thresholdMs);
   return {
     name,
     kind,
@@ -198,9 +238,15 @@ function singleMetric(name, durationMs, thresholdMs, kind = "cli") {
     p95Ms: Math.round(durationMs),
     maxMs: Math.round(durationMs),
     avgMs: Math.round(durationMs),
-    thresholdMs,
-    passed: durationMs <= thresholdMs
+    targetMs: thresholdMs,
+    thresholdMs: effectiveThresholdMs,
+    targetPassed: durationMs <= thresholdMs,
+    passed: durationMs <= effectiveThresholdMs
   };
+}
+
+function gateThreshold(targetMs) {
+  return Math.ceil(targetMs * thresholdScale);
 }
 
 function percentile(sorted, percentileValue) {
@@ -228,12 +274,16 @@ function renderSummary(result, failures) {
     `Node: \`${result.node}\``,
     `Platform: \`${result.platform}\``,
     `Iterations: \`${result.iterations}\` after \`${result.warmups}\` warmup run(s)`,
+    `Shared-runner gate scale: \`${result.thresholdScale}\``,
     "",
-    "| Metric | p50 ms | p95 ms | Threshold ms | Result |",
-    "| --- | ---: | ---: | ---: | --- |"
+    "| Metric | p50 ms | p95 ms | Target ms | Gate ms | Result |",
+    "| --- | ---: | ---: | ---: | ---: | --- |"
   ];
   for (const metric of result.metrics) {
-    lines.push(`| \`${metric.name}\` | ${metric.p50Ms} | ${metric.p95Ms} | ${metric.thresholdMs} | ${metric.passed ? "pass" : "fail"} |`);
+    const outcome = metric.passed ? (metric.targetPassed ? "pass" : "pass (target miss)") : "fail";
+    lines.push(
+      `| \`${metric.name}\` | ${metric.p50Ms} | ${metric.p95Ms} | ${metric.targetMs} | ${metric.thresholdMs} | ${outcome} |`
+    );
   }
   lines.push("", "| Artifact | Size |", "| --- | ---: |");
   for (const artifact of result.artifacts) {
@@ -241,6 +291,14 @@ function renderSummary(result, failures) {
   }
   if (failures.length > 0) {
     lines.push("", `Benchmark failed: ${failures.map((metric) => metric.name).join(", ")}`);
+  } else if (result.thresholdScale > 1) {
+    const targetMisses = result.metrics.filter((metric) => !metric.targetPassed);
+    if (targetMisses.length > 0) {
+      lines.push(
+        "",
+        `Base targets missed within shared-runner headroom: ${targetMisses.map((metric) => metric.name).join(", ")}`
+      );
+    }
   }
   return lines.join("\n");
 }
@@ -261,9 +319,26 @@ function parseArgs(argv) {
       parsed.summary = requireValue(argv, ++i, arg);
     } else if (arg === "--warn-only") {
       parsed.warnOnly = true;
+    } else if (arg === "--strict-session-start") {
+      parsed.strictSessionStart = true;
+    } else if (arg === "--verify-startup-contract") {
+      parsed.verifyStartupContract = true;
+    } else if (arg === "--threshold-scale") {
+      parsed.thresholdScale = parseThresholdScale(requireValue(argv, ++i, arg), arg);
     } else {
       throw new Error(`Unknown benchmark option: ${arg}`);
     }
+  }
+  return parsed;
+}
+
+function parseThresholdScale(value, flag) {
+  if (!/^[12](?:\.\d+)?$/u.test(value)) {
+    throw new Error(`${flag} requires a decimal from 1 through 2`);
+  }
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed < 1 || parsed > 2) {
+    throw new Error(`${flag} requires a decimal from 1 through 2`);
   }
   return parsed;
 }

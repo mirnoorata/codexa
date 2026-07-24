@@ -35,6 +35,22 @@ describe("runCommand", () => {
     expect(result.stdout.length).toBe(1024);
   });
 
+  it("drains discarded stdout without charging it to the diagnostic buffer", async () => {
+    const result = await runCommand(
+      process.execPath,
+      ["-e", "process.stdout.write('x'.repeat(5_000_000)); process.stderr.write('diagnostic')"],
+      {
+        discardStdout: true,
+        timeoutMs: 2_000,
+        maxBufferBytes: 1024
+      }
+    );
+    expect(result.ok).toBe(true);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toBe("diagnostic");
+    expect(result.truncated).toBe(false);
+  });
+
   it("passes bounded stdin input to commands", async () => {
     const result = await runCommand(process.execPath, ["-e", "process.stdin.setEncoding('utf8'); let s=''; process.stdin.on('data', c => s += c); process.stdin.on('end', () => console.log(s.toUpperCase()))"], {
       input: "codexa",
@@ -43,40 +59,6 @@ describe("runCommand", () => {
     });
     expect(result.ok).toBe(true);
     expect(result.stdout.trim()).toBe("CODEXA");
-  });
-
-  it("kills process groups for timed-out commands", async () => {
-    if (process.platform === "win32") {
-      return;
-    }
-    const dir = await mkdtemp(path.join(os.tmpdir(), "codexa-command-group-"));
-    const marker = path.join(dir, "leaked.txt");
-    const childScript = `setTimeout(() => require('node:fs').writeFileSync(${JSON.stringify(marker)}, 'leaked'), 600); setTimeout(() => {}, 2000);`;
-    const script = path.join(dir, "spawn-child.mjs");
-    await writeFile(
-      script,
-      [
-        "import { spawn } from 'node:child_process';",
-        `spawn(process.execPath, ["-e", ${JSON.stringify(childScript)}], { stdio: "ignore" });`,
-        "console.log('spawned');",
-        "setTimeout(() => {}, 2000);"
-      ].join("\n"),
-      "utf8"
-    );
-
-    try {
-      const result = await runCommand(process.execPath, [script], {
-        killProcessGroup: true,
-        timeoutMs: 150,
-        maxBufferBytes: 16 * 1024
-      });
-      expect(result.ok).toBe(false);
-      expect(result.timedOut).toBe(true);
-      await new Promise((resolve) => setTimeout(resolve, 900));
-      await expect(readFile(marker, "utf8")).rejects.toThrow();
-    } finally {
-      await rm(dir, { recursive: true, force: true });
-    }
   });
 
   it("tracks per-request command budgets and warnings", async () => {

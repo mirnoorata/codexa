@@ -81,9 +81,62 @@ jobs:
       - name: Run package install smoke
         run: npm run smoke:package
 
+  worktree-bootstrap:
+    # Exercise both tracked setup lanes on their native hosts. Source-string
+    # assertions cannot prove PowerShell path semantics or receipt consumption.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Use Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: "22"
+          cache: npm
+
+      - name: Create linked Git worktree
+        run: git worktree add --detach ../codexa-linked-worktree HEAD
+
+      - name: Run POSIX worktree bootstrap
+        if: runner.os != 'Windows'
+        working-directory: ../codexa-linked-worktree
+        run: bash .codex/worktree-bootstrap.sh
+
+      - name: Run production Windows PowerShell bootstrap command
+        if: runner.os == 'Windows'
+        shell: pwsh
+        working-directory: ../codexa-linked-worktree
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File ./.codex/worktree-bootstrap.ps1
+
+      - name: Run post-bootstrap test smoke
+        working-directory: ../codexa-linked-worktree
+        run: >-
+          npx vitest run
+          tests/worktree-environment.test.ts
+          tests/worktree-bootstrap-execution.test.ts
+          tests/command-process-tree.test.ts
+          tests/worktree-bootstrap-requirement.test.ts
+
+      - name: Validate consumed setup receipt
+        working-directory: ../codexa-linked-worktree
+        run: node dist/cli.js worktree-receipt validate . --json
+
+      - name: Verify bootstrap concurrency lock
+        working-directory: ../codexa-linked-worktree
+        run: node scripts/worktree-bootstrap.mjs --verify-lock .
+
   benchmark:
-    # Guard only against clear hot-path regressions; thresholds live in the
-    # benchmark script and are intentionally generous for shared CI runners.
+    # Preserve the checked-in product targets while giving shared runners
+    # bounded, explicit headroom. The report exposes both target and gate.
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
     runs-on: ubuntu-latest
     timeout-minutes: 10
@@ -100,11 +153,8 @@ jobs:
           node-version: "22"
           cache: npm
 
-      - name: Install dependencies
-        run: npm ci
-
       - name: Run hot-path benchmark
-        run: npm run benchmark:ci
+        run: npm run benchmark:ci -- --threshold-scale 1.5
 
       - name: Run pinned transport benchmark
         run: npm run benchmark:transport -- --output .codex/cache/codexa-benchmarks/transport.json

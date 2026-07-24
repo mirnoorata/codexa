@@ -23,11 +23,14 @@ The first milestone used a private application repository as the acceptance proj
 - The current implementation also adds natural-language `focus_brief`/`session_context`, a small BM25/inverted-index retrieval layer, first-class typed graph edges, route/job/manifest workflow traces, generated architecture playbooks, proof-carrying symbol neighborhoods, change-plan packets with planned-test provenance, outcome-informed local ranking, external symbol report ingestion, and cross-process refresh locking. These are still local, deterministic, and dependency-light.
 - `session_memory` follows `docs/architecture/session-memory.md`: cache-only structured working memory, bounded auto-recorded `viewed` entries, one MCP tool with actions, no embeddings or learned similarity, and no promotion of agent assertions into the codebase fact graph.
 - The first competitive Codex-native differentiator is the generated
-  `.codex/codebase/codex-contract.md` plus SessionStart packet. It tells Codex
-  when to call `change_plan` directly, when ambiguity justifies `search` or
-  `task_brief`, and when formal proof or advanced graph inspection is actually
-  needed, avoiding a noisy fixed lifecycle at startup. It does not prescribe
-  automatic chaining after any result.
+  `.codex/codebase/codex-contract.md` plus a compact dynamic SessionStart
+  packet. The full contract stays on demand; startup carries only the primary
+  cadence, observable readiness facets, and bounded selected-session recovery
+  data. Together they tell Codex when to call `change_plan` directly, when
+  ambiguity justifies `search` or `task_brief`, and when formal proof or
+  advanced graph inspection is actually needed, avoiding a noisy fixed
+  lifecycle at startup. They do not prescribe automatic chaining after any
+  result.
 - The v1 graph is in-memory and serialized to JSON/NDJSON. No graph DB, vector
   DB, always-on LSP daemon, formal solver, web UI, or generated wiki subsystem
   ships in v1. Embeddings and LSP are optional side lanes that are disabled by
@@ -701,10 +704,74 @@ than a cache-backed full resolver pass.
 
 `codexa init` wires repos with `.codex/hooks.json` and the Codex hooks feature
 flag in `.codex/config.toml`. The hook runs `codexa session-start <repo>` on
-startup/resume. The helper prints cheap status by default; setting
-`CODEXA_SESSIONSTART_CONTEXT=1` also prints a bounded no-refresh `context-pack`
-preview. It does not mutate source files, but context commands can refresh
-generated Codexa cache artifacts when auto-refresh is enabled.
+startup/resume. The helper prints a cheap versioned receipt with independent
+configuration, index, local setup, and current-thread activation states;
+`--json` exposes
+the same facts structurally. Because the hook cannot observe the host MCP
+initialize handshake, activation remains `unverified` rather than being inferred
+from config presence. Setting `CODEXA_SESSIONSTART_CONTEXT=1` also prints the
+bounded context preview and workspace-row digest. It does not mutate source
+files, but context commands can refresh generated Codexa cache artifacts when
+auto-refresh is enabled.
+
+SessionStart does not activate a shared workspace's previous `Workspace
+Default` or a lone implicit active-session row. Without an explicit selected
+session row (via the option or `CODEXA_WORKSPACE_SESSION`), either fallback
+produces independent `selection-required` routing and `not-selected` index
+facets and skips config inspection and `statusQuery` for that repo. Explicit
+query commands retain their fallback routing. The config facet parses and
+bounds the managed command, recognizable Codexa launcher, arguments,
+enabled-tool exposure, and `serve` repo operand. It rejects unrelated launchers,
+excessive config arrays, and targets that resolve to another checkout. Direct
+runtime identity and version-pinned npx provenance are checked without
+executing configuration-supplied commands. Portable shims that cannot be
+statically attested produce the distinct `runtime-unverified` config state.
+Init refuses redirected or multi-link managed config/hook files and uses
+atomic replacement for changed wiring. Index receipt metadata is validated and
+bounded before rendering;
+`metadata-invalid` and `parser-degraded` are distinct nonfresh states. If
+the repo tracks a worktree bootstrap, SessionStart also consumes its
+identity-bound setup receipt. Its startup scope checks durable Git/worktree,
+package/lock, setup-procedure, dependency-seal, runtime, config, hook, and lane
+facts without rescanning source, `dist/`, or every installed package. The
+intermediate adoption scope adds complete `dist/` and dependency-inventory
+integrity without binding ordinary source/HEAD evolution. Explicit full
+receipt validation additionally owns HEAD and source/build-input drift. If
+`--auto-refresh` is enabled, SessionStart rebuilds a missing or stale
+index when durable setup is not required or verified; normal source evolution
+does not force a bootstrap rerun.
+
+Adoption integrity captures `node_modules` once from its root and performs one
+closing revalidation over the retained entries, so nested packages are neither
+omitted nor repeatedly hashed by a redundant third traversal. Regular files,
+legitimate hardlinks, in-root symlink targets such as `.bin` entries, and
+extraneous packages all affect the manifest. The public adoption-validation
+wall begins before receipt-requirement and Git-ref reads; those probes, startup
+facts, the adoption capture, closing revalidation, and final startup facts share
+one budget of at most 20 seconds. The implementation reserves direct-command
+termination time inside that wall, leaving the shared 30-second controller
+headroom for process startup, serialization, and its own termination. Validation
+also fails closed if a symlink escapes the installed tree, a file changes while
+it is read, the generated runtime exceeds 10,000 entries or 256 MiB,
+dependencies exceed 100,000 entries or 2 GiB, or one file exceeds its bounded
+class. `benchmark:ci` separately requires the valid adoption-scope check to
+complete within five seconds.
+The orchestrator snapshots every setup input declared by the tracked wrapper,
+plus both wrappers and the environment contract, before `npm ci`; receipt
+issuance rejects any change to that fingerprint. Tool caches are directed to
+ignored `.codex/cache` state so normal test execution cannot mutate the
+install-owned `node_modules` manifest.
+
+Shared controllers delegate adoption-scope validation to a trusted canonical
+Codexa runtime before executing the validated `dist/` entry point. The Git-ref
+receipt is not a signature and cannot authorize unvalidated worktree code.
+
+`session-start --strict` is the controller-facing observable-state gate. It
+fails unresolved or selection-required routing/status, missing, invalid, or
+`runtime-unverified` focused-repo config, legacy/drifted tool profiles, and
+every index state other than `fresh`. It does not fail solely because
+current-thread activation is unverified. Required setup in any state other than
+`verified` is also a strict failure.
 
 The Codex plugin bundle does not ship hooks. `codexa init` can add edit-scoped
 Codex hooks, but they run before later shell verification and do not claim

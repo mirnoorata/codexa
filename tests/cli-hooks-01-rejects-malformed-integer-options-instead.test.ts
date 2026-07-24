@@ -1,6 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { chmod, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
-import os from "node:os";
+import { chmod, mkdir, readFile, readdir, rename, rm, symlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { afterAll, describe, expect, it, vi } from "vitest";
 import { runAutoVerifyForPostEdit, sanitizeAutoVerifyText } from "../src/autoverify.js";
@@ -101,10 +100,58 @@ it("keeps session-start advisory when query setup fails", async () => {
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
     expect(result.stdout).toContain("Codexa status unavailable:");
-    expect(result.stdout).toContain("Codexa startup hook is advisory");
-  });
+  expect(result.stdout).toContain("Codexa startup hook is advisory");
+});
 
-it("routes workspace-root session-start hooks through the focused repository", async () => {
+it.each(["cache", "codexa-outcomes"] as const)(
+  "does not run hook writers through a redirected %s directory",
+  async (redirectedChild) => {
+    const repo = await createHookFixtureRepo();
+    const cli = path.resolve(process.cwd(), "dist/cli.js");
+    expect(
+      spawnSync(process.execPath, [cli, "init", repo], {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: testEnv()
+      }).status
+    ).toBe(0);
+    const externalRoot = await trackedTmpDir(`codexa-hook-${redirectedChild}-target-`);
+    const redirectedPath = redirectedChild === "cache"
+      ? path.join(repo, ".codex/cache")
+      : path.join(repo, ".codex/cache/codexa-outcomes");
+    await rename(redirectedPath, `${redirectedPath}-before-redirect`).catch(() => undefined);
+    await symlink(externalRoot, redirectedPath, "dir");
+    await writeFile(path.join(repo, "src/main.ts"), "export function main() { return 2 }\n", "utf8");
+
+    const postEdit = spawnSync(process.execPath, [cli, "hook-post-edit", repo], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: testEnv()
+    });
+    expect(postEdit.status).toBe(0);
+    expect(postEdit.stdout).toContain("Codexa: post-edit review unavailable:");
+    expect(postEdit.stdout).toContain("Codexa: hook is advisory; continuing without blocking the edit.");
+
+    const preEdit = spawnSync(process.execPath, [cli, "hook-pre-edit", repo], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: testEnv()
+    });
+    expect(preEdit.status).not.toBe(0);
+    expect(preEdit.stdout).toContain("Codexa: edit blocked because task lifecycle state could not be validated");
+
+    const reviewState = spawnSync(process.execPath, [cli, "hook-review-state", repo], {
+      cwd: process.cwd(),
+      encoding: "utf8",
+      env: testEnv()
+    });
+    expect(reviewState.status).toBe(0);
+    expect(reviewState.stdout.trim()).toBe("review");
+    expect(await readdir(externalRoot)).toEqual([]);
+  }
+);
+
+it("routes workspace-root session-start hooks through the focused repository without telemetry writes", async () => {
     const workspace = await trackedTmpDir("codexa-session-start-focused-");
     const repo = path.join(workspace, "repo");
     await mkdir(repo, { recursive: true });
@@ -125,15 +172,14 @@ it("routes workspace-root session-start hooks through the focused repository", a
 
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain(`Codexa context for ${repo}:`);
+    expect(result.stdout).toContain(`Codexa context for ${repo} (startup receipt v2):`);
     expect(result.stdout).toContain(`Repo: ${repo}`);
     expect(result.stdout).not.toContain("Codexa status unavailable:");
     expect(result.stdout).not.toContain("Failed to read git status");
-    const latest = JSON.parse(await readFile(path.join(workspace, ".codex/cache/codexa-hooks/latest.json"), "utf8")) as { status: string };
-    expect(latest.status).toBe("ok");
+    await expect(readFile(path.join(workspace, ".codex/cache/codexa-hooks/latest.json"), "utf8")).rejects.toThrow();
   });
 
-it("routes workspace-root session-start hooks through the default repository", async () => {
+it("keeps workspace-root SessionStart selection-required when only a default repository exists", async () => {
     const workspace = await trackedTmpDir("codexa-session-start-default-");
     execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
     const repo = path.join(workspace, "repo");
@@ -155,27 +201,19 @@ it("routes workspace-root session-start hooks through the default repository", a
 
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain(`Codexa context for ${repo}:`);
-    expect(result.stdout).toContain(`Repo: ${repo}`);
+    expect(result.stdout).toContain(`Codexa context for ${workspace} (startup receipt v2):`);
+    expect(result.stdout).toContain("Workspace selection required:");
+    expect(result.stdout).toContain(`Repo: not selected (workspace=${workspace})`);
+    expect(result.stdout).toContain("Index: not-selected");
+    expect(result.stdout).not.toContain(repo);
     expect(result.stdout).not.toContain("Codexa status unavailable:");
     expect(result.stdout).not.toContain("Failed to read git status");
-    const latest = JSON.parse(await readFile(path.join(workspace, ".codex/cache/codexa-hooks/latest.json"), "utf8")) as { status: string };
-    expect(latest.status).toBe("ok");
+    await expect(readFile(path.join(workspace, ".codex/cache/codexa-hooks/latest.json"), "utf8")).rejects.toThrow();
   });
 
-it("routes workspace-root session-start hooks through the default repository despite unrelated active sessions", async () => {
+it("does not let a lone implicit active row select a repo for SessionStart", async () => {
     const workspace = await trackedTmpDir("codexa-session-start-default-active-");
     execFileSync("git", ["init"], { cwd: workspace, stdio: "ignore" });
-    const repo = path.join(workspace, "repo");
-    await mkdir(repo, { recursive: true });
-    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
-    await writeFile(path.join(repo, "README.md"), "# fixture\n", "utf8");
-    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
-    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
-      cwd: repo,
-      stdio: "ignore"
-    });
-
     const activeRepo = path.join(workspace, "active-repo");
     await mkdir(activeRepo, { recursive: true });
     execFileSync("git", ["init"], { cwd: activeRepo, stdio: "ignore" });
@@ -190,10 +228,6 @@ it("routes workspace-root session-start hooks through the default repository des
     await writeFile(
       path.join(workspace, ".codex", "WORKING.md"),
       [
-        "## Workspace Default",
-        "",
-        `- Default repo: \`${repo}\`.`,
-        "",
         "## Active Sessions",
         "",
         "| session | agent | repo | task | status | claims | last_seen | next |",
@@ -210,13 +244,14 @@ it("routes workspace-root session-start hooks through the default repository des
 
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain(`Codexa context for ${repo}:`);
-    expect(result.stdout).toContain(`Repo: ${repo}`);
+    expect(result.stdout).toContain(`Codexa context for ${workspace} (startup receipt v2):`);
+    expect(result.stdout).toContain("Workspace selection required:");
+    expect(result.stdout).toContain(`Repo: not selected (workspace=${workspace})`);
+    expect(result.stdout).toContain("Index: not-selected");
     expect(result.stdout).not.toContain(activeRepo);
     expect(result.stdout).not.toContain("Codexa status unavailable:");
     expect(result.stdout).not.toContain("Failed to read git status");
-    const latest = JSON.parse(await readFile(path.join(workspace, ".codex/cache/codexa-hooks/latest.json"), "utf8")) as { status: string };
-    expect(latest.status).toBe("ok");
+    await expect(readFile(path.join(workspace, ".codex/cache/codexa-hooks/latest.json"), "utf8")).rejects.toThrow();
   });
 
 it("routes workspace-root query CLI commands through the default repository", async () => {
@@ -320,11 +355,18 @@ it("routes workspace-root session-start through an explicit workspace session fl
 
     expect(result.status).toBe(0);
     expect(result.stderr).toBe("");
-    expect(result.stdout).toContain(`Codexa context for ${repoA}:`);
+    expect(result.stdout).toContain(`Codexa context for ${repoA} (startup receipt v2):`);
     expect(result.stdout).toContain(`Repo: ${repoA}`);
     expect(result.stdout).toContain("session-a");
     expect(result.stdout).not.toContain(repoB);
     expect(result.stdout).not.toContain("Codexa status unavailable:");
+
+    const fromEnv = spawnSync(process.execPath, [cli, "session-start", workspace, "--workspace-focus-file", focusFile], {
+      cwd: process.cwd(), encoding: "utf8", env: testEnv({ CODEXA_WORKSPACE_SESSION: "session-b" })
+    });
+    expect(fromEnv.status).toBe(0);
+    expect(fromEnv.stdout).toContain(`Repo: ${repoB}`);
+    expect(fromEnv.stdout).not.toContain(repoA);
 });
 
 it("routes workspace-root query CLI commands through an explicit workspace session flag", async () => {

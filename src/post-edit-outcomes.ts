@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { assertSafeManagedDirectory, assertSafeManagedFile, ensureSafeManagedStateDirectory } from "./init-portability.js";
 import { CURRENT_VERIFICATION_PROVENANCE } from "./types.js";
 import type { AutoVerifyReportRunner } from "./autoverify.js";
 import type {
@@ -295,11 +296,13 @@ export async function savePostEditOutcome(input: PostEditOutcomeInput): Promise<
   // exactly. The legacy content-only digest remains useful for ordinary outcome
   // records, but completion probes will never trust it as a skip authority.
   outcome.workspaceStateDigest = (await exactWorkspaceStateDigest(repoRoot, input.freshness)) ?? outcome.workspaceStateDigest;
-  const dir = path.join(repoRoot, OUTCOME_DIR);
-  await fs.mkdir(dir, { recursive: true });
+  const dir = await ensureSafeManagedStateDirectory(repoRoot, "cache", "codexa-outcomes");
   const outcomePath = path.join(dir, `${outcome.outcomeId}.json`);
+  const latestPath = path.join(dir, LATEST_FILE);
+  await assertSafeManagedFile(outcomePath);
+  await assertSafeManagedFile(latestPath);
   await atomicJsonWrite(outcomePath, outcome);
-  await atomicJsonWrite(path.join(dir, LATEST_FILE), {
+  await atomicJsonWrite(latestPath, {
     schemaVersion: 1,
     outcomeId: outcome.outcomeId,
     path: path.basename(outcomePath),
@@ -420,9 +423,10 @@ export async function loadPostEditHookReviewState(repoRoot: string): Promise<Pos
 
 export async function savePostEditHookReviewState(repoRoot: string, input: { signature: string; outcome?: PostEditOutcome; autoVerifyStatus?: PostEditHookReviewState["autoVerifyStatus"] }): Promise<void> {
   const repo = path.resolve(repoRoot);
-  const dir = path.join(repo, OUTCOME_DIR);
-  await fs.mkdir(dir, { recursive: true });
-  await atomicJsonWrite(path.join(dir, LATEST_HOOK_REVIEW_FILE), {
+  const dir = await ensureSafeManagedStateDirectory(repo, "cache", "codexa-outcomes");
+  const reviewPath = path.join(dir, LATEST_HOOK_REVIEW_FILE);
+  await assertSafeManagedFile(reviewPath);
+  await atomicJsonWrite(reviewPath, {
     schemaVersion: 1,
     signature: input.signature,
     createdAt: new Date().toISOString(),
@@ -435,17 +439,16 @@ export async function savePostEditHookReviewState(repoRoot: string, input: { sig
 
 export async function recordCodexaHookEvent(repoRoot: string, input: CodexaHookEventInput): Promise<void> {
   const repo = path.resolve(repoRoot);
-  const codexDir = path.join(repo, ".codex");
-  if (!(await pathExists(codexDir))) {
-    return;
-  }
-  const dir = path.join(repo, HOOK_EVENT_DIR);
-  await fs.mkdir(dir, { recursive: true });
+  const dir = await prepareHookEventDirectory(repo);
+  if (!dir) return;
   const event = compactHookEvent(repo, input);
   const eventsPath = path.join(dir, HOOK_EVENTS_FILE);
+  const latestPath = path.join(dir, LATEST_HOOK_EVENT_FILE);
+  await assertSafeManagedFile(eventsPath);
+  await assertSafeManagedFile(latestPath);
   await trimHookEventsIfNeeded(eventsPath);
   await fs.appendFile(eventsPath, `${JSON.stringify(event)}\n`, "utf8");
-  await atomicJsonWrite(path.join(dir, LATEST_HOOK_EVENT_FILE), event);
+  await atomicJsonWrite(latestPath, event);
 }
 
 export async function loadLatestCodexaHookEvent(repoRoot: string): Promise<CodexaHookEvent | null> {
@@ -579,13 +582,20 @@ async function trimHookEventsIfNeeded(eventsPath: string): Promise<void> {
   }
 }
 
-async function pathExists(filePath: string): Promise<boolean> {
+async function prepareHookEventDirectory(repoRoot: string): Promise<string | null> {
+  const codexDir = path.join(repoRoot, ".codex");
   try {
-    await fs.access(filePath);
-    return true;
-  } catch {
-    return false;
+    await fs.lstat(codexDir);
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return null;
+    throw error;
   }
+  await assertSafeManagedDirectory(codexDir);
+  return ensureSafeManagedStateDirectory(repoRoot, "cache", "codexa-hooks");
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error;
 }
 
 function compactTests(tests: TestRecommendation[], repoRoot: string): PostEditOutcome["recommendedTests"] {

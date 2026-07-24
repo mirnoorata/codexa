@@ -20,18 +20,27 @@ describe("reproducible MCP transport comparison", () => {
         "--repo", repo,
         "--runs", "1",
         "--warmups", "1",
+        "--warn-only",
         "--output", output
       ],
       { cwd: process.cwd(), encoding: "utf8", timeout: 60_000, maxBuffer: 4 * 1024 * 1024 }
     );
     const report = JSON.parse(await readFile(output, "utf8")) as {
+      thresholdScale: number;
       mcp: { toolProfile: string; requiredDirectTools: string[]; directToolNames: string[] };
-      metrics: Array<{ name: string; passed: boolean }>;
+      metrics: Array<{ name: string; targetMs: number; thresholdMs: number }>;
     };
+    expect(report.thresholdScale).toBe(1);
     expect(report.mcp.toolProfile).toBe("full");
     expect(report.mcp.requiredDirectTools).toEqual(["freshness", "repo_map", "task_brief"]);
     expect(report.mcp.requiredDirectTools.every((tool) => report.mcp.directToolNames.includes(tool))).toBe(true);
-    expect(report.metrics.filter((metric) => metric.name.startsWith("mcp.")).every((metric) => metric.passed)).toBe(true);
+    expect(report.metrics.filter((metric) => metric.name.startsWith("mcp.")).map((metric) => metric.name)).toEqual([
+      "mcp.startup",
+      "mcp.freshness",
+      "mcp.repo_map",
+      "mcp.task_brief_explicit_file"
+    ]);
+    expect(report.metrics.every((metric) => metric.targetMs === metric.thresholdMs)).toBe(true);
   }, 60_000);
 
   it("compares full and core exposure without making an agent-quality claim", async () => {

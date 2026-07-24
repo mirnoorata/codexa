@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { acquireCacheLock } from "./cache-lock.js";
+import { assertSafeManagedFile, ensureSafeManagedStateDirectory } from "./init-portability.js";
 import {
   MAX_TASK_INVARIANT_CHARS,
   MAX_TASK_INVARIANT_EVIDENCE,
@@ -305,7 +306,8 @@ export async function loadTaskLifecycleState(repoRoot: string, taskId: string): 
 export async function saveTaskLifecycleState(repoRoot: string, state: TaskLifecycleState): Promise<void> {
   if (!isTaskLifecycleState(state, state.taskId)) throw new Error("Refusing to save invalid task lifecycle state");
   const filePath = taskLifecycleStatePath(repoRoot, state.taskId);
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await ensureSafeManagedStateDirectory(repoRoot, "cache", "codexa-task-lifecycle");
+  await assertSafeManagedFile(filePath);
   const temp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   await fs.writeFile(temp, `${JSON.stringify(state, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   await fs.rename(temp, filePath);

@@ -18,10 +18,94 @@ node <codexa-checkout>/dist/cli.js session-start <repo>
 `<repo>` is the target repository root — the absolute path of the
 codebase you want Codexa to index.
 
-The helper is intentionally read-only for source files. By default it prints
-only Codexa status and a pointer to the MCP `task_brief` tool so Codex startup
-stays cheap. Set `CODEXA_SESSIONSTART_CONTEXT=1` in the hook environment if you
-want a bounded no-refresh context-pack preview as well.
+The helper is intentionally read-only for source files. By default it prints a
+versioned receipt with separate project-config, index, local setup, and
+current-thread MCP activation states plus the compact selective-use cadence.
+SessionStart cannot
+observe the host's MCP initialize handshake, so it reports current-thread MCP
+activation as `unverified`; config presence alone is never called active or
+ready. Pass `--json` for the structured receipt. Set
+`CODEXA_SESSIONSTART_CONTEXT=1` in the hook environment if you want the bounded
+context preview and workspace-row digest as well.
+
+The advisory path has one 15-second wall-clock budget and a shared subprocess
+budget; it does not multiply a fresh timeout across every Git probe. The
+generated host hook keeps a 60-second ceiling so process-group termination
+grace still leaves time to emit the unavailable receipt. Operators may set
+`CODEXA_SESSION_START_BUDGET_MS` between 1,000 and 45,000 milliseconds; values
+outside that range are clamped. The same absolute deadline caps bounded file
+scans and subprocesses. Deadline fallback waits for in-flight work to quiesce
+and retains each routing, setup, config, or index facet that completed; it does
+not return from a non-cancelling response race. Auto-refresh is an explicit
+mutating operation and is not cut off by the advisory wall-clock deadline.
+The ordinary SessionStart status path does not append hook telemetry or write
+managed cache state after rendering its receipt; this keeps the host-visible
+command boundary within the same budget and removes an optional write race
+from project startup.
+
+At a shared workspace root, a `Workspace Default` or lone implicit `Active
+Sessions` row is only a fallback for explicit query commands; neither proves
+that the new session selected that project. SessionStart therefore returns
+`routing.state=selection-required` and `index.state=not-selected` without
+inspecting that repo's config or index. Pass `--workspace-session <id>` to
+select an active row. If a shared workspace generates a selector file, its
+coordinator must validate that selector against current workspace state before
+importing it; do not source a mutable selector directly. An explicit `Active
+Focus` continues to route directly.
+
+The config facet parses the complete TOML document, selects the managed server
+table, and bounds its `command`, launcher token, arguments, enabled-tool list,
+and `serve` operand. The command must resolve to an executable. Direct Node
+launchers must use the current trusted runtime and a readable `dist/cli.js`
+under a package named `@mirnoorata/codexa`; version-pinned npx launchers must
+resolve inside that runtime's npm installation. A portable runtime shim that
+cannot be proven without executing repository-supplied configuration is
+reported as `runtime-unverified`, not mislabeled as either configured or
+broken. It is a strict-readiness failure; use direct host-local wiring when
+identity attestation is required. The post-`serve` arguments must match init's
+stdio shape, and the configured repo must resolve to the receipt's active
+`repoRoot`. Malformed TOML, nested or duplicate server tables, non-stdio
+transports, unrelated or stale launchers, copied wrong-root configs, and
+excessive tool lists are invalid. Init also refuses symlinked, hard-linked, or
+non-regular managed config/hook files instead of following them, and replaces
+changed managed files atomically.
+Repositories that track a Codexa worktree bootstrap also require a local setup
+receipt. It is stored as an immutable Git blob behind the per-worktree
+`refs/worktree/codexa/bootstrap-receipt` ref instead of a mutable managed-state
+file. SessionStart cheaply validates its durable worktree/Git identity, package
+and lock inputs, tracked startup procedure, dependency-install seal,
+config/hooks, lane, and Node runtime. Missing, stale, or malformed durable
+evidence is a separate strict failure and disables startup auto-refresh;
+repositories without a tracked bootstrap remain `setup.state=not-required`.
+The explicit `worktree-receipt validate` command defaults to the full completion
+gate: it additionally recomputes HEAD, build inputs, complete `dist/`, and
+installed dependency inventory. Those volatile fields do not make ordinary
+source edits or index refreshes fail startup.
+Shared startup controllers use the intermediate
+`worktree-receipt validate --scope adoption` through a trusted canonical
+Codexa CLI. Adoption validates the durable startup subset plus the complete
+runtime and installed dependency inventory while deliberately ignoring
+ordinary source/HEAD drift. This avoids duplicating the receipt schema or
+trusting generated code from the worktree before that code has been validated.
+When `--auto-refresh` is requested, a missing or stale index is rebuilt during
+that SessionStart invocation only when setup is not required or currently
+verified; it is not deferred to a later MCP call.
+
+Every index-derived receipt string and count is validated, control-sanitized,
+and bounded before text or JSON rendering. Malformed metadata produces
+`metadata-invalid`; a nonzero parser error count produces `parser-degraded`.
+Both are nonfresh strict failures rather than a successful `fresh` receipt.
+
+The generated hook remains advisory and exits successfully. Explicit callers
+can pass `--strict`: it exits nonzero when repo routing/status is unavailable or
+still requires selection,
+the focused repo's managed config is missing, invalid, or
+`runtime-unverified`, its tool profile is not an internally consistent `core`
+or `full` profile, or its index is not `fresh` (including malformed metadata or
+parser degradation), or required local setup is not `verified`.
+Strict mode deliberately does not turn `Current-thread MCP: unverified` into a
+failure, because only the host handshake—not this subprocess—can attest that
+state.
 
 When Codex edit hooks are available, `codexa init` also writes two lightweight
 edit-loop helpers:

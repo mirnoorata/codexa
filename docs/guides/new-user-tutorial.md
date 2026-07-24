@@ -8,7 +8,7 @@ repository without sending source code to a hosted indexing service.
 
 1. Install Codexa.
 2. Wire Codexa into one local repository, including optional local policy defaults.
-3. Check that the index and MCP server are ready.
+3. Check index freshness and static MCP configuration without claiming current-thread activation.
 4. Use the smallest source, search, plan, edit, and review sequence the task needs.
 5. Print a proof card for the final handoff.
 6. Know where to look when setup is not ready.
@@ -87,12 +87,37 @@ After setup, or whenever freshness is in doubt, check readiness with:
 codexa session-start /path/to/project
 ```
 
-A ready repository reports the repo path, the current commit, freshness, dirty
-file count, parser error count, and the selective-use policy. Managed host hooks
-surface status automatically, so an agent does not need to call this command at
-the start of every turn. `fresh` means the stored Codexa index matches the
-current checkout. `stale` usually means the checkout changed since the last
-index, and most context commands can refresh it automatically.
+The versioned receipt reports the repo path and current commit, static MCP
+configuration and tool profile, index freshness, dirty-file and parser-error
+counts, required local worktree setup, current-thread MCP activation, and the
+selective-use cadence. Managed
+host hooks surface it automatically, so an agent does not need to call this
+command at the start of every turn. `fresh` means the stored Codexa index
+matches the current checkout. `stale` usually means the checkout changed since
+the last index, and most context commands can refresh it automatically.
+`Current-thread MCP: unverified` is expected from SessionStart: only the host's
+actual MCP initialize handshake can prove that this thread loaded the server.
+`Config: runtime-unverified` is different: the managed command is structurally
+valid, but a portable Node/npx shim cannot be tied statically to the trusted
+runtime without executing it. Strict readiness stays closed until the repo
+uses direct host-local wiring.
+For repositories with a tracked Codexa bootstrap, `Setup: verified` means the
+current SessionStart matched the durable worktree/Git, package/lock,
+startup-procedure, dependency-seal, config/hook, lane, and runtime identity
+recorded by setup. It deliberately does not rescan source, `dist/`, or all
+installed packages on every new conversation. Run
+`codexa worktree-receipt validate .` for that full completion check. A durable `missing`, `stale`, or
+`invalid` state means rerun the tracked bootstrap before strict startup or
+auto-refresh. Ordinary downstream repositories report no setup line because
+that receipt is not required.
+At a shared workspace root, `routing: selection-required` and `Index:
+not-selected` mean only a previous workspace default or unselected active row
+was available; select an active row with `--workspace-session <id>` before
+loading project context. If a shared coordinator generates a selector file,
+use its validator rather than sourcing the mutable file directly.
+`metadata-invalid` means stored index identity fields failed bounded validation;
+`parser-degraded` means indexing completed with parser errors. Reindex and
+inspect the parser failures before treating either state as ready.
 
 For a fuller setup check, run:
 
@@ -207,7 +232,7 @@ inspect.
 If `codexa` is not found, confirm the npm global bin directory is on `PATH`, or
 use the source-checkout flow with `npm link`.
 
-If `session-start` reports `missing-index`, run:
+If `session-start` reports `Index: missing`, run:
 
 ```bash
 codexa index /path/to/project

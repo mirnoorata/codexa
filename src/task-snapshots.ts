@@ -1,6 +1,7 @@
 import { existsSync } from "node:fs";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { ensureSafeManagedStateDirectory } from "./init-portability.js";
 import { atomicJsonWrite, atomicTextWrite, ensureTaskSnapshotRollbackDirectory, readJson, redactRepoPath, taskSnapshotRollbackPath } from "./task-snapshot-storage.js";
 import type { ChangePlanInput, ChangeType, TaskSnapshot } from "./types.js";
 import { loadTaskLifecycleState, normalizeTaskInvariants, recordTaskPlanRevision, taskInvariantId, withTaskLifecycleLock } from "./task-lifecycle.js";
@@ -55,8 +56,7 @@ export async function saveTaskSnapshot({ repoRoot, input, snapshot, beforePersis
   const createdAt = new Date().toISOString();
   const taskId = allocateTaskSnapshotId(repo, input, createdAt);
   return withTaskLifecycleLock(repo, taskId, async () => {
-    const dir = snapshotDir(repo);
-    await fs.mkdir(dir, { recursive: true });
+    const dir = await ensureSafeManagedStateDirectory(repo, "cache", "codexa-tasks");
     const snapshotPath = path.join(dir, `${taskId}.json`);
     const previousSnapshotPath = taskSnapshotRollbackPath(dir, taskId);
     const priorRead = await readJson<TaskSnapshot>(snapshotPath);
@@ -136,8 +136,7 @@ export async function saveBlockedTaskSnapshot({ repoRoot, input, reason, details
   const createdAt = new Date().toISOString();
   const taskId = normalizeTaskId(input.taskId) ?? defaultTaskId(repo, input, createdAt);
   const saved = await withTaskLifecycleLock(repo, taskId, async () => {
-    const dir = snapshotDir(repo);
-    await fs.mkdir(dir, { recursive: true });
+    const dir = await ensureSafeManagedStateDirectory(repo, "cache", "codexa-tasks");
     const snapshotPath = path.join(dir, `${taskId}.json`);
     const prior = await readJson<TaskSnapshot>(snapshotPath);
     if (prior.ok && isTaskSnapshot(prior.value)) {

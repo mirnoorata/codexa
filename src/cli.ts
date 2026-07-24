@@ -7,7 +7,8 @@ import { defaultAutonomyMode, effectiveAutonomyMode, parseAutonomyMode, setAuton
 import { checkGithubSync } from "./github-sync.js";
 import { publishProjectGithubRelease } from "./github-release.js";
 import { runDoctor } from "./doctor.js";
-import { initializeProject, sessionStartSummary } from "./init.js";
+import { initializeProject, renderSessionStartJson, renderSessionStartReceipt, sessionStartReceipt, sessionStartStrictFailures } from "./init.js";
+import { sessionStartReceiptForBootstrapIssue } from "./session-start.js";
 import { resolveImplicitGitRepoRoot } from "./init-portability.js";
 import { runLiveIndexer } from "./live-index.js";
 import { serveMcp, serveMcpHttp, type McpTransportKind } from "./mcp.js";
@@ -18,7 +19,7 @@ import { proveQuery } from "./prove.js";
 import { createQuerySession } from "./query/session.js";
 import { ingestVerificationArtifact } from "./verification-artifacts.js";
 import { validateArtifactIds } from "./lifecycle-contract.js";
-import { postEditReviewStateIsCurrent, recordAdvisoryHookEvent, runPostEditHook, runPreEditHook } from "./cli/hooks.js";
+import { postEditReviewStateIsCurrent, runPostEditHook, runPreEditHook } from "./cli/hooks.js";
 import type { ChangeType } from "./types.js";
 import { runEval } from "./eval.js";
 import { registerQueryCommands } from "./cli/query-commands.js";
@@ -40,6 +41,13 @@ import {
 } from "./cli/options.js";
 import { CODEXA_VERSION } from "./version.js";
 import { nodeSupported, nodeVersionComplaint } from "./node-version.js";
+import {
+  inspectWorktreeBootstrapReceipt,
+  issueWorktreeBootstrapReceipt,
+  parseWorktreeBootstrapLane,
+  type WorktreeBootstrapLane,
+  type WorktreeBootstrapValidation
+} from "./worktree-bootstrap-receipt.js";
 
 const program = new Command();
 
@@ -84,7 +92,7 @@ program
   .option("--no-hooks", "do not write hooks.json")
   .option("--index", "index the repository immediately", true)
   .option("--no-index", "only write Codex config and hooks")
-  .option("--tools <profile>", "MCP tool exposure profile: core (3 direct tools plus dispatcher) or full; defaults to the repo's existing profile, else core", parseToolProfile)
+  .option("--tools <profile>", "MCP tool exposure profile: core (3 direct tools including the dispatcher) or full; defaults to the repo's existing profile, else core", parseToolProfile)
   .option("--agents-md", "write a managed Codexa workflow block into the repo's AGENTS.md (Codex)", false)
   .option("--claude-md", "write a managed Codexa workflow block into the repo's CLAUDE.md (Claude Code)", false)
   .option("--claude", "write the codexa MCP server entry into the repo's .mcp.json for Claude Code", false)
@@ -155,6 +163,56 @@ program
       console.log(`Next Codex sessions only need: focus on ${result.repoRoot}`);
     }
   );
+
+const worktreeReceipt = program
+  .command("worktree-receipt")
+  .description("Issue or validate the local, identity-bound Codexa worktree setup receipt.");
+
+worktreeReceipt
+  .command("issue")
+  .argument("<repo>", "repository root")
+  .requiredOption("--lane <lane>", "setup lane: posix-hooks or native-windows-mcp", parseWorktreeBootstrapLane)
+  .requiredOption("--expected-build-input <sha256>", "pre-build source fingerprint", parseSha256Option)
+  .requiredOption("--expected-startup-input <sha256>", "pre-install startup fingerprint", parseSha256Option)
+  .option("--json", "emit machine-readable JSON", false)
+  .action(async (repo: string, opts: { expectedBuildInput: string; expectedStartupInput: string; lane: WorktreeBootstrapLane; json: boolean }) => {
+    const repoRoot = resolveRequiredGitRepo(repo, "worktree-receipt issue");
+    const readiness = await sessionStartReceiptForBootstrapIssue(repoRoot);
+    const failures = sessionStartStrictFailures(readiness);
+    if (readiness.config.toolProfile !== "core") failures.push(`config profile ${readiness.config.toolProfile}`);
+    if (failures.length > 0) {
+      throw new Error(`Cannot issue Codexa worktree receipt: ${[...new Set(failures)].join("; ")}`);
+    }
+    const receipt = await issueWorktreeBootstrapReceipt(
+      repoRoot,
+      opts.lane,
+      opts.expectedBuildInput,
+      opts.expectedStartupInput
+    );
+    console.log(opts.json ? JSON.stringify(receipt, null, 2) : `Codexa worktree receipt: verified (${receipt.lane}).`);
+  });
+
+worktreeReceipt
+  .command("validate")
+  .argument("<repo>", "repository root")
+  .option("--scope <scope>", "validation scope: startup, adoption, or full", parseWorktreeReceiptValidation, "full")
+  .option("--json", "emit machine-readable JSON", false)
+  .action(async (repo: string, opts: { json: boolean; scope: WorktreeBootstrapValidation }) => {
+    const inspection = await inspectWorktreeBootstrapReceipt(
+      resolveRequiredGitRepo(repo, "worktree-receipt validate"),
+      { validation: opts.scope }
+    );
+    const details = [
+      `validation=${inspection.validation ?? opts.scope}`,
+      ...(inspection.lane ? [`lane=${inspection.lane}`] : [])
+    ];
+    console.log(
+      opts.json
+        ? JSON.stringify(inspection, null, 2)
+        : `Codexa worktree receipt: ${inspection.state} (${details.join("; ")}).`
+    );
+    if (inspection.state !== "verified") process.exitCode = 1;
+  });
 
 program
   .command("autonomy")
@@ -576,28 +634,27 @@ program
   .command("session-start")
   .argument("[repo]", "repository root; defaults to current directory")
   .option("--context", "include a small context preview", false)
-  .option("--auto-refresh", "refresh a stale or missing index before rendering the context preview", false)
-  .option("--no-auto-refresh", "do not refresh a stale or missing index before rendering the context preview")
+  .option("--auto-refresh", "refresh a stale or missing index during this startup invocation", false)
+  .option("--no-auto-refresh", "do not refresh a stale or missing index during this startup invocation")
+  .option("--json", "emit the versioned structured startup receipt")
+  .option("--strict", "exit nonzero when observable routing, config/profile, durable setup, or index checks are not usable; MCP activation remains unverified", false)
   .option("--workspace-focus-file <path>", "workspace focus file to consult when <repo> is a workspace launch root")
   .option("--workspace-session <id>", "active WORKING.md session row to prefer when <repo> is a workspace launch root")
   .description("Print the lightweight Codexa SessionStart summary used by Codex hooks.")
-  .action(async (repo: string | undefined, opts: { context: boolean; autoRefresh: boolean; workspaceFocusFile?: string; workspaceSession?: string }) => {
+  .action(async (repo: string | undefined, opts: { context: boolean; autoRefresh: boolean; json?: boolean; strict: boolean; workspaceFocusFile?: string; workspaceSession?: string }) => {
     const resolved = repo ? path.resolve(repo) : resolveImplicitGitRepoRoot() ?? process.cwd();
-    const startedAt = Date.now();
-    const summary = await sessionStartSummary(resolved, opts.context || process.env.CODEXA_SESSIONSTART_CONTEXT === "1", {
+    const includeContext = opts.context || process.env.CODEXA_SESSIONSTART_CONTEXT === "1";
+    const receipt = await sessionStartReceipt(resolved, includeContext, {
       autoRefresh: opts.autoRefresh,
       workspaceFocusFile: opts.workspaceFocusFile ? path.resolve(opts.workspaceFocusFile) : undefined,
       workspaceSessionId: opts.workspaceSession
     });
-    console.log(summary);
-    const unavailable = summary.includes("Codexa status unavailable:");
-    await recordAdvisoryHookEvent(resolved, {
-      hook: "session-start",
-      status: unavailable ? "failed" : "ok",
-      durationMs: Date.now() - startedAt,
-      reason: opts.context || process.env.CODEXA_SESSIONSTART_CONTEXT === "1" ? "context-preview" : "status",
-      error: unavailable ? summary.split(/\r?\n/u).find((line) => line.includes("Codexa status unavailable:")) : undefined
-    });
+    console.log(opts.json ? renderSessionStartJson(receipt) : renderSessionStartReceipt(receipt));
+    const strictFailures = opts.strict ? sessionStartStrictFailures(receipt) : [];
+    if (strictFailures.length > 0) {
+      console.error(`Codexa strict startup check failed: ${strictFailures.join("; ")}`);
+      process.exitCode = 1;
+    }
   });
 
 program
@@ -648,6 +705,16 @@ function resolveRequiredGitRepo(repo: string | undefined, command: string): stri
     throw new Error(`Codexa ${command} requires a git repository: ${candidate}`);
   }
   return gitRoot;
+}
+
+function parseSha256Option(value: string): string {
+  if (!/^[a-f0-9]{64}$/u.test(value)) throw new Error("expected a lowercase SHA-256 digest");
+  return value;
+}
+
+function parseWorktreeReceiptValidation(value: string): WorktreeBootstrapValidation {
+  if (value === "startup" || value === "adoption" || value === "full") return value;
+  throw new Error("worktree receipt validation scope must be startup, adoption, or full");
 }
 
 program.parseAsync(process.argv).catch((error) => {

@@ -84,6 +84,30 @@ describe("GitHub release timeline", () => {
     }
   });
 
+  it("classifies the CommonJS Vitest config as test verification", async () => {
+    const repo = await createReleaseRepo("0.2.0", "@example/widget");
+    try {
+      tag(repo, "v0.1.0", "widget v0.1.0");
+      await writeFile(path.join(repo, "vitest.config.cts"), "export default {}\n", "utf8");
+      commitAll(repo, "test: configure verification cache");
+      tag(repo, "v0.2.0", "widget v0.2.0");
+      const notesFile = path.join(repo, "notes", "v0.2.0.md");
+
+      await writeProjectReleaseNotes(repo, {
+        tag: "v0.2.0",
+        title: "widget v0.2.0",
+        githubRepo: "example-owner/widget",
+        notesFile
+      });
+
+      const notes = await readFile(notesFile, "utf8");
+      expect(notes).toContain("- Tests and verification: `vitest.config.cts`");
+      expect(notes).not.toContain("- Other files: `vitest.config.cts`");
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
   it("prepares a notes-only release from package version without mutating tags", async () => {
     const repo = await createReleaseRepo("0.3.0", "@example/widget");
     try {

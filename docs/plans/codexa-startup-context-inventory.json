@@ -1,0 +1,108 @@
+{
+  "schemaVersion": 1,
+  "kind": "codexa-startup-context-inventory",
+  "claimBoundary": "Repository-controlled startup inputs and reproducible decoded MCP application payloads. Byte counts are not model tokens, cost, task quality, or proof of current-thread MCP activation.",
+  "baselineObservation": {
+    "platformEnvelope": {
+      "firstCallInputTokens": 23331,
+      "repoControllable": false,
+      "source": "host rollout observation"
+    },
+    "session": {
+      "preFocusInputTokens": 64256,
+      "postFocusInputTokens": 78193,
+      "focusPromptIncrementInputTokens": 13937,
+      "postFirstCallCumulativeInputTokens": 54862,
+      "startupToolResultTokens": 46918,
+      "broadStartupReadTokens": 31111,
+      "repeatedReadinessTokens": 8114,
+      "categoryRelationship": "tool-result categories are diagnostic slices and are not asserted to be disjoint"
+    },
+    "automaticPolicyBytes": 30795,
+    "fullProfileProxyTokenEstimate": 16670
+  },
+  "currentDesign": {
+    "automaticPolicySnapshot": {
+      "hostKernelBytes": 2678,
+      "workspaceKernelBytes": 5955,
+      "projectKernelBytes": 2823,
+      "totalBytes": 11456,
+      "fourBytesPerTokenEstimate": 2864,
+      "reductionPercent": 62.8,
+      "externalSnapshotsReproducibleInRepository": false,
+      "projectKernelMaximumBytes": 3072
+    },
+    "sessionStart": {
+      "measurementCommand": "npm run startup:context-check",
+      "defaultReadyFixtureMaximumBytes": 800,
+      "optInMissingFixtureMaximumBytes": 2048,
+      "optInWorkspaceRecoveryMaximumBytes": 4096,
+      "jsonMaximumBytes": 32768,
+      "ordinaryStartupTelemetryWrites": 0
+    },
+    "mcpExposure": {
+      "currentMeasurementCommand": "npm run startup:context-check",
+      "lastCleanCheckoutObservation": {
+        "commit": "9ace851f5744cc2e59befea7c9238168ec5bc5a3",
+        "command": "npm run benchmark:transport:exposure",
+        "passed": true,
+        "unit": "decoded MCP application-payload bytes"
+      },
+      "fullDirectTools": 23,
+      "coreDirectTools": 3,
+      "logicalOperations": 22,
+      "fixtureTolerancePercentagePoints": 0.2,
+      "toolListDecodedPayloadReductionPercent": 87.2,
+      "startupAdvertisementAndDiscoveryDecodedPayloadReductionPercent": 69.8,
+      "firstTaskResultDecodedPayloadReductionPercent": 0,
+      "repeatedTaskResultDecodedPayloadReductionPercent": 0,
+      "advancedOperationsReachableThroughDispatcher": true
+    },
+    "freshDesktopWorktreeEvaluation": {
+      "status": "pending-user-authorized-three-arm-measurement",
+      "arms": [
+        "no Codexa",
+        "Codexa core",
+        "Codexa full"
+      ],
+      "measures": [
+        "first-call actual input tokens",
+        "repeat-call actual input tokens",
+        "task success and evidence quality",
+        "wall-clock latency"
+      ]
+    }
+  },
+  "classification": [
+    {
+      "input": "source, Git, selected-worktree, and setup-receipt identity",
+      "class": "essential",
+      "disposition": "retain as separate bounded readiness facets"
+    },
+    {
+      "input": "compact automatic host, workspace, and project policy",
+      "class": "essential",
+      "disposition": "retain the kernel and load detailed procedure on demand"
+    },
+    {
+      "input": "recovery context, full runbook, and advanced MCP schemas",
+      "class": "conditional",
+      "disposition": "make opt-in or retrieve through explicit docs and the capability dispatcher"
+    },
+    {
+      "input": "generic repeated contract text and ordinary SessionStart telemetry",
+      "class": "bloat",
+      "disposition": "remove from ordinary startup"
+    },
+    {
+      "input": "broad pre-task source reads and repeated readiness probes",
+      "class": "bloat",
+      "disposition": "replace with progressive retrieval and one per-request routing snapshot"
+    },
+    {
+      "input": "platform system and tool envelope",
+      "class": "external",
+      "disposition": "measure separately and never attribute its size to repository changes"
+    }
+  ]
+}

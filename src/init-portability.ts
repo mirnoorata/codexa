@@ -1,7 +1,20 @@
 import { execFileSync } from "node:child_process";
-import { writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { constants as fsConstants, promises as fs, type Stats } from "node:fs";
+import { chmod, lstat, mkdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+import { runCommand } from "./command.js";
 import type { InitToolProfile } from "./types/init.js";
+import { CODEXA_VERSION } from "./version.js";
+
+const CURRENT_CODEXA_CLI_PATH = fileURLToPath(new URL("./cli.js", import.meta.url));
+const GIT_TRACKED_TIMEOUT_MS = 2_500;
+const GIT_TRACKED_MAX_BUFFER_BYTES = 16 * 1024;
+const MANAGED_FILE_READ_MAX_BYTES = 4 * 1024 * 1024;
+const MANAGED_FILE_READ_TIMEOUT_MS = 2_000;
+const MANAGED_FILE_READ_FLAGS =
+  fsConstants.O_RDONLY | fsConstants.O_NONBLOCK | fsConstants.O_NOFOLLOW;
 
 export interface ExistingClaudeMcpConfig {
   contents: string;
@@ -31,11 +44,35 @@ export function portableRepoArg(repoRoot: string, targetRelPath: string): string
 
 export function isGitTracked(repoRoot: string, relPath: string): boolean {
   try {
-    execFileSync("git", ["-C", repoRoot, "ls-files", "--error-unmatch", relPath], { stdio: "ignore" });
+    execFileSync("git", ["-C", repoRoot, "ls-files", "--error-unmatch", "--", relPath], {
+      maxBuffer: GIT_TRACKED_MAX_BUFFER_BYTES,
+      stdio: "ignore",
+      timeout: GIT_TRACKED_TIMEOUT_MS,
+      windowsHide: true
+    });
     return true;
   } catch {
     return false;
   }
+}
+
+export async function isGitTrackedAsync(repoRoot: string, relPath: string): Promise<boolean> {
+  const result = await runCommand(
+    "git",
+    ["-C", repoRoot, "ls-files", "--error-unmatch", "--", relPath],
+    {
+      timeoutMs: GIT_TRACKED_TIMEOUT_MS,
+      maxBufferBytes: GIT_TRACKED_MAX_BUFFER_BYTES,
+      okExitCodes: [0, 1],
+      killProcessGroup: false
+    }
+  );
+  if (result.timedOut) throw new Error("git-tracked-inspection-timeout");
+  if (result.truncated) throw new Error("git-tracked-inspection-output-limit-exceeded");
+  if (result.error || result.exitCode === null) throw new Error("git-tracked-inspection-unavailable");
+  if (result.exitCode === 0) return true;
+  if (result.exitCode === 1) return false;
+  throw new Error(`git-tracked-inspection-failed:${result.exitCode}`);
 }
 
 export function detectExistingServerName(config: string): string | undefined {
@@ -82,6 +119,20 @@ export function isCodexaMcpJsonEntry(entry: unknown): boolean {
   return isCodexaLauncherToken(launcherToken);
 }
 
+/** Recognizes only launcher shapes emitted by init or their portable direct-command equivalent. */
+export function isRecognizedCodexaLauncher(command: string, args: string[], serveIndex = args.indexOf("serve")): boolean {
+  if (serveIndex < 0) return false;
+  const launcherToken = serveIndex === 0 ? command : args[serveIndex - 1];
+  // `init` no longer emits a bare PATH launcher. Accepting one here would let
+  // strict startup attest an executable whose package identity/version cannot
+  // be proven without running untrusted configuration.
+  if (serveIndex === 0) return false;
+  if (command === "npx" || command === "npx.cmd") {
+    return serveIndex === 2 && args[0] === "-y" && launcherToken === `@mirnoorata/codexa@${CODEXA_VERSION}`;
+  }
+  return serveIndex === 1 && isRecognizedNodeCommand(command) && isPotentialCodexaCliPath(launcherToken);
+}
+
 export function defaultServerName(repoRoot: string): string {
   const commonDir = runGit(repoRoot, ["rev-parse", "--git-common-dir"]);
   if (!commonDir) return `codexa-${slugify(path.basename(repoRoot))}`;
@@ -91,8 +142,225 @@ export function defaultServerName(repoRoot: string): string {
   return `codexa-${slugify(repoName)}`;
 }
 
+// This is an optimistic conflict guard, not a universal filesystem lock:
+// Codexa writers reject stale snapshots and changes observed before the final
+// atomic rename. Unrelated editors do not participate in a portable lock, so
+// callers must not claim serialization beyond those observable checks.
 export async function writeTextIfChanged(filePath: string, existing: string, contents: string): Promise<void> {
-  if (existing !== contents) await writeFile(filePath, contents, "utf8");
+  const initial = await managedFileSnapshot(filePath);
+  if (initial.contents !== existing) {
+    throw new Error(`Cannot update ${filePath}: the file changed while Codexa was preparing the update`);
+  }
+  if (existing === contents) return;
+  const temporaryPath = `${filePath}.codexa-${process.pid}-${randomUUID()}.tmp`;
+  try {
+    await writeFile(temporaryPath, contents, { encoding: "utf8", flag: "wx", mode: initial.mode ?? 0o666 });
+    if (initial.mode !== undefined) await chmod(temporaryPath, initial.mode);
+    const current = await managedFileSnapshot(filePath);
+    if (current.contents !== existing || !sameManagedFileIdentity(initial, current)) {
+      throw new Error(`Cannot update ${filePath}: the file changed while Codexa was preparing the update`);
+    }
+    await rename(temporaryPath, filePath);
+  } finally {
+    await rm(temporaryPath, { force: true });
+  }
+}
+
+export async function assertSafeManagedFile(filePath: string): Promise<void> {
+  try {
+    const entry = await lstat(filePath);
+    if (!entry.isFile() || entry.isSymbolicLink() || entry.nlink !== 1) {
+      throw new Error(`Codexa refuses redirected or non-regular managed file: ${filePath}`);
+    }
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return;
+    throw error;
+  }
+}
+
+export async function assertSafeManagedDirectory(directoryPath: string): Promise<void> {
+  try {
+    const entry = await lstat(directoryPath);
+    if (!entry.isDirectory() || entry.isSymbolicLink()) {
+      throw new Error(`Codexa refuses redirected or non-directory managed state: ${directoryPath}`);
+    }
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return;
+    throw error;
+  }
+}
+
+export async function assertSafeManagedStateDirectory(repoRoot: string, ...childSegments: string[]): Promise<string> {
+  const repo = path.resolve(repoRoot);
+  const repoReal = await realpath(repo);
+  const components = [".codex", ...validatedManagedStateSegments(childSegments)];
+  let current = repo;
+  for (const component of components) {
+    current = path.join(current, component);
+    await assertSafeManagedDirectory(current);
+    try {
+      const currentReal = await realpath(current);
+      if (!isContainedPath(repoReal, currentReal)) {
+        throw new Error(`Codexa refuses managed state outside the repository: ${current}`);
+      }
+    } catch (error) {
+      if (isNodeError(error) && error.code === "ENOENT") continue;
+      throw error;
+    }
+  }
+  return path.join(repo, ...components);
+}
+
+export async function ensureSafeManagedStateDirectory(repoRoot: string, ...childSegments: string[]): Promise<string> {
+  const repo = path.resolve(repoRoot);
+  const repoReal = await realpath(repo);
+  const components = [".codex", ...validatedManagedStateSegments(childSegments)];
+  let current = repo;
+  for (const component of components) {
+    current = path.join(current, component);
+    await assertSafeManagedDirectory(current);
+    try {
+      await mkdir(current, { mode: 0o700 });
+    } catch (error) {
+      if (!isNodeError(error) || error.code !== "EEXIST") throw error;
+    }
+    await assertSafeManagedDirectory(current);
+    const currentReal = await realpath(current);
+    if (!isContainedPath(repoReal, currentReal)) {
+      throw new Error(`Codexa refuses managed state outside the repository: ${current}`);
+    }
+  }
+  return path.join(repo, ...components);
+}
+
+function validatedManagedStateSegments(segments: string[]): string[] {
+  for (const segment of segments) {
+    if (
+      !segment ||
+      segment === "." ||
+      segment === ".." ||
+      path.isAbsolute(segment) ||
+      segment.includes("/") ||
+      segment.includes("\\")
+    ) {
+      throw new Error(`Invalid Codexa managed-state path segment: ${segment || "<empty>"}`);
+    }
+  }
+  return segments;
+}
+
+function isContainedPath(parent: string, candidate: string): boolean {
+  const relative = path.relative(parent, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+interface ManagedFileSnapshot {
+  contents: string;
+  changedMs?: number;
+  device?: number;
+  inode?: number;
+  mode?: number;
+  modifiedMs?: number;
+  size?: number;
+}
+
+export async function readManagedTextFileIfExists(filePath: string): Promise<string> {
+  return (await managedFileSnapshot(filePath)).contents;
+}
+
+async function managedFileSnapshot(filePath: string): Promise<ManagedFileSnapshot> {
+  let before: Stats;
+  try {
+    before = await lstat(filePath);
+  } catch (error) {
+    if (isNodeError(error) && error.code === "ENOENT") return { contents: "" };
+    throw error;
+  }
+  assertSafeManagedFileEntry(filePath, before);
+  if (before.size > MANAGED_FILE_READ_MAX_BYTES) {
+    throw new Error(
+      `Codexa refuses managed file larger than ${MANAGED_FILE_READ_MAX_BYTES} bytes: ${filePath}`
+    );
+  }
+  const deadlineAt = Date.now() + MANAGED_FILE_READ_TIMEOUT_MS;
+  const handle = await fs.open(filePath, MANAGED_FILE_READ_FLAGS).catch((error: unknown) => {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      throw new Error(`Cannot update ${filePath}: the file changed while Codexa was preparing the update`);
+    }
+    throw error;
+  });
+  try {
+    const opened = await handle.stat();
+    assertSafeManagedFileEntry(filePath, opened);
+    if (!sameManagedFileIdentity(managedFileIdentity(before), managedFileIdentity(opened))) {
+      throw new Error(`Cannot update ${filePath}: the file changed while Codexa was preparing the update`);
+    }
+    const contents = Buffer.alloc(before.size);
+    let position = 0;
+    while (position < contents.length) {
+      assertManagedFileReadDeadline(filePath, deadlineAt);
+      const { bytesRead } = await handle.read(
+        contents,
+        position,
+        contents.length - position,
+        position
+      );
+      if (bytesRead <= 0) {
+        throw new Error(`Cannot update ${filePath}: the file changed while Codexa was preparing the update`);
+      }
+      position += bytesRead;
+    }
+    const final = await handle.stat();
+    const after = await lstat(filePath);
+    assertSafeManagedFileEntry(filePath, after);
+    const finalIdentity = managedFileIdentity(final);
+    const afterIdentity = managedFileIdentity(after);
+    if (
+      !sameManagedFileIdentity(managedFileIdentity(opened), finalIdentity) ||
+      !sameManagedFileIdentity(finalIdentity, afterIdentity)
+    ) {
+      throw new Error(`Cannot update ${filePath}: the file changed while Codexa was preparing the update`);
+    }
+    assertManagedFileReadDeadline(filePath, deadlineAt);
+    return { contents: contents.toString("utf8"), ...afterIdentity };
+  } finally {
+    await handle.close();
+  }
+}
+
+function assertManagedFileReadDeadline(filePath: string, deadlineAt: number): void {
+  if (Date.now() > deadlineAt) {
+    throw new Error(`Codexa managed file read timed out: ${filePath}`);
+  }
+}
+
+function assertSafeManagedFileEntry(filePath: string, entry: Stats): void {
+  if (!entry.isFile() || entry.isSymbolicLink() || entry.nlink !== 1) {
+    throw new Error(`Codexa refuses redirected or non-regular managed file: ${filePath}`);
+  }
+}
+
+function managedFileIdentity(entry: Stats): Omit<ManagedFileSnapshot, "contents"> {
+  return {
+    changedMs: entry.ctimeMs,
+    device: entry.dev,
+    inode: entry.ino,
+    mode: entry.mode & 0o777,
+    modifiedMs: entry.mtimeMs,
+    size: entry.size
+  };
+}
+
+function sameManagedFileIdentity(
+  left: Omit<ManagedFileSnapshot, "contents">,
+  right: Omit<ManagedFileSnapshot, "contents">
+): boolean {
+  return left.changedMs === right.changedMs &&
+    left.device === right.device &&
+    left.inode === right.inode &&
+    left.mode === right.mode &&
+    left.modifiedMs === right.modifiedMs &&
+    left.size === right.size;
 }
 
 function runGit(cwd: string, args: string[]): string | null {
@@ -112,14 +380,37 @@ function detectClaudeMcpToolProfile(entry: unknown): InitToolProfile | undefined
   return isCodexaMcpJsonEntry(entry) ? "full" : undefined;
 }
 
-function isCodexaLauncherToken(token: string | undefined): boolean {
+export function isCodexaLauncherToken(token: string | undefined): boolean {
   if (!token) return false;
   return (
     token === "codexa" ||
     /^@mirnoorata\/codexa(?:@[^\s]*)?$/u.test(token) ||
+    isCodexaCliPath(token)
+  );
+}
+
+function isCodexaCliPath(token: string | undefined): boolean {
+  return Boolean(token && (
+    sameExecutablePath(token, CURRENT_CODEXA_CLI_PATH) ||
     /[\\/]codexa[\\/]dist[\\/]cli\.js$/u.test(token) ||
     /[\\/]@mirnoorata[\\/]codexa[\\/]dist[\\/]cli\.js$/u.test(token)
-  );
+  ));
+}
+
+function isPotentialCodexaCliPath(token: string | undefined): boolean {
+  return Boolean(token && path.isAbsolute(token) && (
+    isCodexaCliPath(token) || /[\\/]dist[\\/]cli\.js$/u.test(token)
+  ));
+}
+
+export function isRecognizedNodeCommand(command: string): boolean {
+  return command === "node" || (path.isAbsolute(command) && /^node(?:js)?(?:\.exe)?$/iu.test(path.basename(command)));
+}
+
+function sameExecutablePath(left: string, right: string): boolean {
+  if (!path.isAbsolute(left) || !path.isAbsolute(right)) return false;
+  const normalize = (value: string): string => process.platform === "win32" ? path.resolve(value).toLowerCase() : path.resolve(value);
+  return normalize(left) === normalize(right);
 }
 
 function parseJsonObject(value: string, filePath: string): Record<string, unknown> {
@@ -135,6 +426,10 @@ function parseJsonObject(value: string, filePath: string): Record<string, unknow
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function isNodeError(error: unknown): error is NodeJS.ErrnoException {
+  return error instanceof Error && "code" in error;
 }
 
 function slugify(value: string): string {

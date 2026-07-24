@@ -3,6 +3,7 @@ import path from "node:path";
 import { effectiveAutonomyMode } from "../autonomy.js";
 import { runAutoVerifyForPostEdit, autoVerifyPolicySignature, sanitizeAutoVerifyText } from "../autoverify.js";
 import { acquireCacheLock } from "../cache-lock.js";
+import { assertSafeManagedStateDirectory, ensureSafeManagedStateDirectory } from "../init-portability.js";
 import { saveImplicitBaselineSnapshot } from "../implicit-baseline.js";
 import { getFreshness } from "../indexer.js";
 import { resolveMcpRepoRoot, shouldPreferConfiguredRepoRoot } from "../mcp-repo-root.js";
@@ -36,6 +37,7 @@ export async function runPreEditHook(repo: string): Promise<void> {
   }
   let lifecycleBlock: Awaited<ReturnType<typeof pendingPreEditLifecycleBlock>>;
   try {
+    await prepareHookManagedState(activeRepoRoot);
     lifecycleBlock = await pendingPreEditLifecycleBlock(activeRepoRoot);
   } catch (error) {
     const reason = error instanceof Error ? error.message : String(error);
@@ -94,6 +96,7 @@ export async function runPostEditHook(repo: string): Promise<void> {
   const configuredRoot = path.resolve(repo);
   await runAdvisoryHook(configuredRoot, "post-edit", "post-edit review", async () => {
     const { activeRepoRoot } = await resolveHookRepoRoots(repo);
+    await prepareHookManagedState(activeRepoRoot);
     const release = await tryAcquirePostEditHookLock(activeRepoRoot);
     if (!release) {
       return { status: "skipped", reason: "post-edit-hook-lock-active" };
@@ -168,6 +171,13 @@ export async function runPostEditHook(repo: string): Promise<void> {
   });
 }
 
+async function prepareHookManagedState(repoRoot: string): Promise<void> {
+  await ensureSafeManagedStateDirectory(repoRoot, "cache");
+  await ensureSafeManagedStateDirectory(repoRoot, "cache", "codexa-tasks");
+  await ensureSafeManagedStateDirectory(repoRoot, "cache", "codexa-task-lifecycle");
+  await ensureSafeManagedStateDirectory(repoRoot, "cache", "codexa-outcomes");
+}
+
 /**
  * Read-only completion probe for host Stop hooks. It intentionally returns
  * false on any missing or degraded identity so the host falls back to a real
@@ -175,6 +185,14 @@ export async function runPostEditHook(repo: string): Promise<void> {
  */
 export async function postEditReviewStateIsCurrent(repo: string): Promise<boolean> {
   const { activeRepoRoot } = await resolveHookRepoRoots(repo);
+  try {
+    await assertSafeManagedStateDirectory(activeRepoRoot, "cache");
+    await assertSafeManagedStateDirectory(activeRepoRoot, "cache", "codexa-tasks");
+    await assertSafeManagedStateDirectory(activeRepoRoot, "cache", "codexa-task-lifecycle");
+    await assertSafeManagedStateDirectory(activeRepoRoot, "cache", "codexa-outcomes");
+  } catch {
+    return false;
+  }
   const loaded = await loadTaskSnapshot(activeRepoRoot);
   if (!loaded.snapshot) {
     return false;
@@ -254,9 +272,12 @@ export async function recordAdvisoryHookEvent(repoRoot: string, event: CodexaHoo
 
 async function resolveHookRepoRoots(repo: string): Promise<{ configuredRoot: string; activeRepoRoot: string }> {
   const configuredRoot = path.resolve(repo);
-  const preferConfiguredRoot = await shouldPreferConfiguredRepoRoot(configuredRoot);
+  const preferConfiguredRoot = await shouldPreferConfiguredRepoRoot(configuredRoot, {
+    ignoreAmbientWorkspaceSelectors: true
+  });
   const resolution = await resolveMcpRepoRoot(configuredRoot, {
     preferConfiguredRoot,
+    ignoreAmbientWorkspaceSelectors: true,
     requireValidDeclaredFocus: !preferConfiguredRoot
   });
   return { configuredRoot, activeRepoRoot: resolution.repoRoot };

@@ -1,0 +1,8 @@
+version = 1
+name = "Codexa"
+
+[setup]
+script = "./.codex/worktree-bootstrap.sh"
+
+[setup.win32]
+script = "powershell -NoProfile -ExecutionPolicy Bypass -File ./.codex/worktree-bootstrap.ps1"

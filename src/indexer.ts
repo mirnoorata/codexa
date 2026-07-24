@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { acquireCacheLock } from "./cache-lock.js";
+import { ensureSafeManagedStateDirectory } from "./init-portability.js";
 import { discoverRepoFreshness } from "./repo-files.js";
 import { relinkUsageIds, resolveIndexLinks } from "./resolver.js";
 import { externalRiskReportSnapshot, loadExternalRiskSignalReport } from "./risk-ingest.js";
@@ -293,6 +294,7 @@ function requireIndexContext<K extends keyof BuildIndexPipelineContext>(
 
 export async function buildIndexLocked(options: IndexOptions): Promise<CodexaIndex> {
   const repoRoot = path.resolve(options.repoRoot);
+  await ensureSafeManagedStateDirectory(repoRoot, "cache");
   const release = await acquireIndexLock(repoRoot);
   try {
     return await buildIndex(options);
