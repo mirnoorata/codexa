@@ -10,6 +10,7 @@ export interface RunCommandOptions {
   okExitCodes?: number[];
   budget?: CommandBudget;
   killProcessGroup?: boolean;
+  discardStdout?: boolean;
 }
 
 export interface CommandResult {
@@ -166,7 +167,9 @@ export async function runCommand(command: string, args: string[], options: RunCo
       terminate();
     }, timeoutMs);
 
-    child.stdout?.on("data", (chunk: Buffer) => collect(stdout, chunk));
+    child.stdout?.on("data", (chunk: Buffer) => {
+      if (!options.discardStdout) collect(stdout, chunk);
+    });
     child.stderr?.on("data", (chunk: Buffer) => collect(stderr, chunk));
     child.stdin?.on("error", () => undefined);
     child.on("error", (error) => finish({ exitCode: null, signal: null, error }));

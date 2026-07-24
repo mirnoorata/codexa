@@ -35,6 +35,22 @@ describe("runCommand", () => {
     expect(result.stdout.length).toBe(1024);
   });
 
+  it("drains discarded stdout without charging it to the diagnostic buffer", async () => {
+    const result = await runCommand(
+      process.execPath,
+      ["-e", "process.stdout.write('x'.repeat(5_000_000)); process.stderr.write('diagnostic')"],
+      {
+        discardStdout: true,
+        timeoutMs: 2_000,
+        maxBufferBytes: 1024
+      }
+    );
+    expect(result.ok).toBe(true);
+    expect(result.stdout).toBe("");
+    expect(result.stderr).toBe("diagnostic");
+    expect(result.truncated).toBe(false);
+  });
+
   it("passes bounded stdin input to commands", async () => {
     const result = await runCommand(process.execPath, ["-e", "process.stdin.setEncoding('utf8'); let s=''; process.stdin.on('data', c => s += c); process.stdin.on('end', () => console.log(s.toUpperCase()))"], {
       input: "codexa",
