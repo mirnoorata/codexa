@@ -141,6 +141,34 @@ describe("worktree bootstrap receipt", () => {
     expect(mutated).toBe(true);
   });
 
+  it("rejects a required dependency removed after the initial completeness check", async () => {
+    const repo = await createReceiptFixture("codexa-worktree-receipt-dependency-completeness-race-");
+    const expectedBuild = await worktreeBootstrapBuildInputSha256(repo);
+    const expectedStartup = await worktreeBootstrapStartupInputSha256(repo);
+    const dependencyPath = path.join(repo, "node_modules/example-dependency");
+    const displacedPath = path.join(repo, "removed-example-dependency");
+    const originalRealpath = nodeFs.realpath.bind(nodeFs);
+    let removed = false;
+    vi.spyOn(nodeFs, "realpath").mockImplementation(async (candidate, options) => {
+      if (!removed && path.resolve(String(candidate)) === repo) {
+        removed = true;
+        await rename(dependencyPath, displacedPath);
+      }
+      return originalRealpath(candidate, options as never);
+    });
+    try {
+      await expect(issueWorktreeBootstrapReceipt(
+        repo,
+        "posix-hooks",
+        expectedBuild,
+        expectedStartup
+      )).rejects.toThrow(/dependency-tree-changed-during-capture/u);
+    } finally {
+      vi.restoreAllMocks();
+    }
+    expect(removed).toBe(true);
+  });
+
   it("binds extraneous installed packages and rejects an oversized dependency file", async () => {
     const repo = await createReceiptFixture("codexa-worktree-receipt-inventory-");
     await issueReceipt(repo, "posix-hooks");

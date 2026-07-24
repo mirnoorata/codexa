@@ -190,6 +190,10 @@ export async function issueWorktreeBootstrapReceipt(
   if (receipt.buildInputSha256 !== expectedBuildInputSha256) {
     throw new Error("Cannot issue Codexa worktree receipt: build-input-changed-during-bootstrap");
   }
+  const finalDependencyCheck = await runNpmLs(repo);
+  if (!finalDependencyCheck.ok) {
+    throw new Error("Cannot issue Codexa worktree receipt: dependency-tree-changed-during-capture");
+  }
   await publishWorktreeReceiptRef(repo, `${JSON.stringify(receipt, null, 2)}\n`);
   const inspection = await inspectWorktreeBootstrapReceipt(repo, { validation: "full" });
   if (inspection.state !== "verified" || inspection.validation !== "full") {
