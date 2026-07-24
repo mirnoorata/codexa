@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.16.0](https://github.com/mirnoorata/codexa/compare/v0.15.2...v0.16.0) (2026-07-24)
+
+
+### Features
+
+* **startup:** optimize truthful Codexa project startup ([#117](https://github.com/mirnoorata/codexa/issues/117)) ([7101f6b](https://github.com/mirnoorata/codexa/commit/7101f6b845a178ef156c7e72239a014c16d2a9c8))
+
 ## [0.15.2](https://github.com/mirnoorata/codexa/compare/v0.15.1...v0.15.2) (2026-07-20)
 
 

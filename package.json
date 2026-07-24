@@ -1,6 +1,6 @@
 {
   "name": "@mirnoorata/codexa",
-  "version": "0.15.2",
+  "version": "0.16.0",
   "mcpName": "io.github.mirnoorata/codexa",
   "description": "Local change evidence, impact review, and verification receipts for developers, CI, and coding agents.",
   "keywords": [
