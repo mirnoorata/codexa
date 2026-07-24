@@ -58,7 +58,7 @@ prompt as a proxy for task success.
 | Decoded `tools/list` payload | full profile | 87.2% lower in core profile |
 | Startup advertisement plus discovery | full profile | 69.8% lower in core profile |
 | First/repeated tiny task result | full profile | 0% reduction |
-| SessionStart p95 | 1,000 ms limit | 524 ms |
+| SessionStart p95 | 1,000 ms limit | 620 ms |
 
 The automatic-policy token figure is only a four-bytes-per-token estimate
 (2,864), not an observed model-token count. The transport benchmark measures
@@ -101,8 +101,8 @@ quality, and latency. This PR does not fabricate that host-controlled result.
   - Public snapshot, package hygiene, plugin hygiene, and the 31-check packaged
     install smoke passed.
 - `npm run benchmark:ci`: passed every threshold.
-  - SessionStart p50 481 ms, p95 524 ms.
-  - MCP startup 342 ms; MCP freshness p95 190 ms.
+  - SessionStart p50 584 ms, p95 620 ms.
+  - MCP startup 289 ms; MCP freshness p95 221 ms.
 - `npm run benchmark:transport:exposure`: passed with 3/23 direct tools,
   logical-operation parity, 87.2% lower decoded tool-list payload, and 69.8%
   lower startup advertisement/discovery payload.
