@@ -3,7 +3,7 @@
 PR summary for
 `codex/general/codexa-20260722-210037-focus-orientation` against `main`.
 The final source-evidence head used for the measurements below is
-`d67f15d9d2ee2254a3c95036cf54b58014804942`.
+`f64409f84d675fe34558e0dabcbb66eb80179893`.
 
 ## Outcome
 
@@ -72,7 +72,7 @@ prompt as a proxy for task success.
 | Decoded `tools/list` payload | full profile | 87.2% lower in core profile |
 | Startup advertisement plus discovery | full profile | 69.8% lower in core profile |
 | First/repeated tiny task result | full profile | 0% reduction |
-| SessionStart p95 | 1,000 ms limit | 546 ms |
+| SessionStart p95 | 1,000 ms target | 523 ms |
 
 The automatic-policy token figure is only a four-bytes-per-token estimate
 (2,864), not an observed model-token count. The transport benchmark measures
@@ -103,9 +103,9 @@ quality, and latency. This PR does not fabricate that host-controlled result.
 - A trusted shared controller validates adoption before executing generated
   worktree code.
 - Native Windows remains deliberately MCP-only; POSIX may also attest hooks.
-  Linux execution and cross-platform fixture coverage passed here. Physical
-  macOS and native-Windows hosts were not available and are not claimed as
-  runtime proof.
+  Linux execution and cross-platform fixture coverage passed locally. The
+  GitHub-hosted macOS and native-Windows lanes are required before merge;
+  physical user hosts were not available and are not claimed as runtime proof.
 
 ## Verification
 
@@ -116,9 +116,12 @@ quality, and latency. This PR does not fabricate that host-controlled result.
   - Public snapshot, package hygiene, plugin hygiene, and the 31-check packaged
     install smoke passed.
 - `npm run benchmark:ci`: passed every threshold.
-  - SessionStart p50 530 ms, p95 546 ms.
-  - Adoption validation 851 ms against a 5,000 ms ceiling.
-  - MCP startup 285 ms; MCP freshness p95 185 ms.
+  - SessionStart p50 502 ms, p95 523 ms.
+  - Adoption validation 938 ms against a 5,000 ms target.
+  - MCP startup 287 ms; MCP freshness p95 188 ms.
+  - The default run passed every unscaled product target. GitHub Actions uses
+    an explicit, capped 1.5x shared-runner gate while retaining each base
+    target and reporting target misses separately.
 - `npm run benchmark:transport:exposure`: passed with 3/23 direct tools,
   logical-operation parity, 87.2% lower decoded tool-list payload, and 69.8%
   lower startup advertisement/discovery payload.
