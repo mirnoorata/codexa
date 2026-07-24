@@ -293,6 +293,68 @@ describe("Codexa SessionStart CLI receipt", () => {
     }
   );
 
+  it("preserves completed facets when the aggregate deadline expires during status", async () => {
+    const repo = await createHookFixtureRepo();
+    expect(
+      spawnSync(process.execPath, [cli, "init", repo], {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: testEnv()
+      }).status
+    ).toBe(0);
+    const delayedIndex = path.join(repo, ".codex/codebase/index.json");
+    const preload = path.join(repo, "delayed-index-read-preload.mjs");
+    await writeFile(
+      preload,
+      [
+        'import { promises as fs } from "node:fs";',
+        'import path from "node:path";',
+        "const originalReadFile = fs.readFile.bind(fs);",
+        "let delayed = false;",
+        "fs.readFile = async (file, ...args) => {",
+        "  if (!delayed && path.resolve(String(file)) === path.resolve(process.env.CODEXA_DELAYED_INDEX)) {",
+        "    delayed = true;",
+        "    await new Promise((resolve) => setTimeout(resolve, 1500));",
+        "  }",
+        "  return originalReadFile(file, ...args);",
+        "};",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const startedAt = Date.now();
+    const result = spawnSync(
+      process.execPath,
+      ["--import", preload, cli, "session-start", repo, "--json"],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        timeout: 3_000,
+        env: {
+          ...testEnv(),
+          CODEXA_DELAYED_INDEX: delayedIndex,
+          CODEXA_SESSION_START_BUDGET_MS: "1000"
+        }
+      }
+    );
+    expect(result.error).toBeUndefined();
+    expect(Date.now() - startedAt).toBeLessThan(3_000);
+    expect(result.status).toBe(0);
+    expect(JSON.parse(result.stdout)).toMatchObject({
+      availability: "unavailable",
+      repoRoot: repo,
+      routing: { state: "resolved", source: "configured-root" },
+      config: { state: "configured", toolProfile: "core" },
+      setup: { state: "not-required" },
+      index: {
+        error: expect.stringMatching(
+          /session-start-total-budget-exhausted:1000ms:(?:index|complete)$/u
+        )
+      }
+    });
+  });
+
   it.skipIf(process.platform === "win32")(
     "does not block on or mutate advisory hook telemetry during SessionStart",
     async () => {

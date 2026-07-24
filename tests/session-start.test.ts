@@ -6,12 +6,36 @@ import path from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { initializeProject, renderSessionStartJson, SESSION_START_JSON_MAX_BYTES, sessionStartReceipt, sessionStartStrictFailures, sessionStartSummary } from "../src/init.js";
 import { workspaceRepoProject } from "../src/session-start.js";
+import { runWithSessionStartBudget } from "../src/session-start-budget.js";
 import { executableCommandCandidates, trustedNpxCommandCandidates } from "../src/startup-launcher.js";
 import { CODEXA_VERSION } from "../src/version.js";
 
 const testCliPath = path.resolve(process.cwd(), "dist/cli.js");
 
 describe("Codexa versioned SessionStart receipt", () => {
+  it("awaits timed-out startup work before returning the fallback receipt", async () => {
+    const previousBudget = process.env.CODEXA_SESSION_START_BUDGET_MS;
+    process.env.CODEXA_SESSION_START_BUDGET_MS = "1000";
+    let operationSettled = false;
+    try {
+      const result = await runWithSessionStartBudget({
+        allowWallClockTimeout: true,
+        operation: async (budget) => {
+          await new Promise((resolve) => setTimeout(resolve, 1_050));
+          operationSettled = true;
+          budget.checkpoint("delayed-operation");
+          return "unexpected";
+        },
+        onTimeout: (_totalBudgetMs, stage) => `timed-out:${stage}`
+      });
+      expect(result).toBe("timed-out:delayed-operation");
+      expect(operationSettled).toBe(true);
+    } finally {
+      if (previousBudget === undefined) delete process.env.CODEXA_SESSION_START_BUDGET_MS;
+      else process.env.CODEXA_SESSION_START_BUDGET_MS = previousBudget;
+    }
+  });
+
   it("groups shared worktrees with their canonical project without embedding a host path literal", () => {
     const sharedRoot = path.posix.join(path.posix.sep, "srv");
     const canonical = path.posix.join(sharedRoot, "codexa");

@@ -33,8 +33,11 @@ budget; it does not multiply a fresh timeout across every Git probe. The
 generated host hook keeps a 60-second ceiling so process-group termination
 grace still leaves time to emit the unavailable receipt. Operators may set
 `CODEXA_SESSION_START_BUDGET_MS` between 1,000 and 45,000 milliseconds; values
-outside that range are clamped. Auto-refresh is an explicit mutating operation
-and is not cut off by the advisory wall-clock race.
+outside that range are clamped. The same absolute deadline caps bounded file
+scans and subprocesses. Deadline fallback waits for in-flight work to quiesce
+and retains each routing, setup, config, or index facet that completed; it does
+not return from a non-cancelling response race. Auto-refresh is an explicit
+mutating operation and is not cut off by the advisory wall-clock deadline.
 The ordinary SessionStart status path does not append hook telemetry or write
 managed cache state after rendering its receipt; this keeps the host-visible
 command boundary within the same budget and removes an optional write race

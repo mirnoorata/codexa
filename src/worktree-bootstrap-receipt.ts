@@ -14,6 +14,7 @@ import {
   type WorktreeBootstrapAdoptionFacts
 } from "./worktree-bootstrap-adoption.js";
 import { worktreeBootstrapBuildInputDigest } from "./worktree-bootstrap-build-input.js";
+import { sessionStartDeadlineAt } from "./session-start-budget.js";
 import type { StableDirectoryBudget } from "./stable-directory-snapshot.js";
 
 export const WORKTREE_BOOTSTRAP_RECEIPT_REF = "refs/worktree/codexa/bootstrap-receipt";
@@ -726,7 +727,7 @@ function createInputScanBudget(
   timeoutMs: number
 ): InputScanBudget {
   return {
-    deadlineAt: Date.now() + timeoutMs,
+    deadlineAt: sessionStartDeadlineAt(Date.now() + timeoutMs),
     fileCount: 0,
     label,
     logicalBytes: 0,

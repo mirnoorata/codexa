@@ -1,6 +1,7 @@
 import { createHash } from "node:crypto";
 import { constants as fsConstants, promises as fs, type Stats } from "node:fs";
 import path from "node:path";
+import { sessionStartDeadlineAt } from "./session-start-budget.js";
 import {
   assertSafeManagedDirectory,
   assertSafeManagedFile
@@ -60,7 +61,7 @@ export async function currentAdoptionReceiptFacts(
   const packageLockPath = path.join(repo, "package-lock.json");
   const dist = path.join(repo, "dist");
   await assertSafeManagedDirectory(dist);
-  const deadlineAt = Date.now() + ADOPTION_SCAN_TIMEOUT_MS;
+  const deadlineAt = sessionStartDeadlineAt(Date.now() + ADOPTION_SCAN_TIMEOUT_MS);
   const distRuntime = await hashBoundedRegularTree(
     repo,
     dist,

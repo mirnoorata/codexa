@@ -40,8 +40,13 @@ const DEFAULT_TIMEOUT_MS = 5_000;
 const DEFAULT_MAX_BUFFER_BYTES = 1024 * 1024;
 const commandBudgetContext = new AsyncLocalStorage<CommandBudget>();
 
-export function createCommandBudget(totalMs: number, warnings: string[] = [], provenance: string[] = []): CommandBudget {
-  return new MutableCommandBudget(totalMs, warnings, provenance);
+export function createCommandBudget(
+  totalMs: number,
+  warnings: string[] = [],
+  provenance: string[] = [],
+  deadlineAt?: number
+): CommandBudget {
+  return new MutableCommandBudget(totalMs, warnings, provenance, deadlineAt);
 }
 
 export function withCommandBudget<T>(
@@ -189,11 +194,18 @@ class MutableCommandBudget implements CommandBudget {
   readonly warnings: string[];
   readonly provenance: string[];
   #usedMs = 0;
+  readonly #deadlineAt: number | undefined;
 
-  constructor(totalMs: number, warnings: string[], provenance: string[]) {
+  constructor(
+    totalMs: number,
+    warnings: string[],
+    provenance: string[],
+    deadlineAt?: number
+  ) {
     this.totalMs = Math.max(1, Math.trunc(totalMs));
     this.warnings = warnings;
     this.provenance = provenance;
+    this.#deadlineAt = deadlineAt;
   }
 
   get usedMs(): number {
@@ -201,7 +213,10 @@ class MutableCommandBudget implements CommandBudget {
   }
 
   remainingMs(): number {
-    return Math.max(0, this.totalMs - this.#usedMs);
+    const cumulativeRemaining = Math.max(0, this.totalMs - this.#usedMs);
+    return this.#deadlineAt === undefined
+      ? cumulativeRemaining
+      : Math.max(0, Math.min(cumulativeRemaining, this.#deadlineAt - Date.now()));
   }
 
   reserveTimeout(requestedMs: number): number {

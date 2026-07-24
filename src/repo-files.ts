@@ -1,6 +1,7 @@
 import { constants as fsConstants, promises as fs } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
+import { sessionStartDeadlineAt } from "./session-start-budget.js";
 import { getGitStateAsync, type GitState } from "./git.js";
 import { isSourcePath, shouldSkipPath } from "./language.js";
 import { mapLimit, normalizePath } from "./util.js";
@@ -113,7 +114,7 @@ async function hashFileContent(filePath: string): Promise<string> {
 // the caller falls back to metadata. Opening with nonblocking/no-follow flags
 // prevents a regular-to-special-file swap from stalling SessionStart.
 async function streamSha1(filePath: string, maxBytes: number): Promise<string | undefined> {
-  const deadlineAt = Date.now() + DIRTY_FILE_HASH_TIMEOUT_MS;
+  const deadlineAt = sessionStartDeadlineAt(Date.now() + DIRTY_FILE_HASH_TIMEOUT_MS);
   const expected = await fs.lstat(filePath);
   if (!expected.isFile() || expected.isSymbolicLink()) {
     throw new Error("dirty-file-not-regular");

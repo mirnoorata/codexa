@@ -1,4 +1,5 @@
 import path from "node:path";
+import { sessionStartDeadlineAt } from "./session-start-budget.js";
 import { readBoundedStableRegularFile } from "./worktree-bootstrap-adoption.js";
 
 const SESSION_START_FILE_READ_TIMEOUT_MS = 1_000;
@@ -50,7 +51,7 @@ function readSessionStartFile(
     filePath,
     maxBytes,
     label,
-    Date.now() + SESSION_START_FILE_READ_TIMEOUT_MS,
+    sessionStartDeadlineAt(Date.now() + SESSION_START_FILE_READ_TIMEOUT_MS),
     containmentRoot
   );
 }

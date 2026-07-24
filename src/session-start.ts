@@ -22,7 +22,10 @@ import {
   readSessionStartConfig,
   readSessionStartPackageJson
 } from "./session-start-file-read.js";
-import { runWithSessionStartBudget } from "./session-start-budget.js";
+import {
+  runWithSessionStartBudget,
+  type SessionStartBudget
+} from "./session-start-budget.js";
 import {
   workspaceActiveRowsDigest,
   workspaceRepoProject
@@ -52,6 +55,14 @@ export interface SessionStartOptions {
   autoRefresh?: boolean;
   workspaceFocusFile?: string;
   workspaceSessionId?: string;
+}
+
+interface SessionStartProgress {
+  repoRoot?: string;
+  routing?: SessionStartReceipt["routing"];
+  setup?: SessionStartReceipt["setup"];
+  config?: SessionStartReceipt["config"];
+  index?: SessionStartReceipt["index"];
 }
 
 export type SessionStartConfigState = "configured" | "runtime-unverified" | "not-configured" | "invalid" | "unavailable";
@@ -128,19 +139,23 @@ async function sessionStartReceiptInternal(
 ): Promise<SessionStartReceipt> {
   const configuredRoot = path.resolve(repoInput ?? process.cwd());
   const sessionOptions = typeof options === "boolean" ? { autoRefresh: options } : options;
+  const progress: SessionStartProgress = {};
   return runWithSessionStartBudget({
     allowWallClockTimeout: !sessionOptions.autoRefresh,
-    operation: () => sessionStartReceiptWithinBudget(
+    operation: (budget) => sessionStartReceiptWithinBudget(
       repoInput,
       includeContext,
       options,
-      issuingSetupReceipt
+      issuingSetupReceipt,
+      budget,
+      progress
     ),
-    onTimeout: (totalBudgetMs) => unavailableSessionStartReceipt({
+    onTimeout: (totalBudgetMs, stage) => timedOutSessionStartReceipt(
       configuredRoot,
-      config: unresolvedConfigReceipt(configuredRoot),
-      routingError: `session-start-total-budget-exhausted:${totalBudgetMs}ms`
-    })
+      progress,
+      totalBudgetMs,
+      stage
+    )
   });
 }
 
@@ -148,8 +163,11 @@ async function sessionStartReceiptWithinBudget(
   repoInput: string | undefined,
   includeContext: boolean,
   options: boolean | SessionStartOptions,
-  issuingSetupReceipt: boolean
+  issuingSetupReceipt: boolean,
+  budget: SessionStartBudget,
+  progress: SessionStartProgress
 ): Promise<SessionStartReceipt> {
+  budget.checkpoint("start");
   const configuredRoot = path.resolve(repoInput ?? process.cwd());
   const sessionOptions = typeof options === "boolean" ? { autoRefresh: options } : options;
   const autoRefresh = sessionOptions.autoRefresh ?? false;
@@ -168,6 +186,7 @@ async function sessionStartReceiptWithinBudget(
   } catch (error) {
     configuredManagedStateError = boundedErrorMessage(error);
   }
+  budget.checkpoint("configured-root");
   const explicitWorkspaceFocusFile = sessionOptions.workspaceFocusFile ?? process.env.CODEXA_WORKSPACE_FOCUS_FILE;
   if (configuredManagedStateError && !explicitWorkspaceFocusFile) {
     return unavailableSessionStartReceipt({
@@ -192,12 +211,14 @@ async function sessionStartReceiptWithinBudget(
     };
     const resolution = await resolveMcpRepoRootOnce(configuredRoot, routingOptions);
     repoRoot = resolution.repoRoot;
+    progress.repoRoot = repoRoot;
     routingSource = resolution.source;
     routingFocusReason = resolution.focusReason;
     workspaceFocusFile = resolution.focusFile;
     workspaceFocusContents = resolution.focusFileContents;
     workspaceSessionId = resolution.workspaceSessionId;
     if (resolution.focusReason === "workspace-default" || resolution.focusReason === "active-session") {
+      budget.checkpoint("routing");
       return selectionRequiredSessionStartReceipt({
         configuredRoot,
         source: resolution.source,
@@ -235,6 +256,8 @@ async function sessionStartReceiptWithinBudget(
     workspaceSessionId,
     note: resolutionNote
   };
+  progress.routing = routing;
+  budget.checkpoint("routing");
   let setup: SessionStartReceipt["setup"] = { state: "unavailable", reason: "setup-not-inspected" };
   try {
     await assertSafeManagedDirectory(path.join(repoRoot, ".codex"));
@@ -259,12 +282,16 @@ async function sessionStartReceiptWithinBudget(
       indexError: `managed state is unsafe; status and refresh were not inspected: ${message}`
     });
   }
+  progress.setup = setup;
+  budget.checkpoint("setup");
   const config = await inspectSessionStartConfig(repoRoot).catch((error): SessionStartReceipt["config"] => ({
     state: "unavailable",
     path: path.join(repoRoot, ".codex/config.toml"),
     toolProfile: "unknown",
     reason: boundedErrorMessage(error)
   }));
+  progress.config = config;
+  budget.checkpoint("config");
   let status: Awaited<ReturnType<typeof statusQuery>>;
   let refreshedDuringStartup = false;
   let refreshBlockedBySetup = false;
@@ -289,6 +316,8 @@ async function sessionStartReceiptWithinBudget(
     });
   }
   const index = sessionStartIndexReceipt(status, repoRoot);
+  progress.index = index;
+  budget.checkpoint("index");
 
   const context: string[] = [];
   if (includeContext) {
@@ -426,6 +455,7 @@ function unavailableSessionStartReceipt(input: {
   routing?: SessionStartReceipt["routing"];
   routingError?: string;
   indexError?: string;
+  index?: SessionStartReceipt["index"];
   setup?: SessionStartReceipt["setup"];
   hints?: string[];
 }): SessionStartReceipt {
@@ -435,9 +465,44 @@ function unavailableSessionStartReceipt(input: {
     availability: "unavailable",
     repoRoot: input.repoRoot ?? null,
     routing: input.routing ?? { state: "unavailable", error: input.routingError ?? error },
-    index: { state: "unavailable", reason: input.routingError ? "routing-unavailable" : "status-unavailable", error },
+    index: input.index ?? {
+      state: "unavailable",
+      reason: input.routingError ? "routing-unavailable" : "status-unavailable",
+      error
+    },
     hints: input.hints ?? []
   };
+}
+
+function timedOutSessionStartReceipt(
+  configuredRoot: string,
+  progress: SessionStartProgress,
+  totalBudgetMs: number,
+  stage: string
+): SessionStartReceipt {
+  const error = `session-start-total-budget-exhausted:${totalBudgetMs}ms:${boundedReceiptValue(stage, 48)}`;
+  const activeRoot = progress.repoRoot ?? configuredRoot;
+  const config = progress.config ?? {
+    state: "unavailable",
+    path: path.join(activeRoot, ".codex/config.toml"),
+    toolProfile: "unknown",
+    reason: progress.repoRoot
+      ? "budget exhausted before config inspection completed"
+      : "active repo unresolved; config not inspected"
+  };
+  return unavailableSessionStartReceipt({
+    configuredRoot,
+    repoRoot: progress.repoRoot,
+    config,
+    routing: progress.routing,
+    routingError: progress.routing ? undefined : error,
+    indexError: error,
+    setup: progress.setup,
+    index: progress.index
+      ? { ...progress.index, error }
+      : undefined,
+    hints: [`Completed startup facets were retained through ${boundedReceiptValue(stage, 48)}.`]
+  });
 }
 
 function compactSetupInspection(inspection: WorktreeBootstrapInspection): SessionStartReceipt["setup"] {
