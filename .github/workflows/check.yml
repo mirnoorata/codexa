@@ -119,7 +119,11 @@ jobs:
 
       - name: Run post-bootstrap test smoke
         working-directory: ../codexa-linked-worktree
-        run: npx vitest run tests/worktree-environment.test.ts
+        run: >-
+          npx vitest run
+          tests/worktree-environment.test.ts
+          tests/worktree-bootstrap-execution.test.ts
+          tests/command-process-tree.test.ts
 
       - name: Validate consumed setup receipt
         working-directory: ../codexa-linked-worktree
