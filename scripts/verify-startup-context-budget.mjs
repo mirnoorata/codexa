@@ -88,21 +88,21 @@ try {
   git(repo, ["add", "."]);
   git(repo, ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"]);
 
+  const optInMissingSummary = await sessionStartSummary(repo, true);
+  const optInMissingBytes = Buffer.byteLength(optInMissingSummary, "utf8");
+  assert.match(optInMissingSummary, /Session-start dynamic context/);
+  assert.match(optInMissingSummary, /Index: missing/);
+  assert.match(optInMissingSummary, /Config: not-configured/);
+  assert.ok(
+    optInMissingBytes <= sessionStart.optInMissingFixtureMaximumBytes,
+    `missing-index SessionStart fixture used ${optInMissingBytes}/${sessionStart.optInMissingFixtureMaximumBytes} bytes`
+  );
+
   await initializeProject(repo, { cliPath: path.join(repoRoot, "dist/cli.js") });
   const defaultReadyBytes = Buffer.byteLength(await sessionStartSummary(repo, false), "utf8");
   assert.ok(
     defaultReadyBytes <= sessionStart.defaultReadyFixtureMaximumBytes,
     `default SessionStart fixture used ${defaultReadyBytes}/${sessionStart.defaultReadyFixtureMaximumBytes} bytes`
-  );
-
-  const missingRoot = path.join(fixtureRoot, `missing\n${"x".repeat(200)}`);
-  const optInMissingBytes = Buffer.byteLength(
-    await sessionStartSummary(missingRoot, false, { workspaceSessionId: `session\n${"x".repeat(400)}` }),
-    "utf8"
-  );
-  assert.ok(
-    optInMissingBytes <= sessionStart.optInMissingFixtureMaximumBytes,
-    `missing SessionStart fixture used ${optInMissingBytes}/${sessionStart.optInMissingFixtureMaximumBytes} bytes`
   );
 
   await mkdir(path.join(fixtureRoot, ".codex"), { recursive: true });
