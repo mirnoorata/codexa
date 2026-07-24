@@ -198,6 +198,70 @@ describe("Codexa SessionStart CLI receipt", () => {
     }
   );
 
+  it.skipIf(process.platform === "win32")(
+    "degrades instead of blocking when dirty-file hashing is swapped to a FIFO",
+    async () => {
+      const repo = await createHookFixtureRepo();
+      expect(
+        spawnSync(process.execPath, [cli, "init", repo], {
+          cwd: process.cwd(),
+          encoding: "utf8",
+          env: testEnv()
+        }).status
+      ).toBe(0);
+      const target = path.join(repo, "src/main.ts");
+      await writeFile(target, "export function main() { return 2 }\n", "utf8");
+      const preload = path.join(repo, "dirty-fifo-race-preload.mjs");
+      const sentinel = path.join(repo, "dirty-fifo-race-observed");
+      await writeFile(
+        preload,
+        [
+          'import { execFileSync } from "node:child_process";',
+          'import { promises as fs } from "node:fs";',
+          'import path from "node:path";',
+          "const originalOpen = fs.open.bind(fs);",
+          "let swapped = false;",
+          "fs.open = async (file, flags, mode) => {",
+          "  if (!swapped && path.resolve(String(file)) === path.resolve(process.env.CODEXA_FIFO_TARGET)) {",
+          "    swapped = true;",
+          "    await fs.rm(file);",
+          '    execFileSync("mkfifo", [String(file)]);',
+          '    await fs.writeFile(process.env.CODEXA_FIFO_SENTINEL, "observed\\n");',
+          "  }",
+          "  return originalOpen(file, flags, mode);",
+          "};",
+          ""
+        ].join("\n"),
+        "utf8"
+      );
+
+      const result = spawnSync(
+        process.execPath,
+        ["--import", preload, cli, "session-start", repo, "--json"],
+        {
+          cwd: process.cwd(),
+          encoding: "utf8",
+          timeout: 3_000,
+          env: {
+            ...testEnv(),
+            CODEXA_FIFO_TARGET: target,
+            CODEXA_FIFO_SENTINEL: sentinel
+          }
+        }
+      );
+      expect(result.error).toBeUndefined();
+      expect(result.status).toBe(0);
+      const receipt = JSON.parse(result.stdout) as {
+        availability: string;
+        index: { state: string };
+      };
+      expect(receipt.availability).toBe("ok");
+      expect(receipt.index.state).not.toBe("fresh");
+      expect(Buffer.byteLength(result.stdout, "utf8")).toBeLessThanOrEqual(4096);
+      await expect(readFile(sentinel, "utf8")).resolves.toBe("observed\n");
+    }
+  );
+
   it("does not record advisory telemetry through redirected managed state", async () => {
     const repo = await createHookFixtureRepo();
     expect(

@@ -1,4 +1,4 @@
-import { createReadStream, promises as fs } from "node:fs";
+import { constants as fsConstants, promises as fs } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
 import { getGitStateAsync, type GitState } from "./git.js";
@@ -12,6 +12,7 @@ import { mapLimit, normalizePath } from "./util.js";
 // dirty files).
 const MAX_DIRTY_CONTENT_HASH_BYTES = 64 * 1024 * 1024;
 const MAX_DIRTY_TOTAL_HASH_BYTES = 256 * 1024 * 1024;
+const DIRTY_FILE_HASH_TIMEOUT_MS = 5_000;
 export const MAX_INDEXED_SOURCE_BYTES = 2 * 1024 * 1024;
 const SOURCE_DISCOVERY_CONCURRENCY = 16;
 
@@ -108,22 +109,81 @@ async function hashFileContent(filePath: string): Promise<string> {
   return createHash("sha1").update(await fs.readFile(filePath)).digest("hex");
 }
 
-// Returns undefined when the file exceeds maxBytes mid-stream (it grew past the
-// per-file cap between the stat pass and now), so the caller falls back to a
-// fresh metadata hash and per-file I/O stays bounded even if a dirty file grows.
+// Returns undefined when the file exceeds maxBytes during the stable read, so
+// the caller falls back to metadata. Opening with nonblocking/no-follow flags
+// prevents a regular-to-special-file swap from stalling SessionStart.
 async function streamSha1(filePath: string, maxBytes: number): Promise<string | undefined> {
-  const hash = createHash("sha1");
-  const stream = createReadStream(filePath);
-  let read = 0;
-  for await (const chunk of stream) {
-    read += chunk.length;
-    if (read > maxBytes) {
-      stream.destroy();
-      return undefined;
-    }
-    hash.update(chunk);
+  const deadlineAt = Date.now() + DIRTY_FILE_HASH_TIMEOUT_MS;
+  const expected = await fs.lstat(filePath);
+  if (!expected.isFile() || expected.isSymbolicLink()) {
+    throw new Error("dirty-file-not-regular");
   }
-  return hash.digest("hex");
+  if (expected.size > maxBytes) return undefined;
+  const hash = createHash("sha1");
+  const handle = await fs.open(
+    filePath,
+    fsConstants.O_RDONLY | fsConstants.O_NONBLOCK | fsConstants.O_NOFOLLOW
+  );
+  try {
+    const opened = await handle.stat();
+    if (
+      !opened.isFile() ||
+      opened.dev !== expected.dev ||
+      opened.ino !== expected.ino ||
+      opened.mode !== expected.mode ||
+      opened.nlink !== expected.nlink ||
+      opened.size !== expected.size
+    ) {
+      throw new Error("dirty-file-changed-during-read");
+    }
+    const scratch = Buffer.allocUnsafe(1024 * 1024);
+    let position = 0;
+    while (position < expected.size) {
+      assertDirtyHashDeadline(deadlineAt);
+      const length = Math.min(scratch.length, expected.size - position);
+      const { bytesRead } = await handle.read(scratch, 0, length, position);
+      if (bytesRead <= 0) throw new Error("dirty-file-changed-during-read");
+      hash.update(scratch.subarray(0, bytesRead));
+      position += bytesRead;
+    }
+    const probe = Buffer.allocUnsafe(1);
+    if ((await handle.read(probe, 0, 1, position)).bytesRead > 0) return undefined;
+    const final = await handle.stat();
+    if (
+      final.dev !== opened.dev ||
+      final.ino !== opened.ino ||
+      final.mode !== opened.mode ||
+      final.nlink !== opened.nlink ||
+      final.size !== opened.size ||
+      final.mtimeMs !== opened.mtimeMs ||
+      final.ctimeMs !== opened.ctimeMs
+    ) {
+      if (final.size > maxBytes) return undefined;
+      throw new Error("dirty-file-changed-during-read");
+    }
+    const named = await fs.lstat(filePath);
+    if (
+      !named.isFile() ||
+      named.isSymbolicLink() ||
+      named.dev !== final.dev ||
+      named.ino !== final.ino ||
+      named.mode !== final.mode ||
+      named.nlink !== final.nlink ||
+      named.size !== final.size ||
+      named.mtimeMs !== final.mtimeMs ||
+      named.ctimeMs !== final.ctimeMs
+    ) {
+      throw new Error("dirty-file-changed-during-read");
+    }
+    assertDirtyHashDeadline(deadlineAt);
+    return hash.digest("hex");
+  } finally {
+    await handle.close();
+  }
+}
+
+function assertDirtyHashDeadline(deadlineAt: number): void {
+  if (Date.now() > deadlineAt) throw new Error("dirty-file-hash-timeout");
 }
 
 function metadataHash(stat: { size: number; mtimeMs: number }): string {
