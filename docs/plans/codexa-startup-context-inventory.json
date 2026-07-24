@@ -33,6 +33,7 @@
       "projectKernelMaximumBytes": 3072
     },
     "sessionStart": {
+      "measurementCommand": "npm run startup:context-check",
       "defaultReadyFixtureMaximumBytes": 800,
       "optInMissingFixtureMaximumBytes": 2048,
       "optInWorkspaceRecoveryMaximumBytes": 4096,
@@ -40,6 +41,7 @@
       "ordinaryStartupTelemetryWrites": 0
     },
     "mcpExposure": {
+      "currentMeasurementCommand": "npm run startup:context-check",
       "lastCleanCheckoutObservation": {
         "commit": "6d2cd581c8f8afcc85d048c03e123f3cf978f8d1",
         "command": "npm run benchmark:transport:exposure",
@@ -49,6 +51,7 @@
       "fullDirectTools": 23,
       "coreDirectTools": 3,
       "logicalOperations": 22,
+      "fixtureTolerancePercentagePoints": 0.2,
       "toolListDecodedPayloadReductionPercent": 87.2,
       "startupAdvertisementAndDiscoveryDecodedPayloadReductionPercent": 69.8,
       "firstTaskResultDecodedPayloadReductionPercent": 0,
