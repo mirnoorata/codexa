@@ -3,7 +3,7 @@
 PR summary for
 `codex/general/codexa-20260722-210037-focus-orientation` against `main`.
 The final source-evidence head used for the measurements below is
-`96e144b164326964cbebc92460ab4d8bef0c7b14`.
+`d67f15d9d2ee2254a3c95036cf54b58014804942`.
 
 ## Outcome
 
@@ -72,7 +72,7 @@ prompt as a proxy for task success.
 | Decoded `tools/list` payload | full profile | 87.2% lower in core profile |
 | Startup advertisement plus discovery | full profile | 69.8% lower in core profile |
 | First/repeated tiny task result | full profile | 0% reduction |
-| SessionStart p95 | 1,000 ms limit | 533 ms |
+| SessionStart p95 | 1,000 ms limit | 546 ms |
 
 The automatic-policy token figure is only a four-bytes-per-token estimate
 (2,864), not an observed model-token count. The transport benchmark measures
@@ -110,15 +110,15 @@ quality, and latency. This PR does not fabricate that host-controlled result.
 ## Verification
 
 - `npm run security:check`: passed.
-  - 86 test files passed.
-  - 1,035 tests passed; 1 intentionally skipped.
+  - 87 test files passed.
+  - 1,037 tests passed; 1 intentionally skipped.
   - npm audit found 0 vulnerabilities.
   - Public snapshot, package hygiene, plugin hygiene, and the 31-check packaged
     install smoke passed.
 - `npm run benchmark:ci`: passed every threshold.
-  - SessionStart p50 494 ms, p95 533 ms.
-  - Adoption validation 953 ms against a 5,000 ms ceiling.
-  - MCP startup 286 ms; MCP freshness p95 179 ms.
+  - SessionStart p50 530 ms, p95 546 ms.
+  - Adoption validation 851 ms against a 5,000 ms ceiling.
+  - MCP startup 285 ms; MCP freshness p95 185 ms.
 - `npm run benchmark:transport:exposure`: passed with 3/23 direct tools,
   logical-operation parity, 87.2% lower decoded tool-list payload, and 69.8%
   lower startup advertisement/discovery payload.
