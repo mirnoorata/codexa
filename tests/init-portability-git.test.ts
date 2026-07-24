@@ -54,7 +54,8 @@ describe("bounded Git tracked-file inspection", () => {
       {
         maxBufferBytes: 16 * 1024,
         okExitCodes: [0, 1],
-        timeoutMs: 2_500
+        timeoutMs: 2_500,
+        killProcessGroup: false
       }
     );
   });

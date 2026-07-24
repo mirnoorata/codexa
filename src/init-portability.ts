@@ -63,7 +63,8 @@ export async function isGitTrackedAsync(repoRoot: string, relPath: string): Prom
     {
       timeoutMs: GIT_TRACKED_TIMEOUT_MS,
       maxBufferBytes: GIT_TRACKED_MAX_BUFFER_BYTES,
-      okExitCodes: [0, 1]
+      okExitCodes: [0, 1],
+      killProcessGroup: false
     }
   );
   if (result.timedOut) throw new Error("git-tracked-inspection-timeout");

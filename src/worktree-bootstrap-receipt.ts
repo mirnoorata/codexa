@@ -7,7 +7,6 @@ import {
   isGitTrackedAsync
 } from "./init-portability.js";
 import {
-  ADOPTION_SCAN_TIMEOUT_MS,
   currentAdoptionReceiptFacts,
   currentAdoptionReceiptSnapshot,
   readBoundedStableRegularFileWithSnapshot,
@@ -25,7 +24,17 @@ import {
   inspectHookLaneContract,
   lanePlatformMismatch
 } from "./worktree-bootstrap-hook-contract.js";
+import {
+  publishWorktreeReceiptRef,
+  readWorktreeReceiptRef,
+  WORKTREE_BOOTSTRAP_RECEIPT_REF
+} from "./worktree-bootstrap-receipt-ref.js";
 import { parseBootstrapInputNames } from "./worktree-bootstrap-startup-inputs.js";
+import {
+  adoptionDeadlineExpired,
+  adoptionValidationDeadlineAt,
+  withAdoptionCommandBudget
+} from "./worktree-bootstrap-validation-budget.js";
 import { sessionStartDeadlineAt } from "./session-start-budget.js";
 import {
   revalidateStableTreeEntries,
@@ -33,10 +42,8 @@ import {
   type StableTreeEntrySnapshot
 } from "./stable-directory-snapshot.js";
 
-export const WORKTREE_BOOTSTRAP_RECEIPT_REF = "refs/worktree/codexa/bootstrap-receipt";
+export { WORKTREE_BOOTSTRAP_RECEIPT_REF };
 export const WORKTREE_BOOTSTRAP_DEPENDENCY_SEAL_RELATIVE_PATH = "node_modules/.codexa-dependencies.json";
-const RECEIPT_MAX_BYTES = 128 * 1024;
-const GIT_OBJECT_ID_PATTERN = /^[0-9a-f]{40,64}$/u;
 const DEPENDENCY_MAX_ENTRIES = 100_000;
 const DEPENDENCY_MAX_LOGICAL_BYTES = 2 * 1024 * 1024 * 1024;
 const STARTUP_SCAN_TIMEOUT_MS = 5_000;
@@ -236,16 +243,39 @@ export async function issueWorktreeBootstrapReceipt(
 export async function validateWorktreeBootstrapReceipt(
   repoRoot: string,
   receipt: WorktreeBootstrapReceipt,
-  validation: WorktreeBootstrapValidation = "full"
+  validation: WorktreeBootstrapValidation = "full",
+  requestedAdoptionDeadlineAt?: number
 ): Promise<WorktreeBootstrapInspection> {
-  const aggregateDeadlineAt = validation === "adoption"
-    ? Date.now() + ADOPTION_SCAN_TIMEOUT_MS
-    : undefined;
+  const aggregateDeadlineAt = adoptionValidationDeadlineAt(
+    validation,
+    requestedAdoptionDeadlineAt
+  );
+  const validate = () => validateWorktreeBootstrapReceiptWithinDeadline(
+    repoRoot,
+    receipt,
+    validation,
+    aggregateDeadlineAt
+  );
+  if (aggregateDeadlineAt === undefined) return validate();
+  return withAdoptionCommandBudget(aggregateDeadlineAt, validate);
+}
+
+async function validateWorktreeBootstrapReceiptWithinDeadline(
+  repoRoot: string,
+  receipt: WorktreeBootstrapReceipt,
+  validation: WorktreeBootstrapValidation,
+  aggregateDeadlineAt?: number
+): Promise<WorktreeBootstrapInspection> {
   let startup: WorktreeBootstrapStartupSnapshot;
   try {
     startup = await currentStartupReceiptSnapshot(repoRoot, aggregateDeadlineAt);
   } catch (error) {
-    return { state: "unavailable", lane: receipt.lane, validation, reason: boundedReason(error) };
+    return {
+      state: "unavailable",
+      lane: receipt.lane,
+      validation,
+      reason: validationFailureReason(error, aggregateDeadlineAt)
+    };
   }
   const startupMismatch = startupReceiptMismatch(path.resolve(repoRoot), receipt, startup);
   if (startupMismatch) {
@@ -270,7 +300,13 @@ export async function validateWorktreeBootstrapReceipt(
   try {
     adoptionSnapshot = await currentAdoptionReceiptSnapshot(repoRoot, aggregateDeadlineAt);
   } catch (error) {
-    return { state: "unavailable", lane: receipt.lane, validation, reason: boundedReason(error), receipt };
+    return {
+      state: "unavailable",
+      lane: receipt.lane,
+      validation,
+      reason: validationFailureReason(error, aggregateDeadlineAt),
+      receipt
+    };
   }
   const adoption = adoptionSnapshot.facts;
   const adoptionMismatch = adoptionReceiptMismatch(receipt, adoption);
@@ -285,7 +321,13 @@ export async function validateWorktreeBootstrapReceipt(
         ? { state: "stale", lane: receipt.lane, validation, reason: finalStartupMismatch, receipt }
         : { state: "verified", lane: receipt.lane, validation, receipt };
     } catch (error) {
-      return { state: "unavailable", lane: receipt.lane, validation, reason: boundedReason(error), receipt };
+      return {
+        state: "unavailable",
+        lane: receipt.lane,
+        validation,
+        reason: validationFailureReason(error, aggregateDeadlineAt),
+        receipt
+      };
     }
   }
   if (!completionSnapshot) {
@@ -382,15 +424,40 @@ function completionReceiptMismatch(
 
 export async function inspectWorktreeBootstrapReceipt(
   repoRoot: string,
-  options: { validation?: WorktreeBootstrapValidation } = {}
+  options: {
+    validation?: WorktreeBootstrapValidation;
+    adoptionDeadlineAt?: number;
+  } = {}
 ): Promise<WorktreeBootstrapInspection> {
   const repo = path.resolve(repoRoot);
   const validation = options.validation ?? "full";
+  const aggregateDeadlineAt = adoptionValidationDeadlineAt(
+    validation,
+    options.adoptionDeadlineAt
+  );
+  const inspect = () => inspectWorktreeBootstrapReceiptWithinDeadline(
+    repo,
+    validation,
+    aggregateDeadlineAt
+  );
+  if (aggregateDeadlineAt === undefined) return inspect();
+  return withAdoptionCommandBudget(aggregateDeadlineAt, inspect);
+}
+
+async function inspectWorktreeBootstrapReceiptWithinDeadline(
+  repo: string,
+  validation: WorktreeBootstrapValidation,
+  aggregateDeadlineAt?: number
+): Promise<WorktreeBootstrapInspection> {
   let required: boolean;
   try {
     required = await isWorktreeBootstrapReceiptRequired(repo);
   } catch (error) {
-    return { state: "unavailable", validation, reason: boundedReason(error) };
+    return {
+      state: "unavailable",
+      validation,
+      reason: validationFailureReason(error, aggregateDeadlineAt)
+    };
   }
   if (!required) return { state: "not-required" };
   try {
@@ -399,105 +466,22 @@ export async function inspectWorktreeBootstrapReceipt(
       return { state: "missing", validation, reason: "receipt-missing" };
     }
     if (stored.state === "invalid") {
+      if (adoptionDeadlineExpired(aggregateDeadlineAt)) {
+        return { state: "unavailable", validation, reason: "adoption-validation-timeout" };
+      }
       return { state: "invalid", validation, reason: stored.reason };
     }
     const parsed = JSON.parse(stored.contents) as unknown;
     if (!isWorktreeBootstrapReceipt(parsed)) {
       return { state: "invalid", validation, reason: "receipt-schema-invalid" };
     }
-    return validateWorktreeBootstrapReceipt(repo, parsed, validation);
+    return validateWorktreeBootstrapReceipt(repo, parsed, validation, aggregateDeadlineAt);
   } catch (error) {
+    if (adoptionDeadlineExpired(aggregateDeadlineAt)) {
+      return { state: "unavailable", validation, reason: "adoption-validation-timeout" };
+    }
     return { state: "invalid", validation, reason: boundedReason(error) };
   }
-}
-
-async function publishWorktreeReceiptRef(
-  repoRoot: string,
-  contents: string
-): Promise<void> {
-  if (Buffer.byteLength(contents, "utf8") > RECEIPT_MAX_BYTES) {
-    throw new Error("Cannot issue Codexa worktree receipt: receipt-too-large");
-  }
-  const stored = await runCommand(
-    "git",
-    ["-C", repoRoot, "hash-object", "-w", "--stdin"],
-    {
-      input: contents,
-      timeoutMs: 2_500,
-      maxBufferBytes: 64 * 1024
-    }
-  );
-  const objectId = stored.stdout.trim();
-  if (!stored.ok || !GIT_OBJECT_ID_PATTERN.test(objectId)) {
-    throw new Error("Cannot issue Codexa worktree receipt: receipt-object-publication-failed");
-  }
-  const published = await runCommand(
-    "git",
-    ["-C", repoRoot, "update-ref", "--no-deref", WORKTREE_BOOTSTRAP_RECEIPT_REF, objectId],
-    {
-      timeoutMs: 2_500,
-      maxBufferBytes: 64 * 1024
-    }
-  );
-  if (!published.ok) {
-    throw new Error("Cannot issue Codexa worktree receipt: receipt-ref-publication-failed");
-  }
-}
-
-async function readWorktreeReceiptRef(
-  repoRoot: string
-): Promise<
-  | { state: "missing" }
-  | { state: "invalid"; reason: string }
-  | { state: "ok"; contents: string }
-> {
-  const resolved = await runCommand(
-    "git",
-    ["-C", repoRoot, "rev-parse", "--verify", "--end-of-options", WORKTREE_BOOTSTRAP_RECEIPT_REF],
-    {
-      timeoutMs: 2_500,
-      maxBufferBytes: 64 * 1024
-    }
-  );
-  if (!resolved.ok) {
-    if (resolved.timedOut || resolved.truncated || resolved.error) {
-      return { state: "invalid", reason: "receipt-ref-resolution-failed" };
-    }
-    return { state: "missing" };
-  }
-  const objectId = resolved.stdout.trim();
-  if (!GIT_OBJECT_ID_PATTERN.test(objectId)) {
-    return { state: "invalid", reason: "receipt-ref-object-invalid" };
-  }
-  const type = await runCommand(
-    "git",
-    ["-C", repoRoot, "cat-file", "-t", objectId],
-    {
-      timeoutMs: 2_500,
-      maxBufferBytes: 64 * 1024
-    }
-  );
-  if (!type.ok || type.stdout.trim() !== "blob") {
-    return { state: "invalid", reason: "receipt-ref-object-invalid" };
-  }
-  const contents = await runCommand(
-    "git",
-    ["-C", repoRoot, "cat-file", "blob", objectId],
-    {
-      timeoutMs: 2_500,
-      maxBufferBytes: RECEIPT_MAX_BYTES + 1
-    }
-  );
-  if (
-    contents.truncated ||
-    Buffer.byteLength(contents.stdout, "utf8") > RECEIPT_MAX_BYTES
-  ) {
-    return { state: "invalid", reason: "receipt-too-large" };
-  }
-  if (!contents.ok) {
-    return { state: "invalid", reason: "receipt-object-read-failed" };
-  }
-  return { state: "ok", contents: contents.stdout };
 }
 
 async function currentReceiptFacts(
@@ -538,7 +522,7 @@ async function currentCompletionReceiptSnapshot(
     const result = await runCommand(
       "git",
       ["-C", repo, "rev-parse", "HEAD"],
-      { timeoutMs: 2_500, maxBufferBytes: 64 * 1024 }
+      { timeoutMs: 2_500, maxBufferBytes: 64 * 1024, killProcessGroup: false }
     );
     if (!result.ok) throw new Error("git-head-unavailable");
     const value = result.stdout.trim();
@@ -663,7 +647,7 @@ async function currentGitCommonDir(repoRoot: string): Promise<string> {
   const result = await runCommand(
     "git",
     ["-C", repoRoot, "rev-parse", "--path-format=absolute", "--git-common-dir"],
-    { timeoutMs: 2_500, maxBufferBytes: 64 * 1024 }
+    { timeoutMs: 2_500, maxBufferBytes: 64 * 1024, killProcessGroup: false }
   );
   if (!result.ok) throw new Error("git-identity-unavailable");
   return fs.realpath(result.stdout.trim());
@@ -876,6 +860,12 @@ function assertInputScanDeadline(budget: InputScanBudget): void {
   if (Date.now() > budget.deadlineAt) {
     throw new Error(`${budget.label}-scan-timeout`);
   }
+}
+
+function validationFailureReason(error: unknown, deadlineAt?: number): string {
+  return adoptionDeadlineExpired(deadlineAt)
+    ? "adoption-validation-timeout"
+    : boundedReason(error);
 }
 
 function sha256(contents: Buffer): string {

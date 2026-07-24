@@ -741,15 +741,21 @@ receipt validation additionally owns HEAD and source/build-input drift. If
 index when durable setup is not required or verified; normal source evolution
 does not force a bootstrap rerun.
 
-Adoption integrity walks `node_modules` once from its root, so nested packages
-are neither omitted nor repeatedly hashed. Regular files, legitimate
-hardlinks, in-root symlink targets such as `.bin` entries, and extraneous
-packages all affect the manifest. The scan fails closed if a symlink escapes
-the installed tree, a file changes while it is read, the generated runtime
-exceeds 10,000 entries or 256 MiB, dependencies exceed 100,000 entries or
-2 GiB, one file exceeds its bounded class, or the combined adoption scan takes
-more than 20 seconds. `benchmark:ci` separately requires the valid
-adoption-scope check to complete within five seconds.
+Adoption integrity captures `node_modules` once from its root and performs one
+closing revalidation over the retained entries, so nested packages are neither
+omitted nor repeatedly hashed by a redundant third traversal. Regular files,
+legitimate hardlinks, in-root symlink targets such as `.bin` entries, and
+extraneous packages all affect the manifest. The public adoption-validation
+wall begins before receipt-requirement and Git-ref reads; those probes, startup
+facts, the adoption capture, closing revalidation, and final startup facts share
+one budget of at most 20 seconds. The implementation reserves direct-command
+termination time inside that wall, leaving the shared 30-second controller
+headroom for process startup, serialization, and its own termination. Validation
+also fails closed if a symlink escapes the installed tree, a file changes while
+it is read, the generated runtime exceeds 10,000 entries or 256 MiB,
+dependencies exceed 100,000 entries or 2 GiB, or one file exceeds its bounded
+class. `benchmark:ci` separately requires the valid adoption-scope check to
+complete within five seconds.
 The orchestrator snapshots every setup input declared by the tracked wrapper,
 plus both wrappers and the environment contract, before `npm ci`; receipt
 issuance rejects any change to that fingerprint. Tool caches are directed to
