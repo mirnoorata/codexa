@@ -3,7 +3,7 @@
 PR summary for
 `codex/general/codexa-20260722-210037-focus-orientation` against `main`.
 The final source-evidence head used for the measurements below is
-`5dde1520b9a798879d2927b5ddde3fde86b4cf9e`.
+`362019be9a06b95ef0c17322dee8cfb6e0dcfe59`.
 
 ## Outcome
 
@@ -16,12 +16,16 @@ retrieval, not token reduction by itself:
 - One serialized Node bootstrap owns dependency installation, build, worktree
   wiring, indexing, and receipt publication for Bash and PowerShell launchers.
   Every stage has a deadline, termination grace, forced-stop fallback, and a
-  shared 8 MiB log ceiling.
+  shared 8 MiB log ceiling. Terminal settlement also closes inherited pipes
+  when an escaped descendant prevents the direct child’s `close` event.
 - Setup proof is an immutable Git blob published through the per-worktree
   `refs/worktree/codexa/bootstrap-receipt` ref. SessionStart validates a cheap
   durable subset; adoption and completion use progressively stronger scopes.
-  Full validation rechecks earlier scopes before acceptance, and receipt
-  issuance repeats dependency completeness after inventory capture.
+  Startup inputs have a closing snapshot revalidation. Adoption has one
+  aggregate 20-second budget and one large-tree traversal; full validation
+  rechecks the smaller completion scope after adoption. Receipt issuance
+  repeats dependency completeness after inventory capture without retaining
+  successful `npm ls` output.
 - SessionStart reports routing, setup, config/profile, index, and
   current-thread activation as separate facts. Unknown or unobservable state
   never becomes `ready`.
@@ -62,7 +66,7 @@ prompt as a proxy for task success.
 | Decoded `tools/list` payload | full profile | 87.2% lower in core profile |
 | Startup advertisement plus discovery | full profile | 69.8% lower in core profile |
 | First/repeated tiny task result | full profile | 0% reduction |
-| SessionStart p95 | 1,000 ms limit | 536 ms |
+| SessionStart p95 | 1,000 ms limit | 530 ms |
 
 The automatic-policy token figure is only a four-bytes-per-token estimate
 (2,864), not an observed model-token count. The transport benchmark measures
@@ -100,14 +104,15 @@ quality, and latency. This PR does not fabricate that host-controlled result.
 ## Verification
 
 - `npm run security:check`: passed.
-  - 83 test files passed.
-  - 1,025 tests passed; 1 intentionally skipped.
+  - 85 test files passed.
+  - 1,031 tests passed; 1 intentionally skipped.
   - npm audit found 0 vulnerabilities.
   - Public snapshot, package hygiene, plugin hygiene, and the 31-check packaged
     install smoke passed.
 - `npm run benchmark:ci`: passed every threshold.
-  - SessionStart p50 518 ms, p95 536 ms.
-  - MCP startup 287 ms; MCP freshness p95 180 ms.
+  - SessionStart p50 498 ms, p95 530 ms.
+  - Adoption validation 821 ms against a 5,000 ms ceiling.
+  - MCP startup 295 ms; MCP freshness p95 183 ms.
 - `npm run benchmark:transport:exposure`: passed with 3/23 direct tools,
   logical-operation parity, 87.2% lower decoded tool-list payload, and 69.8%
   lower startup advertisement/discovery payload.
