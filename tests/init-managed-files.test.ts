@@ -1,5 +1,5 @@
-import { execFileSync } from "node:child_process";
-import { chmod, link, mkdir, mkdtemp, readFile, readdir, rename, stat, symlink, writeFile } from "node:fs/promises";
+import { execFileSync, spawnSync } from "node:child_process";
+import { chmod, link, mkdir, mkdtemp, readFile, readdir, rename, stat, symlink, truncate, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -9,6 +9,79 @@ import { writeTextIfChanged } from "../src/init-portability.js";
 const cliPath = path.resolve(process.cwd(), "dist/cli.js");
 
 describe("Codexa managed startup files", () => {
+  it("rejects a managed config swapped to a FIFO without blocking the init CLI", async () => {
+    if (process.platform === "win32") return;
+    const repo = await createRepo("codexa-init-config-fifo-race-");
+    const configPath = path.join(repo, ".codex/config.toml");
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(configPath, "[features]\nhooks = false\n", "utf8");
+    const preload = path.join(repo, "init-fifo-race-preload.mjs");
+    const sentinel = path.join(repo, "init-fifo-race-observed");
+    await writeFile(
+      preload,
+      [
+        'import { execFileSync } from "node:child_process";',
+        'import { promises as fs } from "node:fs";',
+        'import path from "node:path";',
+        "const originalOpen = fs.open.bind(fs);",
+        "let swapped = false;",
+        "fs.open = async (file, flags, mode) => {",
+        "  if (!swapped && path.resolve(String(file)) === path.resolve(process.env.CODEXA_FIFO_TARGET)) {",
+        "    swapped = true;",
+        "    await fs.rm(file);",
+        '    execFileSync("mkfifo", [String(file)]);',
+        '    await fs.writeFile(process.env.CODEXA_FIFO_SENTINEL, "observed\\n");',
+        "  }",
+        "  return originalOpen(file, flags, mode);",
+        "};",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const result = spawnSync(
+      process.execPath,
+      ["--import", preload, cliPath, "init", repo, "--no-hooks", "--no-index"],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        timeout: 3_000,
+        env: {
+          ...process.env,
+          CODEXA_FIFO_TARGET: configPath,
+          CODEXA_FIFO_SENTINEL: sentinel
+        }
+      }
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toMatch(/changed while Codexa was preparing|non-regular managed file/u);
+    await expect(readFile(sentinel, "utf8")).resolves.toBe("observed\n");
+  });
+
+  it("rejects an oversized managed config before allocating or rewriting it", async () => {
+    const repo = await createRepo("codexa-init-config-oversized-");
+    const configPath = path.join(repo, ".codex/config.toml");
+    await mkdir(path.dirname(configPath), { recursive: true });
+    await writeFile(configPath, "");
+    await truncate(configPath, 4 * 1024 * 1024 + 1);
+
+    const result = spawnSync(
+      process.execPath,
+      [cliPath, "init", repo, "--no-hooks", "--no-index"],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        timeout: 3_000,
+        env: process.env
+      }
+    );
+    expect(result.error).toBeUndefined();
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain("Codexa refuses managed file larger than");
+    expect((await stat(configPath)).size).toBe(4 * 1024 * 1024 + 1);
+  });
+
   it("refuses a redirected config without reading or changing its target", async () => {
     const repo = await createRepo("codexa-init-config-link-");
     const externalRoot = await mkdtemp(path.join(os.tmpdir(), "codexa-init-config-target-"));

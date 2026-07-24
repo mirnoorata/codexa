@@ -1,5 +1,5 @@
 import path from "node:path";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { assertCiWorkflowWritable, writeCiWorkflow } from "./ci-workflow.js";
 import { buildIndexLocked } from "./indexer.js";
 import {
@@ -12,6 +12,7 @@ import {
   isCodexaMcpJsonEntry,
   isGitTracked,
   portableRepoArg,
+  readManagedTextFileIfExists as readManagedTextIfExists,
   resolveGitRepoRoot,
   writeTextIfChanged,
   type ExistingClaudeMcpConfig
@@ -747,22 +748,6 @@ function isCodexaMcpServerBlock(lines: string[], options: { cliPath: string; rep
     return true;
   }
   return block.includes(tomlString(options.cliPath)) && block.includes(tomlString(options.repoRoot));
-}
-
-async function readTextIfExists(filePath: string): Promise<string> {
-  try {
-    return await readFile(filePath, "utf8");
-  } catch (error) {
-    if (isNodeError(error) && error.code === "ENOENT") {
-      return "";
-    }
-    throw error;
-  }
-}
-
-async function readManagedTextIfExists(filePath: string): Promise<string> {
-  await assertSafeManagedFile(filePath);
-  return readTextIfExists(filePath);
 }
 
 function trimTrailingBlankLines(value: string): string {

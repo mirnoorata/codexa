@@ -1,7 +1,7 @@
 import { execFileSync } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import type { Stats } from "node:fs";
-import { chmod, lstat, mkdir, readFile, realpath, rename, rm, writeFile } from "node:fs/promises";
+import { constants as fsConstants, promises as fs, type Stats } from "node:fs";
+import { chmod, lstat, mkdir, realpath, rename, rm, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { runCommand } from "./command.js";
@@ -11,6 +11,10 @@ import { CODEXA_VERSION } from "./version.js";
 const CURRENT_CODEXA_CLI_PATH = fileURLToPath(new URL("./cli.js", import.meta.url));
 const GIT_TRACKED_TIMEOUT_MS = 2_500;
 const GIT_TRACKED_MAX_BUFFER_BYTES = 16 * 1024;
+const MANAGED_FILE_READ_MAX_BYTES = 4 * 1024 * 1024;
+const MANAGED_FILE_READ_TIMEOUT_MS = 2_000;
+const MANAGED_FILE_READ_FLAGS =
+  fsConstants.O_RDONLY | fsConstants.O_NONBLOCK | fsConstants.O_NOFOLLOW;
 
 export interface ExistingClaudeMcpConfig {
   contents: string;
@@ -259,22 +263,73 @@ interface ManagedFileSnapshot {
   size?: number;
 }
 
+export async function readManagedTextFileIfExists(filePath: string): Promise<string> {
+  return (await managedFileSnapshot(filePath)).contents;
+}
+
 async function managedFileSnapshot(filePath: string): Promise<ManagedFileSnapshot> {
+  let before: Stats;
   try {
-    const before = await lstat(filePath);
-    assertSafeManagedFileEntry(filePath, before);
-    const contents = await readFile(filePath, "utf8");
-    const after = await lstat(filePath);
-    assertSafeManagedFileEntry(filePath, after);
-    const beforeIdentity = managedFileIdentity(before);
-    const afterIdentity = managedFileIdentity(after);
-    if (!sameManagedFileIdentity(beforeIdentity, afterIdentity)) {
-      throw new Error(`Cannot update ${filePath}: the file changed while Codexa was preparing the update`);
-    }
-    return { contents, ...afterIdentity };
+    before = await lstat(filePath);
   } catch (error) {
     if (isNodeError(error) && error.code === "ENOENT") return { contents: "" };
     throw error;
+  }
+  assertSafeManagedFileEntry(filePath, before);
+  if (before.size > MANAGED_FILE_READ_MAX_BYTES) {
+    throw new Error(
+      `Codexa refuses managed file larger than ${MANAGED_FILE_READ_MAX_BYTES} bytes: ${filePath}`
+    );
+  }
+  const deadlineAt = Date.now() + MANAGED_FILE_READ_TIMEOUT_MS;
+  const handle = await fs.open(filePath, MANAGED_FILE_READ_FLAGS).catch((error: unknown) => {
+    if (isNodeError(error) && error.code === "ENOENT") {
+      throw new Error(`Cannot update ${filePath}: the file changed while Codexa was preparing the update`);
+    }
+    throw error;
+  });
+  try {
+    const opened = await handle.stat();
+    assertSafeManagedFileEntry(filePath, opened);
+    if (!sameManagedFileIdentity(managedFileIdentity(before), managedFileIdentity(opened))) {
+      throw new Error(`Cannot update ${filePath}: the file changed while Codexa was preparing the update`);
+    }
+    const contents = Buffer.alloc(before.size);
+    let position = 0;
+    while (position < contents.length) {
+      assertManagedFileReadDeadline(filePath, deadlineAt);
+      const { bytesRead } = await handle.read(
+        contents,
+        position,
+        contents.length - position,
+        position
+      );
+      if (bytesRead <= 0) {
+        throw new Error(`Cannot update ${filePath}: the file changed while Codexa was preparing the update`);
+      }
+      position += bytesRead;
+    }
+    const final = await handle.stat();
+    const after = await lstat(filePath);
+    assertSafeManagedFileEntry(filePath, after);
+    const finalIdentity = managedFileIdentity(final);
+    const afterIdentity = managedFileIdentity(after);
+    if (
+      !sameManagedFileIdentity(managedFileIdentity(opened), finalIdentity) ||
+      !sameManagedFileIdentity(finalIdentity, afterIdentity)
+    ) {
+      throw new Error(`Cannot update ${filePath}: the file changed while Codexa was preparing the update`);
+    }
+    assertManagedFileReadDeadline(filePath, deadlineAt);
+    return { contents: contents.toString("utf8"), ...afterIdentity };
+  } finally {
+    await handle.close();
+  }
+}
+
+function assertManagedFileReadDeadline(filePath: string, deadlineAt: number): void {
+  if (Date.now() > deadlineAt) {
+    throw new Error(`Codexa managed file read timed out: ${filePath}`);
   }
 }
 
