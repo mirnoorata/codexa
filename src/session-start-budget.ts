@@ -100,6 +100,10 @@ export function sessionStartDeadlineAt(requestedDeadlineAt: number): number {
     : requestedDeadlineAt;
 }
 
+export function checkpointSessionStartBudget(stage: string): void {
+  sessionStartBudgetContext.getStore()?.checkpoint(stage);
+}
+
 function configuredBudgetMs(): number {
   const configured = Number(process.env.CODEXA_SESSION_START_BUDGET_MS);
   if (!Number.isFinite(configured)) return DEFAULT_BUDGET_MS;

@@ -1,10 +1,14 @@
 import { constants as fsConstants, promises as fs } from "node:fs";
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { sessionStartDeadlineAt } from "./session-start-budget.js";
+import {
+  checkpointSessionStartBudget,
+  SessionStartBudgetExhausted,
+  sessionStartDeadlineAt
+} from "./session-start-budget.js";
 import { getGitStateAsync, type GitState } from "./git.js";
 import { isSourcePath, shouldSkipPath } from "./language.js";
-import { mapLimit, normalizePath } from "./util.js";
+import { mapLimit, mapLimitChecked, normalizePath } from "./util.js";
 
 // Per-file streaming cap for dirty-file content hashing (low memory, no whole-
 // file buffer) and a per-call total budget so a pathological untracked tree
@@ -113,9 +117,10 @@ async function hashFileContent(filePath: string): Promise<string> {
 // Returns undefined when the file exceeds maxBytes during the stable read, so
 // the caller falls back to metadata. Opening with nonblocking/no-follow flags
 // prevents a regular-to-special-file swap from stalling SessionStart.
-async function streamSha1(filePath: string, maxBytes: number): Promise<string | undefined> {
-  const deadlineAt = sessionStartDeadlineAt(Date.now() + DIRTY_FILE_HASH_TIMEOUT_MS);
+async function streamSha1(filePath: string, maxBytes: number, deadlineAt: number): Promise<string | undefined> {
+  assertDirtyHashDeadline(deadlineAt, "dirty-file-content");
   const expected = await fs.lstat(filePath);
+  assertDirtyHashDeadline(deadlineAt, "dirty-file-content");
   if (!expected.isFile() || expected.isSymbolicLink()) {
     throw new Error("dirty-file-not-regular");
   }
@@ -140,7 +145,7 @@ async function streamSha1(filePath: string, maxBytes: number): Promise<string | 
     const scratch = Buffer.allocUnsafe(1024 * 1024);
     let position = 0;
     while (position < expected.size) {
-      assertDirtyHashDeadline(deadlineAt);
+      assertDirtyHashDeadline(deadlineAt, "dirty-file-content");
       const length = Math.min(scratch.length, expected.size - position);
       const { bytesRead } = await handle.read(scratch, 0, length, position);
       if (bytesRead <= 0) throw new Error("dirty-file-changed-during-read");
@@ -176,15 +181,16 @@ async function streamSha1(filePath: string, maxBytes: number): Promise<string | 
     ) {
       throw new Error("dirty-file-changed-during-read");
     }
-    assertDirtyHashDeadline(deadlineAt);
+    assertDirtyHashDeadline(deadlineAt, "dirty-file-content");
     return hash.digest("hex");
   } finally {
     await handle.close();
   }
 }
 
-function assertDirtyHashDeadline(deadlineAt: number): void {
-  if (Date.now() > deadlineAt) throw new Error("dirty-file-hash-timeout");
+function assertDirtyHashDeadline(deadlineAt: number, stage: string): void {
+  checkpointSessionStartBudget(stage);
+  if (Date.now() >= deadlineAt) throw new Error("dirty-file-hash-timeout");
 }
 
 function metadataHash(stat: { size: number; mtimeMs: number }): string {
@@ -203,19 +209,26 @@ async function hashDirtyFiles(repoRoot: string, dirtyFiles: string[]): Promise<R
   // hash depend on lstat completion order, so identical on-disk state could hash
   // differently across freshness checks and report spurious drift.
   const sorted = [...dirtyFiles].sort((a, b) => a.localeCompare(b));
-  const stats = await mapLimit(sorted, SOURCE_DISCOVERY_CONCURRENCY, async (file): Promise<[string, { size: number; mtimeMs: number } | { sentinel: string }]> => {
-    try {
-      const stat = await fs.lstat(path.join(repoRoot, file));
-      return [file, stat.isFile() ? { size: stat.size, mtimeMs: stat.mtimeMs } : { sentinel: "non-file" }];
-    } catch (error) {
-      return [file, { sentinel: unreadableSentinel(error) }];
+  const deadlineAt = sessionStartDeadlineAt(Date.now() + DIRTY_FILE_HASH_TIMEOUT_MS);
+  const stats = await mapLimitChecked(
+    sorted,
+    SOURCE_DISCOVERY_CONCURRENCY,
+    () => assertDirtyHashDeadline(deadlineAt, "dirty-file-stat"),
+    async (file): Promise<[string, { size: number; mtimeMs: number } | { sentinel: string }]> => {
+      try {
+        const stat = await fs.lstat(path.join(repoRoot, file));
+        return [file, stat.isFile() ? { size: stat.size, mtimeMs: stat.mtimeMs } : { sentinel: "non-file" }];
+      } catch (error) {
+        return [file, { sentinel: unreadableSentinel(error) }];
+      }
     }
-  });
+  );
 
   let reservedBytes = 0;
   const resolved = new Map<string, string>();
   const contentTargets: string[] = [];
   for (const [file, info] of stats) {
+    assertDirtyHashDeadline(deadlineAt, "dirty-file-plan");
     if ("sentinel" in info) {
       resolved.set(file, info.sentinel);
       continue;
@@ -232,19 +245,25 @@ async function hashDirtyFiles(repoRoot: string, dirtyFiles: string[]): Promise<R
     contentTargets.push(file);
   }
 
-  const contentHashes = await mapLimit(contentTargets, SOURCE_DISCOVERY_CONCURRENCY, async (file): Promise<[string, string]> => {
-    const absolutePath = path.join(repoRoot, file);
-    try {
-      const hash = await streamSha1(absolutePath, MAX_DIRTY_CONTENT_HASH_BYTES);
-      if (hash !== undefined) {
-        return [file, hash];
+  const contentHashes = await mapLimitChecked(
+    contentTargets,
+    SOURCE_DISCOVERY_CONCURRENCY,
+    () => assertDirtyHashDeadline(deadlineAt, "dirty-file-content"),
+    async (file): Promise<[string, string]> => {
+      const absolutePath = path.join(repoRoot, file);
+      try {
+        const hash = await streamSha1(absolutePath, MAX_DIRTY_CONTENT_HASH_BYTES, deadlineAt);
+        if (hash !== undefined) {
+          return [file, hash];
+        }
+        // Grew past the per-file cap mid-stream; fall back to fresh metadata.
+        return [file, metadataHash(await fs.lstat(absolutePath))];
+      } catch (error) {
+        if (error instanceof SessionStartBudgetExhausted) throw error;
+        return [file, unreadableSentinel(error)];
       }
-      // Grew past the per-file cap mid-stream; fall back to fresh metadata.
-      return [file, metadataHash(await fs.lstat(absolutePath))];
-    } catch (error) {
-      return [file, unreadableSentinel(error)];
     }
-  });
+  );
   for (const [file, hash] of contentHashes) {
     resolved.set(file, hash);
   }

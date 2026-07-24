@@ -355,6 +355,67 @@ describe("Codexa SessionStart CLI receipt", () => {
     });
   });
 
+  it("stops scheduling dirty-file stats after the aggregate deadline", async () => {
+    const repo = await createHookFixtureRepo();
+    expect(
+      spawnSync(process.execPath, [cli, "init", repo], {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        env: testEnv()
+      }).status
+    ).toBe(0);
+    await Promise.all(
+      Array.from({ length: 160 }, (_, index) =>
+        writeFile(path.join(repo, `slow-dirty-${String(index).padStart(3, "0")}.ts`), `export const value${index} = ${index};\n`, "utf8")
+      )
+    );
+    const preload = path.join(repo, "delayed-dirty-stats-preload.mjs");
+    const marker = path.join(repo, "delayed-dirty-stats-count.txt");
+    await writeFile(
+      preload,
+      [
+        'import { promises as fs, writeFileSync } from "node:fs";',
+        'import path from "node:path";',
+        "const originalLstat = fs.lstat.bind(fs);",
+        "let delayedStats = 0;",
+        "fs.lstat = async (file, ...args) => {",
+        '  if (path.basename(String(file)).startsWith("slow-dirty-")) {',
+        "    delayedStats += 1;",
+        "    await new Promise((resolve) => setTimeout(resolve, 250));",
+        "  }",
+        "  return originalLstat(file, ...args);",
+        "};",
+        'process.on("exit", () => writeFileSync(process.env.CODEXA_DIRTY_STAT_MARKER, `${delayedStats}\\n`));',
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const startedAt = Date.now();
+    const result = spawnSync(
+      process.execPath,
+      ["--import", preload, cli, "session-start", repo, "--json"],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        timeout: 4_000,
+        env: {
+          ...testEnv(),
+          CODEXA_DIRTY_STAT_MARKER: marker,
+          CODEXA_SESSION_START_BUDGET_MS: "1000"
+        }
+      }
+    );
+    const elapsedMs = Date.now() - startedAt;
+    expect(result.error).toBeUndefined();
+    expect(result.status).toBe(0);
+    expect(elapsedMs).toBeLessThan(2_500);
+    expect(result.stdout).toContain("session-start-total-budget-exhausted:1000ms:dirty-file-stat");
+    const delayedStats = Number((await readFile(marker, "utf8")).trim());
+    expect(delayedStats).toBeGreaterThan(0);
+    expect(delayedStats).toBeLessThan(160);
+  });
+
   it.skipIf(process.platform === "win32")(
     "does not block on or mutate advisory hook telemetry during SessionStart",
     async () => {

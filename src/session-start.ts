@@ -23,6 +23,7 @@ import {
 } from "./session-start-file-read.js";
 import {
   runWithSessionStartBudget,
+  SessionStartBudgetExhausted,
   type SessionStartBudget
 } from "./session-start-budget.js";
 import {
@@ -183,6 +184,7 @@ async function sessionStartReceiptWithinBudget(
     await assertSafeManagedDirectory(configuredCodexDir);
     await assertSafeManagedFile(path.join(configuredCodexDir, "WORKING.md"));
   } catch (error) {
+    rethrowSessionStartBudget(error);
     configuredManagedStateError = boundedErrorMessage(error);
   }
   budget.checkpoint("configured-root");
@@ -231,6 +233,7 @@ async function sessionStartReceiptWithinBudget(
       resolutionNote = `Workspace root: ${configuredRoot} -> focused repo via ${via}${scoped}`;
     }
   } catch (error) {
+    rethrowSessionStartBudget(error);
     const message = boundedErrorMessage(error);
     const rawSessionHint = sessionOptions.workspaceSessionId ?? process.env.CODEXA_WORKSPACE_SESSION ?? process.env.SESSION_ID;
     const sessionHint = rawSessionHint ? boundedReceiptValue(rawSessionHint, 72) : undefined;
@@ -266,6 +269,7 @@ async function sessionStartReceiptWithinBudget(
       ? { state: "not-required" }
       : compactSetupInspection(await inspectWorktreeBootstrapReceipt(repoRoot, { validation: "startup" }));
   } catch (error) {
+    rethrowSessionStartBudget(error);
     const message = boundedErrorMessage(error);
     return unavailableSessionStartReceipt({
       configuredRoot,
@@ -283,12 +287,15 @@ async function sessionStartReceiptWithinBudget(
   }
   progress.setup = setup;
   budget.checkpoint("setup");
-  const config = await inspectSessionStartConfig(repoRoot).catch((error): SessionStartReceipt["config"] => ({
-    state: "unavailable",
-    path: path.join(repoRoot, ".codex/config.toml"),
-    toolProfile: "unknown",
-    reason: boundedErrorMessage(error)
-  }));
+  const config = await inspectSessionStartConfig(repoRoot).catch((error): SessionStartReceipt["config"] => {
+    rethrowSessionStartBudget(error);
+    return {
+      state: "unavailable",
+      path: path.join(repoRoot, ".codex/config.toml"),
+      toolProfile: "unknown",
+      reason: boundedErrorMessage(error)
+    };
+  });
   progress.config = config;
   budget.checkpoint("config");
   let status: Awaited<ReturnType<typeof statusQuery>>;
@@ -305,6 +312,7 @@ async function sessionStartReceiptWithinBudget(
       refreshBlockedBySetup = true;
     }
   } catch (error) {
+    rethrowSessionStartBudget(error);
     return unavailableSessionStartReceipt({
       configuredRoot,
       repoRoot,
@@ -513,6 +521,10 @@ function compactSetupInspection(inspection: WorktreeBootstrapInspection): Sessio
     validation: inspection.validation,
     reason: inspection.reason ? boundedReceiptValue(inspection.reason, 160) : undefined
   };
+}
+
+function rethrowSessionStartBudget(error: unknown): void {
+  if (error instanceof SessionStartBudgetExhausted) throw error;
 }
 
 function unresolvedConfigReceipt(configuredRoot: string): SessionStartReceipt["config"] {

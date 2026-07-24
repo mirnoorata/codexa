@@ -37,6 +37,37 @@ export async function mapLimit<T, R>(items: T[], limit: number, mapper: (item: T
   return results;
 }
 
+export async function mapLimitChecked<T, R>(
+  items: T[],
+  limit: number,
+  checkpoint: () => void,
+  mapper: (item: T) => Promise<R>
+): Promise<R[]> {
+  const results: R[] = new Array(items.length);
+  let cursor = 0;
+  let failure: unknown;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (cursor < items.length && failure === undefined) {
+      try {
+        checkpoint();
+      } catch (error) {
+        failure ??= error;
+        break;
+      }
+      const index = cursor;
+      cursor += 1;
+      try {
+        results[index] = await mapper(items[index]);
+      } catch (error) {
+        failure ??= error;
+      }
+    }
+  });
+  await Promise.all(workers);
+  if (failure !== undefined) throw failure;
+  return results;
+}
+
 function stableSortKey(item: unknown): string {
   if (item && typeof item === "object") {
     const record = item as Record<string, unknown>;
