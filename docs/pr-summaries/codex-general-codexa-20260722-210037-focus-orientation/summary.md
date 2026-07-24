@@ -3,7 +3,7 @@
 PR summary for
 `codex/general/codexa-20260722-210037-focus-orientation` against `main`.
 The final source-evidence head used for the measurements below is
-`362019be9a06b95ef0c17322dee8cfb6e0dcfe59`.
+`96e144b164326964cbebc92460ab4d8bef0c7b14`.
 
 ## Outcome
 
@@ -17,15 +17,19 @@ retrieval, not token reduction by itself:
   wiring, indexing, and receipt publication for Bash and PowerShell launchers.
   Every stage has a deadline, termination grace, forced-stop fallback, and a
   shared 8 MiB log ceiling. Terminal settlement also closes inherited pipes
-  when an escaped descendant prevents the direct child’s `close` event.
+  when an escaped descendant prevents the direct child’s `close` event,
+  including ordinary commands that do not request process-tree termination.
 - Setup proof is an immutable Git blob published through the per-worktree
   `refs/worktree/codexa/bootstrap-receipt` ref. SessionStart validates a cheap
   durable subset; adoption and completion use progressively stronger scopes.
-  Startup inputs have a closing snapshot revalidation. Adoption has one
-  aggregate 20-second budget and one large-tree traversal; full validation
-  rechecks the smaller completion scope after adoption. Receipt issuance
-  repeats dependency completeness after inventory capture without retaining
-  successful `npm ls` output.
+  Startup inputs have a closing snapshot revalidation. The public adoption
+  wall begins before requirement and Git-ref reads, shares at most 20 seconds
+  across all phases, and reserves command-settlement time inside the shared
+  controller’s deadline. Adoption performs one capture plus one closing
+  revalidation over retained entries; full validation rechecks the smaller
+  completion scope after adoption and detects source or HEAD drift introduced
+  during that scan. Receipt issuance repeats dependency completeness after
+  inventory capture without retaining successful `npm ls` output.
 - SessionStart reports routing, setup, config/profile, index, and
   current-thread activation as separate facts. Unknown or unobservable state
   never becomes `ready`.
@@ -38,6 +42,8 @@ retrieval, not token reduction by itself:
 - Recovery context is opt-in and prioritizes the selected task and next action.
   Detailed setup and release procedures moved out of the automatic project
   kernel into explicit README and documentation boundaries.
+- Helper-owned startup can resume the identical command after a recoverable
+  Codexa runtime snapshot or timeout configuration failure is repaired.
 - A committed context inventory and `npm run startup:context-check` now reject
   drift in repository-controlled byte limits, direct-tool counts, SessionStart
   bounds, and runbook links.
@@ -66,7 +72,7 @@ prompt as a proxy for task success.
 | Decoded `tools/list` payload | full profile | 87.2% lower in core profile |
 | Startup advertisement plus discovery | full profile | 69.8% lower in core profile |
 | First/repeated tiny task result | full profile | 0% reduction |
-| SessionStart p95 | 1,000 ms limit | 530 ms |
+| SessionStart p95 | 1,000 ms limit | 533 ms |
 
 The automatic-policy token figure is only a four-bytes-per-token estimate
 (2,864), not an observed model-token count. The transport benchmark measures
@@ -104,15 +110,15 @@ quality, and latency. This PR does not fabricate that host-controlled result.
 ## Verification
 
 - `npm run security:check`: passed.
-  - 85 test files passed.
-  - 1,031 tests passed; 1 intentionally skipped.
+  - 86 test files passed.
+  - 1,035 tests passed; 1 intentionally skipped.
   - npm audit found 0 vulnerabilities.
   - Public snapshot, package hygiene, plugin hygiene, and the 31-check packaged
     install smoke passed.
 - `npm run benchmark:ci`: passed every threshold.
-  - SessionStart p50 498 ms, p95 530 ms.
-  - Adoption validation 821 ms against a 5,000 ms ceiling.
-  - MCP startup 295 ms; MCP freshness p95 183 ms.
+  - SessionStart p50 494 ms, p95 533 ms.
+  - Adoption validation 953 ms against a 5,000 ms ceiling.
+  - MCP startup 286 ms; MCP freshness p95 179 ms.
 - `npm run benchmark:transport:exposure`: passed with 3/23 direct tools,
   logical-operation parity, 87.2% lower decoded tool-list payload, and 69.8%
   lower startup advertisement/discovery payload.
