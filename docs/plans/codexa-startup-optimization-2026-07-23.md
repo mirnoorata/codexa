@@ -71,8 +71,8 @@ classification are committed in
 - [x] Fresh-worktree POSIX and native-Windows setup lanes tracked.
 - [x] Setup receipt production validator and SessionStart consumer implemented.
 - [x] Dependency-tree and build-output preflight repair implemented.
-- [x] Full source/security/benchmark/evaluation gate passes on the final diff.
-- [x] Latest adversarial pass reports no actionable findings.
+- [ ] Full source/security/benchmark/evaluation gate passes on the final diff.
+- [ ] Latest adversarial pass reports no actionable findings.
 - [x] Markdown and PDF PR summaries reflect the final committed evidence.
 - [ ] Draft PR is clean, ready, merged, and the canonical checkout is synced.
 - [ ] Post-merge runtime, public surface, and real behavior smokes are verified.
