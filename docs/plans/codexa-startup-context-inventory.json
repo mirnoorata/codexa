@@ -40,6 +40,12 @@
       "ordinaryStartupTelemetryWrites": 0
     },
     "mcpExposure": {
+      "lastCleanCheckoutObservation": {
+        "commit": "6d2cd581c8f8afcc85d048c03e123f3cf978f8d1",
+        "command": "npm run benchmark:transport:exposure",
+        "passed": true,
+        "unit": "decoded MCP application-payload bytes"
+      },
       "fullDirectTools": 23,
       "coreDirectTools": 3,
       "logicalOperations": 22,

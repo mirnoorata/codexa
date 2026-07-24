@@ -73,6 +73,6 @@ classification are committed in
 - [x] Dependency-tree and build-output preflight repair implemented.
 - [ ] Full source/security/benchmark/evaluation gate passes on the final diff.
 - [ ] Latest adversarial pass reports no actionable findings.
-- [ ] Markdown and PDF PR summaries reflect the final committed evidence.
+- [x] Markdown and PDF PR summaries reflect the final committed evidence.
 - [ ] Draft PR is clean, ready, merged, and the canonical checkout is synced.
 - [ ] Post-merge runtime, public surface, and real behavior smokes are verified.

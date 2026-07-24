@@ -51,6 +51,9 @@ assert.ok(sessionStart.optInMissingFixtureMaximumBytes <= 2048);
 assert.ok(sessionStart.optInWorkspaceRecoveryMaximumBytes <= 4096);
 
 const exposure = inventory.currentDesign.mcpExposure;
+assert.match(exposure.lastCleanCheckoutObservation.commit, /^[0-9a-f]{40}$/u);
+assert.equal(exposure.lastCleanCheckoutObservation.command, "npm run benchmark:transport:exposure");
+assert.equal(exposure.lastCleanCheckoutObservation.passed, true);
 assert.equal(MCP_TOOL_NAMES.length, exposure.fullDirectTools);
 assert.equal(CORE_PROFILE_TOOL_NAMES.length, exposure.coreDirectTools);
 assert.deepEqual([...CORE_PROFILE_TOOL_NAMES].sort(), ["capabilities", "change_plan", "search"]);
