@@ -314,7 +314,7 @@ describe("worktree bootstrap receipt", () => {
     });
     try {
       await expect(worktreeBootstrapBuildInputSha256(repo)).rejects.toThrow(
-        /build-input-directory-changed-during-scan/u
+        /build-input-(?:entry|directory)-changed-during-scan/u
       );
     } finally {
       vi.restoreAllMocks();
@@ -346,7 +346,35 @@ describe("worktree bootstrap receipt", () => {
     });
     try {
       await expect(worktreeBootstrapBuildInputSha256(repo)).rejects.toThrow(
-        /build-input-directory-changed-during-scan/u
+        /build-input-(?:entry|directory)-changed-during-scan/u
+      );
+    } finally {
+      vi.restoreAllMocks();
+    }
+    expect(mutated).toBe(true);
+  });
+
+  it("rejects an early source file mutated in place during the build manifest scan", async () => {
+    const repo = await createReceiptFixture("codexa-worktree-receipt-source-content-race-");
+    const early = path.join(repo, "src/a.ts");
+    const trigger = path.join(repo, "src/z-trigger.ts");
+    await writeFile(early, "export const value = 1;\n", "utf8");
+    await writeFile(trigger, "export const trigger = true;\n", "utf8");
+
+    const originalOpen = nodeFs.open.bind(nodeFs);
+    let mutated = false;
+    vi.spyOn(nodeFs, "open").mockImplementation(async (file, flags, mode) => {
+      if (!mutated && path.resolve(String(file)) === trigger) {
+        await writeFile(early, "export const value = 2;\n", "utf8");
+        const future = new Date(Date.now() + 5_000);
+        await nodeFs.utimes(early, future, future);
+        mutated = true;
+      }
+      return originalOpen(file, flags, mode);
+    });
+    try {
+      await expect(worktreeBootstrapBuildInputSha256(repo)).rejects.toThrow(
+        /build-input-entry-changed-during-scan/u
       );
     } finally {
       vi.restoreAllMocks();
@@ -451,6 +479,62 @@ describe("worktree bootstrap receipt", () => {
       await expect(readFile(sentinel, "utf8")).resolves.toBe("observed\n");
     }
   );
+
+  it("rejects an early producer source file mutated in place during its scan", async () => {
+    const repo = await createReceiptFixture("codexa-worktree-producer-content-race-");
+    const early = path.join(repo, "src/a.ts");
+    const trigger = path.join(repo, "src/z-trigger.ts");
+    const preload = path.join(repo, "source-content-race-preload.mjs");
+    const sentinel = path.join(repo, "source-content-race-observed");
+    await writeFile(early, "export const value = 1;\n", "utf8");
+    await writeFile(trigger, "export const trigger = true;\n", "utf8");
+    await writeFile(
+      preload,
+      [
+        'import { promises as fs } from "node:fs";',
+        'import path from "node:path";',
+        "const originalOpen = fs.open.bind(fs);",
+        "let mutated = false;",
+        "fs.open = async (file, flags, mode) => {",
+        "  if (!mutated && path.resolve(String(file)) === path.resolve(process.env.CODEXA_MUTATION_TRIGGER)) {",
+        "    mutated = true;",
+        '    await fs.writeFile(process.env.CODEXA_MUTATION_TARGET, "export const value = 2;\\n");',
+        "    const future = new Date(Date.now() + 5_000);",
+        "    await fs.utimes(process.env.CODEXA_MUTATION_TARGET, future, future);",
+        '    await fs.writeFile(process.env.CODEXA_MUTATION_SENTINEL, "observed\\n");',
+        "  }",
+        "  return originalOpen(file, flags, mode);",
+        "};",
+        ""
+      ].join("\n"),
+      "utf8"
+    );
+
+    const producer = spawnSync(
+      process.execPath,
+      [
+        "--import",
+        preload,
+        path.resolve("scripts/worktree-bootstrap.mjs"),
+        "--inspect-inputs",
+        repo
+      ],
+      {
+        encoding: "utf8",
+        timeout: 3_000,
+        env: {
+          ...process.env,
+          CODEXA_MUTATION_TARGET: early,
+          CODEXA_MUTATION_TRIGGER: trigger,
+          CODEXA_MUTATION_SENTINEL: sentinel
+        }
+      }
+    );
+    expect(producer.error).toBeUndefined();
+    expect(producer.status).not.toBe(0);
+    expect(producer.stderr).toContain("build-input-entry-changed-during-scan");
+    await expect(readFile(sentinel, "utf8")).resolves.toBe("observed\n");
+  });
 
   it("parses newline-heavy wrappers without materializing every line", async () => {
     const repo = await createReceiptFixture("codexa-worktree-receipt-newline-heavy-");

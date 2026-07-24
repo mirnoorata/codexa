@@ -236,16 +236,18 @@ async function hashBuildInputs(repoRoot) {
   const hash = createHash("sha256");
   hash.update("codexa-build-input-v2\0", "utf8");
   for (const filePath of files.sort()) {
+    const read = await readBudgetedStableRegularFileSnapshot(
+      filePath,
+      STARTUP_INPUT_MAX_BYTES,
+      "build-input",
+      budget,
+      repoRoot
+    );
+    tree.entries.push(read.snapshot);
     updateManifestRecord(
       hash,
       path.relative(repoRoot, filePath).replaceAll(path.sep, "/"),
-      await readBudgetedStableRegularFile(
-        filePath,
-        STARTUP_INPUT_MAX_BYTES,
-        "build-input",
-        budget,
-        repoRoot
-      )
+      read.contents
     );
   }
   const digest = hash.digest("hex");
@@ -374,6 +376,7 @@ async function regularTreeFiles(repoRoot, directory, budget) {
   const repoReal = await fs.realpath(repoRoot);
   const files = [];
   const directories = [];
+  const entries = [];
   const visit = async (current) => {
     const captured = await captureStableInputDirectory(
       current,
@@ -397,7 +400,7 @@ async function regularTreeFiles(repoRoot, directory, budget) {
     }
   };
   await visit(directory);
-  return { containmentRootReal: repoReal, directories, files };
+  return { containmentRootReal: repoReal, directories, entries, files };
 }
 
 async function runLockProbe(probeMode, repoInput) {
@@ -913,6 +916,22 @@ async function assertSafeFile(filePath) {
 }
 
 async function readBudgetedStableRegularFile(filePath, maxBytes, label, budget, repoRoot) {
+  return (await readBudgetedStableRegularFileSnapshot(
+    filePath,
+    maxBytes,
+    label,
+    budget,
+    repoRoot
+  )).contents;
+}
+
+async function readBudgetedStableRegularFileSnapshot(
+  filePath,
+  maxBytes,
+  label,
+  budget,
+  repoRoot
+) {
   assertInputScanDeadline(budget);
   budget.fileCount += 1;
   if (budget.fileCount > budget.maxFiles) {
@@ -985,13 +1004,14 @@ async function readBudgetedStableRegularFile(filePath, maxBytes, label, budget, 
     if (budget.logicalBytes > budget.maxLogicalBytes) {
       throw new Error(`${budget.label}-byte-limit-exceeded`);
     }
+    let fileReal;
     if (repoRoot) {
       const rootReal = await fs.realpath(repoRoot);
       if (budget.rootReal && budget.rootReal !== rootReal) {
         throw new Error(`${budget.label}-repository-changed`);
       }
       budget.rootReal = rootReal;
-      const fileReal = await fs.realpath(filePath).catch((error) => {
+      fileReal = await fs.realpath(filePath).catch((error) => {
         if (error?.code === "ENOENT") throw new Error(`${label}-changed-during-read`);
         throw error;
       });
@@ -1000,7 +1020,21 @@ async function readBudgetedStableRegularFile(filePath, maxBytes, label, budget, 
       }
     }
     assertInputScanDeadline(budget);
-    return contents;
+    return {
+      contents,
+      snapshot: {
+        path: filePath,
+        kind: "file",
+        realPath: fileReal ?? await fs.realpath(filePath),
+        dev: named.dev,
+        ino: named.ino,
+        mode: named.mode,
+        nlink: named.nlink,
+        size: named.size,
+        mtimeMs: named.mtimeMs,
+        ctimeMs: named.ctimeMs
+      }
+    };
   } finally {
     await handle.close();
   }
@@ -1117,7 +1151,45 @@ async function captureStableInputDirectory(
 }
 
 async function revalidateInputDirectories(tree, budget) {
-  for (const expected of tree.directories) {
+  for (const expected of [...tree.entries].reverse()) {
+    assertInputScanDeadline(budget);
+    const current = await fs.lstat(expected.path).catch((error) => {
+      if (
+        error?.code === "ENOENT" ||
+        error?.code === "ENOTDIR" ||
+        error?.code === "ELOOP"
+      ) {
+        throw new Error(`${budget.label}-entry-changed-during-scan`);
+      }
+      throw error;
+    });
+    const realPath = await fs.realpath(expected.path).catch((error) => {
+      if (
+        error?.code === "ENOENT" ||
+        error?.code === "ENOTDIR" ||
+        error?.code === "ELOOP"
+      ) {
+        throw new Error(`${budget.label}-entry-changed-during-scan`);
+      }
+      throw error;
+    });
+    if (
+      !current.isFile() ||
+      current.isSymbolicLink() ||
+      current.dev !== expected.dev ||
+      current.ino !== expected.ino ||
+      current.mode !== expected.mode ||
+      current.nlink !== expected.nlink ||
+      current.size !== expected.size ||
+      current.mtimeMs !== expected.mtimeMs ||
+      current.ctimeMs !== expected.ctimeMs ||
+      realPath !== expected.realPath ||
+      !isContainedPath(tree.containmentRootReal, realPath)
+    ) {
+      throw new Error(`${budget.label}-entry-changed-during-scan`);
+    }
+  }
+  for (const expected of [...tree.directories].reverse()) {
     const current = await captureStableInputDirectory(
       expected.path,
       tree.containmentRootReal,

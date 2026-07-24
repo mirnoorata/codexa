@@ -110,7 +110,32 @@ describe("worktree bootstrap adoption integrity", () => {
     });
 
     await expect(currentAdoptionReceiptFacts(repo)).rejects.toThrow(
-      /dependency-inventory-directory-changed-during-scan/u
+      /dependency-inventory-(?:entry|directory)-changed-during-scan/u
+    );
+    expect(mutated).toBe(true);
+  });
+
+  it("rejects an early dist file mutated in place while a later tree is scanned", async () => {
+    const repo = await createAdoptionFixture("codexa-adoption-dist-content-race-");
+    const early = path.join(repo, "dist/a.js");
+    const trigger = path.join(repo, "node_modules/z-trigger.js");
+    await writeFile(early, "export const value = 1;\n", "utf8");
+    await writeFile(trigger, "export const trigger = true;\n", "utf8");
+
+    const originalOpen = nodeFs.open.bind(nodeFs);
+    let mutated = false;
+    vi.spyOn(nodeFs, "open").mockImplementation(async (file, flags, mode) => {
+      if (!mutated && path.resolve(String(file)) === trigger) {
+        await writeFile(early, "export const value = 2;\n", "utf8");
+        const future = new Date(Date.now() + 5_000);
+        await nodeFs.utimes(early, future, future);
+        mutated = true;
+      }
+      return originalOpen(file, flags, mode);
+    });
+
+    await expect(currentAdoptionReceiptFacts(repo)).rejects.toThrow(
+      /dist-runtime-entry-changed-during-scan/u
     );
     expect(mutated).toBe(true);
   });

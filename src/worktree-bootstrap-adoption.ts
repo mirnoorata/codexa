@@ -6,10 +6,14 @@ import {
   assertSafeManagedFile
 } from "./init-portability.js";
 import {
+  captureStableSymlink,
   captureStableDirectory,
   revalidateStableDirectories,
+  revalidateStableTreeEntries,
+  stableRegularFileSnapshot,
   type StableDirectoryBudget,
-  type StableDirectorySnapshot
+  type StableDirectorySnapshot,
+  type StableTreeEntrySnapshot
 } from "./stable-directory-snapshot.js";
 
 const ADOPTION_SCAN_TIMEOUT_MS = 20_000;
@@ -46,6 +50,7 @@ interface AdoptionTreeSnapshot {
   budget: AdoptionScanBudget;
   containmentRootReal: string;
   directories: StableDirectorySnapshot[];
+  entries: StableTreeEntrySnapshot[];
 }
 
 export async function currentAdoptionReceiptFacts(
@@ -210,6 +215,7 @@ async function hashBoundedRegularTree(
   const hash = createHash("sha256");
   const scratch = Buffer.allocUnsafe(1024 * 1024);
   const directories: StableDirectorySnapshot[] = [];
+  const treeEntries: StableTreeEntrySnapshot[] = [];
   const visit = async (current: string): Promise<void> => {
     assertAdoptionDeadline(budget.deadlineAt);
     const captured = await captureStableDirectory(
@@ -237,7 +243,14 @@ async function hashBoundedRegularTree(
           `\0${(stat.mode & 0o777).toString(8)}\0${stat.size}\0`,
           "utf8"
         );
-        await updateHashFromFile(hash, candidate, stat, scratch, budget.deadlineAt);
+        treeEntries.push(await updateHashFromFile(
+          hash,
+          candidate,
+          stat,
+          scratch,
+          budget.deadlineAt,
+          repoReal
+        ));
       } else {
         throw new Error(`non-regular-tree-entry:${path.relative(repoRoot, candidate)}`);
       }
@@ -246,7 +259,7 @@ async function hashBoundedRegularTree(
   await visit(directory);
   return {
     sha256: hash.digest("hex"),
-    tree: { budget, containmentRootReal: repoReal, directories }
+    tree: { budget, containmentRootReal: repoReal, directories, entries: treeEntries }
   };
 }
 
@@ -264,6 +277,7 @@ async function hashDependencyTree(
   const scratch = Buffer.allocUnsafe(1024 * 1024);
   let fileCount = 0;
   const directories: StableDirectorySnapshot[] = [];
+  const treeEntries: StableTreeEntrySnapshot[] = [];
   const visit = async (current: string): Promise<void> => {
     assertAdoptionDeadline(budget.deadlineAt);
     const captured = await captureStableDirectory(
@@ -294,13 +308,23 @@ async function hashDependencyTree(
         consumeAdoptionBytes(budget, stat.size);
         fileCount += 1;
         hash.update(`F\0${relative}\0${(stat.mode & 0o777).toString(8)}\0${stat.size}\0`, "utf8");
-        await updateHashFromFile(hash, candidate, stat, scratch, budget.deadlineAt);
+        treeEntries.push(await updateHashFromFile(
+          hash,
+          candidate,
+          stat,
+          scratch,
+          budget.deadlineAt,
+          nodeModulesReal
+        ));
       } else if (entry.isSymbolicLink()) {
-        const target = await fs.readlink(candidate);
-        const resolved = await fs.realpath(candidate);
-        if (!isContainedPath(nodeModulesReal, resolved)) {
-          throw new Error(`dependency-symlink-outside-root:${relative}`);
-        }
+        const snapshot = await captureStableSymlink(
+          candidate,
+          nodeModulesReal,
+          budget,
+          () => assertAdoptionDeadline(budget.deadlineAt)
+        );
+        const target = snapshot.linkTarget ?? "";
+        treeEntries.push(snapshot);
         consumeAdoptionBytes(budget, Buffer.byteLength(target));
         hash.update(`L\0${relative}\0${target}\0`, "utf8");
       } else {
@@ -313,7 +337,12 @@ async function hashDependencyTree(
     sha256: hash.digest("hex"),
     fileCount,
     logicalBytes: budget.logicalBytes,
-    tree: { budget, containmentRootReal: nodeModulesReal, directories }
+    tree: {
+      budget,
+      containmentRootReal: nodeModulesReal,
+      directories,
+      entries: treeEntries
+    }
   };
 }
 
@@ -322,8 +351,9 @@ async function updateHashFromFile(
   filePath: string,
   expected: Stats,
   scratch: Buffer,
-  deadlineAt: number
-): Promise<void> {
+  deadlineAt: number,
+  containmentRootReal: string
+): Promise<StableTreeEntrySnapshot> {
   const handle = await fs.open(filePath, STABLE_REGULAR_READ_FLAGS);
   try {
     const opened = await handle.stat();
@@ -377,7 +407,12 @@ async function updateHashFromFile(
     ) {
       throw new Error("adoption-file-changed-during-scan");
     }
+    const realPath = await fs.realpath(filePath);
+    if (!isContainedPath(containmentRootReal, realPath)) {
+      throw new Error("adoption-file-changed-during-scan");
+    }
     assertAdoptionDeadline(deadlineAt);
+    return stableRegularFileSnapshot(filePath, realPath, named);
   } finally {
     await handle.close();
   }
@@ -401,6 +436,11 @@ function assertAdoptionDeadline(deadlineAt: number): void {
 async function revalidateDirectorySnapshots(
   tree: AdoptionTreeSnapshot
 ): Promise<void> {
+  await revalidateStableTreeEntries(
+    tree,
+    tree.budget,
+    () => assertAdoptionDeadline(tree.budget.deadlineAt)
+  );
   await revalidateStableDirectories(
     tree,
     tree.budget,
@@ -429,6 +469,22 @@ export async function readBoundedStableRegularFile(
   deadlineAt?: number,
   containmentRoot?: string
 ): Promise<Buffer> {
+  return (await readBoundedStableRegularFileWithSnapshot(
+    filePath,
+    maxBytes,
+    label,
+    deadlineAt,
+    containmentRoot
+  )).contents;
+}
+
+export async function readBoundedStableRegularFileWithSnapshot(
+  filePath: string,
+  maxBytes: number,
+  label: string,
+  deadlineAt?: number,
+  containmentRoot?: string
+): Promise<{ contents: Buffer; snapshot: StableTreeEntrySnapshot }> {
   if (deadlineAt !== undefined) assertAdoptionDeadline(deadlineAt);
   const containment = containmentRoot
     ? await resolveStableContainment(containmentRoot, label)
@@ -511,9 +567,9 @@ export async function readBoundedStableRegularFile(
     ) {
       throw new Error(`${label}-changed-during-read`);
     }
+    const finalFileReal = await stableFileRealpath(filePath, label);
     if (containment && initialFileReal && containmentRoot) {
       const finalContainment = await resolveStableContainment(containmentRoot, label);
-      const finalFileReal = await stableFileRealpath(filePath, label);
       if (
         finalContainment.rootReal !== containment.rootReal ||
         finalContainment.dev !== containment.dev ||
@@ -525,7 +581,10 @@ export async function readBoundedStableRegularFile(
       }
     }
     if (deadlineAt !== undefined) assertAdoptionDeadline(deadlineAt);
-    return contents;
+    return {
+      contents,
+      snapshot: stableRegularFileSnapshot(filePath, finalFileReal, named)
+    };
   } finally {
     await handle.close();
   }

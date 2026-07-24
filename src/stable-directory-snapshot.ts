@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { promises as fs, type Dirent } from "node:fs";
+import { promises as fs, type Dirent, type Stats } from "node:fs";
 import path from "node:path";
 
 export interface StableDirectoryBudget {
@@ -25,6 +25,20 @@ export interface StableDirectorySnapshot {
 export interface StableDirectoryTreeSnapshot {
   containmentRootReal: string;
   directories: StableDirectorySnapshot[];
+}
+
+export interface StableTreeEntrySnapshot {
+  path: string;
+  kind: "file" | "symlink";
+  realPath: string;
+  dev: number;
+  ino: number;
+  mode: number;
+  nlink: number;
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+  linkTarget?: string;
 }
 
 export async function captureStableDirectory(
@@ -70,7 +84,7 @@ export async function revalidateStableDirectories(
   budget: StableDirectoryBudget,
   assertDeadline: () => void
 ): Promise<void> {
-  for (const expected of tree.directories) {
+  for (const expected of [...tree.directories].reverse()) {
     const current = await captureStableDirectory(
       expected.path,
       tree.containmentRootReal,
@@ -91,6 +105,107 @@ export async function revalidateStableDirectories(
       expected.entrySetSha256 !== current.snapshot.entrySetSha256
     ) {
       throw changedDirectoryError(budget);
+    }
+  }
+  assertDeadline();
+}
+
+export function stableRegularFileSnapshot(
+  filePath: string,
+  realPath: string,
+  stat: Stats
+): StableTreeEntrySnapshot {
+  return {
+    path: filePath,
+    kind: "file",
+    realPath,
+    dev: stat.dev,
+    ino: stat.ino,
+    mode: stat.mode,
+    nlink: stat.nlink,
+    size: stat.size,
+    mtimeMs: stat.mtimeMs,
+    ctimeMs: stat.ctimeMs
+  };
+}
+
+export async function captureStableSymlink(
+  filePath: string,
+  containmentRootReal: string,
+  budget: StableDirectoryBudget,
+  assertDeadline: () => void
+): Promise<StableTreeEntrySnapshot> {
+  assertDeadline();
+  const before = await fs.lstat(filePath);
+  if (!before.isSymbolicLink()) throw changedEntryError(budget);
+  const linkTarget = await fs.readlink(filePath);
+  const realPath = await fs.realpath(filePath);
+  const after = await fs.lstat(filePath);
+  if (
+    !after.isSymbolicLink() ||
+    !sameEntryStat(before, after) ||
+    !isContainedPath(containmentRootReal, realPath)
+  ) {
+    throw changedEntryError(budget);
+  }
+  assertDeadline();
+  return {
+    path: filePath,
+    kind: "symlink",
+    realPath,
+    dev: after.dev,
+    ino: after.ino,
+    mode: after.mode,
+    nlink: after.nlink,
+    size: after.size,
+    mtimeMs: after.mtimeMs,
+    ctimeMs: after.ctimeMs,
+    linkTarget
+  };
+}
+
+export async function revalidateStableTreeEntries(
+  tree: { containmentRootReal: string; entries: StableTreeEntrySnapshot[] },
+  budget: StableDirectoryBudget,
+  assertDeadline: () => void
+): Promise<void> {
+  for (const expected of [...tree.entries].reverse()) {
+    assertDeadline();
+    const current = await fs.lstat(expected.path).catch((error: unknown) => {
+      if (
+        isNodeError(error) &&
+        (error.code === "ENOENT" || error.code === "ENOTDIR" || error.code === "ELOOP")
+      ) {
+        throw changedEntryError(budget);
+      }
+      throw error;
+    });
+    const expectedKindMatches = expected.kind === "file"
+      ? current.isFile() && !current.isSymbolicLink()
+      : current.isSymbolicLink();
+    if (!expectedKindMatches || !sameEntryStat(expected, current)) {
+      throw changedEntryError(budget);
+    }
+    const realPath = await fs.realpath(expected.path).catch((error: unknown) => {
+      if (
+        isNodeError(error) &&
+        (error.code === "ENOENT" || error.code === "ENOTDIR" || error.code === "ELOOP")
+      ) {
+        throw changedEntryError(budget);
+      }
+      throw error;
+    });
+    if (
+      realPath !== expected.realPath ||
+      !isContainedPath(tree.containmentRootReal, realPath)
+    ) {
+      throw changedEntryError(budget);
+    }
+    if (
+      expected.kind === "symlink" &&
+      await fs.readlink(expected.path) !== expected.linkTarget
+    ) {
+      throw changedEntryError(budget);
     }
   }
   assertDeadline();
@@ -194,6 +309,23 @@ function compareEntryNames(left: string, right: string): number {
 
 function changedDirectoryError(budget: StableDirectoryBudget): Error {
   return new Error(`${budget.label}-directory-changed-during-scan`);
+}
+
+function changedEntryError(budget: StableDirectoryBudget): Error {
+  return new Error(`${budget.label}-entry-changed-during-scan`);
+}
+
+function sameEntryStat(
+  left: Pick<StableTreeEntrySnapshot, "dev" | "ino" | "mode" | "nlink" | "size" | "mtimeMs" | "ctimeMs"> | Stats,
+  right: Stats
+): boolean {
+  return left.dev === right.dev &&
+    left.ino === right.ino &&
+    left.mode === right.mode &&
+    left.nlink === right.nlink &&
+    left.size === right.size &&
+    left.mtimeMs === right.mtimeMs &&
+    left.ctimeMs === right.ctimeMs;
 }
 
 function isContainedPath(parent: string, candidate: string): boolean {
