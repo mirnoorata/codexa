@@ -3,7 +3,7 @@
 << /Type /Catalog /Pages 2 0 R >>
 endobj
 2 0 obj
-<< /Type /Pages /Kids [4 0 R 6 0 R 8 0 R 10 0 R] /Count 4 >>
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
 endobj
 3 0 obj
 << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
@@ -12,7 +12,7 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
 endobj
 5 0 obj
-<< /Length 3191 >>
+<< /Length 2953 >>
 stream
 BT
 /F1 10 Tf
@@ -24,238 +24,65 @@ BT
 (- Checkout: isolated codexa task worktree) Tj T*
 (- Branch: codex/general/codexa-019f985f-f2aa-7853-a8ec-78ad4943ea5c) Tj T*
 (- Base: main) Tj T*
-(- Primary commit: 76688b4) Tj T*
-(- Subject: feat\(workflow\): harden selective Codexa execution) Tj T*
+(- Primary commit: 6981ea6) Tj T*
+(- Subject: fix\(review\): complete broad post-edit authority) Tj T*
 () Tj T*
 (Changed Files) Tj T*
 () Tj T*
-(76688b4 feat\(workflow\): harden selective Codexa execution) Tj T*
-(benchmarks/agent-ab-selective-v2/README.md         |  53 +++) Tj T*
-(.../config/adaptive-auto-bounded.mcp.json          |   8 +) Tj T*
-(.../config/adaptive-auto-bounded.md                |  18 +) Tj T*
-(.../config/adaptive-auto-legacy.mcp.json           |   8 +) Tj T*
-(.../config/adaptive-auto-legacy.md                 |   8 +) Tj T*
-(.../config/full-detailed-legacy.mcp.json           |   8 +) Tj T*
-(.../config/full-detailed-legacy.md                 |   8 +) Tj T*
-(benchmarks/agent-ab-selective-v2/experiment.json   |  92 +++++) Tj T*
-(.../environment/Dockerfile                         |  21 ++) Tj T*
-(.../environment/project/.gitignore                 |   3 +) Tj T*
-(.../environment/project/README.md                  |  10 +) Tj T*
-(.../environment/project/src/init.py            |   1 +) Tj T*
-(.../environment/project/src/targets.py             |  11 +) Tj T*
-(.../environment/project/tests/testtargets.py      |  14 +) Tj T*
-(.../start-codexa-mcp-adaptive-auto-bounded.sh      |  41 +++) Tj T*
-(.../start-codexa-mcp-adaptive-auto-legacy.sh       |  41 +++) Tj T*
-(.../start-codexa-mcp-full-detailed-legacy.sh       |  41 +++) Tj T*
-(.../tasks/path-target-normalization/instruction.md |  14 +) Tj T*
-(.../solution/solution.patch                        |  36 ++) Tj T*
-(.../path-target-normalization/solution/solve.sh    |   4 +) Tj T*
-(.../tasks/path-target-normalization/task.toml      |  32 ++) Tj T*
-(.../path-target-normalization/tests/Dockerfile     |  16 +) Tj T*
-(.../tests/baseline/.gitignore                      |   3 +) Tj T*
-(.../tests/baseline/README.md                       |  10 +) Tj T*
-(.../tests/baseline/src/init.py                 |   1 +) Tj T*
-(.../tests/baseline/src/targets.py                  |  11 +) Tj T*
-(.../tests/baseline/tests/testtargets.py           |  14 +) Tj T*
-(.../tests/candidaterunner.py                      |  67 ++++) Tj T*
-(.../tests/publictestrunner.py                    |  53 +++) Tj T*
-(.../tasks/path-target-normalization/tests/test.sh  |   7 +) Tj T*
-(.../path-target-normalization/tests/verify.py      | 398 +++++++++++++++++++++) Tj T*
-(docs/architecture/codexa-context-server.md         |  13 +-) Tj T*
-(docs/architecture/session-memory.md                |  56 +--) Tj T*
-(docs/guides/agent-ab.md                            | 110 +++++-) Tj T*
-(scripts/agent-ab-analysis.mjs                      | 322 ++++++++++++++++-) Tj T*
-(scripts/agent-ab.mjs                               | 118 +++++-) Tj T*
-(src/language.ts                                    |   3 +-) Tj T*
-(src/mcp/compaction.ts                              |   8 +-) Tj T*
-(src/mcp/decision-kernel.ts                         |  31 +-) Tj T*
-(src/mcp/decision-policy.ts                         |  45 +++) Tj T*
-ET
-endstream
-endobj
-6 0 obj
-<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 7 0 R >>
-endobj
-7 0 obj
-<< /Length 3832 >>
-stream
-BT
-/F1 10 Tf
-14 TL
-50 760 Td
-(src/mcp/review-coverage-kernel.ts                  |  44 +++) Tj T*
-(src/post-edit-outcomes.ts                          |  47 ++-) Tj T*
-(src/post-edit-review-coverage.ts                   | 164 +++++++++) Tj T*
-(src/prove.ts                                       |  12 +) Tj T*
-(src/query-data.ts                                  |   1 +) Tj T*
-(src/query/post-edit.ts                             |  42 ++-) Tj T*
-(src/query/post-edit/decision.ts                    |  21 +-) Tj T*
-(src/query/post-edit/lifecycle.ts                   |   5 +) Tj T*
-(src/query/post-edit/next-actions.ts                |   9 +-) Tj T*
-(src/query/post-edit/support.ts                     |  22 ++) Tj T*
-(src/task-lifecycle.ts                              |   3 +) Tj T*
-(src/types/query-data.ts                            |  10 +-) Tj T*
-(src/types/verification.ts                          |  26 ++) Tj T*
-(tests/agent-ab-report.test.ts                      |  36 ++) Tj T*
-(tests/agent-ab-v2-identity.test.ts                 | 251 ++++++++++++-) Tj T*
-(tests/agent-ab-v2.test.ts                          |  27 +-) Tj T*
-(...r-01-ranks-transitive-import-hubs-above.test.ts |  41 +++) Tj T*
-(...exer-06-keeps-planned-post-edit-reviews.test.ts |  18 +) Tj T*
-(tests/language.test.ts                             |  29 ++) Tj T*
-(tests/mcp-decision-kernel.test.ts                  |  84 ++++-) Tj T*
-(tests/mcp-result-budget.test.ts                    |  14 +) Tj T*
-(tests/post-edit-review-coverage-validation.test.ts | 263 ++++++++++++++) Tj T*
-(tests/post-edit-review-coverage.test.ts            | 347 ++++++++++++++++++) Tj T*
-(tests/task-lifecycle-ordering.test.ts              |  64 ++++) Tj T*
-(64 files changed, 3216 insertions\(+\), 122 deletions\(-\)) Tj T*
-(create mode 100644 benchmarks/agent-ab-selective-v2/README.md) Tj T*
-(create mode 100644 benchmarks/agent-ab-selective-v2/config/adaptive-auto-bounded.mcp.json) Tj T*
-(create mode 100644 benchmarks/agent-ab-selective-v2/config/adaptive-auto-bounded.md) Tj T*
-(create mode 100644 benchmarks/agent-ab-selective-v2/config/adaptive-auto-legacy.mcp.json) Tj T*
-(create mode 100644 benchmarks/agent-ab-selective-v2/config/adaptive-auto-legacy.md) Tj T*
-(create mode 100644 benchmarks/agent-ab-selective-v2/config/full-detailed-legacy.mcp.json) Tj T*
-(create mode 100644 benchmarks/agent-ab-selective-v2/config/full-detailed-legacy.md) Tj T*
-(create mode 100644 benchmarks/agent-ab-selective-v2/experiment.json) Tj T*
-(create mode 100644 benchmarks/agent-ab-selective-v2/tasks/path-target-) Tj T*
-(normalization/environment/Dockerfile) Tj T*
-(create mode 100644 benchmarks/agent-ab-selective-v2/tasks/path-target-) Tj T*
-(normalization/environment/project/.gitignore) Tj T*
-(create mode 100644 benchmarks/agent-ab-selective-v2/tasks/path-target-) Tj T*
-(normalization/environment/project/README.md) Tj T*
-(create mode 100644 benchmarks/agent-ab-selective-v2/tasks/path-target-) Tj T*
-(normalization/environment/project/src/init.py) Tj T*
-(create mode 100644 benchmarks/agent-ab-selective-v2/tasks/path-target-) Tj T*
-(normalization/environment/project/src/targets.py) Tj T*
-(create mode 100644 benchmarks/agent-ab-selective-v2/tasks/path-target-) Tj T*
-(normalization/environment/project/tests/testtargets.py) Tj T*
-(create mode 100644 benchmarks/agent-ab-selective-v2/tasks/path-target-) Tj T*
-(normalization/environment/start-codexa-mcp-adaptive-auto-bounded.sh) Tj T*
-(create mode 100644 benchmarks/agent-ab-selective-v2/tasks/path-target-) Tj T*
-(normalization/environment/start-codexa-mcp-adaptive-auto-legacy.sh) Tj T*
-(create mode 100644 benchmarks/agent-ab-selective-v2/tasks/path-target-) Tj T*
-(normalization/environment/start-codexa-mcp-full-detailed-legacy.sh) Tj T*
-(create mode 100644 benchmarks/agent-ab-selective-v2/tasks/path-target-) Tj T*
-ET
-endstream
-endobj
-8 0 obj
-<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 9 0 R >>
-endobj
-9 0 obj
-<< /Length 3333 >>
-stream
-BT
-/F1 10 Tf
-14 TL
-50 760 Td
-(normalization/instruction.md) Tj T*
-(create mode 100644 benchmarks/agent-ab-selective-v2/tasks/path-target-) Tj T*
-(normalization/solution/solution.patch) Tj T*
-(create mode 100644 benchmarks/agent-ab-selective-v2/tasks/path-target-) Tj T*
-(normalization/solution/solve.sh) Tj T*
-(create mode 100644 benchmarks/agent-ab-selective-v2/tasks/path-target-) Tj T*
-(normalization/task.toml) Tj T*
-(create mode 100644 benchmarks/agent-ab-selective-v2/tasks/path-target-) Tj T*
-(normalization/tests/Dockerfile) Tj T*
-(create mode 100644 benchmarks/agent-ab-selective-v2/tasks/path-target-) Tj T*
-(normalization/tests/baseline/.gitignore) Tj T*
-(create mode 100644 benchmarks/agent-ab-selective-v2/tasks/path-target-) Tj T*
-(normalization/tests/baseline/README.md) Tj T*
-(create mode 100644 benchmarks/agent-ab-selective-v2/tasks/path-target-) Tj T*
-(normalization/tests/baseline/src/init.py) Tj T*
-(create mode 100644 benchmarks/agent-ab-selective-v2/tasks/path-target-) Tj T*
-(normalization/tests/baseline/src/targets.py) Tj T*
-(create mode 100644 benchmarks/agent-ab-selective-v2/tasks/path-target-) Tj T*
-(normalization/tests/baseline/tests/testtargets.py) Tj T*
-(create mode 100644 benchmarks/agent-ab-selective-v2/tasks/path-target-) Tj T*
-(normalization/tests/candidaterunner.py) Tj T*
-(create mode 100644 benchmarks/agent-ab-selective-v2/tasks/path-target-) Tj T*
-(normalization/tests/publictestrunner.py) Tj T*
-(create mode 100644 benchmarks/agent-ab-selective-v2/tasks/path-target-) Tj T*
-(normalization/tests/test.sh) Tj T*
-(create mode 100644 benchmarks/agent-ab-selective-v2/tasks/path-target-) Tj T*
-(normalization/tests/verify.py) Tj T*
-(create mode 100644 src/mcp/review-coverage-kernel.ts) Tj T*
-(create mode 100644 src/post-edit-review-coverage.ts) Tj T*
-(create mode 100644 tests/language.test.ts) Tj T*
-(create mode 100644 tests/post-edit-review-coverage-validation.test.ts) Tj T*
-(create mode 100644 tests/post-edit-review-coverage.test.ts) Tj T*
-(create mode 100644 tests/task-lifecycle-ordering.test.ts) Tj T*
+(6981ea6 fix\(review\): complete broad post-edit authority) Tj T*
+(src/mcp/compaction.ts                              |   4 +-) Tj T*
+(src/mcp/review-coverage-kernel.ts                  |   1 +) Tj T*
+(src/post-edit-review-coverage.ts                   |  57 +-) Tj T*
+(src/query/context.ts                               |  25 +-) Tj T*
+(src/query/diff.ts                                  |   6 +-) Tj T*
+(src/query/post-edit.ts                             | 115 ++--) Tj T*
+(src/query/post-edit/context-passes.ts              | 150 +++++) Tj T*
+(src/query/post-edit/decision.ts                    |  52 +-) Tj T*
+(src/query/post-edit/dirty-scope.ts                 |  20 +-) Tj T*
+(src/query/post-edit/next-actions.ts                |   8 +-) Tj T*
+(src/query/post-edit/snapshot-contract.ts           |  41 +-) Tj T*
+(src/query/post-edit/support.ts                     |  17 +-) Tj T*
+(src/query/targets.ts                               |  15 +-) Tj T*
+(src/query/tests.ts                                 |  69 ++-) Tj T*
+(src/types/verification.ts                          |  22 +-) Tj T*
+(...exer-06-keeps-planned-post-edit-reviews.test.ts |  18 +-) Tj T*
+(tests/post-edit-review-coverage-validation.test.ts | 125 ++++-) Tj T*
+(tests/post-edit-review-coverage.test.ts            | 617 +++++++++++++++++++--) Tj T*
+(tests/recommend-tests-change-type.test.ts          |  38 ++) Tj T*
+(19 files changed, 1218 insertions\(+\), 182 deletions\(-\)) Tj T*
+(create mode 100644 src/query/post-edit/context-passes.ts) Tj T*
 () Tj T*
 (Verification) Tj T*
 () Tj T*
 (- git diff --check: passed) Tj T*
-(- rtk npm run check: passed) Tj T*
-(- rtk npm run smoke:package: passed) Tj T*
-(- rtk proxy node scripts/agent-ab.mjs validate --config benchmarks/agent-ab-) Tj T*
-(selective-v2/experiment.json: passed) Tj T*
-(- \(cd benchmarks/agent-ab-selective-v2/tasks/path-target-normalization/environment/project) Tj T*
-(&& PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s tests -v\): passed) Tj T*
-(- SOLUTIONCHECKDIR="$\(mktemp -d /tmp/codexa-solution-check.XXXXXX\)"; mkdir -p) Tj T*
-("$SOLUTIONCHECKDIR/src"; cp benchmarks/agent-ab-selective-v2/tasks/path-target-) Tj T*
-(normalization/tests/baseline/src/targets.py "$SOLUTIONCHECKDIR/src/targets.py"; git -C) Tj T*
-("$SOLUTIONCHECKDIR" apply --check --unidiff-zero "$PWD/benchmarks/agent-ab-) Tj T*
-(selective-v2/tasks/path-target-normalization/solution/solution.patch"; git -C) Tj T*
-("$SOLUTIONCHECKDIR" apply --unidiff-zero "$PWD/benchmarks/agent-ab-selective-v2/tasks/path-) Tj T*
-(target-normalization/solution/solution.patch"; PYTHONPATH="$SOLUTIONCHECKDIR") Tj T*
-(PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s benchmarks/agent-ab-) Tj T*
-(selective-v2/tasks/path-target-normalization/environment/project/tests -v: passed) Tj T*
-ET
-endstream
-endobj
-10 0 obj
-<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 11 0 R >>
-endobj
-11 0 obj
-<< /Length 1419 >>
-stream
-BT
-/F1 10 Tf
-14 TL
-50 760 Td
-(- Codexa post-edit-review: generated as a local verification artifact) Tj T*
-(- Codexa verdict replan \(none\) accepted over block: The saved machine snapshot intentionally) Tj T*
-(covered the core authority paths rather than the final four-workstream diff; all six) Tj T*
-(invariants have explicit evidence, the full deterministic gate passes, and the budgeted) Tj T*
-(protocol and authority reviews are clean after the substitution-path fix.) Tj T*
+(- npm run typecheck && npm run lint && npx vitest run tests/post-edit-review-) Tj T*
+(coverage.test.ts tests/post-edit-review-coverage-validation.test.ts tests/recommend-tests-) Tj T*
+(change-type.test.ts: passed) Tj T*
+(- Codexa skipped: Exact local follow-up with raw source evidence, deterministic host gates,) Tj T*
+(and two completed adversarial reviews; Codexa routing requires zero calls here.) Tj T*
 (- git diff --cached --check: passed) Tj T*
 (- staged safety scan: passed) Tj T*
 () Tj T*
 (Notes) Tj T*
 () Tj T*
-(Fixes 119) Tj T*
-() Tj T*
-(Implements four bounded improvements:) Tj T*
-(- fail-closed post-edit coverage bound to task, snapshot, candidate order, and analyzed) Tj T*
-(targets;) Tj T*
-(- a public no-spend schema-v2 four-arm conformance pack pinned to Codexa 0.17.0;) Tj T*
-(- recovery-only session-memory guidance;) Tj T*
-(- truthful file-only C, C/C++, Ruby, and PHP lanes.) Tj T*
-() Tj T*
-(Risk-budgeted review: the protocol specialist was clean; the authority specialist found a) Tj T*
-(target-substitution laundering path, the validator and all-surfaces regression were) Tj T*
-(corrected, and the affected rereview is clean. No new dependency, source-writing MCP) Tj T*
-(capability, paid model call, or configuration toggle is introduced. Release deployment) Tj T*
-(remains on the normal Release Please lane.) Tj T*
+(Closes the broad-scope post-edit deadlock reported on PR 120. Coverage is exhaustive through) Tj T*
+(bounded logical passes with one task-global context call, full internal decision evidence,) Tj T*
+(fail-closed explicit targets, schema-v2 receipts, bounded concurrency, and pre-indexed scale) Tj T*
+(paths. This follow-up preserves the four previously implemented workflow improvements and) Tj T*
+(incorporates both risk-budgeted adversarial reviews.) Tj T*
 ET
 endstream
 endobj
 xref
-0 12
+0 6
 0000000000 65535 f 
 0000000009 00000 n 
 0000000058 00000 n 
-0000000134 00000 n 
-0000000204 00000 n 
-0000000330 00000 n 
-0000003572 00000 n 
-0000003698 00000 n 
-0000007581 00000 n 
-0000007707 00000 n 
-0000011091 00000 n 
-0000011219 00000 n 
+0000000115 00000 n 
+0000000185 00000 n 
+0000000311 00000 n 
 trailer
-<< /Size 12 /Root 1 0 R >>
+<< /Size 6 /Root 1 0 R >>
 startxref
-12690
+3315
 %%EOF
