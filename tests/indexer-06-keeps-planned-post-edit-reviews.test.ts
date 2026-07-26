@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildIndex, buildIndexLocked, getFreshness, loadIndex } from "../src/indexer.js";
 import { MAX_INDEXED_SOURCE_BYTES } from "../src/repo-files.js";
+import { createPostEditReviewCoverage } from "../src/post-edit-review-coverage.js";
 import { validateChangePlanTargetCandidate } from "../src/query/change-plan.js";
 import { postEditDecision } from "../src/query/post-edit/decision.js";
 import { postEditReviewWithTrustedRunnerReports } from "../src/query/post-edit.js";
@@ -272,6 +273,23 @@ it("keeps verified non-source unindexed post-edit drift advisory", () => {
         testsNotRun: [],
         hasTestVerificationAccounting: true,
         noVerificationProofForEditedFiles: false,
+        reviewCoverage: createPostEditReviewCoverage({
+          taskId: "style-css",
+          planRevision: 1,
+          snapshotCreatedAt: null,
+          snapshotPublicationSequence: null,
+          candidateTargets: [],
+          analyzedTargets: [],
+          targetLimit: 3
+        }),
+        reviewCoverageContext: {
+          taskId: "style-css",
+          planRevision: 1,
+          snapshotCreatedAt: null,
+          snapshotPublicationSequence: null,
+          candidateTargets: [],
+          analyzedTargets: []
+        },
         implicitBaseline: false
       });
 

@@ -2,6 +2,7 @@ import path from "node:path";
 import { isTestPath } from "../../language.js";
 import type {
   AutoVerifyCandidate,
+  PostEditReviewCoverage,
   TaskSnapshot,
   TestRecommendation,
   TestRecommendationProvenance,
@@ -9,6 +10,7 @@ import type {
   VerificationLedgerEntry
 } from "../../types.js";
 import type { PostEditCheckResult } from "../../post-edit-outcomes.js";
+import { createPostEditReviewCoverage } from "../../post-edit-review-coverage.js";
 import { stableId, uniqueSorted } from "../../util.js";
 import { autoVerifySnapshotDigest } from "./runner-review.js";
 
@@ -72,6 +74,26 @@ export function hasRelevantVerificationEvidence(input: {
   if (input.ranTests.some((test) => recommendedTests.has(normalizeReviewPath(test)))) return true;
   const changedTargets = uniqueSorted([...input.editPaths, ...input.reviewTargets].map(normalizeReviewPath).filter(Boolean));
   return input.verificationCoverage.some((coverage) => coverageIsRelevantProof(coverage, changedTargets, recommendedTests));
+}
+
+export function buildPostEditReviewCoverage(input: {
+  candidateTargets: string[];
+  analyzedTargets: string[];
+  targetLimit: number;
+  taskId: string | null;
+  planRevision: number;
+  snapshotCreatedAt: string | null;
+  snapshotPublicationSequence: number | null;
+}): PostEditReviewCoverage {
+  return createPostEditReviewCoverage(input);
+}
+
+export function formatPostEditReviewCoverage(coverage: PostEditReviewCoverage): string | undefined {
+  if (coverage.status !== "partial") return undefined;
+  const action = coverage.targetLimit < 30
+    ? "Raise limit to widen the review."
+    : "Narrow or split the review.";
+  return `Review scope: partial (${coverage.analyzedTargetCount}/${coverage.candidateTargetCount} candidate targets analyzed; ${coverage.omittedTargetCount} omitted). ${action}`;
 }
 
 function autoVerifyCandidateSource(provenance: TestRecommendationProvenance | undefined): AutoVerifyCandidate["source"] {

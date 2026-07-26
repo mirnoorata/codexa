@@ -1,4 +1,5 @@
 import { freshnessBlocksAuthority } from "../freshness-authority.js";
+import { validatePostEditReviewCoverage } from "../post-edit-review-coverage.js";
 import { isRecord, nonEmptyArray, stringValue } from "./compaction-helpers.js";
 
 /** Lifecycle authority needs every blocker inline when its compact kernel overflows. */
@@ -17,6 +18,8 @@ export function mcpAuthorityBlockReason(data: Record<string, unknown>, freshness
   const snapshotLoad = isRecord(data.snapshotLoad) ? data.snapshotLoad : undefined;
   if (snapshotLoad?.ambiguousLatest === true || typeof snapshotLoad?.missingReason === "string") return "snapshot-missing-or-ambiguous";
   if (nonEmptyArray(data.driftReasons)) return "review-drift";
+  const reviewCoverageReason = postEditReviewCoverageBlockReason(data);
+  if (reviewCoverageReason) return reviewCoverageReason;
   if (readStringArray(data.gaps).some((gap) => gap.startsWith("worktree state unavailable"))) return "worktree-unavailable";
   const worktree = isRecord(data.worktree) ? data.worktree : runtime;
   if (worktree?.degraded === true || nonEmptyArray(data.worktreeDegradationReasons)) return "worktree-degraded";
@@ -46,6 +49,48 @@ export function mcpAuthorityBlockReason(data: Record<string, unknown>, freshness
     }
   }
   return undefined;
+}
+
+export function postEditReviewCoverageBlockReason(data: Record<string, unknown>, suppliedMode?: string): string | undefined {
+  const mode = suppliedMode ?? stringValue(data.mode);
+  if (mode !== "post_edit_review") return undefined;
+  const snapshot = isRecord(data.snapshot) ? data.snapshot : undefined;
+  const planRevision = data.planRevision;
+  const candidateTargets = Array.isArray(data.reviewCandidateTargets)
+    ? data.reviewCandidateTargets.filter((target): target is string => typeof target === "string")
+    : undefined;
+  const analyzedTargets = Array.isArray(data.reviewTargets)
+    ? data.reviewTargets.filter((target): target is string => typeof target === "string")
+    : undefined;
+  if (
+    !Number.isInteger(planRevision) ||
+    (planRevision as number) < 1 ||
+    !candidateTargets ||
+    candidateTargets.length !== (data.reviewCandidateTargets as unknown[])?.length ||
+    !analyzedTargets ||
+    analyzedTargets.length !== (data.reviewTargets as unknown[])?.length
+  ) {
+    return "post-edit-review-coverage-invalid";
+  }
+  const topLevelTaskId = stringValue(data.taskId);
+  const snapshotTaskId = stringValue(snapshot?.taskId);
+  if (topLevelTaskId && snapshotTaskId && topLevelTaskId !== snapshotTaskId) return "post-edit-review-coverage-invalid";
+  if (snapshot?.planRevision !== undefined && snapshot.planRevision !== planRevision) return "post-edit-review-coverage-invalid";
+  const taskId = topLevelTaskId ?? snapshotTaskId ?? null;
+  const snapshotCreatedAt = stringValue(snapshot?.createdAt) ?? null;
+  const snapshotPublicationSequence = Number.isInteger(snapshot?.publicationSequence)
+    ? snapshot!.publicationSequence as number
+    : null;
+  const validation = validatePostEditReviewCoverage(data.reviewCoverage, {
+    taskId,
+    planRevision: planRevision as number,
+    snapshotCreatedAt,
+    snapshotPublicationSequence,
+    candidateTargets,
+    analyzedTargets
+  });
+  if (!validation.valid) return "post-edit-review-coverage-invalid";
+  return validation.coverage?.status === "partial" ? "post-edit-review-coverage-partial" : undefined;
 }
 
 /** Proof evidence can require inline detail without revoking a `verify` state. */

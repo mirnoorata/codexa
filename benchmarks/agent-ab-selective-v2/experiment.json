@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 2,
+  "experimentId": "codexa-agent-ab-selective-v2-conformance-v1",
+  "framework": {
+    "name": "harbor",
+    "version": "0.18.0"
+  },
+  "runner": {
+    "agent": "codex",
+    "version": "0.145.0",
+    "kwargs": {
+      "reasoning_effort": "high",
+      "web_search": "disabled"
+    }
+  },
+  "candidate": {
+    "codexaVersion": "0.17.0"
+  },
+  "design": {
+    "seed": "codexa-agent-ab-selective-v2-conformance-v1",
+    "repetitions": 1,
+    "concurrency": 1,
+    "maxRetries": 0,
+    "timeoutMultiplier": 1,
+    "controllerTimeoutSeconds": 1800
+  },
+  "tasks": [
+    {
+      "id": "path-target-normalization",
+      "name": "codexa-agent-ab-selective-v2/path-target-normalization",
+      "path": "tasks/path-target-normalization",
+      "expectedRouteClass": "source-only"
+    }
+  ],
+  "arms": [
+    {
+      "id": "control",
+      "kind": "control"
+    },
+    {
+      "id": "full-detailed-legacy",
+      "kind": "codexa",
+      "mcpConfig": "config/full-detailed-legacy.mcp.json",
+      "extraInstruction": "config/full-detailed-legacy.md"
+    },
+    {
+      "id": "adaptive-auto-legacy",
+      "kind": "codexa",
+      "mcpConfig": "config/adaptive-auto-legacy.mcp.json",
+      "extraInstruction": "config/adaptive-auto-legacy.md"
+    },
+    {
+      "id": "adaptive-auto-bounded",
+      "kind": "codexa",
+      "mcpConfig": "config/adaptive-auto-bounded.mcp.json",
+      "extraInstruction": "config/adaptive-auto-bounded.md"
+    }
+  ],
+  "analysis": {
+    "primaryReward": "verified_completion",
+    "bootstrapSamples": 10000,
+    "confidenceLevel": 0.95,
+    "generalizationUnit": "task",
+    "failurePolicy": "intention-to-treat",
+    "comparisons": [
+      {
+        "id": "optimized-net-value",
+        "baselineArm": "control",
+        "candidateArm": "adaptive-auto-bounded",
+        "primary": true
+      },
+      {
+        "id": "total-optimization",
+        "baselineArm": "full-detailed-legacy",
+        "candidateArm": "adaptive-auto-bounded",
+        "primary": false
+      },
+      {
+        "id": "transport-exposure",
+        "baselineArm": "full-detailed-legacy",
+        "candidateArm": "adaptive-auto-legacy",
+        "primary": false
+      },
+      {
+        "id": "cadence",
+        "baselineArm": "adaptive-auto-legacy",
+        "candidateArm": "adaptive-auto-bounded",
+        "primary": false
+      }
+    ]
+  }
+}

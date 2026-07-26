@@ -160,6 +160,32 @@ export interface VerificationCoverage {
   commandEnvelope?: VerificationCommandEnvelope;
 }
 
+export type PostEditReviewCoverageStatus = "complete" | "partial";
+
+export interface PostEditReviewCoverageBinding {
+  taskId: string | null;
+  planRevision: number;
+  snapshotCreatedAt: string | null;
+  snapshotPublicationSequence: number | null;
+  candidateTargetsDigest: string;
+  analyzedTargetsDigest: string;
+}
+
+/**
+ * Bounded authority receipt for the post-edit target cap. Individual omitted
+ * paths stay internal; consumers validate the counts and their binding to the
+ * task snapshot and analyzed targets instead of copying the full change set.
+ */
+export interface PostEditReviewCoverage {
+  schemaVersion: 1;
+  binding: PostEditReviewCoverageBinding;
+  status: PostEditReviewCoverageStatus;
+  candidateTargetCount: number;
+  analyzedTargetCount: number;
+  omittedTargetCount: number;
+  targetLimit: number;
+}
+
 export interface VerificationCommandReport {
   command: string;
   cwd?: string;

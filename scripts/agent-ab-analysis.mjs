@@ -103,8 +103,33 @@ const POST_EDIT_FINAL_STATES = [
   "unknown"
 ];
 const BLOCKING_COMPLETION_AUTHORITIES = new Set(["tests_required", "blocking_inspect", "replan_required"]);
+const EXPECTED_ROUTE_PATTERNS = Object.freeze({
+  "source-only": [],
+  "search-only": ["search"],
+  "plan-review": ["change_plan", "post_edit_review"],
+  "search-plan-review": ["search", "change_plan", "post_edit_review"]
+});
+const MAX_ROUTE_CALLS = 1_000;
 
 class ProtocolIdentityError extends Error {}
+
+export function analyzeAgentAbRouteConformance({ trajectory, expectedRouteClass }) {
+  const routeTrace = trajectory
+    && typeof trajectory === "object"
+    && !Array.isArray(trajectory)
+    && trajectory.schema_version === "ATIF-v1.7"
+    && Array.isArray(trajectory.steps)
+      ? inferRouteTrace(trajectory)
+      : unavailableRouteTrace("unsupported");
+  return {
+    routeTrace,
+    routeConformance: routeConformanceFor(expectedRouteClass, routeTrace)
+  };
+}
+
+export function summarizeAgentAbArmFidelity(outcomes, { arm, kind = "codexa", routeAdherenceArm = null }) {
+  return fidelityForArm(outcomes, arm, kind, routeAdherenceArm);
+}
 
 export function analyzeAgentAb({ config, outputDir }) {
   const registration = readJson(path.join(outputDir, "registration.json"), "registration");
@@ -224,6 +249,16 @@ function buildSchemaV2Summary({ config, registration, outcomes, candidateIdentit
   if (!Array.isArray(registration.comparisons) || registration.comparisons.length < 1) {
     throw new Error("schema-v2 registration must contain comparisons");
   }
+  if (
+    !Array.isArray(registration.tasks)
+    || registration.tasks.some(
+      (task) =>
+        task?.expectedRouteClass !== undefined
+        && !Object.hasOwn(EXPECTED_ROUTE_PATTERNS, task.expectedRouteClass)
+    )
+  ) {
+    throw new Error("schema-v2 registration must contain a valid expectedRouteClass for every task");
+  }
   const armIds = registration.arms.map((arm) => arm.id);
   if (new Set(armIds).size !== armIds.length) {
     throw new Error("schema-v2 registration contains duplicate arms");
@@ -273,12 +308,13 @@ function buildSchemaV2Summary({ config, registration, outcomes, candidateIdentit
   const taskCount = new Set(registration.assignments.map((assignment) => assignment.taskId)).size;
   const armFidelity = Object.fromEntries(registration.arms.map((arm) => [
     arm.id,
-    fidelityForArm(outcomes, arm.id, arm.kind)
+    fidelityForArm(outcomes, arm.id, arm.kind, primary.candidateArm)
   ]));
   const efficiencyTelemetry = Object.fromEntries(registration.arms.map((arm) => [
     arm.id,
     summarizeArmEfficiencyTelemetry(outcomes, arm.id)
   ]));
+  const routeConformance = summarizeRouteConformance(outcomes, registration.arms, primary.candidateArm);
   return {
     schemaVersion: 2,
     experimentId: registration.experimentId,
@@ -317,7 +353,7 @@ function buildSchemaV2Summary({ config, registration, outcomes, candidateIdentit
     estimand: "registered intention-to-treat comparisons between immutable experiment arms on verified completion",
     armDefinitions: {
       arms: registration.arms.map((arm) => ({ id: arm.id, kind: arm.kind })),
-      adherencePolicy: "usage and transport telemetry are descriptive only; no run is excluded for adherence or contamination"
+      adherencePolicy: `selective-route deviation is nonadherence only for registered primary candidate ${primary.candidateArm}; legacy-arm route differences are designed conformance telemetry, and no run is excluded for adherence or contamination`
     },
     generalizationUnit: "task",
     registeredTasks: taskCount,
@@ -330,6 +366,7 @@ function buildSchemaV2Summary({ config, registration, outcomes, candidateIdentit
     comparisons,
     arms,
     armFidelity,
+    routeConformance,
     efficiencyTelemetry,
     positionalBalance: registration.positionalBalance ?? summarizeRegisteredPositionBalance(registration.assignments, armIds),
     outcomes
@@ -345,13 +382,20 @@ function readSchemaV2CandidateIdentityProof({ outputDir, registration, attempts 
   const tasksById = new Map((registration.tasks ?? []).map((task) => [task.id, task]));
   const assignmentsByRunId = new Map(registration.assignments.map((assignment) => [assignment.runId, assignment]));
   const requiredPairs = new Map();
-  for (const [runId] of attempts) {
+  for (const [runId, attempt] of attempts) {
     const assignment = assignmentsByRunId.get(runId);
     const arm = assignment ? armsById.get(assignment.arm) : undefined;
     if (!assignment || arm?.kind !== "codexa") continue;
-    requiredPairs.set(preflightPairKey(assignment.taskId, arm.serverCommand), {
+    const key = preflightPairKey(assignment.taskId, arm.serverCommand);
+    const existing = requiredPairs.get(key);
+    const firstAttemptStartedAt =
+      !existing?.firstAttemptStartedAt || Date.parse(attempt.startedAt) < Date.parse(existing.firstAttemptStartedAt)
+        ? attempt.startedAt
+        : existing.firstAttemptStartedAt;
+    requiredPairs.set(key, {
       taskId: assignment.taskId,
-      serverCommand: arm.serverCommand
+      serverCommand: arm.serverCommand,
+      firstAttemptStartedAt
     });
   }
   const failuresByPair = new Map();
@@ -405,6 +449,9 @@ function readSchemaV2CandidateIdentityProof({ outputDir, registration, attempts 
         if (typeof receipt.completedAt !== "string" || !Number.isFinite(Date.parse(receipt.completedAt))) {
           throw new Error("receipt completion time is invalid");
         }
+        if (Date.parse(receipt.completedAt) > Date.parse(pair.firstAttemptStartedAt)) {
+          throw new Error("receipt completed after the first bound attempt started");
+        }
       } catch (error) {
         failure = `candidate identity preflight ${error instanceof Error ? error.message : String(error)}`;
         failuresByPair.set(preflightPairKey(pair.taskId, pair.serverCommand), failure);
@@ -418,6 +465,7 @@ function readSchemaV2CandidateIdentityProof({ outputDir, registration, attempts 
         status: failure ? "invalid" : "valid",
         receiptHash: raw ? sha256Text(raw) : null,
         completedAt: typeof receipt?.completedAt === "string" ? receipt.completedAt : null,
+        firstAttemptStartedAt: pair.firstAttemptStartedAt,
         failure: failure ?? null
       };
     });
@@ -874,6 +922,16 @@ function assertExactKeys(record, expected, label) {
 
 function normalizeOutcome({ assignment, attempt, metadata, outputDir, primaryReward, registration, config }) {
   const includeEfficiencyTelemetry = registration.schemaVersion === 2;
+  const expectedRouteClass = registration.schemaVersion === 2
+    ? registration.tasks?.find((task) => task?.id === assignment.taskId)?.expectedRouteClass ?? null
+    : null;
+  const unavailableUsage = unavailableCodexaUsage("unavailable", undefined, includeEfficiencyTelemetry);
+  const routeFields = includeEfficiencyTelemetry
+    ? {
+        expectedRouteClass,
+        routeConformance: routeConformanceFor(expectedRouteClass, unavailableUsage.routeTrace)
+      }
+    : {};
   const base = {
     runId: assignment.runId,
     taskId: assignment.taskId,
@@ -900,7 +958,8 @@ function normalizeOutcome({ assignment, attempt, metadata, outputDir, primaryRew
     controllerElapsedMs: metadata?.controllerElapsedMs ?? null,
     codexaIndexElapsedMs: null,
     codexaSetup: { status: "unavailable" },
-    codexaUsage: unavailableCodexaUsage("unavailable", undefined, includeEfficiencyTelemetry)
+    codexaUsage: unavailableUsage,
+    ...routeFields
   };
   if (!attempt || !metadata) {
     return base;
@@ -953,7 +1012,10 @@ function normalizeOutcome({ assignment, attempt, metadata, outputDir, primaryRew
       agentFinishedAt,
       codexaIndexElapsedMs: codexaSetup.indexElapsedMs ?? null,
       codexaSetup,
-      codexaUsage
+      codexaUsage,
+      ...(includeEfficiencyTelemetry
+        ? { routeConformance: routeConformanceFor(expectedRouteClass, codexaUsage.routeTrace) }
+        : {})
     };
   }
   const rewards = numericRecord(trial.verifier_result?.rewards);
@@ -975,7 +1037,10 @@ function normalizeOutcome({ assignment, attempt, metadata, outputDir, primaryRew
     agentElapsedMs: elapsedMs(trial.agent_execution),
     codexaIndexElapsedMs: codexaSetup.indexElapsedMs ?? null,
     codexaSetup,
-    codexaUsage
+    codexaUsage,
+    ...(includeEfficiencyTelemetry
+      ? { routeConformance: routeConformanceFor(expectedRouteClass, codexaUsage.routeTrace) }
+      : {})
   };
 }
 
@@ -1273,11 +1338,20 @@ function summarizeTreatmentFidelity(outcomes, candidateVersion) {
   };
 }
 
-function fidelityForArm(outcomes, arm, kind = arm === "control" ? "control" : "codexa") {
+function fidelityForArm(outcomes, arm, kind = arm === "control" ? "control" : "codexa", routeAdherenceArm = null) {
   const selected = outcomes.filter((outcome) => outcome.arm === arm && outcome.started);
   const observed = selected.filter((outcome) => outcome.codexaUsage.status === "observed");
   const invoked = observed.filter((outcome) => outcome.codexaUsage.codexaInvoked);
   const setupObserved = selected.filter((outcome) => outcome.codexaSetup.status === "observed");
+  const routeEligible = selected.filter((outcome) => outcome.expectedRouteClass !== null);
+  const routeObserved = routeEligible.filter(
+    (outcome) => outcome.routeConformance?.status === "match" || outcome.routeConformance?.status === "deviation"
+  );
+  const routeDeviations = routeObserved.filter((outcome) => outcome.routeConformance.status === "deviation");
+  const legacyRouteOutcomes = selected.filter((outcome) => outcome.expectedRouteClass === null);
+  const legacyRouteObserved = legacyRouteOutcomes.filter((outcome) => outcome.codexaUsage.status === "observed");
+  const legacyRouteInvoked = legacyRouteObserved.filter((outcome) => outcome.codexaUsage.codexaInvoked);
+  const includeRouteConformance = typeof routeAdherenceArm === "string";
   const postEditFinalStates = selected.map(
     (outcome) => outcome.codexaUsage.postEditDecisionTrace?.finalState ?? "unknown"
   );
@@ -1292,7 +1366,20 @@ function fidelityForArm(outcomes, arm, kind = arm === "control" ? "control" : "c
     codexaCallsByTool: mergeCallCounts(observed.map((outcome) => outcome.codexaUsage.callsByTool)),
     noCodexaInvocationObservedRuns: observed.length - invoked.length,
     contaminationRuns: kind === "control" ? invoked.length : 0,
-    nonadherentRuns: kind === "codexa" ? observed.length - invoked.length : 0,
+    nonadherentRuns: kind === "codexa"
+      ? includeRouteConformance && arm === routeAdherenceArm && routeEligible.length > 0
+        ? routeDeviations.length + legacyRouteObserved.length - legacyRouteInvoked.length
+        : observed.length - invoked.length
+      : 0,
+    ...(includeRouteConformance
+      ? {
+          routeEligibleRuns: routeEligible.length,
+          routeObservedRuns: routeObserved.length,
+          routeMatchingRuns: routeObserved.length - routeDeviations.length,
+          routeDeviationRuns: routeDeviations.length,
+          routeUnknownRuns: routeEligible.length - routeObserved.length
+        }
+      : {}),
     setupObservedRuns: setupObserved.length,
     setupSuccessfulRuns: setupObserved.filter((outcome) => outcome.codexaSetup.indexExitCode === 0).length,
     setupFailedRuns: setupObserved.filter((outcome) => Number.isInteger(outcome.codexaSetup.indexExitCode) && outcome.codexaSetup.indexExitCode !== 0).length,
@@ -1302,6 +1389,72 @@ function fidelityForArm(outcomes, arm, kind = arm === "control" ? "control" : "c
     ).length,
     postEditFinalStateCounts,
     note: "agent-reported trajectory and setup telemetry are descriptive and never change ITT inclusion"
+  };
+}
+
+function routeConformanceFor(expectedRouteClass, routeTrace) {
+  const expectedOperations = Object.hasOwn(EXPECTED_ROUTE_PATTERNS, expectedRouteClass)
+    ? EXPECTED_ROUTE_PATTERNS[expectedRouteClass]
+    : null;
+  const common = {
+    schemaVersion: 1,
+    evidenceRole: "descriptive-only",
+    expectedRouteClass,
+    expectedOperations
+  };
+  if (!expectedOperations || routeTrace?.status !== "observed") {
+    return {
+      ...common,
+      status: "unknown",
+      actualOperations: null,
+      exposedTools: null,
+      reason: expectedOperations ? `route trajectory is ${routeTrace?.status ?? "unavailable"}` : "expected route class is unavailable"
+    };
+  }
+  const matches = JSON.stringify(routeTrace.logicalOperations) === JSON.stringify(expectedOperations);
+  return {
+    ...common,
+    status: matches ? "match" : "deviation",
+    actualOperations: routeTrace.logicalOperations,
+    exposedTools: routeTrace.exposedTools,
+    reason: matches
+      ? "observed logical Codexa operation sequence matches the registered route"
+      : "observed logical Codexa operation sequence differs from the registered route"
+  };
+}
+
+function summarizeRouteConformance(outcomes, arms, routeAdherenceArm) {
+  const started = outcomes.filter((outcome) => outcome.started && outcome.expectedRouteClass !== null);
+  return {
+    schemaVersion: 1,
+    evidenceRole: "descriptive-only",
+    routeAdherenceArm,
+    byArm: Object.fromEntries(arms.map((arm) => [
+      arm.id,
+      summarizeRouteConformanceSelection(started.filter((outcome) => outcome.arm === arm.id))
+    ])),
+    byExpectedRouteClass: Object.fromEntries(Object.keys(EXPECTED_ROUTE_PATTERNS).map((routeClass) => [
+      routeClass,
+      summarizeRouteConformanceSelection(started.filter((outcome) => outcome.expectedRouteClass === routeClass))
+    ])),
+    note: "selective-route conformance is descriptive for every arm; only the registered primary candidate uses deviations as treatment nonadherence, and no route result changes ITT inclusion, protocol validity, or verifier outcomes"
+  };
+}
+
+function summarizeRouteConformanceSelection(selected) {
+  const matching = selected.filter((outcome) => outcome.routeConformance?.status === "match");
+  const deviations = selected.filter((outcome) => outcome.routeConformance?.status === "deviation");
+  const observed = [...matching, ...deviations];
+  return {
+    eligibleRuns: selected.length,
+    observedRuns: observed.length,
+    matchingRuns: matching.length,
+    deviationRuns: deviations.length,
+    unknownRuns: selected.length - observed.length,
+    actualPatterns: sortRecord(countBy(observed, (outcome) => {
+      const operations = outcome.routeConformance.actualOperations;
+      return Array.isArray(operations) && operations.length > 0 ? operations.join(" -> ") : "(zero Codexa calls)";
+    }))
   };
 }
 
@@ -1344,6 +1497,7 @@ function inferCodexaUsage(trialDir, includeEfficiencyTelemetry = false) {
     const reconciledTelemetry = reconcileDetailFetchTelemetry(transportTelemetry, serverTelemetry);
     return {
       ...usage,
+      routeTrace: inferRouteTrace(trajectory),
       transportTelemetry: reconciledTelemetry.transportTelemetry,
       serverTelemetry: reconciledTelemetry.serverTelemetry
     };
@@ -1382,10 +1536,121 @@ function unavailableCodexaUsage(status, serverTelemetry, includeEfficiencyTeleme
   return includeEfficiencyTelemetry
     ? {
         ...usage,
+        routeTrace: unavailableRouteTrace(status),
         transportTelemetry: unavailableTransportTelemetry(status),
         serverTelemetry: serverTelemetry ?? unavailableServerTelemetry("unavailable")
       }
     : usage;
+}
+
+function inferRouteTrace(trajectory) {
+  const base = {
+    schemaVersion: 1,
+    evidenceTrust: "agent-reported-structured-trajectory"
+  };
+  if (
+    hasUnsupportedTrajectoryLineage(trajectory)
+    || hasMalformedUsageStructure(trajectory)
+    || trajectory.steps.some((step) => step?.is_copied_context === true)
+  ) {
+    return unavailableRouteTrace("partial", base);
+  }
+  const logicalOperations = [];
+  const exposedTools = [];
+  const callIds = new Set();
+  for (const step of trajectory.steps) {
+    const toolCalls = Array.isArray(step.tool_calls) ? step.tool_calls : [];
+    for (const call of toolCalls) {
+      if (callIds.has(call.tool_call_id)) {
+        return unavailableRouteTrace("partial", base);
+      }
+      callIds.add(call.tool_call_id);
+      const observed = routeCallsFromToolCall(call);
+      if (observed.ambiguous) {
+        return unavailableRouteTrace("partial", base);
+      }
+      logicalOperations.push(...observed.logicalOperations);
+      exposedTools.push(...observed.exposedTools);
+      if (logicalOperations.length > MAX_ROUTE_CALLS) {
+        return unavailableRouteTrace("scan-limit", base);
+      }
+    }
+  }
+  return {
+    ...base,
+    status: "observed",
+    logicalOperations,
+    exposedTools
+  };
+}
+
+function unavailableRouteTrace(status, base = {}) {
+  return {
+    schemaVersion: 1,
+    evidenceTrust: "agent-reported-structured-trajectory",
+    ...base,
+    status,
+    logicalOperations: null,
+    exposedTools: null
+  };
+}
+
+function routeCallsFromToolCall(call) {
+  const directIdentifiers = [
+    call?.function_name,
+    call?.functionName,
+    call?.tool_name,
+    call?.toolName,
+    call?.function?.name
+  ].filter((value) => typeof value === "string");
+  const match = directIdentifiers.map((value) => /^mcp__codexa__([a-z0-9_]+)$/iu.exec(value)).find(Boolean);
+  if (match) {
+    const exposedTool = match[1].toLowerCase();
+    return {
+      logicalOperations: [logicalOperationForMcpCall(exposedTool, call.arguments)],
+      exposedTools: [exposedTool],
+      ambiguous: false
+    };
+  }
+  const exposedTools = extractExactCodexaCliNames(call?.arguments);
+  const ambiguous = exposedTools.length === 0 && (
+    extractMcpCallNames(call?.arguments).length > 0
+    || extractCodexaCliNames(call?.arguments).length > 0
+    || identifyCodexaCalls(call).length > 0
+  );
+  return {
+    logicalOperations: exposedTools.map((name) => name.startsWith("cli:") ? normalizeCliRouteOperation(name) : name),
+    exposedTools,
+    ambiguous
+  };
+}
+
+function logicalOperationForMcpCall(exposedTool, argumentsValue) {
+  if (exposedTool !== "capabilities") {
+    return exposedTool;
+  }
+  const parsed = typeof argumentsValue === "string"
+    ? parseStringifiedToolArguments(argumentsValue)
+    : argumentsValue;
+  return parsed
+    && typeof parsed === "object"
+    && !Array.isArray(parsed)
+    && parsed.action === "invoke"
+    && typeof parsed.operation === "string"
+    && /^[a-z][a-z0-9_]{0,63}$/u.test(parsed.operation)
+      ? parsed.operation
+      : "capabilities";
+}
+
+function normalizeCliRouteOperation(name) {
+  const operation = name.startsWith("cli:") ? name.slice(4) : name;
+  if (operation === "post-edit" || operation === "post-edit-review") {
+    return "post_edit_review";
+  }
+  if (operation === "change-plan") {
+    return "change_plan";
+  }
+  return operation.replaceAll("-", "_");
 }
 
 function inferAtifTransportTelemetry(trajectory) {
@@ -1655,6 +1920,9 @@ function hasMalformedUsageStructure(trajectory) {
     if (!step || typeof step !== "object" || Array.isArray(step)) {
       return true;
     }
+    if (step.is_copied_context !== undefined && typeof step.is_copied_context !== "boolean") {
+      return true;
+    }
     if (
       step.tool_calls !== undefined
       && (!Array.isArray(step.tool_calls) || step.tool_calls.some(isMalformedToolCall))
@@ -1830,7 +2098,9 @@ function unknownPostEditDecisionTrace(base, reviewCallCount, decisions) {
 }
 
 function postEditReviewOccurrenceCount(call) {
-  return identifyCodexaCalls(call).filter(
+  const exactOperations = routeCallsFromToolCall(call).logicalOperations;
+  const operations = exactOperations.length > 0 ? exactOperations : identifyCodexaCalls(call);
+  return operations.filter(
     (name) => name === "post_edit_review" || name === "cli:post-edit-review" || name === "cli:post-edit"
   ).length;
 }
@@ -2127,6 +2397,32 @@ function extractCodexaCliNames(value) {
   return extractCodexaCliNamesFromStructured(value);
 }
 
+function extractExactCodexaCliNames(value) {
+  const parsed = typeof value === "string" ? parseStringifiedToolArguments(value) : value;
+  if (!parsed || typeof parsed !== "object") return [];
+  const commands = [];
+  const visit = (entry) => {
+    if (Array.isArray(entry)) {
+      for (const child of entry) visit(child);
+      return;
+    }
+    if (!entry || typeof entry !== "object") return;
+    for (const [key, child] of Object.entries(entry)) {
+      if (["command", "cmd", "shell_command"].includes(key)) commands.push(child);
+      else if (typeof child === "object") visit(child);
+    }
+  };
+  visit(parsed);
+  return commands.flatMap((command) => {
+    if (Array.isArray(command) && command.every((part) => typeof part === "string")) {
+      return command[0] === "codexa" && /^[a-z][a-z0-9-]*$/u.test(command[1] ?? "") ? [`cli:${command[1].toLowerCase()}`] : [];
+    }
+    if (typeof command !== "string" || /[;&|\n\r]/u.test(command)) return [];
+    const match = /^\s*codexa[ \t]+([a-z][a-z0-9-]*)(?:[ \t]+[^;&|\n\r]*)?\s*$/iu.exec(command);
+    return match ? [`cli:${match[1].toLowerCase()}`] : [];
+  });
+}
+
 function parseStringifiedToolArguments(value) {
   if (value.length > MAX_STRINGIFIED_TOOL_ARGUMENT_CHARACTERS) {
     return null;
@@ -2262,7 +2558,9 @@ function renderSchemaV2Markdown(summary, confidenceLevel) {
   for (const [armId, arm] of Object.entries(summary.arms)) {
     lines.push(`- Arm ${armId}: ${arm.successes}/${arm.startedRuns} started runs`);
     const efficiency = summary.efficiencyTelemetry[armId];
+    const route = summary.routeConformance.byArm[armId];
     lines.push(
+      `  - Selective-route conformance observed/matching/deviation/unknown: ${route.observedRuns}/${route.matchingRuns}/${route.deviationRuns}/${route.unknownRuns}`,
       `  - ATIF transport observed/unknown-or-partial: ${efficiency.atif.observedRuns}/${efficiency.atif.unknownOrPartialRuns}; request/result bytes: ${formatNullableNumber(efficiency.atif.requestArgumentBytes)}/${formatNullableNumber(efficiency.atif.modelVisibleResultTextBytes)}; explicit-detailed/resource-fetch/escalation/unchanged: ${formatNullableNumber(efficiency.atif.explicitDetailedRequests)}/${formatNullableNumber(efficiency.atif.detailResourceFetches)}/${formatNullableNumber(efficiency.atif.automaticEscalations)}/${formatNullableNumber(efficiency.atif.unchangedReceipts)}; resource-fetch request/result bytes: ${formatNullableNumber(efficiency.atif.detailResourceFetchRequestArgumentBytes)}/${formatNullableNumber(efficiency.atif.detailResourceFetchResultTextBytes)}`,
       `  - Server telemetry observed/unknown-or-partial: ${efficiency.server.observedRuns}/${efficiency.server.unknownOrPartialRuns}; tool/resource events: ${formatNullableNumber(efficiency.server.toolCallEvents)}/${formatNullableNumber(efficiency.server.detailResourceFetches)}; request/text/structured/total bytes: ${formatNullableNumber(efficiency.server.requestBytes)}/${formatNullableNumber(efficiency.server.textBytes)}/${formatNullableNumber(efficiency.server.structuredBytes)}/${formatNullableNumber(efficiency.server.totalBytes)}; elapsed ms: ${formatNullableNumber(efficiency.server.elapsedMs)}`
     );
@@ -2299,7 +2597,7 @@ function renderSchemaV2Markdown(summary, confidenceLevel) {
     }
   }
   lines.push(
-    "- Usage, ATIF transport, and server telemetry are descriptive; they do not change ITT inclusion, protocol validity, or verifier outcomes.",
+    "- Selective-route conformance, usage, ATIF transport, and server telemetry are descriptive; they do not change ITT inclusion, protocol validity, or verifier outcomes.",
     "",
     summary.registeredTasks < 2
       ? "This one-task run is a non-confirmatory plumbing pilot and cannot support a product-effect claim."

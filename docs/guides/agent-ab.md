@@ -146,7 +146,14 @@ A v2 experiment replaces top-level `treatment` with `arms` and adds
     "timeoutMultiplier": 1,
     "controllerTimeoutSeconds": 3600
   },
-  "tasks": [{ "id": "TASK_ID", "name": "PACK/TASK_NAME", "path": "TASK_PATH" }],
+  "tasks": [
+    {
+      "id": "TASK_ID",
+      "name": "PACK/TASK_NAME",
+      "path": "TASK_PATH",
+      "expectedRouteClass": "source-only"
+    }
+  ],
   "arms": [
     { "id": "control", "kind": "control" },
     {
@@ -198,6 +205,51 @@ every arm once, and four repetitions of a four-arm design put each arm in each
 position once. Fewer repetitions remain valid but are only partially balanced;
 the registration and summary publish the exact `positionalBalance` counts.
 This is positional balance, not a claim of complete sequence counterbalancing.
+
+### Selective-route conformance
+
+Every task in a new selective-route schema-v2 study should register one
+evaluator-owned `expectedRouteClass`. The value is immutable with the task
+registration and must be one of:
+
+- `source-only`: use ordinary source tools and make no Codexa call;
+- `search-only`: call `search` once and make no later Codexa call;
+- `plan-review`: call `change_plan`, then `post_edit_review`; or
+- `search-plan-review`: call `search`, then `change_plan`, then
+  `post_edit_review`.
+
+The field is additive for compatibility: an older schema-v2 input without it
+is still accepted, but its route evidence remains `unknown` and legacy
+invocation-based adherence semantics remain in force. The checked-in
+conformance pack requires the field on every task.
+
+These classes encode the current selective-workflow contract, not task
+correctness. The analyzer derives the ordered logical call pattern only from
+structured trajectory evidence, including the explicit operation named by a
+`capabilities` invocation. Exact single-command Codexa CLI tool calls are also
+recognized. Tool names found only in source strings, comments, compound or
+conditional shell commands, or other unexecuted text remain unknown. Missing,
+malformed, copied, or unsupported lineage remains unknown. Repeated calls remain
+in the observed sequence and therefore
+produce a deviation when the registered sequence expects only one. Server
+telemetry may corroborate calls that reached Codexa, but it cannot prove a
+truthful zero-call route. The route trace does not prove that planned
+verification ran; verifier and command evidence retain that separate
+responsibility.
+
+Route conformance is descriptive and never changes verifier rewards, protocol
+validity, ITT inclusion, or effect estimates. A mismatch is treatment
+nonadherence only for the registered primary comparison's candidate arm
+(`adaptive-auto-bounded` in the checked-in design). The control has no Codexa
+exposure, while legacy arms deliberately follow a fixed cadence that may
+disagree with the selective route and are not labelled nonadherent for that
+designed difference.
+
+The checked-in
+[`benchmarks/agent-ab-selective-v2`](../../benchmarks/agent-ab-selective-v2/)
+pack is a one-task public conformance fixture for this plumbing. Its one
+`source-only` task, one repetition, and four assignments cannot support a
+calibration, confirmatory, or product-effect claim.
 
 ### Descriptive transport evidence
 
@@ -309,8 +361,10 @@ provision. Keeping the preflight outside the measured wrapper avoids charging
 a second server startup to Codexa arms. At analysis time, every receipt needed
 by a started Codexa task/command pair is read again as a bounded regular file.
 The JSON and Markdown reports surface the proof status plus expected and
-observed server identities; a missing, malformed, or identity-mismatched
-receipt invalidates the protocol and suppresses all effect estimates.
+observed server identities; a missing, malformed, identity-mismatched, or
+post-attempt receipt invalidates the protocol and suppresses all effect
+estimates. The controller refuses to create or accept a receipt completed after
+the first bound attempt journal starts.
 
 ## Agent-inaccessible verification
 
@@ -373,11 +427,10 @@ node scripts/agent-ab.mjs validate --config benchmarks/agent-ab/experiment.json
 
 Validate from an artifact-clean task tree. Validation rejects symlinks,
 oversized input, and transient artifacts such as bytecode and tool caches
-before the task hash is computed. Then make a real authenticated no-op request
-through the exact selected agent adapter and model. Installation-only checks do
-not prove that credentials reach the model, and registration deliberately does
-not inspect or serialize provider secrets. Complete both preflights before a
-costly run.
+before the task hash is computed. Separately, make a real authenticated no-op
+request through the exact selected agent adapter and model. Installation-only
+checks do not prove that credentials reach the model, and registration
+deliberately does not inspect or serialize provider secrets.
 
 Register the exact task hashes, schema-v1 treatment or schema-v2 per-arm input
 hashes, comparisons, framework, agent, model, agent-runner version and
@@ -398,16 +451,44 @@ continue only when the experiment, task, registered arm inputs, agent, and model
 hashes still match. A started assignment without final metadata remains an ITT
 failure and is never rerun.
 
+For schema v2, exercise the exact registered candidate images and wrappers
+without invoking Harbor or a provider:
+
+```bash
+node scripts/agent-ab.mjs preflight \
+  --config benchmarks/agent-ab-selective-v2/experiment.json \
+  --output .codex/cache/codexa-agent-ab/selective-v2-conformance \
+  --agent codex \
+  --model PROVIDER/MODEL
+```
+
+`preflight` requires an existing immutable schema-v2 registration and exact
+matching agent and model labels. It builds each required task image with the
+registered candidate pin and runs the harness-owned bounded `initialize` plus
+`tools/list` identity handshake through every registered Codexa wrapper. It
+writes reusable identity receipts only: it does not create attempt journals,
+spawn assignments, invoke `uvx` or Harbor, start the agent runner, or contact a
+model provider. Schema v1 is rejected.
+
 Those hashes bind source inputs; they do not make a container build
 bit-for-bit reproducible. Exact replay also requires recording the built-image
 digest and the resolved operating-system and package dependency lock used by
 that run. Without those artifacts, compare paired arms within a run and label
 cross-run reproduction accordingly.
 
-The checked-in configuration is frozen to the archived Codexa 0.10.0 pilot.
-A later candidate needs a new experiment ID plus matching version pins in the
-experiment config and task Dockerfile; do not relabel or overwrite the archived
-result.
+The checked-in `benchmarks/agent-ab` configuration is frozen to the archived
+Codexa 0.10.0 pilot. The public `benchmarks/agent-ab-selective-v2` fixture
+validates current schema-v2 conformance only. A later candidate or evidence
+study needs a new experiment ID plus matching version pins in the experiment
+config and every task Dockerfile; do not relabel or overwrite either input.
+
+Before any paid run, audit the immutable registration, including task hashes,
+route classes, comparisons, exact registered run count, and positional
+balance. For a calibration, require 12–20 diverse evaluator-owned tasks and at
+least two repetitions per arm. Also complete the authenticated no-op provider
+check with scoped, disposable, spend-limited credentials and obtain explicit
+approval for the disclosed spend-bearing assignment count. `validate`,
+`register`, and schema-v2 `preflight` are not substitutes for that approval.
 
 Execute:
 
@@ -424,6 +505,8 @@ The runner uses executable-plus-argument subprocesses, disables Harbor
 telemetry, sets one Harbor attempt, sets zero retries, and terminates the whole
 Harbor process group at the controller deadline. Environment values are
 inherited for provider authentication but never serialized by the controller.
+`run` is the spend-bearing boundary: do not invoke it for the public conformance
+pack or before the explicit approval above.
 
 ## Analysis
 
@@ -447,7 +530,8 @@ The schema-v1 summary reports:
 Schema v2 reports the same arm metrics for every registered arm, independently
 recomputes every registered baseline/candidate comparison, identifies the
 primary comparison, publishes positional balance, and adds per-arm descriptive
-efficiency telemetry. It does not use telemetry to adjust or select effects.
+efficiency and selective-route-conformance telemetry. It does not use telemetry
+to adjust or select effects.
 
 No effect is emitted while the experiment is incomplete. Final metadata is
 accepted only when its assignment fields and expected job path match the

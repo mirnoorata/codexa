@@ -66,6 +66,11 @@ export async function buildPostEditLifecycleDecision(input: PostEditLifecycleInp
     verificationMissingTargets: [
       ...input.decisionInput.testsNotRun.map((test) => test.path),
       ...(input.verification.noVerificationProofForEditedFiles ? input.verification.reviewTargets : []),
+      ...(preliminaryDecision.reviewCoverageBlockReason
+        ? [!preliminaryDecision.reviewCoverageBlockReason.startsWith("post-edit review coverage receipt is invalid") && input.decisionInput.reviewCoverage?.status === "partial"
+            ? `post-edit-review-scope:${input.decisionInput.reviewCoverage.omittedTargetCount}-target(s)-omitted`
+            : "post-edit-review-scope:coverage-receipt-invalid"]
+        : []),
       ...input.decisionInput.degradedSnapshotTests.map((test) => test.path)
     ],
     verificationFailedTargets: input.verification.commandReports.filter((report) => report.exitCode !== undefined && report.exitCode !== 0).map((report) => report.command),

@@ -1,5 +1,5 @@
 import type { PostEditCheckResult, PostEditVerdict } from "../../post-edit-outcomes.js";
-import type { ChangeType, FileFact, TaskSnapshot, TestRecommendation, WorkflowTraceFact } from "../../types.js";
+import type { ChangeType, FileFact, PostEditReviewCoverage, TaskSnapshot, TestRecommendation, WorkflowTraceFact } from "../../types.js";
 import { nextTool } from "../next-tools.js";
 
 export function postEditNextActions(
@@ -11,6 +11,7 @@ export function postEditNextActions(
     degradedSnapshotTests: TestRecommendation[];
     riskEscalations: FileFact[];
     reviewTargets: string[];
+    reviewCoverage: PostEditReviewCoverage;
     workflows: WorkflowTraceFact[];
     missingChecks: PostEditCheckResult[];
     noVerificationProofForEditedFiles: boolean;
@@ -25,7 +26,11 @@ export function postEditNextActions(
   }
   if (verdict === "inspect") {
     return [
-      input.degradedSnapshotTests.length > 0
+      input.reviewCoverage.status === "partial"
+        ? input.reviewCoverage.targetLimit < 30
+          ? `Raise the post-edit review limit above ${input.reviewCoverage.targetLimit} to analyze the ${input.reviewCoverage.omittedTargetCount} omitted target(s).`
+          : `Narrow or split the post-edit review so the ${input.reviewCoverage.omittedTargetCount} omitted target(s) are analyzed directly.`
+        : input.degradedSnapshotTests.length > 0
         ? "Re-run change_plan for the current edit scope before treating planned-test evidence as trusted."
         : input.snapshot
           ? "Read the unplanned or high-risk files before treating the edit as complete."

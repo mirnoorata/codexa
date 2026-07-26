@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { compactMcpResult } from "../src/mcp/compaction.js";
 import { mcpAutoEscalationReason, mcpDecisionKernel, renderMcpConciseText, withMcpDelivery } from "../src/mcp/decision-kernel.js";
+import { createPostEditReviewCoverage } from "../src/post-edit-review-coverage.js";
 import type { FreshnessInfo, QueryResult } from "../src/types.js";
 
 const previousBudget = process.env.CODEXA_MCP_STRUCTURED_BUDGET_BYTES;
@@ -32,7 +33,71 @@ function invariants() {
   return Array.from({ length: 12 }, (_, index) => ({ id: `invariant-${index}`, statement: `preserve invariant ${index} ${"x".repeat(180)}` }));
 }
 
+function completeReviewCoverage(taskId: string, reviewTargets: string[]) {
+  return createPostEditReviewCoverage({
+    taskId,
+    planRevision: 1,
+    snapshotCreatedAt: null,
+    snapshotPublicationSequence: null,
+    candidateTargets: reviewTargets,
+    analyzedTargets: reviewTargets,
+    targetLimit: 30
+  });
+}
+
 describe("mandatory MCP decision kernel", () => {
+  it("preserves partial post-edit review coverage and fails closed even if detailed authority contradicts it", () => {
+    process.env.CODEXA_MCP_STRUCTURED_BUDGET_BYTES = "4000";
+    const reviewTargets = Array.from({ length: 30 }, (_, index) => `src/review-${index}.ts`);
+    const reviewCoverage = createPostEditReviewCoverage({
+      taskId: "kernel-coverage",
+      planRevision: 1,
+      snapshotCreatedAt: null,
+      snapshotPublicationSequence: null,
+      candidateTargets: [...reviewTargets, "src/review-30.ts"],
+      analyzedTargets: reviewTargets,
+      targetLimit: 30
+    });
+    const packet: QueryResult = {
+      freshness: freshness(),
+      text: "partial review",
+      data: {
+        mode: "post_edit_review",
+        actionability: "done",
+        taskId: "kernel-coverage",
+        verdict: "continue",
+        completionAuthority: "complete",
+        inspectMode: "none",
+        planRevision: 1,
+        reviewCoverage,
+        reviewCandidateTargets: [...reviewTargets, "src/review-30.ts"],
+        reviewTargets,
+        huge: Array.from({ length: 200 }, () => "x".repeat(300))
+      }
+    };
+
+    expect(mcpAutoEscalationReason(packet)).toBe("post-edit-review-coverage-partial");
+    const compacted = compactMcpResult(packet, { format: "concise" });
+    const compactedData = compacted.data as {
+      actionability?: string;
+      reviewCoverage?: typeof reviewCoverage;
+      decisionKernel?: {
+        authority?: { actionability?: string; verdict?: string; completionAuthority?: string; inspectMode?: string };
+        reviewCoverage?: typeof reviewCoverage;
+      };
+    };
+    expect(compactedData.actionability).toBe("blocked");
+    expect(compactedData.reviewCoverage).toEqual(reviewCoverage);
+    expect(compactedData.decisionKernel?.authority).toMatchObject({
+      actionability: "blocked",
+      verdict: "inspect",
+      completionAuthority: "blocking_inspect",
+      inspectMode: "blocking"
+    });
+    expect(compactedData.decisionKernel?.reviewCoverage).toEqual(reviewCoverage);
+    expect(renderMcpConciseText(compacted)).toContain("Review coverage: partial; 30/31 analyzed; 1 omitted");
+  });
+
   it("keeps checkout/freshness identity and every declared invariant in an actionable oversized concise plan", () => {
     process.env.CODEXA_MCP_STRUCTURED_BUDGET_BYTES = "4000";
     const packet: QueryResult = {
@@ -165,13 +230,17 @@ describe("mandatory MCP decision kernel", () => {
       mode: "post_edit_review",
       data: {
         mode: "post_edit_review",
+        taskId: "oversized-review",
+        planRevision: 1,
         actionability: "done",
         completionAuthority: "complete",
         inspectMode: "none",
         loopReview: { status: "resolved" },
         invariants: invariants(),
         invariantReviews: invariants().map(({ id }) => ({ invariantId: id, status: "satisfied" })),
-        reviewTargets: Array.from({ length: 40 }, (_, index) => `src/review-${index}.ts`),
+        reviewCandidateTargets: Array.from({ length: 30 }, (_, index) => `src/review-${index}.ts`),
+        reviewTargets: Array.from({ length: 30 }, (_, index) => `src/review-${index}.ts`),
+        reviewCoverage: completeReviewCoverage("oversized-review", Array.from({ length: 30 }, (_, index) => `src/review-${index}.ts`)),
         changedSinceSnapshot: Array.from({ length: 40 }, (_, index) => ({ path: `src/review-${index}.ts`, status: "modified" })),
         verificationLedger: Array.from({ length: 40 }, (_, index) => ({ target: `check-${index}`, status: "covered", reason: "verified" }))
       }
@@ -245,7 +314,18 @@ describe("mandatory MCP decision kernel", () => {
     { name: "non-editable plan", mode: "change_plan", actionability: "edit_ready", editReadiness: { editable: false }, expected: "edit-target-not-ready" },
     { name: "degraded worktree", mode: "change_plan", actionability: "edit_ready", worktree: { degraded: true }, expected: "worktree-degraded" },
     { name: "low-quality plan", mode: "change_plan", actionability: "edit_ready", quality: { level: "low" }, expected: "low-context-quality" },
-    { name: "replan-required completion", mode: "post_edit_review", actionability: "done", completionAuthority: "replan_required", expected: "completion-authority:replan_required" }
+    {
+      name: "replan-required completion",
+      mode: "post_edit_review",
+      taskId: "replan-review",
+      planRevision: 1,
+      reviewCandidateTargets: [],
+      reviewTargets: [],
+      reviewCoverage: completeReviewCoverage("replan-review", []),
+      actionability: "done",
+      completionAuthority: "replan_required",
+      expected: "completion-authority:replan_required"
+    }
   ])("downgrades contradictory detailed and concise authority: $name", ({ expected, ...data }) => {
     const packet: QueryResult = { freshness: freshness(), text: "contradictory authority", data };
     const kernel = mcpDecisionKernel(data, String(data.mode), packet.freshness);

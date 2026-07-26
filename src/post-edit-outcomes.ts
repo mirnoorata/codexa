@@ -2,6 +2,11 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { assertSafeManagedDirectory, assertSafeManagedFile, ensureSafeManagedStateDirectory } from "./init-portability.js";
+import {
+  isCompletionBearingPostEditReviewCoverage,
+  postEditReviewCoverageDigest,
+  validatePostEditReviewCoverage
+} from "./post-edit-review-coverage.js";
 import { CURRENT_VERIFICATION_PROVENANCE } from "./types.js";
 import type { AutoVerifyReportRunner } from "./autoverify.js";
 import type {
@@ -23,7 +28,8 @@ import type {
   TaskInvariantReview,
   TaskLoopFailureSignal,
   TaskLoopReview,
-  VerificationArtifactSummary
+  VerificationArtifactSummary,
+  PostEditReviewCoverage
 } from "./types.js";
 import { stableId } from "./util.js";
 import { exactWorkspaceStateDigest, workspaceStateDigest } from "./workspace-state.js";
@@ -66,6 +72,8 @@ export interface PostEditOutcomeInput {
   changedFiles: string[];
   plannedEditTargets: string[];
   reviewTargets: string[];
+  reviewCandidateTargets: string[];
+  reviewCoverage: PostEditReviewCoverage;
   unplannedEditedFiles: string[];
   unindexedEditedFiles: string[];
   modifiedSymbols: string[];
@@ -148,6 +156,11 @@ export interface PostEditOutcome {
   changedFiles: string[];
   plannedEditTargets: string[];
   reviewTargets: string[];
+  /**
+   * Optional only for reading legacy schema-v1 records. New outcomes always
+   * persist this authority receipt.
+   */
+  reviewCoverage?: PostEditReviewCoverage;
   unplannedEditedFiles: string[];
   unindexedEditedFiles: string[];
   modifiedSymbols: string[];
@@ -192,6 +205,7 @@ interface LatestPostEditOutcomePointer {
   headCommit: string | null;
   indexSnapshotId: string;
   workspaceStateDigest: string;
+  reviewCoverageDigest: string;
 }
 
 export interface PostEditHookReviewState {
@@ -224,6 +238,15 @@ export interface CodexaHookEvent extends CodexaHookEventInput {
 
 export function buildPostEditOutcome(input: PostEditOutcomeInput, createdAt = new Date().toISOString()): PostEditOutcome {
   const repoRoot = path.resolve(input.repoRoot);
+  const coverageValidation = validatePostEditReviewCoverage(input.reviewCoverage, {
+    taskId: input.taskId ?? null,
+    planRevision: input.planRevision,
+    snapshotCreatedAt: input.snapshotCreatedAt ?? null,
+    snapshotPublicationSequence: input.snapshotPublicationSequence ?? null,
+    candidateTargets: input.reviewCandidateTargets,
+    analyzedTargets: input.reviewTargets
+  });
+  if (!coverageValidation.valid) throw new Error(`refusing to build post-edit outcome with invalid review coverage: ${coverageValidation.reason}`);
   const outcomeId = stableOutcomeId(repoRoot, input, createdAt);
   return {
     schemaVersion: 1,
@@ -257,6 +280,7 @@ export function buildPostEditOutcome(input: PostEditOutcomeInput, createdAt = ne
     changedFiles: input.changedFiles,
     plannedEditTargets: input.plannedEditTargets,
     reviewTargets: input.reviewTargets,
+    reviewCoverage: input.reviewCoverage,
     unplannedEditedFiles: input.unplannedEditedFiles,
     unindexedEditedFiles: input.unindexedEditedFiles,
     modifiedSymbols: input.modifiedSymbols,
@@ -299,6 +323,8 @@ export async function savePostEditOutcome(input: PostEditOutcomeInput): Promise<
   const dir = await ensureSafeManagedStateDirectory(repoRoot, "cache", "codexa-outcomes");
   const outcomePath = path.join(dir, `${outcome.outcomeId}.json`);
   const latestPath = path.join(dir, LATEST_FILE);
+  const reviewCoverageDigest = postEditReviewCoverageDigest(outcome.reviewCoverage);
+  if (!reviewCoverageDigest) throw new Error("refusing to save post-edit outcome with invalid review coverage");
   await assertSafeManagedFile(outcomePath);
   await assertSafeManagedFile(latestPath);
   await atomicJsonWrite(outcomePath, outcome);
@@ -315,7 +341,8 @@ export async function savePostEditOutcome(input: PostEditOutcomeInput): Promise<
     snapshotPublicationSequence: outcome.snapshotPublicationSequence,
     headCommit: outcome.headCommit,
     indexSnapshotId: outcome.indexSnapshotId,
-    workspaceStateDigest: outcome.workspaceStateDigest
+    workspaceStateDigest: outcome.workspaceStateDigest,
+    reviewCoverageDigest
   } satisfies LatestPostEditOutcomePointer);
   return { outcome, path: outcomePath, relativePath: path.posix.join(OUTCOME_DIR, `${outcome.outcomeId}.json`) };
 }
@@ -379,6 +406,16 @@ export async function latestCompletedPostEditReviewMatches(input: {
     outcome.snapshotCreatedAt === pointer.snapshotCreatedAt &&
     outcome.snapshotPublicationSequence === pointer.snapshotPublicationSequence &&
     outcome.completionAuthority === pointer.completionAuthority &&
+    Array.isArray(outcome.reviewTargets) &&
+    outcome.reviewTargets.every((target) => typeof target === "string") &&
+    isCompletionBearingPostEditReviewCoverage(outcome.reviewCoverage, {
+      taskId: outcome.taskId ?? null,
+      planRevision: outcome.planRevision ?? 0,
+      snapshotCreatedAt: outcome.snapshotCreatedAt ?? null,
+      snapshotPublicationSequence: outcome.snapshotPublicationSequence ?? null,
+      analyzedTargets: outcome.reviewTargets
+    }) &&
+    postEditReviewCoverageDigest(outcome.reviewCoverage) === pointer.reviewCoverageDigest &&
     outcome.headCommit === pointer.headCommit &&
     outcome.indexSnapshotId === pointer.indexSnapshotId &&
     outcome.workspaceStateDigest === pointer.workspaceStateDigest
@@ -520,7 +557,8 @@ function isLatestPostEditOutcomePointer(value: unknown): value is LatestPostEdit
     (record.snapshotPublicationSequence === undefined || (Number.isInteger(record.snapshotPublicationSequence) && (record.snapshotPublicationSequence ?? 0) > 0)) &&
     (record.headCommit === null || typeof record.headCommit === "string") &&
     typeof record.indexSnapshotId === "string" &&
-    /^[a-f0-9]{64}$/u.test(record.workspaceStateDigest ?? "")
+    /^[a-f0-9]{64}$/u.test(record.workspaceStateDigest ?? "") &&
+    /^[a-f0-9]{16}$/u.test(record.reviewCoverageDigest ?? "")
   );
 }
 
@@ -800,6 +838,9 @@ function hookSummary(input: PostEditOutcomeInput): PostEditHookSummary {
 
 function calibrationLabels(input: PostEditOutcomeInput): string[] {
   const labels: string[] = [];
+  if (input.reviewCoverage.status === "partial") {
+    labels.push("partial-review-coverage");
+  }
   if (input.unplannedEditedFiles.length > 0) {
     labels.push("unplanned-edits");
   }

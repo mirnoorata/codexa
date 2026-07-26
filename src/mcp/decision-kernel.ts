@@ -4,7 +4,8 @@ import { compactNextTools, isRecord, stringValue, structuredByteLength } from ".
 import { capabilitiesDecisionKernel, compactCapabilitiesKernel, renderCapabilitiesKernel } from "./capability-kernel.js";
 import { advancedModeDecisionKernel, compactAdvancedModeKernel, renderAdvancedModeKernel } from "./advanced-mode-kernel.js";
 import { renderKernelGuidance, skillGuidanceKernel, terminalGuidanceKernel } from "./decision-guidance.js";
-import { decisionEntryPath, mcpAuthorityBlockReason, mcpProofEscalationReason, modeRequiresExactKernelDetail, renderDecisionReadScope } from "./decision-policy.js";
+import { decisionEntryPath, mcpAuthorityBlockReason, mcpProofEscalationReason, modeRequiresExactKernelDetail, postEditReviewCoverageBlockReason, renderDecisionReadScope } from "./decision-policy.js";
+import { postEditOutcomeKernel, reviewCoverageKernel } from "./review-coverage-kernel.js";
 
 export type McpResponseFormat = "auto" | "concise" | "detailed";
 
@@ -46,13 +47,18 @@ export function mcpDecisionKernel(data: Record<string, unknown>, suppliedMode?: 
   const mode = suppliedMode ?? (typeof data.mode === "string" ? data.mode : inferKernelMode(data)) ?? "unknown";
   const runtime = isRecord(data.runtime) ? data.runtime : isRecord(data.session) ? data.session : undefined;
   const freshness = isRecord(freshnessValue) ? freshnessValue : isRecord(data.freshness) ? data.freshness : undefined;
+  const coverageBlockReason = postEditReviewCoverageBlockReason(data, mode);
+  const inspectReasons = [
+    ...(Array.isArray(data.inspectReasons) ? data.inspectReasons.filter((reason): reason is string => typeof reason === "string") : []),
+    ...(coverageBlockReason ? [coverageBlockReason] : [])
+  ];
   const authority = definedRecord({
-    actionability: deriveMcpActionability(mode, data, mcpAuthorityBlocked(data, freshnessValue)),
-    verdict: boundedString(data.verdict),
+    actionability: deriveMcpActionability(mode, data, Boolean(coverageBlockReason) || mcpAuthorityBlocked(data, freshnessValue)),
+    verdict: coverageBlockReason ? "inspect" : boundedString(data.verdict),
     packetVerdict: boundedString(data.packetVerdict),
-    completionAuthority: boundedString(data.completionAuthority),
-    inspectMode: boundedString(data.inspectMode),
-    inspectReasons: kernelStrings(data.inspectReasons, 5),
+    completionAuthority: coverageBlockReason ? "blocking_inspect" : boundedString(data.completionAuthority),
+    inspectMode: coverageBlockReason ? "blocking" : boundedString(data.inspectMode),
+    inspectReasons: kernelStrings(inspectReasons, 5),
     editReadiness: kernelRecord(data.editReadiness, ["status", "editable", "reason", "source", "recommendedNextTool", "missingAnchors", "snapshotBlocked"])
   });
   const identity = definedRecord({
@@ -67,6 +73,7 @@ export function mcpDecisionKernel(data: Record<string, unknown>, suppliedMode?: 
   });
   const gapCount = arrayCount(data.gaps);
   const gaps = kernelStrings(data.gaps, 6);
+  const reviewCoverage = reviewCoverageKernel(data.reviewCoverage);
   const common = {
     schemaVersion: 1,
     mode,
@@ -74,6 +81,7 @@ export function mcpDecisionKernel(data: Record<string, unknown>, suppliedMode?: 
     identity,
     worktree: kernelRecord(data.worktree ?? runtime, ["knownClean", "degraded", "dirtyFileCount", "degradedReasons", "warnings", "provenance", "repoRoot", "gitHead", "routingSource", "workspaceSessionId"]),
     quality: kernelRecord(data.quality, ["level", "score", "confidence", "warnings", "reasons"]),
+    reviewCoverage,
     gapCount,
     gaps,
     gapsOmitted: Math.max(0, gapCount - gaps.length),
@@ -99,6 +107,7 @@ export function mcpDecisionKernel(data: Record<string, unknown>, suppliedMode?: 
       freshness: identity.freshness
     }),
     worktree: common.worktree,
+    reviewCoverage,
     guidance: narrowKernelSection(kernel.guidance),
     capabilities: compactCapabilitiesKernel(kernel.capabilities),
     advanced: compactAdvancedModeKernel(kernel.advanced, "narrow"),
@@ -211,6 +220,7 @@ export function renderMcpConciseText(result: QueryResult): string {
   const invariants = Array.isArray(kernel.invariants) ? kernel.invariants : [];
   const loop = isRecord(kernel.loop) ? kernel.loop : undefined;
   const verification = isRecord(kernel.verification) ? kernel.verification : undefined;
+  const reviewCoverage = isRecord(kernel.reviewCoverage) ? kernel.reviewCoverage : undefined;
   const guidance = isRecord(kernel.guidance) ? kernel.guidance : undefined;
   const invariantLine = renderKernelInvariants(invariants);
   const capabilityLines = renderCapabilitiesKernel(kernel.capabilities);
@@ -227,6 +237,9 @@ export function renderMcpConciseText(result: QueryResult): string {
     renderDecisionReadScope(kernel.scope),
     guidance ? renderKernelGuidance(guidance) : undefined,
     verification ? renderKernelVerification(verification) : undefined,
+    reviewCoverage
+      ? `Review coverage: ${stringValue(reviewCoverage.status) ?? "unknown"}; ${String(reviewCoverage.analyzedTargetCount ?? "?")}/${String(reviewCoverage.candidateTargetCount ?? "?")} analyzed; ${String(reviewCoverage.omittedTargetCount ?? "?")} omitted`
+      : undefined,
     renderKernelGaps(kernel),
     Array.isArray(kernel.nextTools) && kernel.nextTools.length > 0 ? `Next: ${kernel.nextTools.slice(0, 2).map((entry) => boundedReceiptValue(renderKernelEntry(entry), 160)).join(" | ")}` : stringValue(kernel.systemMessage) ? `Next: ${boundedReceiptValue(stringValue(kernel.systemMessage)!, 220)}` : undefined
   ].filter((line): line is string => Boolean(line));
@@ -269,6 +282,7 @@ export function attachMcpDecisionKernel(record: Record<string, unknown>, kernel:
     editReadiness: authority.editReadiness ?? record.editReadiness,
     completionAuthority: authority.completionAuthority ?? record.completionAuthority,
     inspectMode: authority.inspectMode ?? record.inspectMode,
+    inspectReasons: authority.inspectReasons ?? record.inspectReasons,
     decisionKernel: kernel
   });
 }
@@ -342,6 +356,7 @@ function emergencyDecisionKernel(kernel: Record<string, unknown>): Record<string
     decisionLog: compactDecisionKernelSection(kernel.decisionLog),
     worktree: kernelRecord(kernel.worktree, ["knownClean", "degraded", "dirtyFileCount", "degradedReasons"]),
     quality: kernelRecord(kernel.quality, ["level", "score", "confidence"]),
+    reviewCoverage: reviewCoverageKernel(kernel.reviewCoverage),
     verificationProvenance: kernelRecord(kernel.verificationProvenance, ["schemaVersion", "commandCoverageClassifierVersion", "commandEnvelopeRulesetVersion", "verificationCoverageVersion", "verificationLedgerVersion"]),
     guidance: emergencyModeSection(kernel.guidance),
     capabilities: compactCapabilitiesKernel(kernel.capabilities),
@@ -396,6 +411,7 @@ function terminalDecisionKernel(kernel: Record<string, unknown>, failClosed = tr
     decisionLog: decisionLog ? definedRecord({ status: decisionLog.status, baselineIntact: decisionLog.baselineIntact, summaryHashValid: decisionLog.summaryHashValid }) : undefined,
     worktree: kernelRecord(kernel.worktree, ["knownClean", "degraded", "dirtyFileCount"]),
     quality: kernelRecord(kernel.quality, ["level", "confidence"]),
+    reviewCoverage: reviewCoverageKernel(kernel.reviewCoverage),
     verificationProvenance: kernelRecord(kernel.verificationProvenance, ["schemaVersion", "verificationCoverageVersion", "verificationLedgerVersion"]),
     guidance: terminalGuidanceKernel(kernel.guidance),
     capabilities: compactCapabilitiesKernel(kernel.capabilities),
@@ -542,6 +558,7 @@ function absoluteTerminalDecisionKernel(kernel: Record<string, unknown>): Record
     decisionLog: decisionLog ? definedRecord({ status: boundedString(decisionLog.status, 30), baselineIntact: decisionLog.baselineIntact, summaryHashValid: decisionLog.summaryHashValid }) : undefined,
     worktree: kernelRecord(kernel.worktree, ["knownClean", "degraded", "dirtyFileCount"]),
     quality: kernelRecord(kernel.quality, ["level"]),
+    reviewCoverage: reviewCoverageKernel(kernel.reviewCoverage),
     capabilities: compactCapabilitiesKernel(kernel.capabilities),
     advanced: compactAdvancedModeKernel(kernel.advanced, "terminal"),
     search: terminalModeSection(kernel.search),
@@ -686,7 +703,7 @@ function modeDecisionKernel(mode: string, data: Record<string, unknown>): Record
     return { scope: definedRecord({ targetFileCount: arrayCount(data.targetFiles), targetFiles: kernelStrings(data.targetFiles, 10), unindexedTargetFileCount: arrayCount(data.unindexedTargetFiles), unindexedTargetFiles: kernelStrings(data.unindexedTargetFiles, 6), rejectedTargetFileCount: arrayCount(data.rejectedTargetFiles), rejectedTargetFiles: kernelStrings(data.rejectedTargetFiles, 6), changedFileCount: arrayCount(data.changedFiles), changedFiles: kernelStrings(data.changedFiles, 6) }), verification: definedRecord({ testCount: arrayCount(data.tests), tests: kernelEntries(data.tests, 8), commandCount: arrayCount(data.verificationCommands), commands: kernelEntries(data.verificationCommands, 8), testsNotRunCount: arrayCount(data.testsNotRun), testsNotRun: kernelEntries(data.testsNotRun, 6), ledgerCount: arrayCount(data.verificationLedgerPreview), ledger: kernelEntries(data.verificationLedgerPreview, 6) }) };
   }
   if (mode === "post_edit_review") {
-    return { scope: definedRecord({ fileCount: arrayCount(data.files), files: kernelStrings(data.files, 8), reviewTargetCount: arrayCount(data.reviewTargets), reviewTargets: kernelStrings(data.reviewTargets, 8), unplannedEditedFileCount: arrayCount(data.unplannedEditedFiles), unplannedEditedFiles: kernelStrings(data.unplannedEditedFiles, 6), changedSinceSnapshotCount: arrayCount(data.changedSinceSnapshot), changedSinceSnapshot: kernelEntries(data.changedSinceSnapshot, 6) }), invariants: compactInvariantKernel(data.invariants, data.invariantReviews, 16), loop: loopDecisionKernel(data.loopReview), failureSignalCount: arrayCount(data.failureSignals), failureSignals: kernelEntries(data.failureSignals, 8), verification: definedRecord({ testsNotRunCount: arrayCount(data.testsNotRun), testsNotRun: kernelEntries(data.testsNotRun, 6), missedLikelyTestCount: arrayCount(data.missedLikelyTests), missedLikelyTests: kernelEntries(data.missedLikelyTests, 5), ledgerCount: arrayCount(data.verificationLedger), ledger: kernelEntries(data.verificationLedger, 6), riskEscalationsNeedInspection: data.riskEscalationsNeedInspection }), outcome: kernelRecord(data.outcome, ["outcomeId", "id", "path", "persisted"]), planRevision: data.planRevision };
+    return { scope: definedRecord({ fileCount: arrayCount(data.files), files: kernelStrings(data.files, 8), reviewTargetCount: arrayCount(data.reviewTargets), reviewTargets: kernelStrings(data.reviewTargets, 8), reviewCoverage: reviewCoverageKernel(data.reviewCoverage), unplannedEditedFileCount: arrayCount(data.unplannedEditedFiles), unplannedEditedFiles: kernelStrings(data.unplannedEditedFiles, 6), changedSinceSnapshotCount: arrayCount(data.changedSinceSnapshot), changedSinceSnapshot: kernelEntries(data.changedSinceSnapshot, 6) }), invariants: compactInvariantKernel(data.invariants, data.invariantReviews, 16), loop: loopDecisionKernel(data.loopReview), failureSignalCount: arrayCount(data.failureSignals), failureSignals: kernelEntries(data.failureSignals, 8), verification: definedRecord({ testsNotRunCount: arrayCount(data.testsNotRun), testsNotRun: kernelEntries(data.testsNotRun, 6), missedLikelyTestCount: arrayCount(data.missedLikelyTests), missedLikelyTests: kernelEntries(data.missedLikelyTests, 5), ledgerCount: arrayCount(data.verificationLedger), ledger: kernelEntries(data.verificationLedger, 6), riskEscalationsNeedInspection: data.riskEscalationsNeedInspection }), outcome: postEditOutcomeKernel(data.outcome), planRevision: data.planRevision };
   }
   if (mode === "proof_card") {
     const verification = isRecord(data.verification) ? data.verification : undefined;

@@ -34,6 +34,12 @@ const MCP_PREFLIGHT_REFERENCE_PATH = path.join(
   "support",
   MCP_PREFLIGHT_BASENAME
 );
+const EXPECTED_ROUTE_CLASSES = new Set([
+  "source-only",
+  "search-only",
+  "plan-review",
+  "search-plan-review"
+]);
 
 const command = process.argv[2];
 const options = parseOptions(process.argv.slice(3));
@@ -46,6 +52,27 @@ try {
     const loaded = loadAndValidateConfig(requiredOption(options, "config"));
     const registration = createOrLoadRegistration({ loaded, options, allowExisting: Boolean(options.resume) });
     printJson(registration);
+  } else if (command === "preflight") {
+    const loaded = loadAndValidateConfig(requiredOption(options, "config"));
+    if (loaded.config.schemaVersion !== 2) {
+      throw new Error("preflight requires a schema-v2 experiment");
+    }
+    if (options.resume) {
+      throw new Error("preflight does not accept --resume");
+    }
+    const agent = validateCliLabel(requiredOption(options, "agent"), "agent");
+    const model = validateCliLabel(requiredOption(options, "model"), "model");
+    const outputDir = validateOutputPath(requiredOption(options, "output"), loaded);
+    const registration = requireMatchingRegistration(loaded, outputDir, { agent, model });
+    await preflightSchemaV2Assignments({ registration, includeStarted: true });
+    printJson({
+      schemaVersion: 2,
+      experimentId: registration.experimentId,
+      status: "passed",
+      candidate: registration.candidate,
+      registeredRuns: registration.assignments.length,
+      note: "MCP image and initialize/tools-list preflight only; no Harbor assignment was started"
+    });
   } else if (command === "run") {
     const loaded = loadAndValidateConfig(requiredOption(options, "config"));
     const registration = createOrLoadRegistration({ loaded, options, allowExisting: Boolean(options.resume) });
@@ -79,6 +106,7 @@ function usage(error) {
   console.error(`Usage:
   node scripts/agent-ab.mjs validate --config <experiment.json>
   node scripts/agent-ab.mjs register --config <experiment.json> --output <dir> --agent <agent> --model <model>
+  node scripts/agent-ab.mjs preflight --config <experiment.json> --output <dir> --agent <agent> --model <model>
   node scripts/agent-ab.mjs run --config <experiment.json> --output <dir> --agent <agent> --model <model> [--resume]
   node scripts/agent-ab.mjs analyze --config <experiment.json> --output <dir> [--agent <agent> --model <model>]
 
@@ -222,10 +250,23 @@ function validateConfigObject(config) {
   const taskIds = new Set();
   for (const task of config.tasks) {
     assertObject(task, "task");
-    assertKeys(task, ["id", "name", "path"], "task");
+    if (config.schemaVersion === 1) {
+      assertKeys(task, ["id", "name", "path"], "task");
+    } else {
+      assertKeysWithOptional(task, ["id", "name", "path"], ["expectedRouteClass"], "task");
+    }
     assertIdentifier(task.id, "task.id");
     validateTaskName(task.name, `task ${task.id} name`);
     assertSafeRelative(task.path, `task ${task.id} path`);
+    if (
+      config.schemaVersion === 2
+      && task.expectedRouteClass !== undefined
+      && !EXPECTED_ROUTE_CLASSES.has(task.expectedRouteClass)
+    ) {
+      throw new Error(
+        `task ${task.id} expectedRouteClass must be one of: ${[...EXPECTED_ROUTE_CLASSES].join(", ")}`
+      );
+    }
     if (taskIds.has(task.id)) {
       throw new Error(`duplicate task id: ${task.id}`);
     }
@@ -550,7 +591,14 @@ function createOrLoadRegistration({ loaded, options, allowExisting }) {
     candidate: loaded.config.candidate,
     agent,
     model,
-    tasks: loaded.tasks.map((task) => ({ id: task.id, name: task.name, hash: task.hash })),
+    tasks: loaded.tasks.map((task) => loaded.config.schemaVersion === 1
+      ? { id: task.id, name: task.name, hash: task.hash }
+      : {
+          id: task.id,
+          name: task.name,
+          expectedRouteClass: task.expectedRouteClass,
+          hash: task.hash
+        }),
     inputs,
     assignments
   };
@@ -612,9 +660,13 @@ function requireMatchingRegistration(loaded, outputDir, options) {
   if (JSON.stringify(registration.harness) !== JSON.stringify(loaded.harness)) {
     throw new Error("agent A/B harness source changed after registration");
   }
-  const expectedTaskIdentity = loaded.config.tasks.map((task) => ({ id: task.id, name: task.name }));
+  const expectedTaskIdentity = loaded.config.tasks.map((task) => loaded.config.schemaVersion === 1
+    ? { id: task.id, name: task.name }
+    : { id: task.id, name: task.name, expectedRouteClass: task.expectedRouteClass });
   const registeredTaskIdentity = Array.isArray(registration.tasks)
-    ? registration.tasks.map((task) => ({ id: task.id, name: task.name }))
+    ? registration.tasks.map((task) => loaded.config.schemaVersion === 1
+      ? { id: task.id, name: task.name }
+      : { id: task.id, name: task.name, expectedRouteClass: task.expectedRouteClass })
     : [];
   if (JSON.stringify(registeredTaskIdentity) !== JSON.stringify(expectedTaskIdentity)) {
     throw new Error("registered task identity changed after registration");
@@ -898,18 +950,15 @@ function summarizePositionalBalance(assignments, armIds) {
   };
 }
 
-async function preflightSchemaV2Assignments({ registration }) {
+async function preflightSchemaV2Assignments({ registration, includeStarted = false }) {
   if (registration.schemaVersion !== 2) {
     return;
   }
   const attemptsDir = path.join(registration.outputDir, "attempts");
   const armsById = new Map(registration.arms.map((arm) => [arm.id, arm]));
   const tasksById = new Map(registration.tasks.map((task) => [task.id, task]));
-  const pendingPairs = new Map();
+  const pairsByKey = new Map();
   for (const assignment of registration.assignments) {
-    if (pathEntryExists(path.join(attemptsDir, `${assignment.runId}.json`))) {
-      continue;
-    }
     const arm = armsById.get(assignment.arm);
     if (arm?.kind !== "codexa") {
       continue;
@@ -918,22 +967,46 @@ async function preflightSchemaV2Assignments({ registration }) {
     if (!registeredTask) {
       throw new Error(`registration is missing schema-v2 preflight task ${assignment.taskId}`);
     }
-    pendingPairs.set(`${assignment.taskId}\0${arm.serverCommand}`, {
+    const key = `${assignment.taskId}\0${arm.serverCommand}`;
+    const existing = pairsByKey.get(key);
+    const attemptPath = path.join(attemptsDir, `${assignment.runId}.json`);
+    const attempt = pathEntryExists(attemptPath)
+      ? requireMatchingAttempt(attemptPath, attemptIdentity(registration, assignment))
+      : undefined;
+    const started = Boolean(attempt);
+    const firstAttemptStartedAt = [existing?.firstAttemptStartedAt, attempt?.startedAt]
+      .filter((value) => typeof value === "string")
+      .sort((left, right) => Date.parse(left) - Date.parse(right))[0];
+    pairsByKey.set(key, {
       registeredTask,
-      serverCommand: arm.serverCommand
+      serverCommand: arm.serverCommand,
+      started: started || existing?.started === true,
+      pending: !started || existing?.pending === true,
+      firstAttemptStartedAt
     });
   }
-  if (pendingPairs.size === 0) {
+  const requiredPairs = [...pairsByKey.values()].filter((pair) => includeStarted || pair.pending);
+  if (requiredPairs.length === 0) {
     return;
   }
   const preflightDir = ensureOutputSubdirectory(registration.outputDir, "preflight");
   const missingByTask = new Map();
-  for (const pair of pendingPairs.values()) {
+  for (const pair of requiredPairs) {
     const expected = schemaV2PreflightReceiptIdentity(registration, pair.registeredTask, pair.serverCommand);
     const receiptPath = schemaV2PreflightReceiptPath(preflightDir, expected);
     if (pathEntryExists(receiptPath)) {
-      requireMatchingSchemaV2PreflightReceipt(receiptPath, expected);
+      const receipt = requireMatchingSchemaV2PreflightReceipt(receiptPath, expected);
+      if (pair.firstAttemptStartedAt && Date.parse(receipt.completedAt) > Date.parse(pair.firstAttemptStartedAt)) {
+        throw new Error(
+          `schema-v2 MCP preflight receipt was completed after an attempt journal started for task ${pair.registeredTask.id}; use a new experiment output`
+        );
+      }
       continue;
+    }
+    if (pair.started) {
+      throw new Error(
+        `schema-v2 MCP preflight receipt is missing after an attempt journal started for task ${pair.registeredTask.id}; use a new experiment output instead of backfilling identity proof`
+      );
     }
     const taskReceipts = missingByTask.get(pair.registeredTask.id) ?? [];
     taskReceipts.push({ expected, receiptPath });
@@ -1086,6 +1159,7 @@ function requireMatchingSchemaV2PreflightReceipt(file, expected) {
     throw new Error(`schema-v2 MCP preflight receipt identity differs from registration for ${expected.taskId}`);
   }
   requireExactServerInfo(receipt.observedServerInfo, expected.expectedServerInfo, `schema-v2 MCP preflight receipt for ${expected.taskId}`);
+  return receipt;
 }
 
 function readSchemaV2McpPreflightObservation(file, expectedServerInfo, taskId) {
@@ -1321,7 +1395,14 @@ function validationSummary(loaded) {
     runner: loaded.config.runner,
     candidate: loaded.config.candidate,
     configHash: loaded.configHash,
-    tasks: loaded.tasks.map((task) => ({ id: task.id, name: task.name, hash: task.hash })),
+    tasks: loaded.tasks.map((task) => loaded.config.schemaVersion === 1
+      ? { id: task.id, name: task.name, hash: task.hash }
+      : {
+          id: task.id,
+          name: task.name,
+          expectedRouteClass: task.expectedRouteClass,
+          hash: task.hash
+        }),
     inputs: inputSnapshotLayout(loaded.config),
     registeredRuns: loaded.config.tasks.length * loaded.config.design.repetitions * loaded.arms.length,
     primaryReward: loaded.config.analysis.primaryReward,
@@ -1836,11 +1917,16 @@ function assertObject(value, label) {
 }
 
 function assertKeys(value, allowed, label) {
+  assertKeysWithOptional(value, allowed, [], label);
+}
+
+function assertKeysWithOptional(value, required, optional, label) {
+  const allowed = [...required, ...optional];
   const unexpected = Object.keys(value).filter((key) => !allowed.includes(key));
   if (unexpected.length > 0) {
     throw new Error(`${label} contains unknown field: ${unexpected[0]}`);
   }
-  for (const key of allowed) {
+  for (const key of required) {
     if (!Object.hasOwn(value, key)) {
       throw new Error(`${label} is missing field: ${key}`);
     }
