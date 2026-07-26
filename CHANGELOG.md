@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.0](https://github.com/mirnoorata/codexa/compare/v0.16.0...v0.17.0) (2026-07-26)
+
+
+### Features
+
+* **workflow:** harden selective Codexa execution ([#120](https://github.com/mirnoorata/codexa/issues/120)) ([244a38e](https://github.com/mirnoorata/codexa/commit/244a38e14f4b4bc410085177f27463aae002c322))
+
 ## [0.16.0](https://github.com/mirnoorata/codexa/compare/v0.15.2...v0.16.0) (2026-07-24)
 
 
