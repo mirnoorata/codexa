@@ -2,11 +2,13 @@ import { describe, expect, it } from "vitest";
 import { compactMcpResult } from "../src/mcp/compaction.js";
 import { mcpDecisionKernel } from "../src/mcp/decision-kernel.js";
 import {
+  MAX_POST_EDIT_REVIEW_CANDIDATE_TARGETS,
   createPostEditReviewCoverage,
   isCompletionBearingPostEditReviewCoverage,
   postEditReviewTargetDigest,
   validatePostEditReviewCoverage
 } from "../src/post-edit-review-coverage.js";
+import { postEditReviewPasses } from "../src/query/post-edit/context-passes.js";
 import type { QueryResult } from "../src/types.js";
 
 const context = {
@@ -19,6 +21,27 @@ const context = {
 };
 
 describe("post-edit review coverage validation", () => {
+  it("uses the task-lifecycle candidate boundary without a hidden pass-count cap", () => {
+    const maximumTargets = Array.from(
+      { length: MAX_POST_EDIT_REVIEW_CANDIDATE_TARGETS },
+      (_, index) => `src/file-${index}.ts`
+    );
+    const passes = postEditReviewPasses(maximumTargets, 30);
+    expect(passes).toHaveLength(67);
+    expect(passes.flat()).toEqual(maximumTargets);
+    expect(() => postEditReviewPasses([...maximumTargets, "src/overflow.ts"], 30)).toThrow(
+      `${MAX_POST_EDIT_REVIEW_CANDIDATE_TARGETS}-target lifecycle safety limit`
+    );
+    expect(() =>
+      createPostEditReviewCoverage({
+        ...context,
+        candidateTargets: [...maximumTargets, "src/overflow.ts"],
+        analyzedTargets: [...maximumTargets, "src/overflow.ts"],
+        targetLimit: 30
+      })
+    ).toThrow(`${MAX_POST_EDIT_REVIEW_CANDIDATE_TARGETS}-target lifecycle safety limit`);
+  });
+
   it("accepts generated complete and partial receipts", () => {
     const partial = createPostEditReviewCoverage({ ...context, targetLimit: 3 });
     expect(validatePostEditReviewCoverage(partial, context)).toMatchObject({ valid: true });
@@ -28,6 +51,103 @@ describe("post-edit review coverage validation", () => {
     const complete = createPostEditReviewCoverage({ ...completeContext, targetLimit: 3 });
     expect(validatePostEditReviewCoverage(complete, completeContext)).toMatchObject({ valid: true });
     expect(isCompletionBearingPostEditReviewCoverage(complete, completeContext)).toBe(true);
+
+    const { analysisPassCount: _analysisPassCount, ...legacyComplete } = complete;
+    const legacyV1 = { ...legacyComplete, schemaVersion: 1 as const };
+    expect(validatePostEditReviewCoverage(legacyV1, completeContext)).toMatchObject({ valid: true });
+    expect(isCompletionBearingPostEditReviewCoverage(legacyV1, completeContext)).toBe(true);
+  });
+
+  it("binds exhaustive broad reviews to the exact number of maximum-size analysis passes", () => {
+    const candidateTargets = Array.from({ length: 61 }, (_, index) => `src/file-${index}.ts`);
+    const broadContext = {
+      ...context,
+      candidateTargets,
+      analyzedTargets: candidateTargets
+    };
+    const complete = createPostEditReviewCoverage({
+      ...broadContext,
+      targetLimit: 30,
+      analysisPassCount: 3
+    });
+    expect(complete).toMatchObject({
+      status: "complete",
+      candidateTargetCount: 61,
+      analyzedTargetCount: 61,
+      omittedTargetCount: 0,
+      targetLimit: 30,
+      analysisPassCount: 3
+    });
+    expect(validatePostEditReviewCoverage(complete, broadContext)).toMatchObject({ valid: true });
+    expect(isCompletionBearingPostEditReviewCoverage(complete, broadContext)).toBe(true);
+
+    expect(validatePostEditReviewCoverage({ ...complete, analysisPassCount: 1 }, broadContext)).toMatchObject({
+      valid: false,
+      reason: "analysisPassCount does not match analyzed targets"
+    });
+    expect(validatePostEditReviewCoverage({ ...complete, analysisPassCount: 4 }, broadContext)).toMatchObject({
+      valid: false,
+      reason: "analysisPassCount does not match analyzed targets"
+    });
+    expect(validatePostEditReviewCoverage({ ...complete, targetLimit: 10, analysisPassCount: 7 }, broadContext)).toMatchObject({
+      valid: true
+    });
+  });
+
+  it("validates the full broad target list before compact MCP delivery returns only 30 targets", () => {
+    const targets = Array.from({ length: 61 }, (_, index) => `src/file-${index}.ts`);
+    const broadContext = {
+      ...context,
+      candidateTargets: targets,
+      analyzedTargets: targets
+    };
+    const reviewCoverage = createPostEditReviewCoverage({
+      ...broadContext,
+      targetLimit: 10,
+      analysisPassCount: 7
+    });
+    const data: Record<string, unknown> = {
+      mode: "post_edit_review",
+      taskId: context.taskId,
+      planRevision: context.planRevision,
+      snapshot: {
+        taskId: context.taskId,
+        planRevision: context.planRevision,
+        createdAt: context.snapshotCreatedAt,
+        publicationSequence: context.snapshotPublicationSequence
+      },
+      reviewCandidateTargets: targets,
+      reviewTargets: targets,
+      reviewCoverage,
+      actionability: "done",
+      verdict: "continue",
+      completionAuthority: "complete",
+      inspectMode: "none"
+    };
+
+    expect(validatePostEditReviewCoverage(reviewCoverage, broadContext)).toMatchObject({ valid: true });
+    expect(mcpDecisionKernel(data).authority).toMatchObject({
+      actionability: "done",
+      verdict: "continue",
+      completionAuthority: "complete",
+      inspectMode: "none"
+    });
+
+    const compacted = compactMcpResult({ text: "complete", data } as QueryResult, { format: "concise" });
+    const compactedData = compacted.data as Record<string, unknown>;
+    expect(compactedData.reviewCandidateTargets).toBeUndefined();
+    expect(compactedData.reviewTargets).toEqual(targets.slice(0, 30));
+    expect(compactedData.truncation).toMatchObject({
+      reviewTargets: { total: 61, returned: 30 }
+    });
+    expect(compactedData.decisionKernel).toMatchObject({
+      authority: {
+        actionability: "done",
+        verdict: "continue",
+        completionAuthority: "complete",
+        inspectMode: "none"
+      }
+    });
   });
 
   it.each([
@@ -197,7 +317,7 @@ describe("post-edit review coverage validation", () => {
       analyzedTargets
     };
     const substituted = {
-      schemaVersion: 1,
+      schemaVersion: 2,
       binding: {
         taskId: context.taskId,
         planRevision: context.planRevision,
@@ -210,7 +330,8 @@ describe("post-edit review coverage validation", () => {
       candidateTargetCount: candidateTargets.length,
       analyzedTargetCount: analyzedTargets.length,
       omittedTargetCount: 0,
-      targetLimit: 3
+      targetLimit: 3,
+      analysisPassCount: 1
     };
     const data: Record<string, unknown> = {
       mode: "post_edit_review",

@@ -186,7 +186,14 @@ it("degrades legacy snapshot tests instead of trusting unscoped planned-test evi
       await writeFile(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
       await writeFile(path.join(repo, "service/helpers.py"), "def normalize(value):\n    return value.strip().upper()\n", "utf8");
 
-      const review = await postEditReviewQuery(repo, { taskId: "legacy-planned-test-provenance", ranTests: [] }, { autoRefresh: true });
+      const review = await postEditReviewQuery(
+        repo,
+        {
+          taskId: "legacy-planned-test-provenance",
+          ranTests: ["tests/test_app.py", "tests/test_alias_app.py"]
+        },
+        { autoRefresh: true }
+      );
       const data = review.data as {
         verdict: string;
         inspectMode: string;
@@ -236,7 +243,14 @@ it("requires explicit snapshot binding when multiple task snapshots exist", asyn
       );
       await writeFile(path.join(repo, "service/helpers.py"), "def normalize(value):\n    return value.strip().upper()\n", "utf8");
 
-      const review = await postEditReviewQuery(repo, { ranTests: ["tests/test_app.py"], persistOutcome: false }, { autoRefresh: true });
+      const review = await postEditReviewQuery(
+        repo,
+        {
+          ranTests: ["tests/test_app.py", "tests/test_alias_app.py"],
+          persistOutcome: false
+        },
+        { autoRefresh: true }
+      );
       const data = review.data as { verdict: string; inspectMode: string; completionAuthority: string; driftReasons: string[] };
       expect(data.verdict).toBe("inspect");
       expect(data.inspectMode).toBe("advisory");

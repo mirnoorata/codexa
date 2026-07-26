@@ -10,6 +10,7 @@ export function reviewCoverageKernel(value: unknown): Record<string, unknown> | 
     analyzedTargetCount: primitive(value.analyzedTargetCount),
     omittedTargetCount: primitive(value.omittedTargetCount),
     targetLimit: primitive(value.targetLimit),
+    analysisPassCount: primitive(value.analysisPassCount),
     binding: binding
       ? defined({
           taskId: primitive(binding.taskId),

@@ -27,9 +27,7 @@ export function postEditNextActions(
   if (verdict === "inspect") {
     return [
       input.reviewCoverage.status === "partial"
-        ? input.reviewCoverage.targetLimit < 30
-          ? `Raise the post-edit review limit above ${input.reviewCoverage.targetLimit} to analyze the ${input.reviewCoverage.omittedTargetCount} omitted target(s).`
-          : `Narrow or split the post-edit review so the ${input.reviewCoverage.omittedTargetCount} omitted target(s) are analyzed directly.`
+        ? partialCoverageNextAction(input.reviewCoverage)
         : input.degradedSnapshotTests.length > 0
         ? "Re-run change_plan for the current edit scope before treating planned-test evidence as trusted."
         : input.snapshot
@@ -52,6 +50,10 @@ export function postEditNextActions(
     ];
   }
   return ["No drift detected against the saved snapshot. Finish with the normal source diff review and targeted tests already reported."];
+}
+
+function partialCoverageNextAction(coverage: PostEditReviewCoverage): string {
+  return `Rebuild the index or inspect the first unresolved target, then re-run post-edit review so the ${coverage.omittedTargetCount} omitted target(s) receive authoritative file evidence.`;
 }
 
 export function postEditStructuredNextTools(

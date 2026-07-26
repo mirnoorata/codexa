@@ -10,7 +10,9 @@ import type {
   VerificationLedgerEntry
 } from "../../types.js";
 import type { PostEditCheckResult } from "../../post-edit-outcomes.js";
-import { createPostEditReviewCoverage } from "../../post-edit-review-coverage.js";
+import {
+  createPostEditReviewCoverage
+} from "../../post-edit-review-coverage.js";
 import { stableId, uniqueSorted } from "../../util.js";
 import { autoVerifySnapshotDigest } from "./runner-review.js";
 
@@ -80,6 +82,7 @@ export function buildPostEditReviewCoverage(input: {
   candidateTargets: string[];
   analyzedTargets: string[];
   targetLimit: number;
+  analysisPassCount: number;
   taskId: string | null;
   planRevision: number;
   snapshotCreatedAt: string | null;
@@ -89,11 +92,13 @@ export function buildPostEditReviewCoverage(input: {
 }
 
 export function formatPostEditReviewCoverage(coverage: PostEditReviewCoverage): string | undefined {
-  if (coverage.status !== "partial") return undefined;
-  const action = coverage.targetLimit < 30
-    ? "Raise limit to widen the review."
-    : "Narrow or split the review.";
-  return `Review scope: partial (${coverage.analyzedTargetCount}/${coverage.candidateTargetCount} candidate targets analyzed; ${coverage.omittedTargetCount} omitted). ${action}`;
+  if (coverage.status === "complete") {
+    const analysisPassCount = coverage.analysisPassCount ?? 1;
+    return analysisPassCount > 1
+      ? `Review scope: complete (${coverage.analyzedTargetCount}/${coverage.candidateTargetCount} candidate targets analyzed across ${analysisPassCount} bounded passes; none omitted).`
+      : undefined;
+  }
+  return `Review scope: partial (${coverage.analyzedTargetCount}/${coverage.candidateTargetCount} candidate targets analyzed; ${coverage.omittedTargetCount} omitted). Rebuild the index or inspect the first unresolved target, then re-run the review.`;
 }
 
 function autoVerifyCandidateSource(provenance: TestRecommendationProvenance | undefined): AutoVerifyCandidate["source"] {

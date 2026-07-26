@@ -122,7 +122,7 @@ export async function repositoryTargetPathAuthority(
   if (!canonicalPath || canonicalPath === ".." || canonicalPath.startsWith("../")) {
     return { requestedPath, status: "invalid", viaSymlink, reason: "target does not resolve to a repository file path" };
   }
-  const indexedPaths = new Set(repositoryFiles);
+  const indexedPaths = repositoryFiles instanceof Set ? repositoryFiles : new Set(repositoryFiles);
   return {
     requestedPath,
     path: canonicalPath,
@@ -189,8 +189,17 @@ export async function inspectDirtyTargetAuthorities(
   repoRoot: string,
   repositoryFiles: Iterable<string>
 ): Promise<DirtyTargetPathAuthority[]> {
-  const indexed = [...repositoryFiles];
-  return Promise.all(entries.map((entry) => dirtyTargetPathAuthority(entry, repoRoot, indexed)));
+  const indexed = repositoryFiles instanceof Set ? repositoryFiles : new Set(repositoryFiles);
+  const results = new Array<DirtyTargetPathAuthority>(entries.length);
+  let nextIndex = 0;
+  const worker = async (): Promise<void> => {
+    while (nextIndex < entries.length) {
+      const index = nextIndex++;
+      results[index] = await dirtyTargetPathAuthority(entries[index]!, repoRoot, indexed);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(16, entries.length) }, worker));
+  return results;
 }
 
 function errorCode(error: unknown): string {

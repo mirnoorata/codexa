@@ -15,10 +15,12 @@ export function groupDiffImpact(
     symbolsByPath.set(entry.symbol.path, list);
   }
 
+  const fileByPath = new Map(index.files.map((file) => [file.path, file]));
+  const unindexedPathSet = new Set(unindexedChanged);
   const groups = new Map<string, DiffImpactGroup>();
   for (const entry of changedEntries) {
     const filePath = entry.path;
-    const file = index.files.find((candidate) => candidate.path === filePath);
+    const file = fileByPath.get(filePath);
     const kind = classifyImpactPath(filePath, file);
     const language = file?.language ?? languageForPath(filePath);
     const module = file ? moduleNameForPath(file.path) : moduleNameForPath(filePath);
@@ -40,7 +42,7 @@ export function groupDiffImpact(
     existing.files.push(filePath);
     existing.diffKinds.push(entry.kind);
     existing.changedSymbols.push(...(symbolsByPath.get(filePath) ?? []));
-    if (!file || unindexedChanged.includes(filePath)) {
+    if (!file || unindexedPathSet.has(filePath)) {
       existing.unindexedFiles.push(filePath);
     }
     existing.rank += file?.rank ?? 0;

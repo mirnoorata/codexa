@@ -172,12 +172,12 @@ export interface PostEditReviewCoverageBinding {
 }
 
 /**
- * Bounded authority receipt for the post-edit target cap. Individual omitted
- * paths stay internal; consumers validate the counts and their binding to the
- * task snapshot and analyzed targets instead of copying the full change set.
+ * Bounded authority receipt for post-edit review. Individual omitted paths
+ * stay internal; consumers validate the counts, exhaustive logical pass count,
+ * and binding to the task snapshot and analyzed targets instead of copying the
+ * full change set. Candidate count shares the task-lifecycle 2,000-file limit.
  */
-export interface PostEditReviewCoverage {
-  schemaVersion: 1;
+interface PostEditReviewCoverageBase {
   binding: PostEditReviewCoverageBinding;
   status: PostEditReviewCoverageStatus;
   candidateTargetCount: number;
@@ -185,6 +185,18 @@ export interface PostEditReviewCoverage {
   omittedTargetCount: number;
   targetLimit: number;
 }
+
+export interface PostEditReviewCoverageV1 extends PostEditReviewCoverageBase {
+  schemaVersion: 1;
+  analysisPassCount?: never;
+}
+
+export interface PostEditReviewCoverageV2 extends PostEditReviewCoverageBase {
+  schemaVersion: 2;
+  analysisPassCount: number;
+}
+
+export type PostEditReviewCoverage = PostEditReviewCoverageV1 | PostEditReviewCoverageV2;
 
 export interface VerificationCommandReport {
   command: string;

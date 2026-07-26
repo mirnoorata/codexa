@@ -61,7 +61,16 @@ import { contextSnippets, sessionMemoryPreview } from "./context/previews.js";
 import { editableTargetsWithDefault, inspectPlannedTargetAuthority, mergeTaskTargetRoles, structuredNewTargetAuthority } from "./context/target-authority.js";
 import { terminalContextPackResult, terminalFocusBriefResult } from "./context/terminal.js";
 
-export async function contextPackQuery(input: QuerySessionInput, contextInput: ContextPackInput = {}, options: QueryOptions = {}): Promise<QueryResult> {
+interface ContextPackInternalOptions {
+  requiredFocusFiles?: string[];
+}
+
+export async function contextPackQuery(
+  input: QuerySessionInput,
+  contextInput: ContextPackInput = {},
+  options: QueryOptions = {},
+  internal: ContextPackInternalOptions = {}
+): Promise<QueryResult> {
   const session = await ensureQuerySession(input, options);
   const { index, freshness, refresh, repoRoot } = session;
   const tokenBudget = clampInt(contextInput.tokenBudget ?? 4000, 500, 12000);
@@ -259,8 +268,20 @@ export async function contextPackQuery(input: QuerySessionInput, contextInput: C
     }
   }
 
+  const sortedFocus = [...focus.values()].sort(
+    (a, b) => tierScore(a.tier) - tierScore(b.tier) || b.rank - a.rank || a.file.path.localeCompare(b.file.path)
+  );
+  const requiredFocusPaths = new Set(internal.requiredFocusFiles ?? []);
+  const requiredFocus = sortedFocus.filter((entry) => requiredFocusPaths.has(entry.file.path));
+  if (requiredFocus.length > limit) {
+    throw new Error(`required context focus exceeds the bounded limit (${requiredFocus.length}/${limit})`);
+  }
+  const selectedFocus = [
+    ...requiredFocus,
+    ...sortedFocus.filter((entry) => !requiredFocusPaths.has(entry.file.path))
+  ].slice(0, limit);
   const focusPrune = pruneMissingFiles(
-    [...focus.values()].sort((a, b) => tierScore(a.tier) - tierScore(b.tier) || b.rank - a.rank || a.file.path.localeCompare(b.file.path)).slice(0, limit),
+    selectedFocus,
     repoRoot,
     (entry) => entry.file.path
   );

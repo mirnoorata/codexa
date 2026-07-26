@@ -125,28 +125,44 @@ export function postEditDecision(input: {
   // Quality-low likewise floors at inspect for implicit baselines: "replan"
   // is advice about a plan, and an implicit baseline carries none.
   const qualityLowReplan = input.quality?.level === "low" && !input.implicitBaseline;
+  const requiresReplan =
+    loopReplanReasons.length > 0 ||
+    violatedInvariantCount > 0 ||
+    headChangedBlocking ||
+    input.unplannedEditedFiles.length >= 3 ||
+    qualityLowReplan;
+  const requiresBlockingInspect =
+    input.worktreeDegradationReasons.length > 0 ||
+    input.unplannedEditedFiles.length > 0 ||
+    input.unplannedChangedSymbols.length > 0 ||
+    blockingUnindexedEditedFiles.length > 0 ||
+    missingWorkflowCheckCount > 0 ||
+    missingDependencyCheckCount > 0 ||
+    input.waivedVerification.length > 0 ||
+    input.noVerificationProofForEditedFiles ||
+    Boolean(reviewCoverageBlockReason) ||
+    missingInvariantCount > 0 ||
+    riskEscalationsNeedInspection ||
+    (input.quality?.level === "low" && input.implicitBaseline);
+  const requiresTests = input.hasActualEditedFiles && input.testsNotRun.length > 0;
+  const requiresAdvisoryInspect =
+    !input.snapshot ||
+    Boolean(input.snapshotAmbiguity) ||
+    advisoryUnindexedEditedFiles.length > 0 ||
+    hasDegradedSnapshotTests ||
+    input.symbolDeltas.some((delta) => delta.newSymbols.length > 0 || delta.removedSymbols.length > 0) ||
+    input.riskDeltas.some((delta) => delta.delta > 0) ||
+    input.quality?.level === "medium";
   const verdict: PostEditDecision["verdict"] =
-    loopReplanReasons.length > 0 || violatedInvariantCount > 0 || headChangedBlocking || input.unplannedEditedFiles.length >= 3 || qualityLowReplan
+    requiresReplan
       ? "replan"
-      : !input.snapshot ||
-          input.worktreeDegradationReasons.length > 0 ||
-            input.unplannedEditedFiles.length > 0 ||
-            Boolean(input.snapshotAmbiguity) ||
-            input.unplannedChangedSymbols.length > 0 ||
-            missingWorkflowCheckCount > 0 ||
-            missingDependencyCheckCount > 0 ||
-            hasDegradedSnapshotTests ||
-            input.waivedVerification.length > 0 ||
-            input.noVerificationProofForEditedFiles ||
-            Boolean(reviewCoverageBlockReason) ||
-            missingInvariantCount > 0 ||
-            riskEscalationsNeedInspection ||
-            input.quality?.level === "medium" ||
-            input.quality?.level === "low"
+      : requiresBlockingInspect
         ? "inspect"
-        : input.hasActualEditedFiles && input.testsNotRun.length > 0
+        : requiresTests
           ? "run_tests"
-          : "continue";
+          : requiresAdvisoryInspect
+            ? "inspect"
+            : "continue";
   const inspect = inspectClassification(verdict, {
     snapshot: input.snapshot,
     snapshotAmbiguity: input.snapshotAmbiguity,
