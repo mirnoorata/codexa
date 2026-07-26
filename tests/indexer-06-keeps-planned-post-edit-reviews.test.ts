@@ -5,6 +5,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildIndex, buildIndexLocked, getFreshness, loadIndex } from "../src/indexer.js";
 import { MAX_INDEXED_SOURCE_BYTES } from "../src/repo-files.js";
+import { createPostEditReviewCoverage } from "../src/post-edit-review-coverage.js";
 import { validateChangePlanTargetCandidate } from "../src/query/change-plan.js";
 import { postEditDecision } from "../src/query/post-edit/decision.js";
 import { postEditReviewWithTrustedRunnerReports } from "../src/query/post-edit.js";
@@ -185,7 +186,14 @@ it("degrades legacy snapshot tests instead of trusting unscoped planned-test evi
       await writeFile(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
       await writeFile(path.join(repo, "service/helpers.py"), "def normalize(value):\n    return value.strip().upper()\n", "utf8");
 
-      const review = await postEditReviewQuery(repo, { taskId: "legacy-planned-test-provenance", ranTests: [] }, { autoRefresh: true });
+      const review = await postEditReviewQuery(
+        repo,
+        {
+          taskId: "legacy-planned-test-provenance",
+          ranTests: ["tests/test_app.py", "tests/test_alias_app.py"]
+        },
+        { autoRefresh: true }
+      );
       const data = review.data as {
         verdict: string;
         inspectMode: string;
@@ -235,7 +243,14 @@ it("requires explicit snapshot binding when multiple task snapshots exist", asyn
       );
       await writeFile(path.join(repo, "service/helpers.py"), "def normalize(value):\n    return value.strip().upper()\n", "utf8");
 
-      const review = await postEditReviewQuery(repo, { ranTests: ["tests/test_app.py"], persistOutcome: false }, { autoRefresh: true });
+      const review = await postEditReviewQuery(
+        repo,
+        {
+          ranTests: ["tests/test_app.py", "tests/test_alias_app.py"],
+          persistOutcome: false
+        },
+        { autoRefresh: true }
+      );
       const data = review.data as { verdict: string; inspectMode: string; completionAuthority: string; driftReasons: string[] };
       expect(data.verdict).toBe("inspect");
       expect(data.inspectMode).toBe("advisory");
@@ -272,6 +287,23 @@ it("keeps verified non-source unindexed post-edit drift advisory", () => {
         testsNotRun: [],
         hasTestVerificationAccounting: true,
         noVerificationProofForEditedFiles: false,
+        reviewCoverage: createPostEditReviewCoverage({
+          taskId: "style-css",
+          planRevision: 1,
+          snapshotCreatedAt: null,
+          snapshotPublicationSequence: null,
+          candidateTargets: [],
+          analyzedTargets: [],
+          targetLimit: 3
+        }),
+        reviewCoverageContext: {
+          taskId: "style-css",
+          planRevision: 1,
+          snapshotCreatedAt: null,
+          snapshotPublicationSequence: null,
+          candidateTargets: [],
+          analyzedTargets: []
+        },
         implicitBaseline: false
       });
 

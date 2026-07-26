@@ -70,8 +70,9 @@ export function languageForPath(filePath: string): LanguageId {
 }
 
 export function isSourcePath(filePath: string): boolean {
+  const language = languageForPath(filePath);
   return (
-    ["typescript", "javascript", "python", "rust", "go", "java", "json", "markdown"].includes(languageForPath(filePath)) ||
+    language !== "unknown" ||
     /^scripts\/[^/]+\.sh$/.test(filePath) ||
     filePath.endsWith(".service")
   );

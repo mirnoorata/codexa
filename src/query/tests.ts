@@ -1,6 +1,6 @@
 import path from "node:path";
 import { isTestPath } from "../language.js";
-import type { ChangeType, CodexaIndex, Confidence, EvidenceTier, TestRecommendation, TestRecommendationProvenance, TestRecommendationProvenanceSource } from "../types.js";
+import type { ChangeType, CodexaIndex, Confidence, EvidenceTier, FileFact, TestRecommendation, TestRecommendationProvenance, TestRecommendationProvenanceSource } from "../types.js";
 import { uniqueSorted } from "../util.js";
 import { candidateTestCommand } from "./test-commands.js";
 
@@ -41,6 +41,37 @@ export function recommendTests(
   changeType: ChangeType = "unknown"
 ): TestRecommendation[] {
   const changedSet = new Set(paths);
+  const broadPackageRoots = new Set(["api", "backend", "server", "service", "src", "web", "tests", "scripts"]);
+  const pythonPackageRoots = new Set(
+    paths
+      .filter((candidate) => sourceKindForPath(candidate) === "python")
+      .map((filePath) => filePath.split("/")[0])
+      .filter((packageRoot): packageRoot is string => Boolean(packageRoot) && !broadPackageRoots.has(packageRoot))
+  );
+  const packageImportTestsByRoot = new Map<string, Set<string>>(
+    [...pythonPackageRoots].map((packageRoot) => [packageRoot, new Set<string>()])
+  );
+  const fileByPath = new Map<string, FileFact>();
+  const testFiles: FileFact[] = [];
+  for (const file of index.files) {
+    fileByPath.set(file.path, file);
+    if (file.test) testFiles.push(file);
+  }
+  const importsByResolvedPath = new Map<string, CodexaIndex["imports"]>();
+  for (const edge of index.imports) {
+    if (edge.resolvedPath) {
+      const importers = importsByResolvedPath.get(edge.resolvedPath) ?? [];
+      importers.push(edge);
+      importsByResolvedPath.set(edge.resolvedPath, importers);
+    }
+    if (isTestPath(edge.path)) {
+      const normalizedSpecifier = edge.specifier.replace(/^\.+/, "");
+      for (let length = 1; length <= normalizedSpecifier.length; length += 1) {
+        packageImportTestsByRoot.get(normalizedSpecifier.slice(0, length))?.add(edge.path);
+      }
+    }
+  }
+  const testFilesByTrigram = trigramFileIndex(testFiles);
   interface Candidate {
     path: string;
     reasons: Set<string>;
@@ -111,9 +142,9 @@ export function recommendTests(
     }
   }
 
-  const related = transitiveImporters(index, paths, 2);
+  const related = transitiveImporters(importsByResolvedPath, paths, 2);
   for (const [relatedPath, source] of related) {
-    const relatedFile = index.files.find((file) => file.path === relatedPath);
+    const relatedFile = fileByPath.get(relatedPath);
     if (relatedFile?.test) {
       // Reached via transitive importers — NOT direct coverage. Subject
       // to change-type narrowing.
@@ -132,27 +163,25 @@ export function recommendTests(
     if (basename.length < 3) {
       continue;
     }
-    for (const testFile of index.files.filter((candidate) => candidate.test)) {
+    for (const testFile of testFilesByTrigram.get(basename.slice(0, 3)) ?? []) {
       if (testFile.path.includes(basename)) {
         add(testFile.path, `near ${file}`, 2, file, "heuristic", false, "heuristic_match", [file]);
       }
     }
   }
 
-  const broadPackageRoots = new Set(["api", "backend", "server", "service", "src", "web", "tests", "scripts"]);
   for (const file of paths.filter((candidate) => sourceKindForPath(candidate) === "python")) {
     const packageRoot = file.split("/")[0];
     if (!packageRoot || broadPackageRoots.has(packageRoot)) {
       continue;
     }
-    const packageImportTests = new Set(index.imports.filter((edge) => isTestPath(edge.path) && edge.specifier.replace(/^\.+/, "").startsWith(packageRoot)).map((edge) => edge.path));
-    for (const testPath of packageImportTests) {
+    for (const testPath of packageImportTestsByRoot.get(packageRoot) ?? []) {
       add(testPath, `imports ${packageRoot} package near ${file}`, 3, file, "derived", false, "package_import", [file]);
     }
   }
 
   for (const candidate of candidates.values()) {
-    const testFile = index.files.find((file) => file.path === candidate.path);
+    const testFile = fileByPath.get(candidate.path);
     const outcomeBoost = Math.min(3, testFile?.rankReasons?.outcomeHistory ?? 0);
     if (outcomeBoost > 0) {
       candidate.rank += outcomeBoost;
@@ -425,7 +454,11 @@ function outcomeLearningEvidence(test: TestRecommendation): string[] {
   return evidence.length > 0 ? evidence : [test.reason];
 }
 
-function transitiveImporters(index: CodexaIndex, sourcePaths: string[], maxDepth: number): Map<string, string> {
+function transitiveImporters(
+  importsByResolvedPath: Map<string, CodexaIndex["imports"]>,
+  sourcePaths: string[],
+  maxDepth: number
+): Map<string, string> {
   const result = new Map<string, string>();
   const queue = sourcePaths.map((sourcePath) => ({ path: sourcePath, origin: sourcePath, depth: 0 }));
   const seen = new Set(queue.map((entry) => entry.path));
@@ -437,13 +470,29 @@ function transitiveImporters(index: CodexaIndex, sourcePaths: string[], maxDepth
     if (current.depth >= maxDepth) {
       continue;
     }
-    for (const edge of index.imports.filter((candidate) => candidate.resolvedPath === current.path)) {
+    for (const edge of importsByResolvedPath.get(current.path) ?? []) {
       if (seen.has(edge.path)) {
         continue;
       }
       seen.add(edge.path);
       result.set(edge.path, current.origin);
       queue.push({ path: edge.path, origin: current.origin, depth: current.depth + 1 });
+    }
+  }
+  return result;
+}
+
+function trigramFileIndex(files: FileFact[]): Map<string, FileFact[]> {
+  const result = new Map<string, FileFact[]>();
+  for (const file of files) {
+    const trigrams = new Set<string>();
+    for (let index = 0; index <= file.path.length - 3; index += 1) {
+      trigrams.add(file.path.slice(index, index + 3));
+    }
+    for (const trigram of trigrams) {
+      const matches = result.get(trigram) ?? [];
+      matches.push(file);
+      result.set(trigram, matches);
     }
   }
   return result;

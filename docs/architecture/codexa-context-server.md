@@ -309,6 +309,11 @@ imports, direct call shapes, and obvious tests without building a full AST. Thos
 facts use heuristic source and `derived` confidence so downstream tools can use
 them for target discovery, import impact, and likely-test routing while still
 signaling that deep native-language semantics are outside V1.
+C#, C, C++, Ruby, and PHP use file-only lanes. Codexa records authoritative
+Git/file metadata and may attach generic path or placeholder risk hints, but it
+does not claim first-party symbols, imports, calls, or test relationships for
+those languages. Richer relationships require an imported static-analysis or
+symbol report.
 
 Unchanged files are reused from a content-hash parse cache at `.codex/cache/codexa-parse-cache.json`. The cache stores pre-resolution parse results and rebases snapshot metadata on reuse. The resolver still runs over the full current index, so changed files can relink against cached unchanged files. Cache misses, corrupt caches, parser-version changes, and missing entries fall back to normal parsing.
 
@@ -858,15 +863,17 @@ If implementation drift is found, either fix the code or update this document wi
 ## Test Plan
 
 Unit tests cover TS/TSX/Python parsing, shallow Rust/Go/Java symbol and import
-extraction, Python imports/decorators/pytest fixtures/direct calls,
+extraction, file-only language classification and indexability,
+Python imports/decorators/pytest fixtures/direct calls,
 usage-site source/confidence labeling, dirty working-tree
 overlays, deterministic ranking, planned-test provenance, stale snapshot
 degradation, symbol ambiguity, callers/callees, implements/extends evidence,
 outcome boost caps, artifact validity, bounded Markdown output, static-analysis
 symbol-report validation, and MCP freshness metadata.
 
-Integration tests index a mixed TS/Python fixture repo, run status before and
-after edits, run MCP `symbol_context` at depth 2 or CLI
+Integration tests index a mixed TS/Python fixture repo, verify file-only
+C#/C/C++/Ruby/PHP facts, run status before and after edits, run MCP
+`symbol_context` at depth 2 or CLI
 `explain --symbol <id> --depth 2`, impact for TS and Python symbols/files,
 imported symbol-report relationships, `test-plan --diff`, live watch debouncing,
 stdio `serve`, Streamable HTTP `serve`, MCP handshake version/instructions,

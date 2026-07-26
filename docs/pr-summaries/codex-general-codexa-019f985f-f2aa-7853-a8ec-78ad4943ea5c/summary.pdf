@@ -1,0 +1,88 @@
+%PDF-1.4
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R] /Count 1 >>
+endobj
+3 0 obj
+<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /Font << /F1 3 0 R >> >> /Contents 5 0 R >>
+endobj
+5 0 obj
+<< /Length 2953 >>
+stream
+BT
+/F1 10 Tf
+14 TL
+50 760 Td
+(Change Summary) Tj T*
+() Tj T*
+(- Project: codexa) Tj T*
+(- Checkout: isolated codexa task worktree) Tj T*
+(- Branch: codex/general/codexa-019f985f-f2aa-7853-a8ec-78ad4943ea5c) Tj T*
+(- Base: main) Tj T*
+(- Primary commit: 6981ea6) Tj T*
+(- Subject: fix\(review\): complete broad post-edit authority) Tj T*
+() Tj T*
+(Changed Files) Tj T*
+() Tj T*
+(6981ea6 fix\(review\): complete broad post-edit authority) Tj T*
+(src/mcp/compaction.ts                              |   4 +-) Tj T*
+(src/mcp/review-coverage-kernel.ts                  |   1 +) Tj T*
+(src/post-edit-review-coverage.ts                   |  57 +-) Tj T*
+(src/query/context.ts                               |  25 +-) Tj T*
+(src/query/diff.ts                                  |   6 +-) Tj T*
+(src/query/post-edit.ts                             | 115 ++--) Tj T*
+(src/query/post-edit/context-passes.ts              | 150 +++++) Tj T*
+(src/query/post-edit/decision.ts                    |  52 +-) Tj T*
+(src/query/post-edit/dirty-scope.ts                 |  20 +-) Tj T*
+(src/query/post-edit/next-actions.ts                |   8 +-) Tj T*
+(src/query/post-edit/snapshot-contract.ts           |  41 +-) Tj T*
+(src/query/post-edit/support.ts                     |  17 +-) Tj T*
+(src/query/targets.ts                               |  15 +-) Tj T*
+(src/query/tests.ts                                 |  69 ++-) Tj T*
+(src/types/verification.ts                          |  22 +-) Tj T*
+(...exer-06-keeps-planned-post-edit-reviews.test.ts |  18 +-) Tj T*
+(tests/post-edit-review-coverage-validation.test.ts | 125 ++++-) Tj T*
+(tests/post-edit-review-coverage.test.ts            | 617 +++++++++++++++++++--) Tj T*
+(tests/recommend-tests-change-type.test.ts          |  38 ++) Tj T*
+(19 files changed, 1218 insertions\(+\), 182 deletions\(-\)) Tj T*
+(create mode 100644 src/query/post-edit/context-passes.ts) Tj T*
+() Tj T*
+(Verification) Tj T*
+() Tj T*
+(- git diff --check: passed) Tj T*
+(- npm run typecheck && npm run lint && npx vitest run tests/post-edit-review-) Tj T*
+(coverage.test.ts tests/post-edit-review-coverage-validation.test.ts tests/recommend-tests-) Tj T*
+(change-type.test.ts: passed) Tj T*
+(- Codexa skipped: Exact local follow-up with raw source evidence, deterministic host gates,) Tj T*
+(and two completed adversarial reviews; Codexa routing requires zero calls here.) Tj T*
+(- git diff --cached --check: passed) Tj T*
+(- staged safety scan: passed) Tj T*
+() Tj T*
+(Notes) Tj T*
+() Tj T*
+(Closes the broad-scope post-edit deadlock reported on PR 120. Coverage is exhaustive through) Tj T*
+(bounded logical passes with one task-global context call, full internal decision evidence,) Tj T*
+(fail-closed explicit targets, schema-v2 receipts, bounded concurrency, and pre-indexed scale) Tj T*
+(paths. This follow-up preserves the four previously implemented workflow improvements and) Tj T*
+(incorporates both risk-budgeted adversarial reviews.) Tj T*
+ET
+endstream
+endobj
+xref
+0 6
+0000000000 65535 f 
+0000000009 00000 n 
+0000000058 00000 n 
+0000000115 00000 n 
+0000000185 00000 n 
+0000000311 00000 n 
+trailer
+<< /Size 6 /Root 1 0 R >>
+startxref
+3315
+%%EOF

@@ -1,5 +1,5 @@
 import type { PostEditCheckResult, PostEditVerdict } from "../../post-edit-outcomes.js";
-import type { ChangeType, FileFact, TaskSnapshot, TestRecommendation, WorkflowTraceFact } from "../../types.js";
+import type { ChangeType, FileFact, PostEditReviewCoverage, TaskSnapshot, TestRecommendation, WorkflowTraceFact } from "../../types.js";
 import { nextTool } from "../next-tools.js";
 
 export function postEditNextActions(
@@ -11,6 +11,7 @@ export function postEditNextActions(
     degradedSnapshotTests: TestRecommendation[];
     riskEscalations: FileFact[];
     reviewTargets: string[];
+    reviewCoverage: PostEditReviewCoverage;
     workflows: WorkflowTraceFact[];
     missingChecks: PostEditCheckResult[];
     noVerificationProofForEditedFiles: boolean;
@@ -25,7 +26,9 @@ export function postEditNextActions(
   }
   if (verdict === "inspect") {
     return [
-      input.degradedSnapshotTests.length > 0
+      input.reviewCoverage.status === "partial"
+        ? partialCoverageNextAction(input.reviewCoverage)
+        : input.degradedSnapshotTests.length > 0
         ? "Re-run change_plan for the current edit scope before treating planned-test evidence as trusted."
         : input.snapshot
           ? "Read the unplanned or high-risk files before treating the edit as complete."
@@ -47,6 +50,10 @@ export function postEditNextActions(
     ];
   }
   return ["No drift detected against the saved snapshot. Finish with the normal source diff review and targeted tests already reported."];
+}
+
+function partialCoverageNextAction(coverage: PostEditReviewCoverage): string {
+  return `Rebuild the index or inspect the first unresolved target, then re-run post-edit review so the ${coverage.omittedTargetCount} omitted target(s) receive authoritative file evidence.`;
 }
 
 export function postEditStructuredNextTools(

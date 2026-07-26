@@ -1,0 +1,36 @@
+--- a/src/targets.py
++++ b/src/targets.py
+@@ -2,0 +3,6 @@
++import re
++import unicodedata
++
++
++_WINDOWS_DRIVE = re.compile(r"^[A-Za-z]:")
++
+@@ -5 +11,13 @@
+-    """Return normalized targets.
++    """Return valid unique repository-relative targets in caller order."""
++
++    normalized: list[str] = []
++    seen: set[str] = set()
++    for raw_target in targets:
++        if any(unicodedata.category(character) == "Cc" for character in raw_target):
++            continue
++        target = raw_target.strip()
++        if not target or target in seen or not _is_safe_relative_target(target):
++            continue
++        seen.add(target)
++        normalized.append(target)
++    return normalized
+@@ -7,3 +24,0 @@
+-    The current implementation is intentionally incomplete for the evaluation
+-    task: it loses caller order and accepts unsafe path forms.
+-    """
+@@ -11 +26,6 @@
+-    return sorted({target.strip() for target in targets if target.strip()})
++def _is_safe_relative_target(target: str) -> bool:
++    if target.startswith("/") or target.startswith("\\") or _WINDOWS_DRIVE.match(target):
++        return False
++    if "\\" in target:
++        return False
++    return ".." not in target.split("/")

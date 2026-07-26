@@ -5,6 +5,7 @@ import { MCP_TOOL_RESULT_DETAILED_MAX_BYTES, MCP_TOOL_RESULT_MAX_BYTES } from ".
 import { canonicalMcpDetailedProjection, compactMcpResult, compactNextTools } from "../src/mcp/compaction.js";
 import { withMcpDelivery } from "../src/mcp/decision-kernel.js";
 import { CORE_PROFILE_TOOL_NAMES } from "../src/mcp/tool-registry.js";
+import { createPostEditReviewCoverage } from "../src/post-edit-review-coverage.js";
 
 const POLICY = { autoRefresh: true, sessionMemoryMode: "auto" };
 
@@ -162,6 +163,19 @@ describe("MCP serialized ToolResult budget", () => {
         text: "review\n".repeat(20_000),
         data: {
           mode: "post_edit_review",
+          taskId: "transport-compaction-review",
+          planRevision: 1,
+          reviewCandidateTargets: [],
+          reviewTargets: [],
+          reviewCoverage: createPostEditReviewCoverage({
+            taskId: "transport-compaction-review",
+            planRevision: 1,
+            snapshotCreatedAt: null,
+            snapshotPublicationSequence: null,
+            candidateTargets: [],
+            analyzedTargets: [],
+            targetLimit: 3
+          }),
           verdict: "replan",
           completionAuthority: "replan_required",
           gaps: Array.from({ length: 2_000 }, (_, index) => `gap-${index}-${"g".repeat(300)}`),

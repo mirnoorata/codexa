@@ -39,16 +39,13 @@ import {
 export { compactNextTools } from "./compaction-helpers.js";
 import type { ChangePlanData, CodexaQueryData, ContextPacketData, FocusBriefData, FreshnessInfo, PostEditReviewData, ProofCardData, QueryResult, TestPlanData } from "../types.js";
 import { attachMcpDecisionKernel, compactTerminalDecisionKernel, mcpDecisionKernel } from "./decision-kernel.js";
-
 const DEFAULT_MCP_STRUCTURED_DATA_TARGET_BYTES = 96_000;
 const MIN_MCP_STRUCTURED_DATA_TARGET_BYTES = 4_000;
 const MAX_MCP_STRUCTURED_DATA_TARGET_BYTES = 512_000;
 export const MCP_DETAILED_PROJECTION_TARGET_BYTES = MAX_MCP_STRUCTURED_DATA_TARGET_BYTES;
-
 export function mcpStructuredDataTargetBytes(): number {
   return configuredMcpStructuredDataTargetBytes() ?? DEFAULT_MCP_STRUCTURED_DATA_TARGET_BYTES;
 }
-
 export function mcpDetailedProjectionTargetBytes(): number {
   return configuredMcpStructuredDataTargetBytes() ?? MCP_DETAILED_PROJECTION_TARGET_BYTES;
 }
@@ -520,11 +517,12 @@ export function compactPostEditMcpResult(result: QueryResult): QueryResult {
     ...result,
     data: {
       mode: data.mode,
-      task: data.task,
+      task: data.task, taskId: data.taskId,
       verdict: data.verdict,
       inspectMode: data.inspectMode,
       inspectReasons: limitArray(data.inspectReasons, 12),
       completionAuthority: data.completionAuthority,
+      reviewCoverage: data.reviewCoverage,
       planRevision: data.planRevision,
       invariants: limitArray(data.invariants, 12),
       invariantReviews: limitArray(data.invariantReviews, 12),
@@ -533,7 +531,7 @@ export function compactPostEditMcpResult(result: QueryResult): QueryResult {
       loopReview: data.loopReview,
       verificationArtifacts: limitArray(data.verificationArtifacts, 20),
       files: data.files,
-      reviewTargets: data.reviewTargets,
+      reviewTargets: limitArray(data.reviewTargets, 30),
       changedSinceSnapshot: limitArray(data.changedSinceSnapshot, 40),
       changedGroups: limitArray(data.changedGroups, 20),
       resolvedBaselineFiles: limitArray(data.resolvedBaselineFiles, 30),
@@ -577,7 +575,7 @@ export function compactPostEditMcpResult(result: QueryResult): QueryResult {
       snapshotLoad: compactSnapshotLoad(data.snapshotLoad),
       snapshot: snapshot
         ? {
-            taskId: snapshot.taskId,
+            taskId: snapshot.taskId, publicationSequence: snapshot.publicationSequence,
             createdAt: snapshot.createdAt,
             origin: snapshot.origin,
             changeType: snapshot.changeType,
@@ -598,6 +596,7 @@ export function compactPostEditMcpResult(result: QueryResult): QueryResult {
             inspectMode: outcome.inspectMode,
             inspectReasons: limitArray(outcome.inspectReasons, 12),
             completionAuthority: outcome.completionAuthority,
+            reviewCoverage: outcome.reviewCoverage,
             path: outcome.path,
             planRevision: outcome.planRevision,
             invariants: limitArray(outcome.invariants, 12),
@@ -635,6 +634,7 @@ function compactPostEditTruncation(
   outcome: Record<string, unknown> | undefined
 ): Record<string, { total: number; returned: number }> {
   return {
+    ...truncatedArray("reviewTargets", data.reviewTargets, 30),
     ...truncatedArray("changedSinceSnapshot", data.changedSinceSnapshot, 40),
     ...truncatedArray("changedGroups", data.changedGroups, 20),
     ...truncatedArray("resolvedBaselineFiles", data.resolvedBaselineFiles, 30),

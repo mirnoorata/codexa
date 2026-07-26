@@ -19,7 +19,6 @@ const comparisons = [
   { id: "transport-exposure", baselineArm: "full-detailed-legacy", candidateArm: "adaptive-auto-legacy", primary: false },
   { id: "cadence", baselineArm: "adaptive-auto-legacy", candidateArm: "adaptive-auto-bounded", primary: false }
 ] as const;
-
 describe("agent A/B schema-v2 stepped ablation", () => {
   it("registers every arm once per block with deterministic cyclic positional balance", async () => {
     const fixture = await createV2Benchmark(4);
@@ -199,8 +198,8 @@ lines.on("line", (line) => {
     }
   });
 
-  it("suppresses schema-v2 effects when a started candidate preflight receipt is missing or identity-tampered", async () => {
-    for (const mutation of ["missing", "tampered"] as const) {
+  it("suppresses schema-v2 effects when a started candidate preflight receipt is missing, late, or identity-tampered", async () => {
+    for (const mutation of ["missing", "late", "tampered"] as const) {
       const experiment = await createSyntheticV2Experiment(["task-a"]);
       for (const assignment of experiment.assignments) {
         await writeSyntheticRun(experiment, assignment, 1, "none");
@@ -214,7 +213,8 @@ lines.on("line", (line) => {
         await rm(receiptPath);
       } else {
         const receipt = JSON.parse(await readFile(receiptPath, "utf8"));
-        receipt.observedServerInfo.version = "9.9.9";
+        if (mutation === "late") receipt.completedAt = "2026-07-13T00:00:01.000Z";
+        else receipt.observedServerInfo.version = "9.9.9";
         await writeFile(receiptPath, `${JSON.stringify(receipt, null, 2)}\n`, "utf8");
       }
 
@@ -236,7 +236,7 @@ lines.on("line", (line) => {
         status: "invalid"
       });
       expect(invalidReceipt.observedServerInfo).toEqual(
-        mutation === "missing" ? null : { name: "codexa", version: "9.9.9" }
+        mutation === "missing" ? null : { name: "codexa", version: mutation === "late" ? "0.12.0" : "9.9.9" }
       );
       for (const comparison of Object.values(summary.comparisons) as Array<{ effect: unknown }>) {
         expect(comparison.effect).toBeNull();
@@ -405,6 +405,9 @@ lines.on("line", (line) => {
     const markdown = await readFile(path.join(experiment.output, "summary.md"), "utf8");
     expect(markdown).toContain("ATIF transport observed/unknown-or-partial: 1/1");
     expect(markdown).toContain("Server telemetry observed/unknown-or-partial: 1/1");
+    expect(bounded.routeConformance).toMatchObject({ expectedRouteClass: "source-only", status: "deviation", actualOperations: ["task_brief"] });
+    expect(summary.routeConformance).toMatchObject({ routeAdherenceArm: "adaptive-auto-bounded", byArm: { "adaptive-auto-bounded": { observedRuns: 1, deviationRuns: 1, unknownRuns: 1 } } });
+    expect(summary.armFidelity["adaptive-auto-bounded"].nonadherentRuns).toBe(1);
     expect(bounded.success).toBe(true);
   });
 
@@ -779,7 +782,6 @@ lines.on("line", (line) => {
         writeFile(path.join(noise, `entry-${start + offset}.txt`), "", "utf8")
       ));
     }
-
     const summary = analyzeAgentAb(experiment);
     const symlinkOutcome = summary.outcomes.find((entry: { runId: string }) => entry.runId === symlinkAssignment.runId);
     const emptyOutcome = summary.outcomes.find((entry: { runId: string }) => entry.runId === emptyAssignment.runId);
@@ -859,7 +861,7 @@ exec "$codexa" serve "$repo"
     runner: original.runner,
     candidate: original.candidate,
     design: { ...original.design, repetitions },
-    tasks: original.tasks,
+    tasks: original.tasks.map((task: Record<string, unknown>) => ({ ...task, expectedRouteClass: "source-only" })),
     arms,
     analysis: { ...original.analysis, comparisons }
   };
@@ -868,7 +870,7 @@ exec "$codexa" serve "$repo"
   return { root: target, config };
 }
 
-async function createSyntheticV2Experiment(taskIds = ["task-a", "task-b"]) {
+async function createSyntheticV2Experiment(taskIds = ["task-a", "task-b"], expectedRouteClasses: Record<string, string> = {}) {
   const output = await mkdtemp(path.join(os.tmpdir(), "codexa-agent-ab-v2-analysis-"));
   const arms = armIds.map((id) => id === "control"
     ? { id, kind: "control" }
@@ -911,7 +913,12 @@ async function createSyntheticV2Experiment(taskIds = ["task-a", "task-b"]) {
     candidate: { codexaVersion: "0.12.0" },
     agent: "codex",
     model: "openai/test-model",
-    tasks: taskIds.map((id) => ({ id, name: `agent-ab-v2/${id}`, hash: `hash-${id}` })),
+    tasks: taskIds.map((id) => ({
+      id,
+      name: `agent-ab-v2/${id}`,
+      expectedRouteClass: expectedRouteClasses[id] ?? "source-only",
+      hash: `hash-${id}`
+    })),
     arms,
     comparisons,
     inputs,
@@ -943,7 +950,7 @@ async function writeSyntheticPreflightReceipts(output: string, registration: Rec
         expectedServerInfo: { name: "codexa", version: registration.candidate.codexaVersion },
         mcpPreflightHash: registration.harness.mcpPreflightHash,
         observedServerInfo: { name: "codexa", version: registration.candidate.codexaVersion },
-        completedAt: "2026-07-13T00:00:01.000Z"
+        completedAt: "2026-07-12T23:59:59.000Z"
       };
       await writeFile(syntheticPreflightReceiptPath({ output }, task.id, arm.serverCommand), `${JSON.stringify(receipt, null, 2)}\n`, "utf8");
     }

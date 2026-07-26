@@ -43,6 +43,33 @@ function makeIndex(): CodexaIndex {
 }
 
 describe("recommendTests change-type filter", () => {
+  it("pre-indexes broad file and import lookups instead of rescanning per target", () => {
+    const sourcePaths = Array.from({ length: 400 }, (_, index) => `src/file-${String(index).padStart(3, "0")}.ts`);
+    const rawFiles = [
+      ...sourcePaths.map((filePath) => ({ path: filePath, test: false })),
+      { path: "tests/broad.test.ts", test: true }
+    ];
+    const rawImports = sourcePaths.map((filePath) => ({
+      path: "tests/broad.test.ts",
+      specifier: `../${filePath}`,
+      resolvedPath: filePath
+    }));
+    const files = countedArrayReads(rawFiles);
+    const imports = countedArrayReads(rawImports);
+    const index = {
+      snapshot: { repoRoot: "/fake/repo" },
+      files: files.value,
+      imports: imports.value,
+      testEdges: []
+    } as unknown as CodexaIndex;
+
+    const recommendations = recommendTests(index, sourcePaths, "/fake/repo", "behavior");
+
+    expect(recommendations.map((entry) => entry.path)).toContain("tests/broad.test.ts");
+    expect(files.numericReads()).toBeLessThanOrEqual(rawFiles.length + 2);
+    expect(imports.numericReads()).toBeLessThanOrEqual(rawImports.length + 2);
+  });
+
   it("keeps both Python and TS authoritative tests when change-type is unknown", () => {
     const index = makeIndex();
     const result = recommendTests(index, ["myapi/store.py", "web/src/App.tsx"], "/fake/repo", "unknown");
@@ -279,3 +306,14 @@ describe("recommendTests change-type filter", () => {
     expect(htmlPaths).toContain("tests/test_views.py");
   });
 });
+
+function countedArrayReads<T>(values: T[]): { value: T[]; numericReads: () => number } {
+  let numericReads = 0;
+  const value = new Proxy(values, {
+    get(target, property, receiver) {
+      if (typeof property === "string" && /^\d+$/u.test(property)) numericReads += 1;
+      return Reflect.get(target, property, receiver);
+    }
+  });
+  return { value, numericReads: () => numericReads };
+}

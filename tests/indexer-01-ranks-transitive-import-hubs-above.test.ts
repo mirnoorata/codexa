@@ -458,6 +458,47 @@ it("indexes shallow Rust, Go, and Java symbols and imports as codebase context",
     expect(index.graphEdges.some((edge) => edge.edgeKind === "IMPORTS" && edge.fromPath === "src/main/java/com/acme/App.java" && edge.toPath === "src/main/java/com/acme/Worker.java")).toBe(true);
   });
 
+it("indexes recognized C-family, Ruby, and PHP files without claiming native code facts", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-file-only-languages-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await mkdirp(path.join(repo, "src"));
+    const fixtures = [
+      ["src/App.cs", "namespace Acme;\npublic class App { public int Run() => 1; }\n", "csharp"],
+      ["src/main.c", "int app(void) { return 1; }\n", "c"],
+      ["src/main.cpp", "int app() { return 1; }\n", "cpp"],
+      ["src/app.rb", "def app\n  1\nend\n", "ruby"],
+      ["src/app.php", "<?php\nfunction app() { return 1; }\n", "php"]
+    ] as const;
+    await Promise.all(
+      fixtures.map(([filePath, sourceText]) => writeFile(path.join(repo, filePath), sourceText, "utf8"))
+    );
+    execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+    execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"], {
+      cwd: repo,
+      stdio: "ignore"
+    });
+
+    const index = await buildIndex({ repoRoot: repo, writeArtifacts: false });
+    const fixturePaths = new Set(fixtures.map(([filePath]) => filePath));
+
+    for (const [filePath, , language] of fixtures) {
+      expect(index.files.find((file) => file.path === filePath)).toMatchObject({
+        path: filePath,
+        language,
+        source: "git",
+        confidence: "authoritative",
+        symbolCount: 0,
+        usageCount: 0,
+        importCount: 0
+      });
+    }
+    expect(index.symbols.filter((fact) => fixturePaths.has(fact.path))).toEqual([]);
+    expect(index.usageSites.filter((fact) => fixturePaths.has(fact.path))).toEqual([]);
+    expect(index.imports.filter((fact) => fixturePaths.has(fact.path))).toEqual([]);
+    expect(index.testEdges.filter((fact) => fixturePaths.has(fact.path))).toEqual([]);
+    expect(index.parserErrors.filter((fact) => fixturePaths.has(fact.path))).toEqual([]);
+  });
+
 it("bounds source indexing and surfaces oversized files as parser evidence", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-large-source-"));
     execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });

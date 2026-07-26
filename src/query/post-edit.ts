@@ -4,18 +4,18 @@ import { buildPostEditComplexityReview, formatComplexityReview } from "./complex
 import { groupDiffImpact, formatDiffGroups, formatGaps, indexGaps } from "./diff.js";
 import { clampInt, fitLinesToTokenBudget, formatReasons } from "./formatting.js";
 import { affectedWorkflowGraphEdges, testsFromGraphEdges } from "./graph.js";
-import { contextPackQuery, focusBriefQuery } from "./context.js";
-import { formatContextQuality, type ContextQuality } from "./quality.js";
+import { focusBriefQuery } from "./context.js";
+import { formatContextQuality } from "./quality.js";
 import {
   assertFreshnessAuthorityCurrent,
   FreshnessAuthorityChangedError,
   freshnessAuthorityBlockReason,
   freshnessBanner
 } from "./runtime.js";
-import { ensureQuerySession, type QuerySession, type QuerySessionInput } from "./session.js";
+import { ensureQuerySession, type QuerySessionInput } from "./session.js";
 import { normalizeSearchText } from "./search.js";
 import { formatTestRecommendations, narrowTestRecommendationsByChangeType, recommendTests, uniqueTests } from "./tests.js";
-import { findFile, normalizeInputPaths, resolveFileTarget, resolveSymbolTarget } from "./targets.js";
+import { normalizeInputPaths, resolveFileTarget } from "./targets.js";
 import { formatVerificationCoverage, formatVerificationLedger, verificationEvidenceForCommandReports, verificationLedgerForPostEdit } from "./verification.js";
 import {
   sanitizeCommandEnvelopeForDisplay,
@@ -32,6 +32,7 @@ import { postEditDirtyScope } from "./post-edit/dirty-scope.js";
 import { postEditNextActions, postEditStructuredNextTools } from "./post-edit/next-actions.js";
 import { compactSnapshotTests, reconcileSnapshotTests, snapshotRiskBaseline, snapshotSymbolBaseline } from "./post-edit/snapshot-contract.js";
 import { buildPostEditOutcome, type PostEditCheckResult, type PostEditOutcomeInput } from "../post-edit-outcomes.js";
+import { MAX_POST_EDIT_REVIEW_TARGETS_PER_PASS } from "../post-edit-review-coverage.js";
 import { pointerForSessionMemory, readSessionMemory } from "../session-memory.js";
 import { loadTaskSnapshot, saveBlockedTaskSnapshot, saveTaskSnapshot, type TaskSnapshotLoadResult } from "../task-snapshots.js";
 import { CURRENT_VERIFICATION_PROVENANCE } from "../types.js";
@@ -42,8 +43,6 @@ import type {
   ChangePlanInput,
   ChangeType,
   CodexaIndex,
-  DiffImpactGroup,
-  EvidenceTier,
   FileFact,
   FreshnessInfo,
   GraphEdgeFact,
@@ -64,11 +63,13 @@ import { limitText, stableId, uniqueSorted } from "../util.js";
 import { reviewTrustedRunnerReports, stripRunnerMetadata, type AutoVerifyRunnerReviewEntry } from "./post-edit/runner-review.js";
 import { reviewTaskInvariants } from "../task-lifecycle.js";
 import { buildPostEditLifecycleDecision, formatPostEditLifecycle, persistPostEditLifecycleOutcome, postEditLifecycleData, type PostEditLifecycleInput } from "./post-edit/lifecycle.js";
-import { buildAutoVerifyCandidates, compactContextData, hasRelevantVerificationEvidence, stableSessionMemoryHash } from "./post-edit/support.js";
+import { buildAutoVerifyCandidates, buildPostEditReviewCoverage, compactContextData, formatPostEditReviewCoverage, hasRelevantVerificationEvidence, stableSessionMemoryHash } from "./post-edit/support.js";
 import { applyArtifactRequiredChecks, failedVerificationArtifactIds, formatPostEditArtifacts } from "./post-edit/artifacts.js";
+import { postEditExplicitSymbolTargets, postEditReviewContext, postEditReviewPasses, type PostEditReviewContextData } from "./post-edit/context-passes.js";
 import { evaluateVerificationArtifacts, loadVerificationArtifacts } from "../verification-artifacts.js";
 import { validateArtifactIds } from "../lifecycle-contract.js";
 interface PostEditReviewInternalInput { trustedRunnerReports?: AutoVerifyCommandReport[]; }
+
 export async function postEditReviewQuery(
   sessionInput: QuerySessionInput,
   input: PostEditReviewInput = {},
@@ -93,8 +94,13 @@ async function postEditReviewQueryInternal(
 ): Promise<QueryResult> {
   const session = await ensureQuerySession(sessionInput, options);
   const { index, freshness, refresh, repoRoot } = session;
+  const indexedFileByPath = new Map(index.files.map((file) => [file.path, file]));
   const tokenBudget = clampInt(input.tokenBudget ?? 2800, 600, 10000);
-  const limit = clampInt(input.limit ?? 10, 3, 30);
+  const limit = clampInt(
+    input.limit ?? 10,
+    3,
+    Math.min(MAX_POST_EDIT_REVIEW_TARGETS_PER_PASS, session.maxResults)
+  );
   const loadedSnapshot = await loadTaskSnapshot(repoRoot, input.taskId);
   if (loadedSnapshot.missingReason === "invalid-json" && /^task lifecycle\b/iu.test(loadedSnapshot.error ?? "")) {
     throw new Error(loadedSnapshot.error);
@@ -108,7 +114,9 @@ async function postEditReviewQueryInternal(
   const currentEntries = await session.getChangedFileEntries();
   const dirtyScope = postEditDirtyScope({ snapshot, currentEntries, freshness, index });
   const { currentDirtyPaths, changedSinceSnapshot, resolvedBaselineFiles, editPaths, unindexedEditedFiles } = dirtyScope;
-  const changedSymbols = (await session.getChangedSymbols()).filter((entry) => editPaths.includes(entry.symbol.path));
+  const editPathSet = new Set(editPaths);
+  const currentDirtyPathSet = new Set(currentDirtyPaths);
+  const changedSymbols = (await session.getChangedSymbols()).filter((entry) => editPathSet.has(entry.symbol.path));
   const requestedSymbolNames = new Set([...(snapshot?.input.symbols ?? []), ...(input.symbols ?? [])].map(normalizeSearchText));
   const plannedSymbolIds = requestedSymbolIds(snapshot, requestedSymbolNames);
   const unplannedChangedSymbols =
@@ -117,12 +125,8 @@ async function postEditReviewQueryInternal(
       : [];
   const changedGroups = groupDiffImpact(index, changedSinceSnapshot, changedSymbols, unindexedEditedFiles);
   const explicitFiles = normalizeInputPaths(input.files ?? [], repoRoot);
-  const explicitSymbolFiles = (input.symbols ?? [])
-    .flatMap((symbol) => {
-      const resolved = resolveSymbolTarget(index, symbol);
-      return resolved.symbol ? [resolved.symbol.path] : [];
-    })
-    .filter(Boolean);
+  const { resolvedFiles: explicitSymbolFiles, unresolvedTargets: unresolvedExplicitSymbolTargets } =
+    postEditExplicitSymbolTargets(index, input.symbols);
   const plannedScope = snapshot ? (snapshot.plannedEditTargets.length > 0 ? snapshot.plannedEditTargets : snapshot.plannedFiles) : [];
   const plannedScopeSet = new Set(plannedScope);
   const plannedRenames = snapshot
@@ -135,9 +139,10 @@ async function postEditReviewQueryInternal(
           .filter((entry) => !plannedScopeSet.has(entry.path) && !(entry.oldPath && plannedScopeSet.has(entry.oldPath)))
           .map((entry) => entry.path)
       : [];
+  const unplannedEditedFileSet = new Set(unplannedEditedFiles);
   const renamedAwayPaths = new Set(changedSinceSnapshot.flatMap((entry) => (entry.oldPath ? [entry.oldPath] : [])));
   const plannedButUntouchedFiles = snapshot
-    ? plannedScope.filter((filePath) => !editPaths.includes(filePath) && !currentDirtyPaths.includes(filePath) && !renamedAwayPaths.has(filePath))
+    ? plannedScope.filter((filePath) => !editPathSet.has(filePath) && !currentDirtyPathSet.has(filePath) && !renamedAwayPaths.has(filePath))
     : [];
   const headChanged = Boolean(snapshot && snapshot.dirtyBaseline.headCommit !== freshness.headCommit);
   const task = input.task ?? snapshot?.task ?? "Post-edit review";
@@ -153,6 +158,7 @@ async function postEditReviewQueryInternal(
     ...editPaths,
     ...explicitFiles,
     ...explicitSymbolFiles,
+    ...unresolvedExplicitSymbolTargets,
     ...(editPaths.length === 0 && explicitFiles.length === 0 && explicitSymbolFiles.length === 0 && snapshot ? snapshot.plannedFiles.slice(0, limit) : [])
   ];
   const seenReviewTargets = new Set<string>();
@@ -163,34 +169,23 @@ async function postEditReviewQueryInternal(
       orderedReviewTargets.push(target);
     }
   }
-  const reviewTargets = orderedReviewTargets.slice(0, Math.max(limit, 3));
-  const droppedReviewTargets = orderedReviewTargets.length - reviewTargets.length;
-  const context = await contextPackQuery(
+  const reviewPasses = postEditReviewPasses(orderedReviewTargets, limit);
+  const reviewContext = await postEditReviewContext({
     session,
-    {
-      task,
-      files: reviewTargets,
-      symbols: input.symbols,
-      changeType,
-      diff: !snapshot,
-      tokenBudget: Math.min(tokenBudget, 3600),
-      limit,
-      includeSnippets: input.includeSnippets ?? false
-    },
-    { ...options, autoRefresh: false }
-  );
-  const contextData = context.data as {
-    focusFiles?: Array<{ file: FileFact; reasons: string[]; tier: EvidenceTier }>;
-    changedFiles?: string[];
-    unindexedChanged?: string[];
-    groups?: DiffImpactGroup[];
-    tests?: TestRecommendation[];
-    recipes?: string[];
-    quality?: ContextQuality;
-    gaps?: string[];
-    warnings?: string[];
-    retrieval?: { semantic?: SemanticRetrievalSummary };
-  };
+    task,
+    reviewPasses,
+    unresolvedTargets: unresolvedExplicitSymbolTargets,
+    symbols: input.symbols,
+    changeType,
+    includeDiff: !snapshot,
+    tokenBudget,
+    limit,
+    includeSnippets: input.includeSnippets ?? false,
+    options
+  });
+  const context = reviewContext.context;
+  const reviewTargets = reviewContext.analyzedTargets;
+  const contextData = context.data as PostEditReviewContextData;
   const semanticReviewContext = contextData.retrieval?.semantic;
   const priorSessionMemory = await readSessionMemory({
     repoRoot,
@@ -201,8 +196,10 @@ async function postEditReviewQueryInternal(
     limit: 8,
     includeStale: true
   }).catch(() => undefined);
-  const selectedFiles = [...new Set([...reviewTargets, ...(contextData.focusFiles ?? []).map((entry) => entry.file.path)])].slice(0, Math.max(limit * 2, 12));
-  const symbolDeltas = compareSnapshotSymbols(snapshot, index, uniqueSorted([...reviewTargets, ...editPaths]));
+  const selectedFiles = [...new Set([...reviewTargets, ...(contextData.focusFiles ?? []).map((entry) => entry.file.path)])];
+  const authorityPaths = uniqueSorted([...reviewTargets, ...editPaths]);
+  const reviewTargetSet = new Set(reviewTargets);
+  const symbolDeltas = compareSnapshotSymbols(snapshot, index, authorityPaths);
   const modifiedSymbols = changedSymbols
     .map((entry) => `${entry.symbol.qualifiedName} (${entry.symbol.kind}) in ${entry.symbol.path}`)
     .sort((a, b) => a.localeCompare(b));
@@ -210,11 +207,11 @@ async function postEditReviewQueryInternal(
     .filter((entry) => entry.symbol.exported || ["route", "node"].includes(entry.symbol.kind))
     .map((entry) => `${entry.symbol.qualifiedName} (${entry.symbol.kind}) in ${entry.symbol.path}`)
     .sort((a, b) => a.localeCompare(b));
-  const riskDeltas = compareSnapshotRisks(snapshot, index, uniqueSorted([...reviewTargets, ...editPaths]));
-  const affectedEdges = affectedWorkflowGraphEdges(index, reviewTargets).slice(0, 20);
+  const riskDeltas = compareSnapshotRisks(snapshot, index, authorityPaths);
+  const affectedEdges = affectedWorkflowGraphEdges(index, reviewTargets);
   const affectedTests = uniqueSorted([
     ...testsFromGraphEdges(affectedEdges),
-    ...index.testEdges.filter((edge) => edge.targetPath && reviewTargets.includes(edge.targetPath)).map((edge) => edge.path)
+    ...index.testEdges.filter((edge) => edge.targetPath && reviewTargetSet.has(edge.targetPath)).map((edge) => edge.path)
   ]);
   const reviewScope = reviewTargets.length > 0 ? reviewTargets : currentDirtyPaths;
   const snapshotTestScope = snapshot ? (snapshot.plannedEditTargets.length > 0 ? snapshot.plannedEditTargets : snapshot.plannedFiles) : [];
@@ -236,7 +233,7 @@ async function postEditReviewQueryInternal(
     mergedTests,
     reviewScope,
     changeType
-  ).slice(0, 12);
+  );
   const ranTests = input.ranTests ?? [];
   const ranCommands = input.ranCommands ?? [];
   const manualRanCommandReports = (input.ranCommandReports ?? []).map(stripRunnerMetadata);
@@ -253,15 +250,13 @@ async function postEditReviewQueryInternal(
   }).coverage;
   const hasActualEditedFiles = editPaths.length > 0;
   const riskEscalations = reviewTargets
-    .map((filePath) => findFile(index, filePath))
+    .map((filePath) => indexedFileByPath.get(filePath))
     .filter((file): file is FileFact => Boolean(file))
-    .filter((file) => file.riskScore >= 4 || unplannedEditedFiles.includes(file.path))
-    .sort((a, b) => b.riskScore - a.riskScore || b.rank - a.rank || a.path.localeCompare(b.path))
-    .slice(0, 10);
+    .filter((file) => file.riskScore >= 4 || unplannedEditedFileSet.has(file.path))
+    .sort((a, b) => b.riskScore - a.riskScore || b.rank - a.rank || a.path.localeCompare(b.path));
   const workflows = index.workflows
-    .filter((workflow) => reviewTargets.some((filePath) => workflow.relatedFiles.includes(filePath) || workflow.entryPath === filePath))
-    .sort((a, b) => b.rank - a.rank || a.title.localeCompare(b.title))
-    .slice(0, 12);
+    .filter((workflow) => workflow.relatedFiles.some((filePath) => reviewTargetSet.has(filePath)) || reviewTargetSet.has(workflow.entryPath))
+    .sort((a, b) => b.rank - a.rank || a.title.localeCompare(b.title));
   const rawWorkflowChecks = evaluateRequiredChecks(snapshot?.requiredWorkflowChecks ?? [], {
     editPaths,
     reviewTargets,
@@ -311,6 +306,12 @@ async function postEditReviewQueryInternal(
     dependencyChecks
   });
   const verificationCoverage = verification.coverage;
+  const reviewCoverage = buildPostEditReviewCoverage({
+    candidateTargets: orderedReviewTargets, analyzedTargets: reviewTargets, targetLimit: limit,
+    analysisPassCount: Math.max(1, Math.ceil(reviewTargets.length / limit)),
+    taskId: effectiveTaskId ?? null, planRevision, snapshotCreatedAt: snapshot?.createdAt ?? null,
+    snapshotPublicationSequence: snapshot?.publicationSequence ?? null
+  });
   const commandEnvelopes = verification.commandEnvelopes;
   const verificationLedger = verification.ledger;
   const testsNotRun = verification.testsNotRun;
@@ -363,6 +364,12 @@ async function postEditReviewQueryInternal(
     testsNotRun,
     hasTestVerificationAccounting,
     noVerificationProofForEditedFiles,
+    reviewCoverage,
+    reviewCoverageContext: {
+      taskId: effectiveTaskId ?? null, planRevision, snapshotCreatedAt: snapshot?.createdAt ?? null,
+      snapshotPublicationSequence: snapshot?.publicationSequence ?? null,
+      candidateTargets: orderedReviewTargets, analyzedTargets: reviewTargets
+    },
     missingInvariantCount: invariantReview.missing.length,
     violatedInvariantCount: invariantReview.violated.length,
     loopReplanReasons: []
@@ -428,6 +435,8 @@ async function postEditReviewQueryInternal(
     changedFiles: editPaths,
     plannedEditTargets: plannedScope,
     reviewTargets,
+    reviewCandidateTargets: orderedReviewTargets,
+    reviewCoverage,
     unplannedEditedFiles,
     unindexedEditedFiles,
     modifiedSymbols,
@@ -496,6 +505,7 @@ async function postEditReviewQueryInternal(
     testsNotRun,
     riskEscalations,
     reviewTargets,
+    reviewCoverage,
     workflows,
     missingChecks: [...workflowChecks, ...dependencyChecks].filter((check) => check.status === "missing"),
     noVerificationProofForEditedFiles,
@@ -527,9 +537,7 @@ async function postEditReviewQueryInternal(
     ...formatPostEditArtifacts(verificationArtifacts.selected),
     semanticReviewContext ? formatPostEditSemanticReviewContext(semanticReviewContext) : undefined,
     `Outcome record: ${outcomePath ?? "not persisted"}`,
-    droppedReviewTargets > 0
-      ? `Review scope: first ${reviewTargets.length} of ${orderedReviewTargets.length} candidate targets (edited files prioritized); ${droppedReviewTargets} not analyzed — raise limit to widen.`
-      : undefined,
+    formatPostEditReviewCoverage(reviewCoverage),
     // Verdict-relevant summaries render BEFORE the bulk sections: small
     // token budgets truncate from the end, and a hook consuming this text
     // needs the drift reasons and next actions to survive, not the
@@ -599,7 +607,7 @@ async function postEditReviewQueryInternal(
 	    ...formatCheckResults(dependencyChecks),
 	    "",
 	    "Recommended tests:",
-	    ...formatTestRecommendations(tests),
+	    ...formatTestRecommendations(tests.slice(0, 12)),
 	    degradedSnapshotTests.length > 0 ? "" : undefined,
 	    degradedSnapshotTests.length > 0 ? "Degraded planned snapshot tests:" : undefined,
 	    ...degradedSnapshotTests.map((test) => `- ${test.path}: ${test.provenance?.degradedReason ?? "provenance does not match current review scope"}`),
@@ -630,10 +638,12 @@ async function postEditReviewQueryInternal(
     data: {
       mode: "post_edit_review",
       task,
+      taskId: effectiveTaskId,
       verdict,
       inspectMode,
       inspectReasons,
       completionAuthority,
+      reviewCoverage,
       ...postEditLifecycleData(planRevision, invariants, invariantReview, failureSignals, diffFootprint, loopReview),
       snapshot: compactSnapshotForData(snapshot),
       snapshotLoad: {
@@ -645,7 +655,8 @@ async function postEditReviewQueryInternal(
         ambiguousLatest: Boolean(snapshotAmbiguity),
         ambiguityReason: snapshotAmbiguity
       },
-      files: selectedFiles,
+      files: limitArray(selectedFiles, 60),
+      reviewCandidateTargets: orderedReviewTargets,
       reviewTargets,
       changedSinceSnapshot: limitArray(changedSinceSnapshot, 40),
       changedGroups: limitArray(changedGroups, 20),
@@ -802,13 +813,12 @@ function compareSnapshotSymbols(
   index: CodexaIndex,
   paths: string[]
 ): Array<{ path: string; newSymbols: TaskSnapshotSymbol[]; removedSymbols: TaskSnapshotSymbol[] }> {
-  if (!snapshot?.symbolBaseline) {
-    return [];
-  }
+  if (!snapshot?.symbolBaseline) return [];
+  const afterByPath = snapshotSymbolBaseline(index, paths);
   return uniqueSorted(paths)
     .map((filePath) => {
       const before = snapshot.symbolBaseline?.[filePath] ?? [];
-      const after = snapshotSymbolBaseline(index, [filePath])[filePath] ?? [];
+      const after = afterByPath[filePath] ?? [];
       const beforeKeys = new Set(before.map(symbolDeltaKey));
       const afterKeys = new Set(after.map(symbolDeltaKey));
       return {
@@ -845,9 +855,7 @@ async function latestSnapshotAmbiguity(repoRoot: string, latestTaskId: string): 
     const entries = await fs.readdir(dir);
     const taskSnapshots = entries.filter((entry) => entry.endsWith(".json") && entry !== "latest.json" && !entry.endsWith(".blocked.json"));
     const otherSnapshots = taskSnapshots.filter((entry) => entry !== `${latestTaskId}.json`);
-    if (otherSnapshots.length === 0) {
-      return undefined;
-    }
+    if (otherSnapshots.length === 0) return undefined;
     return `post_edit_review used latest snapshot ${latestTaskId} without an explicit taskId while ${otherSnapshots.length} other snapshot(s) exist; pass taskId to bind review to the intended plan`;
   } catch {
     return undefined;
@@ -855,9 +863,7 @@ async function latestSnapshotAmbiguity(repoRoot: string, latestTaskId: string): 
 }
 
 function plannedScopeContainsSymbolFile(snapshot: TaskSnapshot | undefined, filePath: string): boolean {
-  if (!snapshot) {
-    return false;
-  }
+  if (!snapshot) return false;
   const planned = snapshot.plannedEditTargets.length > 0 ? snapshot.plannedEditTargets : snapshot.plannedFiles;
   return planned.includes(filePath);
 }
@@ -867,13 +873,12 @@ function compareSnapshotRisks(
   index: CodexaIndex,
   paths: string[]
 ): Array<{ path: string; before: TaskSnapshotRiskFile; after: TaskSnapshotRiskFile; delta: number; newSignals: string[]; removedSignals: string[] }> {
-  if (!snapshot?.riskBaseline) {
-    return [];
-  }
+  if (!snapshot?.riskBaseline) return [];
+  const afterByPath = snapshotRiskBaseline(index, paths);
   return uniqueSorted(paths)
     .map((filePath) => {
       const before = snapshot.riskBaseline?.[filePath] ?? { riskScore: 0, signals: [] };
-      const after = snapshotRiskBaseline(index, [filePath])[filePath] ?? { riskScore: 0, signals: [] };
+      const after = afterByPath[filePath] ?? { riskScore: 0, signals: [] };
       return {
         path: filePath,
         before,
@@ -977,7 +982,7 @@ function compactSnapshotForData(snapshot: TaskSnapshot | undefined): unknown {
     return undefined;
   }
   return {
-    taskId: snapshot.taskId,
+    taskId: snapshot.taskId, planRevision: snapshot.planRevision, publicationSequence: snapshot.publicationSequence,
     createdAt: snapshot.createdAt,
     origin: snapshot.origin,
     changeType: snapshot.changeType,

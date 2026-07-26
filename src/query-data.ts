@@ -59,6 +59,7 @@ function isChangePlanData(value: Record<string, unknown>): boolean {
 function isPostEditReviewData(value: Record<string, unknown>): boolean {
   return arraysOrUndefined(value, [
     "files",
+    "reviewCandidateTargets",
     "changedSinceSnapshot",
     "changedGroups",
     "resolvedBaselineFiles",

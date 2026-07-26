@@ -196,6 +196,9 @@ export async function prepareTaskLoopAttempt(input: {
   }
   const attemptsById = new Map(current.attempts.map((attempt) => [attempt.attemptId, attempt]));
   const now = new Date().toISOString();
+  // Replacing an attempt revisits that diff footprint. Reappend it so insertion
+  // order remains the lock-serialized commit order used by proof consumers.
+  attemptsById.delete(input.attemptId);
   attemptsById.set(input.attemptId, {
     createdAt: now,
     planRevision: input.planRevision,

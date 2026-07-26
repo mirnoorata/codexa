@@ -667,6 +667,7 @@ function proofGaps(input: {
     ...(input.decisionLog.summaryHashValid === false ? ["task-bound decision log content differs from the plan-time canonical digest"] : []),
     ...(input.lifecycle.status === "invalid" ? [`task lifecycle state is invalid${input.lifecycle.error ? `: ${input.lifecycle.error}` : ""}`] : []),
     ...(input.lifecycle.pendingStop ? [`task lifecycle requires replan: ${input.lifecycle.pendingStop.reasons.join("; ")}`] : []),
+    ...unresolvedPostEditReviewCoverageGaps(input.lifecycle),
     ...input.lifecycle.invariants.flatMap((invariant) => {
       const review = input.lifecycle.invariantReviews.find((entry) => entry.invariantId === invariant.id);
       return !review ? [`task invariant unreviewed: ${invariant.id}`] : review.status === "violated" ? [`task invariant violated: ${invariant.id}`] : [];
@@ -676,6 +677,17 @@ function proofGaps(input: {
     ...input.focusGaps,
     ...input.testGaps
   ]);
+}
+
+function unresolvedPostEditReviewCoverageGaps(lifecycle: ProveLifecycle): string[] {
+  const latestAttempt = lifecycle.attempts.at(-1);
+  if (!latestAttempt || latestAttempt.attemptStatus !== "unresolved") return [];
+  return latestAttempt.failureSignals
+    .filter((signal) => signal.class === "verification-missing")
+    .flatMap((signal) => signal.targets)
+    .filter((target) => target.startsWith("post-edit-review-scope:"))
+    .slice(0, 4)
+    .map((target) => `latest post-edit review is unresolved: ${target.replace(/^post-edit-review-scope:/u, "")}`);
 }
 
 async function lifecycleForProof(repoRoot: string, snapshot: TaskSnapshot | undefined): Promise<ProveLifecycle> {

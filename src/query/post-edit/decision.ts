@@ -1,4 +1,5 @@
 import type { PostEditCheckResult, PostEditCompletionAuthority, PostEditInspectMode } from "../../post-edit-outcomes.js";
+import { validatePostEditReviewCoverage, type PostEditReviewCoverageContext } from "../../post-edit-review-coverage.js";
 import type { TaskSnapshotLoadResult } from "../../task-snapshots.js";
 import type {
   FileFact,
@@ -7,7 +8,8 @@ import type {
   TaskSnapshotRiskFile,
   TaskSnapshotSymbol,
   TestRecommendation,
-  VerificationLedgerEntry
+  VerificationLedgerEntry,
+  PostEditReviewCoverage
 } from "../../types.js";
 import type { ContextQuality } from "../quality.js";
 
@@ -26,6 +28,7 @@ export interface PostEditDecision {
   riskEscalationsCoveredByVerification: boolean;
   riskEscalationsNeedInspection: boolean;
   hasDegradedSnapshotTests: boolean;
+  reviewCoverageBlockReason?: string;
 }
 
 export function postEditDecision(input: {
@@ -49,6 +52,8 @@ export function postEditDecision(input: {
   testsNotRun: TestRecommendation[];
   hasTestVerificationAccounting: boolean;
   noVerificationProofForEditedFiles: boolean;
+  reviewCoverage?: PostEditReviewCoverage;
+  reviewCoverageContext: PostEditReviewCoverageContext;
   missingInvariantCount?: number;
   violatedInvariantCount?: number;
   loopReplanReasons?: string[];
@@ -62,6 +67,12 @@ export function postEditDecision(input: {
   const missingInvariantCount = input.missingInvariantCount ?? 0;
   const violatedInvariantCount = input.violatedInvariantCount ?? 0;
   const loopReplanReasons = input.loopReplanReasons ?? [];
+  const reviewCoverageValidation = validatePostEditReviewCoverage(input.reviewCoverage, input.reviewCoverageContext);
+  const reviewCoverageBlockReason = !reviewCoverageValidation.valid
+    ? `post-edit review coverage receipt is invalid: ${reviewCoverageValidation.reason}`
+    : reviewCoverageValidation.coverage?.status === "partial"
+      ? `${reviewCoverageValidation.coverage.omittedTargetCount} candidate review target(s) were not analyzed`
+      : undefined;
   const blockingUnindexedEditedFiles = input.unindexedEditedFiles.filter((filePath) => !isAdvisoryUnindexedEditedFile(filePath));
   const advisoryUnindexedEditedFiles = input.unindexedEditedFiles.filter((filePath) => isAdvisoryUnindexedEditedFile(filePath));
   const riskEscalationsCoveredByVerification =
@@ -105,6 +116,7 @@ export function postEditDecision(input: {
       : undefined,
     input.hasActualEditedFiles && input.testsNotRun.length > 0 && input.hasTestVerificationAccounting ? `${input.testsNotRun.length} recommended test(s) remain unaccounted for` : undefined,
     input.noVerificationProofForEditedFiles ? "edited files have no credible verification evidence" : undefined,
+    reviewCoverageBlockReason,
     missingInvariantCount > 0 ? `${missingInvariantCount} task invariant(s) lack an explicit review` : undefined,
     violatedInvariantCount > 0 ? `${violatedInvariantCount} task invariant(s) were reported violated` : undefined,
     ...loopReplanReasons
@@ -113,27 +125,44 @@ export function postEditDecision(input: {
   // Quality-low likewise floors at inspect for implicit baselines: "replan"
   // is advice about a plan, and an implicit baseline carries none.
   const qualityLowReplan = input.quality?.level === "low" && !input.implicitBaseline;
+  const requiresReplan =
+    loopReplanReasons.length > 0 ||
+    violatedInvariantCount > 0 ||
+    headChangedBlocking ||
+    input.unplannedEditedFiles.length >= 3 ||
+    qualityLowReplan;
+  const requiresBlockingInspect =
+    input.worktreeDegradationReasons.length > 0 ||
+    input.unplannedEditedFiles.length > 0 ||
+    input.unplannedChangedSymbols.length > 0 ||
+    blockingUnindexedEditedFiles.length > 0 ||
+    missingWorkflowCheckCount > 0 ||
+    missingDependencyCheckCount > 0 ||
+    input.waivedVerification.length > 0 ||
+    input.noVerificationProofForEditedFiles ||
+    Boolean(reviewCoverageBlockReason) ||
+    missingInvariantCount > 0 ||
+    riskEscalationsNeedInspection ||
+    (input.quality?.level === "low" && input.implicitBaseline);
+  const requiresTests = input.hasActualEditedFiles && input.testsNotRun.length > 0;
+  const requiresAdvisoryInspect =
+    !input.snapshot ||
+    Boolean(input.snapshotAmbiguity) ||
+    advisoryUnindexedEditedFiles.length > 0 ||
+    hasDegradedSnapshotTests ||
+    input.symbolDeltas.some((delta) => delta.newSymbols.length > 0 || delta.removedSymbols.length > 0) ||
+    input.riskDeltas.some((delta) => delta.delta > 0) ||
+    input.quality?.level === "medium";
   const verdict: PostEditDecision["verdict"] =
-    loopReplanReasons.length > 0 || violatedInvariantCount > 0 || headChangedBlocking || input.unplannedEditedFiles.length >= 3 || qualityLowReplan
+    requiresReplan
       ? "replan"
-      : !input.snapshot ||
-          input.worktreeDegradationReasons.length > 0 ||
-            input.unplannedEditedFiles.length > 0 ||
-            Boolean(input.snapshotAmbiguity) ||
-            input.unplannedChangedSymbols.length > 0 ||
-            missingWorkflowCheckCount > 0 ||
-            missingDependencyCheckCount > 0 ||
-            hasDegradedSnapshotTests ||
-            input.waivedVerification.length > 0 ||
-            input.noVerificationProofForEditedFiles ||
-            missingInvariantCount > 0 ||
-            riskEscalationsNeedInspection ||
-            input.quality?.level === "medium" ||
-            input.quality?.level === "low"
+      : requiresBlockingInspect
         ? "inspect"
-        : input.hasActualEditedFiles && input.testsNotRun.length > 0
+        : requiresTests
           ? "run_tests"
-          : "continue";
+          : requiresAdvisoryInspect
+            ? "inspect"
+            : "continue";
   const inspect = inspectClassification(verdict, {
     snapshot: input.snapshot,
     snapshotAmbiguity: input.snapshotAmbiguity,
@@ -152,6 +181,7 @@ export function postEditDecision(input: {
     riskEscalationsNeedInspection,
     waivedVerification: input.waivedVerification,
     noVerificationProofForEditedFiles: input.noVerificationProofForEditedFiles,
+    reviewCoverageBlockReason,
     missingInvariantCount
   });
   return {
@@ -164,7 +194,8 @@ export function postEditDecision(input: {
     missingDependencyCheckCount,
     riskEscalationsCoveredByVerification,
     riskEscalationsNeedInspection,
-    hasDegradedSnapshotTests
+    hasDegradedSnapshotTests,
+    reviewCoverageBlockReason
   };
 }
 
@@ -192,6 +223,7 @@ function inspectClassification(
     riskEscalationsNeedInspection: boolean;
     waivedVerification: VerificationLedgerEntry[];
     noVerificationProofForEditedFiles: boolean;
+    reviewCoverageBlockReason?: string;
     missingInvariantCount: number;
   }
 ): { mode: PostEditInspectMode; reasons: string[] } {
@@ -209,6 +241,7 @@ function inspectClassification(
     input.riskEscalationsNeedInspection ? "high-risk target lacks complete verification accounting" : undefined,
     input.waivedVerification.length > 0 ? "verification was waived" : undefined,
     input.noVerificationProofForEditedFiles ? "edited files have no credible verification evidence" : undefined,
+    input.reviewCoverageBlockReason,
     input.missingInvariantCount > 0 ? "task invariants lack explicit review" : undefined
   ].filter((reason): reason is string => Boolean(reason));
   const qualityBlockingReason =

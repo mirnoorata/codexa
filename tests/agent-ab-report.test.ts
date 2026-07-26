@@ -4,6 +4,8 @@ import { readFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+// @ts-expect-error the benchmark analyzer is intentionally plain ESM
+import { summarizeAgentAbArmFidelity } from "../scripts/agent-ab-analysis.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const script = path.join(root, "scripts", "agent-ab.mjs");
@@ -296,8 +298,10 @@ describe("archived agent A/B report", () => {
     });
 
     expect(report.treatmentFidelity.candidateVersion).toBe("0.10.0");
+    expect(report).not.toHaveProperty("routeConformance");
     for (const arm of ["control", "treatment"] as const) {
       expect(report.treatmentFidelity[arm]).toMatchObject(summarizeFidelity(outcomes, arm));
+      expect(report.treatmentFidelity[arm]).not.toHaveProperty("routeEligibleRuns");
     }
 
     expect(report.runWindow).toEqual({
@@ -317,6 +321,38 @@ describe("archived agent A/B report", () => {
     expect(Date.parse(report.runWindow.firstAgentStartedAt)).toBeLessThanOrEqual(
       Date.parse(report.runWindow.lastAgentFinishedAt)
     );
+  });
+});
+
+describe("schema-v2 mixed route fidelity", () => {
+  it("keeps legacy invocation adherence for unannotated tasks in an annotated study", () => {
+    const common = {
+      arm: "candidate",
+      started: true,
+      codexaSetup: { status: "observed", indexExitCode: 0, versionMatchesCandidate: true }
+    };
+    const fidelity = summarizeAgentAbArmFidelity([
+      {
+        ...common,
+        taskId: "annotated",
+        expectedRouteClass: "source-only",
+        routeConformance: { status: "match" },
+        codexaUsage: { status: "observed", codexaInvoked: false, callsByTool: {}, postEditDecisionTrace: null }
+      },
+      {
+        ...common,
+        taskId: "legacy",
+        expectedRouteClass: null,
+        codexaUsage: { status: "observed", codexaInvoked: false, callsByTool: {}, postEditDecisionTrace: null }
+      }
+    ], { arm: "candidate", routeAdherenceArm: "candidate" });
+    expect(fidelity).toMatchObject({
+      startedRuns: 2,
+      routeEligibleRuns: 1,
+      routeMatchingRuns: 1,
+      routeDeviationRuns: 0,
+      nonadherentRuns: 1
+    });
   });
 });
 

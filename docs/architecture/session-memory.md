@@ -294,13 +294,17 @@ Auto-recorded entries:
 Auto-recording must be bounded. Prefer one tool-call entry with compact refs to
 one entry per returned file. Compaction can aggregate by ref, task, and kind.
 
-Explicit `remember` is required for:
+Explicit `remember` is appropriate only when the durable future value
+outweighs another memory call, for example:
 
-- Agent conclusions after reading source.
-- Ruled-out hypotheses.
-- User-specific constraints forwarded by the agent.
-- Open questions and next actions the agent wants carried forward.
-- Manual verification results not already passed through `post_edit_review`.
+- A task-local decision that should survive genuine context loss.
+- A ruled-out hypothesis whose recovery will prevent repeated investigation.
+- A durable user-specific constraint.
+- An open question or next action that must be recovered in a later session.
+
+Do not mirror ordinary source conclusions or manual verification results into
+memory when source, task snapshots, or `post_edit_review` already retain the
+authoritative evidence.
 
 Error modes:
 
@@ -347,30 +351,34 @@ Cache behavior:
 
 ## 5. Agent-Side Protocol
 
-Generated `codex-contract.md` should add:
+Generated `codex-contract.md` uses the following recovery-only policy:
 
 ```md
 Session memory protocol:
 
-1. At session start or focus change, call `session_memory` with
-   `action: "summary"` unless `session_context` already included a fresh memory
-   preview.
-2. Before re-asking for the same task facts, call `session_memory` with
-   `action: "read"` and task/file/symbol filters.
-3. After forming a non-trivial claim, decision, ruled-out path, open question,
-   or durable task constraint, call `session_memory` with `action: "remember"`.
-4. For an explicit bounded edit, call `change_plan` with `saveSnapshot: true`
-   directly; session memory does not replace snapshots. Add orientation tools
-   first only when the target or context is unclear.
-5. Edit and run the tests and commands returned by `change_plan`. Call
+1. Do not call `session_memory` ritualistically at session start or on every
+   focus change. Use it after real context loss, or when one compact recall will
+   prevent repeated deep source reads.
+2. For an exact file, symbol, error, or bounded local task, use source tools
+   directly. Session memory is not an orientation prerequisite.
+3. When recovery is needed, call `session_memory` with `action: "summary"` or
+   `action: "read"` and the narrowest useful task, file, symbol, or entry
+   filters. Revalidate stale or heuristic entries against source before acting.
+4. Call `session_memory` with `action: "remember"` only for a durable,
+   task-local decision or constraint whose future reuse is worth more than the
+   memory call. Link replacements with `supersedes`.
+5. For a non-trivial risky edit, call `change_plan` with `saveSnapshot: true`
+   directly; session memory does not replace snapshots. Add `search` first only
+   when the target is ambiguous.
+6. Edit and run the tests and commands returned by `change_plan`. Call
    `test_plan` only when verification guidance remains unresolved.
-6. After editing, call `post_edit_review`; Codexa auto-records the compact
-   outcome summary and task-lifecycle state.
-7. Call `proof_card` only when a policy change, formal audit, release, artifact
-   handoff, or decision-integrity review needs an explicit proof packet.
+7. After planned verification, call `post_edit_review` once unless a true
+   completion or Stop gate already owns final drift review. Call `proof_card`
+   only for policy, audit, release, or formal handoff proof.
 
-Codexa auto-records bounded `viewed` entries for context it returns. Do not log
-views manually.
+Codexa auto-records bounded `viewed` entries for focused context and lifecycle
+packets. Do not log views manually or add memory calls merely because the
+server is present.
 ```
 
 Agent writes should be short, scoped, and evidenced:

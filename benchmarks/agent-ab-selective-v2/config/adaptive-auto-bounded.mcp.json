@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "codexa": {
+      "command": "/opt/codexa-agent-ab/start-codexa-mcp-adaptive-auto-bounded",
+      "args": []
+    }
+  }
+}

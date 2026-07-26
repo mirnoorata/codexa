@@ -2,7 +2,7 @@ import type { EvidenceTier, FileFact, GraphEdgeFact, SymbolFact, WorkflowTraceFa
 import type { ChangeType } from "./change.js";
 import type { GuidedNextToolV1 } from "./runtime.js";
 import type { DiffFootprintV1, TaskInvariant, TaskInvariantReview, TaskLoopFailureSignal, TaskLoopReview, TaskSnapshot, TaskSnapshotRequiredCheck } from "./snapshots.js";
-import type { ChangedFileEntry, DiffImpactGroup, TestRecommendation, VerificationArtifactSummary, VerificationCommandEnvelope, VerificationCommandPlanEntry, VerificationCommandReport, VerificationCoverage, VerificationLedgerEntry, VerificationProvenance, VerificationWaiver } from "./verification.js";
+import type { ChangedFileEntry, DiffImpactGroup, PostEditReviewCoverage, TestRecommendation, VerificationArtifactSummary, VerificationCommandEnvelope, VerificationCommandPlanEntry, VerificationCommandReport, VerificationCoverage, VerificationLedgerEntry, VerificationProvenance, VerificationWaiver } from "./verification.js";
 
 export type QueryPrimitive = string | number | boolean | null;
 export type QueryValue = QueryPrimitive | VerificationProvenance | QueryValue[] | { [key: string]: QueryValue | undefined };
@@ -69,6 +69,7 @@ export interface PostEditOutcomeData extends QueryObject {
   inspectMode?: "none" | "advisory" | "blocking";
   inspectReasons?: string[];
   completionAuthority?: "complete" | "tests_required" | "advisory_inspect" | "blocking_inspect" | "replan_required";
+  reviewCoverage?: QueryObject;
   path?: string;
   planRevision?: number;
   invariants?: QueryObject[];
@@ -212,10 +213,12 @@ export interface ChangePlanData extends BaseQueryData {
 
 export interface PostEditReviewData extends BaseQueryData {
   mode: "post_edit_review";
+  taskId?: string;
   verdict?: string;
   inspectMode?: "none" | "advisory" | "blocking";
   inspectReasons?: string[];
   completionAuthority?: "complete" | "tests_required" | "advisory_inspect" | "blocking_inspect" | "replan_required";
+  reviewCoverage?: PostEditReviewCoverage;
   planRevision?: number;
   invariants?: TaskInvariant[];
   invariantReviews?: TaskInvariantReview[];
@@ -224,6 +227,11 @@ export interface PostEditReviewData extends BaseQueryData {
   loopReview?: TaskLoopReview;
   verificationArtifacts?: VerificationArtifactSummary[];
   files?: string[];
+  /**
+   * Internal, pre-compaction authority input. MCP projections deliberately
+   * omit this list after the decision kernel validates reviewCoverage.
+   */
+  reviewCandidateTargets?: string[];
   reviewTargets?: string[];
   changedSinceSnapshot?: ChangedFileEntry[];
   changedGroups?: CompactDiffImpactGroup[];

@@ -1,36 +1,39 @@
 import type { CodexaIndex, TaskSnapshotRiskFile, TaskSnapshotSymbol, TestRecommendation, TestRecommendationProvenance } from "../../types.js";
-import { findFile } from "../targets.js";
 
 export function snapshotSymbolBaseline(index: CodexaIndex, paths: string[]): Record<string, TaskSnapshotSymbol[]> {
   const pathSet = new Set(paths);
   const result: Record<string, TaskSnapshotSymbol[]> = {};
-  for (const filePath of pathSet) {
-    result[filePath] = index.symbols
-      .filter((symbol) => symbol.path === filePath)
-      .map((symbol) => ({
-        id: symbol.id,
-        path: symbol.path,
-        name: symbol.name,
-        qualifiedName: symbol.qualifiedName,
-        kind: symbol.kind,
-        range: symbol.range
-      }))
-      .sort((a, b) => (a.range?.startLine ?? 0) - (b.range?.startLine ?? 0) || a.qualifiedName.localeCompare(b.qualifiedName));
+  for (const filePath of pathSet) result[filePath] = [];
+  for (const symbol of index.symbols) {
+    if (!pathSet.has(symbol.path)) continue;
+    result[symbol.path]!.push({
+      id: symbol.id,
+      path: symbol.path,
+      name: symbol.name,
+      qualifiedName: symbol.qualifiedName,
+      kind: symbol.kind,
+      range: symbol.range
+    });
+  }
+  for (const symbols of Object.values(result)) {
+    symbols.sort((a, b) => (a.range?.startLine ?? 0) - (b.range?.startLine ?? 0) || a.qualifiedName.localeCompare(b.qualifiedName));
   }
   return result;
 }
 
 export function snapshotRiskBaseline(index: CodexaIndex, paths: string[]): Record<string, TaskSnapshotRiskFile> {
   const pathSet = new Set(paths);
+  const riskByPath = new Map(index.files.filter((file) => pathSet.has(file.path)).map((file) => [file.path, file.riskScore]));
+  const signalsByPath = new Map<string, string[]>([...pathSet].map((filePath) => [filePath, []]));
+  for (const risk of index.risks) {
+    const signals = signalsByPath.get(risk.path);
+    if (signals) signals.push(`${risk.signal}: ${risk.reason}`);
+  }
   const result: Record<string, TaskSnapshotRiskFile> = {};
   for (const filePath of pathSet) {
-    const file = findFile(index, filePath);
-    const signals = index.risks
-      .filter((risk) => risk.path === filePath)
-      .map((risk) => `${risk.signal}: ${risk.reason}`)
-      .sort();
+    const signals = signalsByPath.get(filePath)!.sort();
     result[filePath] = {
-      riskScore: file?.riskScore ?? signals.length,
+      riskScore: riskByPath.get(filePath) ?? signals.length,
       signals
     };
   }
