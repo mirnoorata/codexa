@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { compactMcpResult } from "../src/mcp/compaction.js";
 import { mcpDecisionKernel } from "../src/mcp/decision-kernel.js";
+import { toToolResult } from "../src/mcp/envelope.js";
 import {
   MAX_POST_EDIT_REVIEW_CANDIDATE_TARGETS,
   createPostEditReviewCoverage,
@@ -18,6 +19,23 @@ const context = {
   snapshotPublicationSequence: 4,
   candidateTargets: ["src/a.ts", "src/b.ts", "src/c.ts", "src/d.ts"],
   analyzedTargets: ["src/a.ts", "src/b.ts", "src/c.ts"]
+};
+
+const freshness = {
+  schemaVersion: 1 as const,
+  snapshotId: "coverage-snapshot",
+  repoRoot: "/repo",
+  gitRoot: "/repo",
+  headCommit: "head",
+  indexedAt: "2026-07-25T00:00:00.000Z",
+  dirtyFiles: [],
+  dirtyFileHashes: {},
+  indexedDirtyFileHashes: {},
+  indexedDirtyFiles: [],
+  missing: false,
+  stale: false,
+  reason: "fresh",
+  parserErrorCount: 0
 };
 
 describe("post-edit review coverage validation", () => {
@@ -148,6 +166,18 @@ describe("post-edit review coverage validation", () => {
         inspectMode: "none"
       }
     });
+    const toolResult = toToolResult(
+      { text: compacted.text, data: compactedData, freshness },
+      "post_edit_review",
+      { autoRefresh: false, sessionMemoryMode: "off" }
+    );
+    expect(toolResult.structuredContent).toMatchObject({
+      actionability: "done",
+      data: {
+        actionability: "done",
+        decisionKernel: { authority: { actionability: "done" } }
+      }
+    });
   });
 
   it.each([
@@ -223,6 +253,18 @@ describe("post-edit review coverage validation", () => {
           completionAuthority: "blocking_inspect",
           inspectMode: "blocking"
         }
+      }
+    });
+    const toolResult = toToolResult(
+      { text: compacted.text, data: compacted.data, freshness },
+      "post_edit_review",
+      { autoRefresh: false, sessionMemoryMode: "off" }
+    );
+    expect(toolResult.structuredContent).toMatchObject({
+      actionability: "blocked",
+      data: {
+        actionability: "blocked",
+        decisionKernel: { authority: { actionability: "blocked" } }
       }
     });
   });

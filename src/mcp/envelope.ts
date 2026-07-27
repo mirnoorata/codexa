@@ -5,7 +5,8 @@ import { nextToolNames } from "../query/next-tools.js";
 import { CURRENT_VERIFICATION_PROVENANCE } from "../types.js";
 import type { FreshnessInfo, QueryResult, RefreshInfo } from "../types.js";
 import { inferMcpDataMode } from "./compaction.js";
-import { deriveMcpActionability, mcpAuthorityBlocked, renderMcpConciseText } from "./decision-kernel.js";
+import { deriveMcpActionability, renderMcpConciseText } from "./decision-kernel.js";
+import { mcpAuthorityBlockReason, mcpPostEditReviewIsAdvisory } from "./decision-policy.js";
 import { boundMcpToolResult } from "./result-budget.js";
 import { DISPATCHABLE_MCP_TOOL_NAMES, MEMORY_RECORDING_MCP_TOOL_NAMES, SOURCE_CONTEXT_MCP_TOOL_NAMES } from "./tool-registry.js";
 
@@ -263,8 +264,11 @@ function routeMcpGuidanceForProfile(record: Record<string, unknown>, enabledTool
   const dispatchContractLocation = routed.dispatches.length > 0
     ? "top-level nextTools contract"
     : "data.nextCall contract";
+  const dynamicEvidenceGuidance = primaryDispatch?.operation === "post_edit_review"
+    ? " The contract supplies fixed identifiers only; add actual ranCommands/ranTests, available artifactIds, and applicable invariantReviews from work already performed."
+    : "";
   const systemMessage = primaryDispatch
-    ? `Use the complete ${dispatchContractLocation}; ${primaryDispatch.operation} is routed through the core capabilities dispatcher and is not registered directly.`
+    ? `Use the fixed inputs from the ${dispatchContractLocation}; ${primaryDispatch.operation} is routed through the core capabilities dispatcher and is not registered directly.${dynamicEvidenceGuidance}`
     : routeGuidanceTextForProfile(record.systemMessage, enabledTools);
   const decisionKernel = sourceKernel
     ? {
@@ -583,10 +587,11 @@ function lifecycleForMcpData(mode: string, data: Record<string, unknown>): {
   const snapshotBlock = isRecord(data.snapshotBlock) ? data.snapshotBlock : undefined;
   const snapshotLoad = isRecord(data.snapshotLoad) ? data.snapshotLoad : undefined;
   const taskId = stringValue(data.taskId) ?? stringValue(snapshot?.taskId) ?? stringValue(snapshotBlock?.taskId);
+  const advisoryReview = mcpPostEditReviewIsAdvisory(data);
   const blockingReasons = [
     stringValue(snapshotBlock?.reason),
     stringValue(snapshotLoad?.missingReason),
-    ...stringArray(data.driftReasons).slice(0, 6),
+    ...(advisoryReview ? [] : stringArray(data.driftReasons).slice(0, 6)),
     ...stringArray(data.gaps).filter((gap) => gap.startsWith("worktree state unavailable")).slice(0, 2)
   ].filter((entry): entry is string => Boolean(entry));
   const snapshotStatus = snapshotBlock ? "blocked" : snapshot ? "saved" : snapshotLoad ? "loaded" : mode === "post_edit_review" ? "missing-or-ambiguous" : undefined;
@@ -627,7 +632,30 @@ function actionabilityForMcpData(
   freshness: unknown,
   lifecycle: { blockingReasons: string[]; snapshotStatus?: string }
 ): McpActionability {
-  return mcpActionabilityValue(deriveMcpActionability(mode, data, mcpAuthorityBlocked(data, freshness) || lifecycle.blockingReasons.length > 0 || lifecycle.snapshotStatus === "blocked")) ?? "blocked";
+  const kernel = isRecord(data.decisionKernel) && data.decisionKernel.schemaVersion === 1 && data.decisionKernel.mode === mode
+    ? data.decisionKernel
+    : undefined;
+  const authority = kernel && isRecord(kernel.authority) ? kernel.authority : undefined;
+  const compaction = isRecord(data.mcp) ? data.mcp : undefined;
+  const kernelActionability = mcpActionabilityValue(authority?.actionability);
+  const explicitActionability = mcpActionabilityValue(data.actionability);
+  if (kernelActionability && explicitActionability && kernelActionability !== explicitActionability) {
+    return "blocked";
+  }
+  const blockReason = mcpAuthorityBlockReason(data, isRecord(freshness) ? freshness : undefined);
+  const coverageInputsIntentionallyCompacted =
+    mode === "post_edit_review" &&
+    compaction?.compacted === true &&
+    kernelActionability !== undefined &&
+    !Array.isArray(data.reviewCandidateTargets) &&
+    blockReason === "post-edit-review-coverage-invalid";
+  const blocked =
+    (!coverageInputsIntentionallyCompacted && blockReason !== undefined) ||
+    lifecycle.blockingReasons.length > 0 ||
+    lifecycle.snapshotStatus === "blocked";
+  if (blocked) return "blocked";
+  if (kernelActionability) return kernelActionability;
+  return mcpActionabilityValue(deriveMcpActionability(mode, data)) ?? "blocked";
 }
 
 function mcpActionabilityValue(value: unknown): McpActionability | undefined {

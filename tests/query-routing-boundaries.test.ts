@@ -3,11 +3,62 @@ import { mkdir, symlink, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildIndex } from "../src/indexer.js";
+import { focusFilesAndSymbolsInTaskOrder } from "../src/query/graph.js";
 import { changePlanQuery, contextPackQuery, focusBriefQuery, searchQuery } from "../src/queries.js";
 import { dirtyTargetPathAuthority } from "../src/query/targets.js";
-import { createFixtureRepo } from "./indexer-fixtures.js";
+import { createDocFixtureRepo, createFixtureRepo } from "./indexer-fixtures.js";
 
 describe("query routing boundaries", () => {
+  it("keeps heuristic subsystem matches and document headings below edit authority", async () => {
+    const repo = await createDocFixtureRepo();
+    await writeFile(
+      path.join(repo, "README.md"),
+      "# Codexa\n\nCodexa documents routing, retrieval, compaction, freshness, and evaluation behavior.\n",
+      "utf8"
+    );
+    await writeFile(path.join(repo, "src/special.ts"), "export const $store = 1\nexport const _hidden = 2\n", "utf8");
+    const index = await buildIndex({ repoRoot: repo });
+    const repositoryFiles = index.files.map((file) => file.path);
+    for (const symbol of ["$store", "_hidden"]) {
+      expect(focusFilesAndSymbolsInTaskOrder(`Show ${symbol}`, repositoryFiles, repositoryFiles, index.symbols), symbol).toContain("src/special.ts");
+    }
+
+    const orientationTask = "How does Codexa help models decide when and where to edit code, distinguish authoritative from heuristic evidence, avoid unnecessary tool calls, and verify fixes? Identify the core routing, retrieval, change-planning, result-compaction, freshness, and evaluation paths plus likely gaps or duplicated logic.";
+    for (const result of [
+      await focusBriefQuery(repo, { task: orientationTask, diff: false }, { autoRefresh: false }),
+      await searchQuery(repo, { query: orientationTask }, { autoRefresh: false })
+    ]) {
+      const data = result.data as {
+        actionability: string;
+        intentConfidence: { mode: string };
+        targetRoles: { editableTargets: string[] };
+      };
+      expect(data.intentConfidence.mode).toBe("orientation");
+      expect(data.actionability).not.toBe("edit_ready");
+      expect(data.targetRoles.editableTargets).not.toContain("README.md");
+    }
+
+    const unboundedEditTask = "Change routing behavior across retrieval, compaction, freshness, and evaluation.";
+    const focus = await focusBriefQuery(repo, { task: unboundedEditTask, diff: false }, { autoRefresh: false });
+    expect((focus.data as { actionability: string; targetRoles: { editableTargets: string[] }; nextCall: { tool: string } })).toMatchObject({
+      actionability: "needs_target",
+      targetRoles: { editableTargets: [] },
+      nextCall: { tool: "search" }
+    });
+    const search = await searchQuery(repo, { query: unboundedEditTask }, { autoRefresh: false });
+    expect((search.data as { actionability: string; targetRoles: { editableTargets: string[] }; nextTools: unknown[] })).toMatchObject({
+      actionability: "needs_target",
+      targetRoles: { editableTargets: [] },
+      nextTools: []
+    });
+
+    const explicit = await searchQuery(repo, { query: "Update README.md" }, { autoRefresh: false });
+    expect((explicit.data as { actionability: string; targetRoles: { editableTargets: string[] } })).toMatchObject({
+      actionability: "edit_ready",
+      targetRoles: { editableTargets: ["README.md"] }
+    });
+  });
+
   it("keeps change-inspection prompts in read-only orientation", async () => {
     const repo = await createFixtureRepo();
     await buildIndex({ repoRoot: repo });

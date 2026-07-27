@@ -5,10 +5,12 @@ import { z } from "zod";
 // not instruct the model to call a tool the reduced profile never registered.
 export function registerWorkflowPrompts(server: McpServer, enabledTools?: ReadonlySet<string>): void {
   const toolAvailable = (name: string): boolean => !enabledTools || enabledTools.has(name);
-  const call = (name: string, purpose: string, operationArguments: Record<string, unknown> = {}): string =>
-    toolAvailable(name)
-      ? `Call \`${name}\` ${purpose}.`
+  const call = (name: string, purpose: string, operationArguments: Record<string, unknown> = {}): string => {
+    const argumentContract = Object.keys(operationArguments).length > 0 ? ` with \`arguments: ${JSON.stringify(operationArguments)}\`` : "";
+    return toolAvailable(name)
+      ? `Call \`${name}\`${argumentContract} ${purpose}.`
       : `Call \`capabilities\` with \`action: "invoke"\`, \`operation: "${name}"\`, and \`arguments: ${JSON.stringify(operationArguments)}\` ${purpose}.`;
+  };
   const impactCall = (target: string, targetKind?: "file" | "symbol"): string => {
     if (targetKind) return call("impact", "for this exact target", { [targetKind]: target });
     if (toolAvailable("impact")) {
@@ -108,10 +110,13 @@ export function registerWorkflowPrompts(server: McpServer, enabledTools?: Readon
               "Use Codexa's snapshot edit loop.",
               `Task: ${task}`,
               target ? `Target: ${target}` : undefined,
-              target ? call("change_plan", "with `saveSnapshot: true` and a short `taskId`") : call("search", "once; do not stack another context packet unless the scope becomes materially risky"),
+              target
+                ? call("change_plan", "to save a bounded plan; add a short `taskId` when useful", { task: `${task}\nTarget: ${target}`, saveSnapshot: true })
+                : call("search", "once; inspect the ranked source, then stop if one bounded edit target is still unresolved", { query: task }),
+              target ? undefined : call("change_plan", "after source inspection resolves a non-trivial bounded target; replace `files` with `symbols` when the selected target is a symbol", { task, files: ["<selected source file>"], saveSnapshot: true }),
               "Use the returned planned files, tests, workflows, quality, and gaps to guide source reads.",
-              "After planned verification, rely on a true completion/Stop gate when present. An edit-only hook is not a completion gate; otherwise:",
-              call("post_edit_review", "once with that taskId and tests already run", { taskId: "<saved taskId>" }),
+              "After planned verification, rely on a true completion/Stop gate when present. An edit-only hook is not a completion gate; otherwise, if a snapshot was saved:",
+              call("post_edit_review", "once with that taskId plus actual ranCommands/ranTests, available artifactIds, and applicable invariantReviews", { taskId: "<saved taskId>" }),
               "If the review says `inspect` or `replan`, resolve that drift before claiming the edit is complete."
             ]
               .filter((line): line is string => Boolean(line))

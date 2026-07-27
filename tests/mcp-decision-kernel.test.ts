@@ -46,6 +46,128 @@ function completeReviewCoverage(taskId: string, reviewTargets: string[]) {
 }
 
 describe("mandatory MCP decision kernel", () => {
+  it("preserves bounded editable, read-only, and excluded target roles through typed compaction", () => {
+    const targetRoles = {
+      editableTargets: ["src/api.ts"],
+      readDependencies: ["src/util.ts"],
+      excludedTargets: ["src/generated.ts"],
+      hasReferenceCue: true,
+      unresolvedReferenceCue: false
+    };
+    const contextPacket = compactMcpResult({
+      freshness: freshness(),
+      text: "bounded context",
+      data: {
+        mode: "context_pack",
+        actionability: "edit_ready",
+        boundedPlanTargets: ["src/api.ts"],
+        targetRoles,
+        focusFiles: [],
+        nextReads: ["src/api.ts", "src/util.ts"],
+        truncation: {
+          verificationCoverage: {
+            total: 40,
+            returned: 16
+          }
+        }
+      }
+    });
+    expect(contextPacket.data).toMatchObject({
+      boundedPlanTargets: ["src/api.ts"],
+      targetRoles,
+      truncation: {
+        verificationCoverage: {
+          total: 40,
+          returned: 16
+        }
+      },
+      decisionKernel: {
+        scope: {
+          boundedPlanTargets: ["src/api.ts"],
+          editableTargets: ["src/api.ts"],
+          readDependencies: ["src/util.ts"],
+          excludedTargets: ["src/generated.ts"]
+        }
+      }
+    });
+
+    const changePlan = compactMcpResult({
+      freshness: freshness(),
+      text: "bounded plan",
+      data: {
+        mode: "change_plan",
+        actionability: "edit_ready",
+        files: ["src/api.ts", "src/util.ts", "src/generated.ts"],
+        plannedEditTargets: ["src/api.ts"],
+        targetRoles,
+        reviewOwner: "agent-final-review"
+      }
+    });
+    expect(changePlan.data).toMatchObject({
+      plannedEditTargets: ["src/api.ts"],
+      targetRoles,
+      reviewOwner: "agent-final-review",
+      decisionKernel: {
+        scope: {
+          plannedEditTargets: ["src/api.ts"],
+          editableTargets: ["src/api.ts"],
+          readDependencies: ["src/util.ts"],
+          excludedTargets: ["src/generated.ts"],
+          reviewOwner: "agent-final-review"
+        }
+      }
+    });
+  });
+
+  it("preserves search target-role boundaries through the 4 KiB summary tier", () => {
+    const targetRoles = {
+      editableTargets: ["src/api.ts"],
+      readDependencies: ["src/util.ts"],
+      excludedTargets: ["src/generated.ts"],
+      hasReferenceCue: true,
+      unresolvedReferenceCue: false
+    };
+    const compacted = compactMcpResult(
+      {
+        freshness: freshness(),
+        text: "bounded search",
+        data: {
+          mode: "search",
+          actionability: "edit_ready",
+          targetRoles,
+          files: [{ path: "src/api.ts" }],
+          evidence: Array.from({ length: 200 }, (_, index) => ({ index, detail: "x".repeat(300) }))
+        }
+      },
+      { format: "concise", targetBytes: 4_000 }
+    );
+    const data = compacted.data as {
+      targetRoles?: typeof targetRoles;
+      decisionKernel?: {
+        search?: {
+          editableTargetCount?: number;
+          editableTargets?: string[];
+          readDependencyCount?: number;
+          readDependencies?: string[];
+          excludedTargetCount?: number;
+          excludedTargets?: string[];
+        };
+      };
+      mcp?: { budgetCompaction?: string };
+    };
+    expect(Buffer.byteLength(JSON.stringify(data), "utf8")).toBeLessThanOrEqual(4_000);
+    expect(data.mcp?.budgetCompaction).toBe("summary");
+    expect(data.targetRoles).toMatchObject(targetRoles);
+    expect(data.decisionKernel?.search).toMatchObject({
+      editableTargetCount: 1,
+      editableTargets: ["src/api.ts"],
+      readDependencyCount: 1,
+      readDependencies: ["src/util.ts"],
+      excludedTargetCount: 1,
+      excludedTargets: ["src/generated.ts"]
+    });
+  });
+
   it("preserves partial post-edit review coverage and fails closed even if detailed authority contradicts it", () => {
     process.env.CODEXA_MCP_STRUCTURED_BUDGET_BYTES = "4000";
     const reviewTargets = Array.from({ length: 30 }, (_, index) => `src/review-${index}.ts`);

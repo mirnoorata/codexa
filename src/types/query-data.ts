@@ -170,6 +170,8 @@ export interface ContextPacketData extends BaseQueryData {
   snippets?: string[];
   contextSources?: ContextSourceSummaryData[];
   nextReads?: string[];
+  boundedPlanTargets?: string[];
+  targetRoles?: QueryObject;
   baseline?: QueryObject;
   retrieval?: RetrievalSummaryData;
   recipes?: string[];
@@ -190,6 +192,7 @@ export interface FocusBriefData extends BaseQueryData {
   groups?: CompactDiffImpactGroup[];
   tests?: TestRecommendation[];
   nextCall?: NextCallData;
+  targetRoles?: QueryObject;
 }
 
 export interface ChangePlanData extends BaseQueryData {
@@ -203,6 +206,8 @@ export interface ChangePlanData extends BaseQueryData {
   context?: ContextPacketData | QueryObject;
   files?: string[];
   plannedEditTargets?: string[];
+  targetRoles?: QueryObject;
+  reviewOwner?: string;
   tests?: TestRecommendation[];
   recipes?: string[];
   requiredWorkflowChecks?: TaskSnapshotRequiredCheck[];

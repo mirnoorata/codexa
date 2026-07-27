@@ -65,6 +65,8 @@ interface ContextPackInternalOptions {
   requiredFocusFiles?: string[];
 }
 
+const CONTEXT_VERIFICATION_COVERAGE_LIMIT = 16;
+
 export async function contextPackQuery(
   input: QuerySessionInput,
   contextInput: ContextPackInput = {},
@@ -367,6 +369,10 @@ export async function contextPackQuery(
     ? []
     : asVerificationCoveragePreview(verificationCoverageForCommands(index, verificationCommands, repoRoot));
   const commandPlan = suppressActionGuidance ? [] : verificationCommandPlan(verificationCoverage);
+  const returnedVerificationCoverage = verificationCoverage.slice(0, CONTEXT_VERIFICATION_COVERAGE_LIMIT);
+  const truncation = verificationCoverage.length > returnedVerificationCoverage.length
+    ? { verificationCoverage: { total: verificationCoverage.length, returned: returnedVerificationCoverage.length } }
+    : undefined;
   const value = valueEstimate("context_pack", {
     rawFileCount: baseline?.lines,
     codexaFileCount: focusEntries.length,
@@ -607,8 +613,9 @@ export async function contextPackQuery(
       actionGuidanceSuppressed: suppressActionGuidance,
       recipes,
       verificationCommands,
-      verificationCoverage: verificationCoverage.slice(0, 40),
+      verificationCoverage: returnedVerificationCoverage,
       verificationCommandPlan: commandPlan,
+      truncation,
       value,
       quality,
 	      gaps,
@@ -811,7 +818,11 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
   const dirtyScopePlan = dirtyScopeFileCount > 0 && proposedNextCall.tool === "change_plan";
   const boundedPlan = routedPlanTargets.length > 0 && proposedNextCall.tool === "change_plan" && !ambiguousExplicitTarget && !unresolvedNaturalTarget;
   const boundedTargetReady = routingMode === "edit" && routedPlanTargets.length > 0 && !dirtyQualifierNoMatch && !ambiguousExplicitTarget && !unresolvedNaturalTarget;
+  const unboundedEditTarget = routingMode === "edit" && routedPlanTargets.length === 0 && !dirtyScopeRequested && !ambiguousExplicitTarget && !unresolvedNaturalTarget;
   const noDirtyTarget = dirtyScopeEmpty || dirtyQualifierNoMatch;
+  const targetMissingAnchor = ambiguousExplicitTarget ? "ambiguous repository target" : unresolvedNaturalTarget ? "unresolved repository path" : "no explicit editable repository target";
+  const targetBlockReason = unboundedEditTarget ? "ranked retrieval evidence does not supply edit authority" : targetMissingAnchor;
+  const targetBlockDiagnostic = ambiguousExplicitTarget ? "named target matches multiple repository paths" : unresolvedNaturalTarget ? "named path does not resolve to an indexed repository file" : "edit prompt lacks one explicit editable repository target";
   const effectiveIntent = dirtyScopePlan || boundedPlan || boundedTargetReady
     ? {
         ...retrieval.intentConfidence,
@@ -835,23 +846,23 @@ export async function focusBriefQuery(input: QuerySessionInput, focusInput: Focu
           verdict: "orientation-only" as const,
           reasons: uniqueSorted([...retrieval.intentConfidence.reasons, dirtyScopeEmpty ? "no dirty files" : "no dirty files match the named qualifier"])
         }
-      : ambiguousExplicitTarget || unresolvedNaturalTarget
+      : ambiguousExplicitTarget || unresolvedNaturalTarget || unboundedEditTarget
       ? {
           ...retrieval.intentConfidence,
           anchors: [],
           selectedAnchorCount: 0,
-          missingAnchors: uniqueSorted([...retrieval.intentConfidence.missingAnchors, ambiguousExplicitTarget ? "ambiguous repository target" : "unresolved repository path"]),
+          missingAnchors: uniqueSorted([...retrieval.intentConfidence.missingAnchors, targetMissingAnchor]),
           editReady: false,
           verdict: "needs-target" as const,
-          reasons: uniqueSorted([...retrieval.intentConfidence.reasons, ambiguousExplicitTarget ? "ambiguous repository target" : "unresolved repository path"])
+          reasons: uniqueSorted([...retrieval.intentConfidence.reasons, targetBlockReason])
         }
       : retrieval.intentConfidence;
   const effectiveDiagnostics = dirtyScopePlan || boundedPlan || boundedTargetReady
     ? uniqueSorted([...retrieval.diagnostics.filter((diagnostic) => !/needs explicit|raw search likely|workflow intent had no matching trace/iu.test(diagnostic)), dirtyScopePlan ? "explicit dirty worktree scope supplies plan targets" : "bounded task target supplies plan authority"])
     : noDirtyTarget
       ? uniqueSorted([...retrieval.diagnostics.filter((diagnostic) => !/needs explicit|raw search likely/iu.test(diagnostic)), dirtyScopeEmpty ? "no dirty files" : "no dirty files match the named qualifier"])
-      : ambiguousExplicitTarget || unresolvedNaturalTarget
-      ? uniqueSorted([...retrieval.diagnostics, ambiguousExplicitTarget ? "named target matches multiple repository paths" : "named path does not resolve to an indexed repository file"])
+      : ambiguousExplicitTarget || unresolvedNaturalTarget || unboundedEditTarget
+      ? uniqueSorted([...retrieval.diagnostics, targetBlockDiagnostic])
       : retrieval.diagnostics;
   const nextCall = !noDirtyTarget && !dirtyScopePlan && !boundedTargetReady && !ambiguousExplicitTarget && !unresolvedNaturalTarget && (effectiveIntent.verdict === "needs-target" || effectiveIntent.verdict === "raw-search-better")
     ? { tool: "search", reason: "the session packet still lacks one exact source target", arguments: { query: task } }

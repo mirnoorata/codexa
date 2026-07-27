@@ -78,7 +78,9 @@ describe("retrieval prompt intent", () => {
     "Could you explain whether src/util.ts has to be fixed?",
     "Should src/api.ts enforce auth?",
     "Does src/api.ts need to enforce auth?",
-    "Explain whether the route in src/api.ts has to enforce auth"
+    "Explain whether the route in src/api.ts has to enforce auth",
+    "How does Codexa help models decide when and where to edit code, distinguish authoritative from heuristic evidence, avoid unnecessary tool calls, and verify fixes? Identify the core routing, retrieval, change-planning, result-compaction, freshness, and evaluation paths plus likely gaps or duplicated logic.",
+    "Identify the core routing, retrieval, change planning, result compaction, freshness, and evaluation paths"
   ])("keeps %s read-only", (task) => {
     expect(promptModeForTask(task)).toBe("orientation");
     expect(classifyTaskIntent(task)).not.toContain("implementation");
@@ -92,6 +94,7 @@ describe("retrieval prompt intent", () => {
     "Create src/new.ts",
     "Please fix src/util.ts",
     "Review src/a.ts, then fix src/b.ts",
+    "Review routing, then change the planning logic",
     "Need to harden API permissions in src/api.ts",
     "Task: Harden API permissions in src/api.ts",
     "Context first. Harden API permissions in src/api.ts",

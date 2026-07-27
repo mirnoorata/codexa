@@ -4,6 +4,9 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildIndex, buildIndexLocked, getFreshness, loadIndex } from "../src/indexer.js";
+import { compactMcpResult } from "../src/mcp/compaction.js";
+import { withMcpDelivery } from "../src/mcp/decision-kernel.js";
+import { toToolResult } from "../src/mcp/envelope.js";
 import { MAX_INDEXED_SOURCE_BYTES } from "../src/repo-files.js";
 import { createPostEditReviewCoverage } from "../src/post-edit-review-coverage.js";
 import { validateChangePlanTargetCandidate } from "../src/query/change-plan.js";
@@ -213,6 +216,50 @@ it("degrades legacy snapshot tests instead of trusting unscoped planned-test evi
       expect(data.missedLikelyTests.map((test) => test.path)).not.toContain("tests/manual_legacy.py");
       expect(data.missedLikelyTests.map((test) => test.path)).not.toContain("tests/manual_v1_stale.py");
       expect(data.driftReasons.some((reason) => reason.includes("planned snapshot test"))).toBe(true);
+
+      const delivered = withMcpDelivery(compactMcpResult(review, { format: "detailed" }), {
+        schemaVersion: 1,
+        requestedFormat: "detailed",
+        effectiveFormat: "detailed",
+        resultId: `mr_${"a".repeat(64)}`,
+        resultUri: `codexa://repo/mcp-results/rr_${"b".repeat(32)}/mr_${"a".repeat(64)}`,
+        detailAvailable: true
+      });
+      const envelope = toToolResult(delivered, "post_edit_review", {
+        autoRefresh: false,
+        sessionMemoryMode: "off"
+      }).structuredContent as {
+        actionability: string;
+        lifecycle: { blockingReasons: string[] };
+        data: { decisionKernel: { authority: { actionability: string } } };
+      };
+      expect(envelope.actionability).toBe("review");
+      expect(envelope.lifecycle.blockingReasons).toEqual([]);
+      expect(envelope.data.decisionKernel.authority.actionability).toBe("review");
+
+      for (const implementation of [
+        "def normalize(value):\n    return value.strip().lower()\n",
+        "def normalize(value):\n    return value.strip().title()\n"
+      ]) {
+        await writeFile(path.join(repo, "service/helpers.py"), implementation, "utf8");
+        const repeated = await postEditReviewQuery(
+          repo,
+          {
+            taskId: "legacy-planned-test-provenance",
+            ranTests: ["tests/test_app.py", "tests/test_alias_app.py"]
+          },
+          { autoRefresh: true }
+        );
+        expect(repeated.data).toMatchObject({
+          verdict: "inspect",
+          completionAuthority: "advisory_inspect",
+          loopReview: {
+            status: "within-budget",
+            attemptStatus: "resolved",
+            unresolvedAttemptsSincePlan: 0
+          }
+        });
+      }
     });
 
 it("requires explicit snapshot binding when multiple task snapshots exist", async () => {

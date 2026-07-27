@@ -1,10 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildIndex, buildIndexLocked, getFreshness, loadIndex } from "../src/indexer.js";
 import { MAX_INDEXED_SOURCE_BYTES } from "../src/repo-files.js";
+import { loadOutcomeRankSignals } from "../src/outcome-ranking.js";
 import { validateChangePlanTargetCandidate } from "../src/query/change-plan.js";
 import { postEditDecision } from "../src/query/post-edit/decision.js";
 import { postEditReviewWithTrustedRunnerReports } from "../src/query/post-edit.js";
@@ -34,6 +35,43 @@ import {
 } from "../src/queries.js";
 import { createFixtureRepo, createDocFixtureRepo, createBroadWorkflowFixtureRepo, createVerificationCoverageFixtureRepo, createSemanticDefaultRepo, createManifestGateFixtureRepo, createDottedReferenceFixtureRepo, createManifestLocalityFixtureRepo, mkdirp } from "./indexer-fixtures.js";
 describe("Codexa indexer", () => {
+it.each([
+  ["tied", 0],
+  ["newer", 1_000]
+])("loads the full newest outcome when latest.json is %s", async (_label, pointerOffsetMs) => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-outcome-pointer-ranking-"));
+    const outcomeDir = path.join(repo, ".codex/cache/codexa-outcomes");
+    await mkdir(outcomeDir, { recursive: true });
+    const outcomePath = path.join(outcomeDir, "z-outcome.json");
+    const pointerPath = path.join(outcomeDir, "latest.json");
+    await writeFile(
+      outcomePath,
+      JSON.stringify({
+        schemaVersion: 1,
+        outcomeId: "z-outcome",
+        changedFiles: ["src/main.ts"]
+      }),
+      "utf8"
+    );
+    await writeFile(
+      pointerPath,
+      JSON.stringify({
+        schemaVersion: 1,
+        outcomeId: "z-outcome",
+        path: "z-outcome.json"
+      }),
+      "utf8"
+    );
+    const baseTime = new Date("2026-07-26T00:00:00.000Z");
+    await utimes(outcomePath, baseTime, baseTime);
+    const pointerTime = new Date(baseTime.getTime() + pointerOffsetMs);
+    await utimes(pointerPath, pointerTime, pointerTime);
+
+    const signals = await loadOutcomeRankSignals(repo, null, new Set(["src/main.ts"]));
+    expect(signals.boosts.get("src/main.ts")).toBeCloseTo(0.2);
+    expect(signals.reasons.get("src/main.ts")).toContain("outcome: recent changed file");
+  });
+
 it("reserves fixed risk-path symbol reports after known custom symbol reports", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-risk-path-symbol-fixed-reserve-"));
     execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });

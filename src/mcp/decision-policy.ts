@@ -7,6 +7,8 @@ export function modeRequiresExactKernelDetail(mode: string): boolean {
   return mode === "post_edit_review" || mode === "proof_card";
 }
 
+export function mcpKernelRequiresExactDetail(mode: string, data: Record<string, unknown>): boolean { const authority = isRecord(data.authority) ? data.authority : data; return modeRequiresExactKernelDetail(mode) && !mcpPostEditReviewIsAdvisory({ mode, completionAuthority: authority.completionAuthority, inspectMode: authority.inspectMode }); }
+
 /** One authority classifier feeds both detailed and compact delivery. */
 export function mcpAuthorityBlockReason(data: Record<string, unknown>, freshness: Record<string, unknown> | undefined): string | undefined {
   if (freshness?.missing === true) return "index-missing";
@@ -17,7 +19,8 @@ export function mcpAuthorityBlockReason(data: Record<string, unknown>, freshness
   if (isRecord(data.snapshotBlock)) return "snapshot-blocked";
   const snapshotLoad = isRecord(data.snapshotLoad) ? data.snapshotLoad : undefined;
   if (snapshotLoad?.ambiguousLatest === true || typeof snapshotLoad?.missingReason === "string") return "snapshot-missing-or-ambiguous";
-  if (nonEmptyArray(data.driftReasons)) return "review-drift";
+  const advisoryReview = mcpPostEditReviewIsAdvisory(data);
+  if (nonEmptyArray(data.driftReasons) && !advisoryReview) return "review-drift";
   const reviewCoverageReason = postEditReviewCoverageBlockReason(data);
   if (reviewCoverageReason) return reviewCoverageReason;
   if (readStringArray(data.gaps).some((gap) => gap.startsWith("worktree state unavailable"))) return "worktree-unavailable";
@@ -28,13 +31,13 @@ export function mcpAuthorityBlockReason(data: Record<string, unknown>, freshness
   const editReadiness = isRecord(data.editReadiness) ? data.editReadiness : undefined;
   if (editReadiness?.editable === false) return "edit-target-not-ready";
   const completionAuthority = stringValue(data.completionAuthority);
-  if (completionAuthority && completionAuthority !== "complete") return `completion-authority:${completionAuthority}`;
+  if (completionAuthority && completionAuthority !== "complete" && !advisoryReview) return `completion-authority:${completionAuthority}`;
   const inspectMode = stringValue(data.inspectMode);
-  if (inspectMode && inspectMode !== "none" && inspectMode !== "not-required") return `inspect-mode:${inspectMode}`;
+  if (inspectMode && inspectMode !== "none" && inspectMode !== "not-required" && !advisoryReview) return `inspect-mode:${inspectMode}`;
   if (data.mode === "post_edit_review" && hasUnresolvedInvariants(data.invariants, data.invariantReviews)) return "invariant-unresolved";
   const loop = isRecord(data.loopReview) ? data.loopReview : undefined;
   if (typeof loop?.status === "string" && !["continue", "resolved", "within-budget"].includes(loop.status)) return `loop:${loop.status}`;
-  if (nonEmptyArray(data.failureSignals) && completionAuthority !== "complete") return "recurring-failure-signal";
+  if (nonEmptyArray(data.failureSignals) && completionAuthority !== "complete" && !advisoryReview) return "recurring-failure-signal";
   if (data.mode === "proof_card") {
     const lifecycle = isRecord(data.lifecycle) ? data.lifecycle : undefined;
     const decisionLog = isRecord(data.decisionLog) ? data.decisionLog : undefined;
@@ -49,6 +52,10 @@ export function mcpAuthorityBlockReason(data: Record<string, unknown>, freshness
     }
   }
   return undefined;
+}
+
+export function mcpPostEditReviewIsAdvisory(data: Record<string, unknown>): boolean {
+  return data.mode === "post_edit_review" && stringValue(data.completionAuthority) === "advisory_inspect" && stringValue(data.inspectMode) === "advisory";
 }
 
 export function postEditReviewCoverageBlockReason(data: Record<string, unknown>, suppliedMode?: string): string | undefined {

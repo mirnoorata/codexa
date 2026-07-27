@@ -9,7 +9,7 @@ const activeDeclarativeMutation = new RegExp(`^(?:the\\s+)?[^.!?\\n]{1,140}?\\s+
 const readOnlyRequestHead = /^(?:(?:i|we)\s+)?(?:need|want)\s+(?:(?:(?:an?|the|some)\s+)?(?:analysis|assessment|checklist|context|details|diagram|document|explanation|information|inventory|list|map|overview|plan|proposal|report|review|summary|understanding)\b|(?:(?:you|help(?:\s+(?:me|us))?)\s+)?(?:to\s+)?(?:describe|explain|inspect|know|review|see|show|understand(?:ing)?)\b)/u;
 const readOnlyLead = /^(?:what|which|who|where|when|why|how|does|check|assess|determine|verify|tell|show|review|inspect|compare|summarize|explain|list|identify|describe|understand|map|audit|analy[sz]e|report|find|locate|debug|diagnose)\b/u;
 const readOnlyMutationNounHead = /^(?:change|patch)\s+review\b/u;
-const laterEditVerb = new RegExp(`(?:[.,;:]|\\n|\\band\\b|\\bthen\\b|\\bbefore\\b)\\s*(?:please\\s+)?(?:${editVerb})\\b`, "u");
+const laterEditVerb = new RegExp(`(?:[.,;:]|\\n|\\band\\b|\\bthen\\b|\\bbefore\\b)\\s*(?:please\\s+)?(?:${editVerb})\\b(?!-)`, "u");
 const readOnlyArtifactHead = /^(?:build(?:ing)?|creat(?:e|ing)|generat(?:e|ing)|mak(?:e|ing)|writ(?:e|ing))\s+(?:(?:a|an|the)\s+)?(?:[a-z0-9_-]+\s+){0,3}(?:(?:architecture|call|dependency)\s+(?:diagram|graph)|(?:design|implementation)\s+document|(?:test|implementation|migration)\s+plan|analysis|assessment|checklist|diagram|document|flowchart|graph|inventory|list|map|overview|plan|proposal|report|review|summary|todo(?:\s+list)?|understanding)(?=\s+(?:about|and|covering|detailing|describing|for|from|in|including|of|on|showing|listing|summarizing|that|to|with)\b|\.(?![a-z0-9])|[?!,;:]|$)/u;
 const readOnlyIdiomHead = /^(?:mak(?:e|ing)\s+sense\s+of|build(?:ing)?\s+an?\s+understanding\s+of|writ(?:e|ing)\s+up\s+(?:(?:a|the)\s+)?(?:analysis|overview|report|review|summary))\b/u;
 const nominalMutation = /^(?:(?:i|we)\s+(?:need|require|want)\s+(?:an?\s+)?(?:changes?|fix(?:es)?|patch(?:es)?|updates?)\s+(?:for|in|to)\b|(?:(?:the\s+)?[a-z0-9_@.-]+(?:\s+[a-z0-9_@.-]+){0,5})\s+(?:needs?|requires?)\s+(?:an?\s+)?(?:changes?|fix(?:es)?|patch(?:es)?|updates?)\b)/u;
@@ -61,5 +61,5 @@ function hasLaterEditDirective(task: string): boolean {
   if (readOnlyHead && /^\s*and\b/u.test(match[0]) && /^[a-z]+ing\b/u.test(directive)) return false;
   if (readOnlyArtifactHead.test(directive) || readOnlyIdiomHead.test(directive)) return hasLaterEditDirective(directive);
   const suffix = task.slice(match.index + match[0].length);
-  return !/^\s+(?:alternatives?|approaches?|history|ideas?|options?|patterns?|plans?|status|strategies|strategy)\b/u.test(suffix);
+  return !/^\s+(?:alternatives?|approaches?|history|ideas?|options?|patterns?|planning|plans?|status|strategies|strategy)\b/u.test(suffix);
 }

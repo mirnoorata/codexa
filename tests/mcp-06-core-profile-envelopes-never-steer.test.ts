@@ -131,6 +131,9 @@ it("core-profile envelopes steer only to directly registered or dispatcher-calla
       expect(planEnvelope.data?.decisionKernel?.nextTools).toEqual(["capabilities"]);
       expect(planEnvelope.lifecycle?.nextTools).toEqual(["capabilities"]);
       expect(planEnvelope.systemMessage).toContain("top-level nextTools contract");
+      expect(planEnvelope.systemMessage).toContain("fixed identifiers only");
+      expect(planEnvelope.systemMessage).toMatch(/ranCommands\/ranTests.*artifactIds.*invariantReviews/u);
+      expect(planEnvelope.systemMessage).not.toContain("Use the complete");
       const serializedPlanEnvelope = JSON.stringify(planEnvelope);
       const serializedRequiredInputs = `"requiredInputs":${JSON.stringify(expectedDispatch)}`;
       expect(serializedPlanEnvelope.split(serializedRequiredInputs)).toHaveLength(2);
@@ -172,9 +175,21 @@ it("core-profile envelopes steer only to directly registered or dispatcher-calla
 
       const snapshotPrompt = await client.getPrompt({ name: "snapshot_edit_loop", arguments: { task: "change alpha", target: "src/alpha.ts" } });
       const snapshotText = JSON.stringify(snapshotPrompt);
+      const snapshotBody = snapshotPrompt.messages[0]?.content.type === "text" ? snapshotPrompt.messages[0].content.text : "";
+      expect(snapshotBody).toContain('arguments: {"task":"change alpha\\nTarget: src/alpha.ts","saveSnapshot":true}');
       expect(snapshotText).toContain('`operation: \\"post_edit_review\\"`');
       expect(snapshotText).toContain('`arguments: {\\"taskId\\":\\"<saved taskId>\\"}`');
+      expect(snapshotText).toMatch(/ranCommands\/ranTests.*artifactIds.*invariantReviews/u);
       expect(snapshotText).not.toMatch(/(?:call|invoke|run|use)\s+`?post_edit_review`?/iu);
+
+      const targetlessSnapshotPrompt = await client.getPrompt({ name: "snapshot_edit_loop", arguments: { task: "change alpha" } });
+      const targetlessSnapshotText = JSON.stringify(targetlessSnapshotPrompt);
+      const targetlessSnapshotBody = targetlessSnapshotPrompt.messages[0]?.content.type === "text" ? targetlessSnapshotPrompt.messages[0].content.text : "";
+      expect(targetlessSnapshotText).toContain("Call `search`");
+      expect(targetlessSnapshotText).toContain("Call `change_plan`");
+      expect(targetlessSnapshotText).toContain("if a snapshot was saved");
+      expect(targetlessSnapshotBody).toContain('arguments: {"query":"change alpha"}');
+      expect(targetlessSnapshotBody).toContain('arguments: {"task":"change alpha","files":["<selected source file>"],"saveSnapshot":true}');
 
       const impactPrompt = await client.getPrompt({ name: "impact_before_edit", arguments: { target: "src/alpha.ts", targetKind: "file" } });
       const impactText = JSON.stringify(impactPrompt);

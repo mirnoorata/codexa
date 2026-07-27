@@ -379,6 +379,7 @@ function buildMcpBudgetSummaryData(data: Record<string, unknown>, mode: string, 
     systemMessage: stringValue(data.systemMessage),
     files: compactSummaryArray("files", data.files, 12, truncation),
     plannedEditTargets: compactSummaryArray("plannedEditTargets", data.plannedEditTargets, 12, truncation),
+    targetRoles: isRecord(data.targetRoles) ? { editableTargets: compactSummaryArray("targetRoles.editableTargets", data.targetRoles.editableTargets, 6, truncation), readDependencies: compactSummaryArray("targetRoles.readDependencies", data.targetRoles.readDependencies, 6, truncation), excludedTargets: compactSummaryArray("targetRoles.excludedTargets", data.targetRoles.excludedTargets, 6, truncation), hasReferenceCue: data.targetRoles.hasReferenceCue, unresolvedReferenceCue: data.targetRoles.unresolvedReferenceCue } : undefined,
     changedFiles: compactSummaryArray("changedFiles", data.changedFiles, 12, truncation),
     tests: compactSummaryArray("tests", data.tests, 12, truncation, compactTestRecommendation),
     verificationCommands: compactSummaryArray("verificationCommands", data.verificationCommands, 10, truncation),
@@ -684,13 +685,9 @@ function compactPostEditTruncation(
 function compactContextPacketData(data: ContextPacketData, mode: ContextPacketData["mode"]): McpCompactionResult {
   const limit = createArrayLimiter();
   const compacted = {
-	    mode,
-	    task: data.task,
-	    changeType: data.changeType,
-	    actionability: data.actionability,
-	    tokenBudget: data.tokenBudget,
-    packetVerdict: data.packetVerdict,
-    focusFiles: limit("focusFiles", data.focusFiles, 20, compactFocusEntry),
+    mode, task: data.task, changeType: data.changeType, actionability: data.actionability, tokenBudget: data.tokenBudget,
+    packetVerdict: data.packetVerdict, boundedPlanTargets: limit("boundedPlanTargets", data.boundedPlanTargets, 64),
+    targetRoles: compactTargetRoles(data.targetRoles, limit), focusFiles: limit("focusFiles", data.focusFiles, 20, compactFocusEntry),
     changedFiles: limit("changedFiles", data.changedFiles, 40),
     changedEntries: limit("changedEntries", data.changedEntries, 40, compactChangedEntry),
     changedSymbols: limit("changedSymbols", data.changedSymbols, 40, compactSymbolLike),
@@ -720,20 +717,17 @@ function compactContextPacketData(data: ContextPacketData, mode: ContextPacketDa
     workspaceGuidance: data.workspaceGuidance,
     skillHints: data.skillHints,
     targetPlaybooks: limit("targetPlaybooks", data.targetPlaybooks, 12),
-    runtime: data.runtime,
-    truncation: Object.keys(limit.truncation).length > 0 ? limit.truncation : undefined
+    runtime: data.runtime
   };
-  return { data: compacted, truncation: limit.truncation, compacted: true };
+  const truncation = mergeTruncation(truncationFromValue(data.truncation), limit.truncation);
+  return { data: { ...compacted, truncation: Object.keys(truncation).length > 0 ? truncation : undefined }, truncation, compacted: true };
 }
 
 function compactFocusBriefData(data: FocusBriefData): McpCompactionResult {
   const limit = createArrayLimiter();
   const compacted = {
-	    mode: data.mode,
-	    task: data.task,
-	    actionability: data.actionability,
-	    retrieval: compactRetrieval(data.retrieval),
-    packetVerdict: data.packetVerdict,
+    mode: data.mode, task: data.task, actionability: data.actionability, retrieval: compactRetrieval(data.retrieval),
+    packetVerdict: data.packetVerdict, targetRoles: compactTargetRoles(data.targetRoles, limit),
     diagnostics: limit("diagnostics", data.diagnostics, 20),
     focusFiles: limit("focusFiles", data.focusFiles, 20, compactFileFact),
     workflows: limit("workflows", data.workflows, 12, compactWorkflow),
@@ -770,8 +764,8 @@ function compactChangePlanData(data: ChangePlanData): McpCompactionResult {
     steps: limit("steps", data.steps, 12),
     focus: compactFocus?.data,
     context: compactContext?.data,
-    files: limit("files", data.files, 30),
-    plannedEditTargets: limit("plannedEditTargets", data.plannedEditTargets, 30),
+    files: limit("files", data.files, 30), plannedEditTargets: limit("plannedEditTargets", data.plannedEditTargets, 30),
+    targetRoles: compactTargetRoles(data.targetRoles, limit), reviewOwner: data.reviewOwner,
     tests: limit("tests", data.tests, 30, compactTestRecommendation),
     recipes: limit("recipes", data.recipes, 12),
     quality: data.quality,
@@ -828,6 +822,11 @@ function compactChangePlanData(data: ChangePlanData): McpCompactionResult {
     ...prefixTruncation("context", compactContext?.truncation)
   };
   return { data: compacted, truncation, compacted: true };
+}
+
+function compactTargetRoles(value: unknown, limit: ReturnType<typeof createArrayLimiter>): Record<string, unknown> | undefined {
+  if (!isRecord(value)) return undefined;
+  return { editableTargets: limit("targetRoles.editableTargets", value.editableTargets, 64), readDependencies: limit("targetRoles.readDependencies", value.readDependencies, 64), excludedTargets: limit("targetRoles.excludedTargets", value.excludedTargets, 64), hasReferenceCue: value.hasReferenceCue, unresolvedReferenceCue: value.unresolvedReferenceCue };
 }
 
 function compactSnapshotBlock(value: unknown): unknown {
