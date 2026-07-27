@@ -4,7 +4,7 @@ import { compactNextTools, isRecord, stringValue, structuredByteLength } from ".
 import { capabilitiesDecisionKernel, compactCapabilitiesKernel, renderCapabilitiesKernel } from "./capability-kernel.js";
 import { advancedModeDecisionKernel, compactAdvancedModeKernel, renderAdvancedModeKernel } from "./advanced-mode-kernel.js";
 import { renderKernelGuidance, skillGuidanceKernel, terminalGuidanceKernel } from "./decision-guidance.js";
-import { decisionEntryPath, mcpAuthorityBlockReason, mcpKernelRequiresExactDetail, mcpProofEscalationReason, postEditReviewCoverageBlockReason, renderDecisionReadScope } from "./decision-policy.js";
+import { decisionEntryPath, mcpAuthorityBlockReason, mcpKernelRequiresExactDetail, mcpProofEscalationReason, mcpTargetRoleBoundariesTruncated, mcpTargetRoleBoundaryRequiresExactDetail, postEditReviewCoverageBlockReason, renderDecisionReadScope } from "./decision-policy.js";
 import { postEditOutcomeKernel, reviewCoverageKernel } from "./review-coverage-kernel.js";
 
 export type McpResponseFormat = "auto" | "concise" | "detailed";
@@ -89,7 +89,7 @@ export function mcpDecisionKernel(data: Record<string, unknown>, suppliedMode?: 
     systemMessage: boundedString(data.systemMessage, 240),
     verificationProvenance: boundedVerificationProvenance(data.verificationProvenance)
   };
-  const kernel = definedRecord({ ...common, ...modeDecisionKernel(mode, data) });
+  const kernel = definedRecord({ ...common, ...modeDecisionKernel(mode, data), detailsRequired: mcpTargetRoleBoundaryRequiresExactDetail({ ...data, authority }) || undefined });
   if (structuredByteLength(kernel) <= 3_200) return kernel;
   const narrowedGaps = kernelStrings(kernel.gaps, 3);
   const narrowed = definedRecord({
@@ -126,68 +126,69 @@ export function mcpDecisionKernel(data: Record<string, unknown>, suppliedMode?: 
     gapsOmitted: Math.max(0, gapCount - narrowedGaps.length),
     nextTools: common.nextTools,
     systemMessage: common.systemMessage,
-    detailsRequired: mcpKernelRequiresExactDetail(mode, data) || undefined
+    detailsRequired: kernel.detailsRequired === true || mcpKernelRequiresExactDetail(mode, data) || undefined
   });
   if (structuredByteLength(narrowed) <= 2_800) return narrowed;
   const emergency = emergencyDecisionKernel(narrowed);
-  return structuredByteLength(emergency) <= 2_600 ? emergency : terminalDecisionKernel(emergency, mcpKernelRequiresExactDetail(mode, data));
+  return structuredByteLength(emergency) <= 2_600 ? emergency : terminalDecisionKernel(emergency, emergency.detailsRequired === true || mcpKernelRequiresExactDetail(mode, data));
 }
 
 export function withMcpDelivery(result: QueryResult, delivery: McpDeliveryMetadata): QueryResult {
   if (!isRecord(result.data)) return result;
   const mode = typeof result.data.mode === "string" ? result.data.mode : inferKernelMode(result.data) ?? "unknown";
   const projected = isRecord(result.data.decisionKernel) ? result.data.decisionKernel : mcpDecisionKernel(result.data, mode, result.freshness);
-  const detailBlocked = delivery.effectiveFormat === "concise"
-    && (projected.detailsRequired === true || (delivery.detailRequired === true && delivery.detailAvailable === false));
+  const targetRoleBoundariesTruncated = isRecord(projected.authority) && projected.authority.actionability === "edit_ready" && mcpTargetRoleBoundariesTruncated(result.data); const detailUnavailable = targetRoleBoundariesTruncated && (delivery.effectiveFormat === "detailed" || delivery.detailAvailable === false);
+  const safeDelivery = targetRoleBoundariesTruncated ? { ...delivery, ...(detailUnavailable ? { resultId: undefined, resultUri: undefined, detailAvailable: false } : {}), detailRequired: true, requiredDetailReason: "target-role-boundaries-truncated", escalationReason: [delivery.escalationReason, "target-role-boundaries-truncated"].filter(Boolean).join("+") } : delivery;
+  const targetRoleKernelDetail = mcpTargetRoleBoundaryRequiresExactDetail(result.data); const detailBlocked = targetRoleBoundariesTruncated || (safeDelivery.effectiveFormat === "concise" && ((projected.detailsRequired === true && (!targetRoleKernelDetail || mcpKernelRequiresExactDetail(mode, result.data))) || (safeDelivery.detailRequired === true && safeDelivery.detailAvailable === false)));
   const kernel = detailBlocked
-    ? failClosedDecisionKernel(projected, delivery.detailAvailable === false, delivery.requiredDetailReason)
+    ? failClosedDecisionKernel(projected, detailUnavailable || safeDelivery.detailAvailable === false, safeDelivery.requiredDetailReason)
     : projected;
-  const authority = isRecord(kernel.authority) ? kernel.authority : {};
+  const deliveredAuthority = isRecord(kernel.authority) ? kernel.authority : {}; const deliveredText = detailBlocked && safeDelivery.effectiveFormat === "detailed" && safeDelivery.detailAvailable === false ? stringValue(kernel.systemMessage) ?? result.text : result.text;
   const delivered = reconcileMcpReturnedBytes({
-    ...result.data,
+    ...(detailBlocked ? withoutNextCall(result.data) : result.data),
     ...(detailBlocked ? { nextTools: [], systemMessage: kernel.systemMessage } : {}),
-    actionability: authority.actionability ?? result.data.actionability,
-    delivery,
+    actionability: deliveredAuthority.actionability ?? result.data.actionability,
+    delivery: safeDelivery,
     decisionKernel: kernel
   });
   const targetBytes = mcpTargetBytes(delivered);
   if (targetBytes === undefined || structuredByteLength(delivered) <= targetBytes) {
-    return { ...result, data: delivered };
+    return { ...result, text: deliveredText, data: delivered };
   }
   // Once adding the delivery reference itself crosses the host budget, use
   // the intrinsically bounded terminal kernel. Omitting detail is an
   // authority boundary even when the pre-delivery kernel narrowly fit.
   const terminalKernel = compactTerminalDecisionKernel(kernel);
-  const terminalAuthority = isRecord(terminalKernel.authority) ? terminalKernel.authority : {};
+  const terminalAuthority = isRecord(terminalKernel.authority) ? terminalKernel.authority : {}; const terminalText = terminalAuthority.actionability === "blocked" ? stringValue(terminalKernel.systemMessage) ?? "Required detailed evidence is omitted from this bounded receipt; do not act from it." : deliveredText;
   const fallback = reconcileMcpReturnedBytes(definedRecord({
     mode,
-    actionability: terminalAuthority.actionability ?? authority.actionability ?? "blocked",
+    actionability: terminalAuthority.actionability ?? deliveredAuthority.actionability ?? "blocked",
     verdict: terminalAuthority.verdict,
     packetVerdict: terminalAuthority.packetVerdict,
     completionAuthority: terminalAuthority.completionAuthority,
     inspectMode: terminalAuthority.inspectMode,
-    delivery,
+    delivery: safeDelivery,
     decisionKernel: terminalKernel,
-    systemMessage: boundedString(result.data.systemMessage, 120),
+    systemMessage: terminalAuthority.actionability === "blocked" ? terminalKernel.systemMessage : boundedString(result.data.systemMessage, 120),
     truncation: { "__mcp.deliveryBudget": { total: structuredByteLength(delivered), returned: targetBytes } },
     mcp: compactMcpMetrics(result.data.mcp, targetBytes)
   }));
-  if (structuredByteLength(fallback) <= targetBytes) return { ...result, data: fallback };
+  if (structuredByteLength(fallback) <= targetBytes) return { ...result, text: terminalText, data: fallback };
 
   const absoluteKernel = absoluteTerminalDecisionKernel(terminalKernel);
-  const absoluteAuthority = isRecord(absoluteKernel.authority) ? absoluteKernel.authority : {};
+  const absoluteAuthority = isRecord(absoluteKernel.authority) ? absoluteKernel.authority : {}; const absoluteText = stringValue(absoluteKernel.systemMessage) ?? "Result detail was omitted to enforce the MCP transport budget; do not edit from this receipt alone.";
   const absolute = reconcileMcpReturnedBytes(definedRecord({
     mode,
     actionability: "blocked",
     verdict: absoluteAuthority.verdict,
     completionAuthority: absoluteAuthority.completionAuthority,
-    delivery,
+    delivery: safeDelivery,
     decisionKernel: absoluteKernel,
     mcp: { compacted: true, targetBytes, hardBudgetEnforced: true, budgetCompaction: "delivery-terminal" }
   }));
   // MIN_MCP_STRUCTURED_DATA_TARGET_BYTES is 4KB; every string and collection
   // in this last tier has a fixed cap whose aggregate is below that floor.
-  return { ...result, data: absolute };
+  return { ...result, text: absoluteText, data: absolute };
 }
 
 export function mcpAuthorityBlocked(data: Record<string, unknown>, freshnessValue?: unknown): boolean {
@@ -252,7 +253,7 @@ export function renderMcpConciseText(result: QueryResult): string {
     delivery.unchangedReceipt === true ? "Detailed result: unchanged from the prior receipt." : undefined,
     stringValue(delivery.resultUri) ? `Detailed result: ${stringValue(delivery.resultUri)}` : undefined,
     delivery.detailAvailable === false && delivery.detailRequired === true
-      ? "Required detailed result unavailable; retry once with responseFormat \"detailed\"."
+      ? delivery.requiredDetailReason === "target-role-boundaries-truncated" ? "Target-role boundaries were truncated; narrow the target scope before requesting detailed evidence." : "Required detailed result unavailable; retry once with responseFormat \"detailed\"."
       : delivery.detailAvailable === false
         ? "Detailed result unavailable; rely only on this bounded decision receipt."
         : undefined
@@ -302,7 +303,7 @@ export function compactDecisionKernelSection(value: unknown): Record<string, unk
 
 export function compactTerminalDecisionKernel(kernel: Record<string, unknown>): Record<string, unknown> {
   const mode = stringValue(kernel.mode) ?? "unknown";
-  return terminalDecisionKernel(emergencyDecisionKernel(kernel), mcpKernelRequiresExactDetail(mode, kernel));
+  return terminalDecisionKernel(emergencyDecisionKernel(kernel), kernel.detailsRequired === true || mcpKernelRequiresExactDetail(mode, kernel) || mcpTargetRoleBoundaryRequiresExactDetail(kernel, 1));
 }
 
 function narrowKernelSection(value: unknown): Record<string, unknown> | undefined {
@@ -370,7 +371,7 @@ function emergencyDecisionKernel(kernel: Record<string, unknown>): Record<string
     gapCount,
     gaps,
     gapsOmitted: Math.max(0, gapCount - gaps.length),
-    detailsRequired: mcpKernelRequiresExactDetail(stringValue(kernel.mode) ?? "unknown", kernel) || undefined
+    detailsRequired: kernel.detailsRequired === true || mcpKernelRequiresExactDetail(stringValue(kernel.mode) ?? "unknown", kernel) || mcpTargetRoleBoundaryRequiresExactDetail(kernel, 2) || undefined
   });
 }
 
@@ -460,7 +461,6 @@ function terminalModeSection(value: unknown): Record<string, unknown> | undefine
     kept += 1;
     if (kept === 5) break;
   }
-  if (kept < 2 && isRecord(value.nextCall)) output.nextCall = kernelEntry(value.nextCall);
   return definedRecord(output);
 }
 
@@ -742,19 +742,18 @@ function failClosedDecisionKernel(kernel: Record<string, unknown>, detailUnavail
   const authority = isRecord(kernel.authority) ? kernel.authority : {};
   return {
     ...kernel,
+    scope: isRecord(kernel.scope) ? withoutNextCall(kernel.scope) : kernel.scope,
     authority: {
       ...authority,
       originalActionability: authority.actionability,
       actionability: "blocked"
     },
     nextTools: [],
-    systemMessage: detailUnavailable
-      ? `Required detailed evidence is unavailable${reason ? ` (${boundedReceiptValue(reason, 120)})` : ""}; do not act from this receipt. Retry once with responseFormat "detailed".`
-      : "Required detailed evidence is omitted from this concise receipt; read the linked detailed result before acting.",
+    systemMessage: detailUnavailable ? reason === "target-role-boundaries-truncated" ? "Target-role boundaries were truncated before this packet was returned; narrow the target scope before requesting detailed evidence. Do not act from this receipt." : `Required detailed evidence is unavailable${reason ? ` (${boundedReceiptValue(reason, 120)})` : ""}; do not act from this receipt. Retry once with responseFormat "detailed".` : "Required detailed evidence is omitted from this concise receipt; read the linked detailed result before acting.",
     detailsRequired: true
   };
 }
-
+function withoutNextCall(data: Record<string, unknown>): Record<string, unknown> { return Object.fromEntries(Object.entries(data).filter(([key]) => key !== "nextCall")); }
 function loopDecisionKernel(value: unknown): Record<string, unknown> | undefined {
   if (!isRecord(value)) return undefined;
   const growth = isRecord(value.cumulativeDiffGrowth) ? value.cumulativeDiffGrowth : undefined;

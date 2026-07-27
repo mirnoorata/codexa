@@ -39,6 +39,7 @@ import {
 export { compactNextTools } from "./compaction-helpers.js";
 import type { ChangePlanData, CodexaQueryData, ContextPacketData, FocusBriefData, FreshnessInfo, PostEditReviewData, ProofCardData, QueryResult, TestPlanData } from "../types.js";
 import { attachMcpDecisionKernel, compactTerminalDecisionKernel, mcpDecisionKernel } from "./decision-kernel.js";
+import { mcpTargetRoleBoundaryTruncation } from "./decision-policy.js";
 const DEFAULT_MCP_STRUCTURED_DATA_TARGET_BYTES = 96_000;
 const MIN_MCP_STRUCTURED_DATA_TARGET_BYTES = 4_000;
 const MAX_MCP_STRUCTURED_DATA_TARGET_BYTES = 512_000;
@@ -89,7 +90,7 @@ export function compactMcpResult(result: QueryResult, options?: McpCompactionOpt
   const compaction = (typedData ? compactMcpDataByMode(typedData) : undefined) ?? compactGenericMcpData(originalData, effectiveMode);
   const decisionKernel = mcpDecisionKernel(originalData, effectiveMode, result.freshness);
   const clamped = clampLargeStringsPreservingMcpGuidance(compaction.data);
-  const dataWithoutMetrics = attachMcpDecisionKernel(withMergedTruncation(clamped.value as Record<string, unknown>, compaction.truncation), decisionKernel);
+  const dataWithoutMetrics = attachMcpDecisionKernel(withTargetRoleBoundaryTruncation(originalData, withMergedTruncation(clamped.value as Record<string, unknown>, compaction.truncation)), decisionKernel);
   const compactedBytes = structuredByteLength(dataWithoutMetrics);
   const baseTargetBytes = options?.targetBytes === undefined
     ? mcpStructuredDataTargetBytes()
@@ -106,7 +107,7 @@ export function compactMcpResult(result: QueryResult, options?: McpCompactionOpt
   let data = attachMcpMetrics(dataWithoutMetrics, structuredData);
   const returnedBytes = structuredByteLength(data);
   if (returnedBytes > targetBytes) {
-    data = enforceMcpStructuredBudget(dataWithoutMetrics, structuredData, returnedBytes, effectiveMode, targetBytes, decisionKernel);
+    data = enforceMcpStructuredBudget(originalData, dataWithoutMetrics, structuredData, returnedBytes, effectiveMode, targetBytes, decisionKernel);
   }
   return {
     ...result,
@@ -212,7 +213,7 @@ function compactGenericMcpData(data: Record<string, unknown>, mode: string): Mcp
   return { data: dataWithMode, truncation, compacted: true };
 }
 
-function enforceMcpStructuredBudget(
+function enforceMcpStructuredBudget(sourceData: Record<string, unknown>,
   dataWithoutMetrics: Record<string, unknown>,
   structuredData: Record<string, unknown>,
   preEnforcementBytes: number,
@@ -226,10 +227,7 @@ function enforceMcpStructuredBudget(
   const hardCompacted = compactGenericValue(dataWithoutMetrics, { arrayLimit: 12, objectKeyLimit: 40, maxDepth: 6 }, hardTruncation);
   const hardClamped = clampLargeStringsPreservingMcpGuidance(hardCompacted, 240);
   const hardRecord = isRecord(hardClamped.value) ? hardClamped.value : { value: hardClamped.value };
-  const hardData = attachMcpDecisionKernel(
-    withMergedTruncation(reattachGuidanceFields(typeof hardRecord.mode === "string" ? hardRecord : { mode, ...hardRecord }, dataWithoutMetrics, hardTruncation), hardTruncation),
-    decisionKernel
-  );
+  const hardData = attachMcpDecisionKernel(withTargetRoleBoundaryTruncation(sourceData, withMergedTruncation(reattachGuidanceFields(typeof hardRecord.mode === "string" ? hardRecord : { mode, ...hardRecord }, dataWithoutMetrics, hardTruncation), hardTruncation)), decisionKernel);
   const hardResult = attachMcpMetrics(hardData, {
     ...structuredData,
     compacted: true,
@@ -247,7 +245,7 @@ function enforceMcpStructuredBudget(
   });
   const summaryClamped = clampLargeStringsPreservingMcpGuidance(buildMcpBudgetSummaryData(dataWithoutMetrics, mode, summaryTruncation), 160);
   const summaryRecord = isRecord(summaryClamped.value) ? summaryClamped.value : { value: summaryClamped.value };
-  const summaryResult = attachMcpMetrics(attachMcpDecisionKernel(withMergedTruncation(summaryRecord, summaryTruncation), decisionKernel), {
+  const summaryResult = attachMcpMetrics(attachMcpDecisionKernel(withTargetRoleBoundaryTruncation(sourceData, withMergedTruncation(summaryRecord, summaryTruncation)), decisionKernel), {
     ...structuredData,
     compacted: true,
     hardBudgetEnforced: true,
@@ -283,7 +281,7 @@ function enforceMcpStructuredBudget(
     160
   );
   const fallbackRecord = isRecord(fallbackClamped.value) ? fallbackClamped.value : { value: fallbackClamped.value };
-  const fallbackResult = attachMcpMetrics(attachMcpDecisionKernel(fallbackRecord, decisionKernel), {
+  const fallbackResult = attachMcpMetrics(attachMcpDecisionKernel(withTargetRoleBoundaryTruncation(sourceData, fallbackRecord), decisionKernel), {
     ...structuredData,
     compacted: true,
     hardBudgetEnforced: true,
@@ -325,7 +323,7 @@ function enforceMcpStructuredBudget(
     stringTruncations:
       metricNumber(structuredData, "stringTruncations") + hardClamped.stringTruncations + summaryClamped.stringTruncations + fallbackClamped.stringTruncations + minimalClamped.stringTruncations
   };
-  const minimalResult = attachMcpMetrics(attachMcpDecisionKernel(minimalRecord, decisionKernel), minimalMetrics);
+  const minimalResult = attachMcpMetrics(attachMcpDecisionKernel(withTargetRoleBoundaryTruncation(sourceData, minimalRecord), decisionKernel), minimalMetrics);
   if (structuredByteLength(minimalResult) <= targetBytes) {
     return minimalResult;
   }
@@ -464,6 +462,8 @@ function withMergedTruncation(data: Record<string, unknown>, truncation: McpTrun
   }
   return { ...data, truncation: merged };
 }
+
+function withTargetRoleBoundaryTruncation(source: Record<string, unknown>, returned: Record<string, unknown>): Record<string, unknown> { return withMergedTruncation(returned, mcpTargetRoleBoundaryTruncation(source, returned)); }
 
 function mergeTruncation(...records: Array<McpTruncation | undefined>): McpTruncation {
   const merged: McpTruncation = {};

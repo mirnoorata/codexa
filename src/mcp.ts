@@ -12,6 +12,7 @@ import { semanticMayUseOpenWorldProvider } from "./semantic-retrieval.js";
 import { resolveMcpRepoRootOnce } from "./mcp-repo-root.js";
 import { canonicalMcpDetailedProjection, compactMcpResult } from "./mcp/compaction.js";
 import { mcpAutoEscalationReason, renderMcpConciseText, withMcpDelivery, type McpResponseFormat } from "./mcp/decision-kernel.js";
+import { mcpTargetRoleBoundariesTruncated } from "./mcp/decision-policy.js";
 import { createMcpOutputSchema, safeQuery, toToolResult, type McpToolPolicyOptions } from "./mcp/envelope.js";
 import { registerWorkflowPrompts } from "./mcp/prompts.js";
 import { registerArtifactResources, type McpDetailedResultReadEvent } from "./mcp/resources.js";
@@ -438,16 +439,24 @@ async function createCodexaMcpServer(
     const artifactDetailedResult = !needsResultReference
       ? undefined
       : canonicalMcpDetailedProjection(modeResult);
+    const artifactTargetRoleBoundariesTruncated = Boolean(
+      artifactDetailedResult
+      && isRecord(artifactDetailedResult.data)
+      && artifactDetailedResult.data.actionability === "edit_ready"
+      && mcpTargetRoleBoundariesTruncated(artifactDetailedResult.data)
+    );
     let resultReference: Awaited<ReturnType<typeof persistMcpResultArtifact>> | undefined;
     let artifactFailure: string | undefined;
-    if (needsResultReference) {
+    if (needsResultReference && !artifactTargetRoleBoundariesTruncated) {
       try {
         resultReference = await persistMcpResultArtifact(activeRepoRoot, artifactDetailedResult!, mcpResultBinding(toolName, activeRepoRoot, artifactDetailedResult!), resultArtifactRouter, emittedResultIds);
       } catch (error) {
         artifactFailure = error instanceof Error ? error.message : String(error);
       }
     }
-    const requiredDetailReason = semanticEscalation ?? exactSearchDetailReason;
+    const requiredDetailReason = artifactTargetRoleBoundariesTruncated
+      ? "target-role-boundaries-truncated"
+      : semanticEscalation ?? exactSearchDetailReason;
     const escalationReason = artifactFailure
       ? [requiredDetailReason, "detailed-result-resource-unavailable"].filter(Boolean).join("+")
       : requiredDetailReason;
