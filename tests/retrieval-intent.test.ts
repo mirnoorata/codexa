@@ -95,6 +95,7 @@ describe("retrieval prompt intent", () => {
     "Please fix src/util.ts",
     "Review src/a.ts, then fix src/b.ts",
     "Review routing, then change the planning logic",
+    "Review routing, then change planning logic",
     "Need to harden API permissions in src/api.ts",
     "Task: Harden API permissions in src/api.ts",
     "Context first. Harden API permissions in src/api.ts",

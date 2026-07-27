@@ -61,5 +61,5 @@ function hasLaterEditDirective(task: string): boolean {
   if (readOnlyHead && /^\s*and\b/u.test(match[0]) && /^[a-z]+ing\b/u.test(directive)) return false;
   if (readOnlyArtifactHead.test(directive) || readOnlyIdiomHead.test(directive)) return hasLaterEditDirective(directive);
   const suffix = task.slice(match.index + match[0].length);
-  return !/^\s+(?:alternatives?|approaches?|history|ideas?|options?|patterns?|planning|plans?|status|strategies|strategy)\b/u.test(suffix);
+  return !/^\s+(?:alternatives?|approaches?|history|ideas?|options?|patterns?|planning(?=\s*(?:[,.;:]|$))|plans?|status|strategies|strategy)\b/u.test(suffix);
 }
