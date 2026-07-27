@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.17.1](https://github.com/mirnoorata/codexa/compare/v0.17.0...v0.17.1) (2026-07-27)
+
+
+### Bug Fixes
+
+* **mcp:** harden model guidance ([e5e5558](https://github.com/mirnoorata/codexa/commit/e5e5558743989b3c018e26502ec44d698ad96332))
+
 ## [0.17.0](https://github.com/mirnoorata/codexa/compare/v0.16.0...v0.17.0) (2026-07-26)
 
 
