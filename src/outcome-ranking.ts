@@ -4,6 +4,7 @@ import type { PostEditOutcome } from "./post-edit-outcomes.js";
 import { normalizePath, uniqueSorted } from "./util.js";
 
 const OUTCOME_DIR = ".codex/cache/codexa-outcomes";
+const LATEST_OUTCOME_POINTER = "latest.json";
 const MAX_OUTCOME_FILES = 30;
 const MAX_OUTCOME_BYTES = 256 * 1024;
 const MAX_REASON_PER_PATH = 5;
@@ -21,7 +22,7 @@ export async function loadOutcomeRankSignals(repoRoot: string, headCommit: strin
     entries = (
       await Promise.all(
         (await fs.readdir(outcomeDir, { withFileTypes: true })).flatMap(async (entry) => {
-          if (!entry.isFile() || !entry.name.endsWith(".json")) {
+          if (!entry.isFile() || !entry.name.endsWith(".json") || entry.name === LATEST_OUTCOME_POINTER) {
             return [];
           }
           const stat = await fs.stat(path.join(outcomeDir, entry.name)).catch(() => null);

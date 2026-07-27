@@ -1,6 +1,8 @@
 import { afterEach, describe, expect, it } from "vitest";
-import { compactMcpResult } from "../src/mcp/compaction.js";
-import { mcpAutoEscalationReason, mcpDecisionKernel, renderMcpConciseText, withMcpDelivery } from "../src/mcp/decision-kernel.js";
+import { canonicalMcpDetailedProjection, compactMcpResult } from "../src/mcp/compaction.js";
+import { compactTerminalDecisionKernel, mcpAutoEscalationReason, mcpDecisionKernel, renderMcpConciseText, withMcpDelivery } from "../src/mcp/decision-kernel.js";
+import { mcpTargetRoleBoundariesTruncated, mcpTargetRoleBoundaryTruncation } from "../src/mcp/decision-policy.js";
+import { toToolResult } from "../src/mcp/envelope.js";
 import { createPostEditReviewCoverage } from "../src/post-edit-review-coverage.js";
 import type { FreshnessInfo, QueryResult } from "../src/types.js";
 
@@ -33,6 +35,14 @@ function invariants() {
   return Array.from({ length: 12 }, (_, index) => ({ id: `invariant-${index}`, statement: `preserve invariant ${index} ${"x".repeat(180)}` }));
 }
 
+function targetRoles(count: number, prefix = "src/role"): Record<string, string[]> {
+  return {
+    editableTargets: Array.from({ length: count }, (_, index) => `${prefix}-edit-${index}.ts`),
+    readDependencies: Array.from({ length: count }, (_, index) => `${prefix}-read-${index}.ts`),
+    excludedTargets: Array.from({ length: count }, (_, index) => `${prefix}-excluded-${index}.ts`)
+  };
+}
+
 function completeReviewCoverage(taskId: string, reviewTargets: string[]) {
   return createPostEditReviewCoverage({
     taskId,
@@ -46,6 +56,422 @@ function completeReviewCoverage(taskId: string, reviewTargets: string[]) {
 }
 
 describe("mandatory MCP decision kernel", () => {
+  it("preserves bounded editable, read-only, and excluded target roles through typed compaction", () => {
+    const targetRoles = {
+      editableTargets: ["src/api.ts"],
+      readDependencies: ["src/util.ts"],
+      excludedTargets: ["src/generated.ts"],
+      hasReferenceCue: true,
+      unresolvedReferenceCue: false
+    };
+    const contextPacket = compactMcpResult({
+      freshness: freshness(),
+      text: "bounded context",
+      data: {
+        mode: "context_pack",
+        actionability: "edit_ready",
+        boundedPlanTargets: ["src/api.ts"],
+        targetRoles,
+        focusFiles: [],
+        nextReads: ["src/api.ts", "src/util.ts"],
+        truncation: {
+          verificationCoverage: {
+            total: 40,
+            returned: 16
+          }
+        }
+      }
+    });
+    expect(contextPacket.data).toMatchObject({
+      boundedPlanTargets: ["src/api.ts"],
+      targetRoles,
+      truncation: {
+        verificationCoverage: {
+          total: 40,
+          returned: 16
+        }
+      },
+      decisionKernel: {
+        scope: {
+          boundedPlanTargets: ["src/api.ts"],
+          editableTargets: ["src/api.ts"],
+          readDependencies: ["src/util.ts"],
+          excludedTargets: ["src/generated.ts"]
+        }
+      }
+    });
+
+    const changePlan = compactMcpResult({
+      freshness: freshness(),
+      text: "bounded plan",
+      data: {
+        mode: "change_plan",
+        actionability: "edit_ready",
+        files: ["src/api.ts", "src/util.ts", "src/generated.ts"],
+        plannedEditTargets: ["src/api.ts"],
+        targetRoles,
+        reviewOwner: "agent-final-review"
+      }
+    });
+    expect(changePlan.data).toMatchObject({
+      plannedEditTargets: ["src/api.ts"],
+      targetRoles,
+      reviewOwner: "agent-final-review",
+      decisionKernel: {
+        scope: {
+          plannedEditTargets: ["src/api.ts"],
+          editableTargets: ["src/api.ts"],
+          readDependencies: ["src/util.ts"],
+          excludedTargets: ["src/generated.ts"],
+          reviewOwner: "agent-final-review"
+        }
+      }
+    });
+  });
+
+  it("preserves search target-role boundaries through the 4 KiB summary tier", () => {
+    const targetRoles = {
+      editableTargets: ["src/api.ts"],
+      readDependencies: ["src/util.ts"],
+      excludedTargets: ["src/generated.ts"],
+      hasReferenceCue: true,
+      unresolvedReferenceCue: false
+    };
+    const compacted = compactMcpResult(
+      {
+        freshness: freshness(),
+        text: "bounded search",
+        data: {
+          mode: "search",
+          actionability: "edit_ready",
+          targetRoles,
+          files: [{ path: "src/api.ts" }],
+          evidence: Array.from({ length: 200 }, (_, index) => ({ index, detail: "x".repeat(300) }))
+        }
+      },
+      { format: "concise", targetBytes: 4_000 }
+    );
+    const data = compacted.data as {
+      targetRoles?: typeof targetRoles;
+      decisionKernel?: {
+        search?: {
+          editableTargetCount?: number;
+          editableTargets?: string[];
+          readDependencyCount?: number;
+          readDependencies?: string[];
+          excludedTargetCount?: number;
+          excludedTargets?: string[];
+        };
+      };
+      mcp?: { budgetCompaction?: string };
+    };
+    expect(Buffer.byteLength(JSON.stringify(data), "utf8")).toBeLessThanOrEqual(4_000);
+    expect(data.mcp?.budgetCompaction).toBe("summary");
+    expect(data.targetRoles).toMatchObject(targetRoles);
+    expect(data.decisionKernel?.search).toMatchObject({
+      editableTargetCount: 1,
+      editableTargets: ["src/api.ts"],
+      readDependencyCount: 1,
+      readDependencies: ["src/util.ts"],
+      excludedTargetCount: 1,
+      excludedTargets: ["src/generated.ts"]
+    });
+  });
+
+  it("fails closed when a compact receipt would omit target-role boundaries", () => {
+    const targetRoles = {
+      editableTargets: Array.from({ length: 7 }, (_, index) => `src/edit-${index}.ts`),
+      readDependencies: Array.from({ length: 7 }, (_, index) => `src/read-${index}.ts`),
+      excludedTargets: Array.from({ length: 7 }, (_, index) => `src/excluded-${index}.ts`)
+    };
+    const packet: QueryResult = {
+      freshness: freshness(),
+      text: "bounded role receipt",
+      data: {
+        mode: "search",
+        actionability: "edit_ready",
+        targetRoles,
+        nextCall: { tool: "change_plan", reason: "use the bounded plan", arguments: { task: "update the role targets", files: ["src/edit-0.ts"], saveSnapshot: true } },
+        evidence: Array.from({ length: 200 }, (_, index) => ({ index, detail: "x".repeat(300) }))
+      }
+    };
+    const kernel = mcpDecisionKernel(packet.data as Record<string, unknown>, "search", packet.freshness);
+    expect(kernel).toMatchObject({ authority: { actionability: "edit_ready" }, detailsRequired: true });
+    expect(compactTerminalDecisionKernel(kernel)).toMatchObject({ authority: { actionability: "blocked", originalActionability: "edit_ready" }, detailsRequired: true });
+
+    const multiRoleKernel = mcpDecisionKernel({
+      mode: "search",
+      actionability: "edit_ready",
+      targetRoles: {
+        editableTargets: ["src/edit-a.ts", "src/edit-b.ts"],
+        readDependencies: ["src/read-a.ts", "src/read-b.ts"],
+        excludedTargets: ["src/excluded-a.ts", "src/excluded-b.ts"]
+      }
+    }, "search", freshness());
+    expect(multiRoleKernel.detailsRequired).toBeUndefined();
+    expect(compactTerminalDecisionKernel(multiRoleKernel)).toMatchObject({ authority: { actionability: "blocked", originalActionability: "edit_ready" }, detailsRequired: true });
+
+    const concise = withMcpDelivery(compactMcpResult(packet, { format: "concise", targetBytes: 4_000 }), {
+      schemaVersion: 1,
+      requestedFormat: "auto",
+      effectiveFormat: "concise",
+      resultUri: `codexa://repo/mcp-results/rr_${"e".repeat(32)}/mr_${"f".repeat(64)}`
+    });
+    expect(concise.data).toMatchObject({ actionability: "blocked", decisionKernel: { authority: { actionability: "blocked", originalActionability: "edit_ready" }, detailsRequired: true } });
+    expect(concise.data).not.toHaveProperty("nextCall");
+    expect((concise.data as { decisionKernel?: { scope?: { nextCall?: unknown } } }).decisionKernel?.scope?.nextCall).toBeUndefined();
+    const conciseEnvelope = toToolResult(concise, "search", { autoRefresh: false, sessionMemoryMode: "off" }).structuredContent as { data: { nextCall?: unknown }; lifecycle: { nextTools: string[] }; nextTools: unknown[] };
+    expect(conciseEnvelope.data.nextCall).toBeUndefined();
+    expect(conciseEnvelope.lifecycle.nextTools).toEqual([]);
+    expect(conciseEnvelope.nextTools).toEqual([]);
+  });
+
+  it("retains an executable focus follow-up when concise target roles remain exact", () => {
+    const packet: QueryResult = {
+      freshness: freshness(),
+      text: "exact focus role receipt",
+      data: {
+        mode: "focus_brief",
+        actionability: "edit_ready",
+        targetRoles: targetRoles(7, "src/focus"),
+        focusFiles: [], workflows: [], modules: [], groups: [], tests: [],
+        nextCall: { tool: "change_plan", reason: "save the exact plan", arguments: { task: "update the focus targets", files: ["src/focus-edit-0.ts"], saveSnapshot: true } }
+      }
+    };
+    const concise = compactMcpResult(packet, { format: "concise" });
+    expect(mcpTargetRoleBoundariesTruncated(concise.data as Record<string, unknown>)).toBe(false);
+    expect((concise.data as { targetRoles?: { editableTargets?: string[] } }).targetRoles?.editableTargets).toHaveLength(7);
+    expect((concise.data as { decisionKernel?: { detailsRequired?: boolean } }).decisionKernel?.detailsRequired).toBe(true);
+    const delivered = withMcpDelivery(concise, {
+      schemaVersion: 1,
+      requestedFormat: "auto",
+      effectiveFormat: "concise",
+      detailAvailable: true,
+      detailRequired: true,
+      resultUri: `codexa://repo/mcp-results/rr_${"c".repeat(32)}/mr_${"d".repeat(64)}`
+    });
+    expect(delivered.data).toMatchObject({ actionability: "edit_ready", nextCall: { tool: "change_plan" } });
+    const envelope = toToolResult(delivered, "focus_brief", { autoRefresh: false, sessionMemoryMode: "off" }).structuredContent as { data: { nextCall?: { tool?: string } }; lifecycle: { nextTools: string[] } };
+    expect(envelope.data.nextCall).toMatchObject({ tool: "change_plan" });
+    expect(envelope.lifecycle.nextTools).toEqual(["change_plan"]);
+  });
+
+  it("distinguishes shared query objects from cyclic target-role scans", () => {
+    const shared = { source: "reused query evidence" };
+    const aliased = { actionability: "edit_ready", targetRoles: targetRoles(1, "src/alias"), first: shared, second: shared };
+    expect(mcpTargetRoleBoundaryTruncation(aliased, aliased)).toEqual({});
+    const cyclic: Record<string, unknown> = { actionability: "edit_ready", targetRoles: targetRoles(1, "src/cycle") };
+    cyclic.self = cyclic;
+    expect(mcpTargetRoleBoundaryTruncation(cyclic, cyclic)).toMatchObject({ "__mcp.targetRoleBoundaryScan": { total: 1, returned: 0 } });
+  });
+
+  it("fails closed when detailed delivery omits target-role boundaries", () => {
+    const roles = targetRoles(65, "src/detailed");
+    const packet: QueryResult = {
+      freshness: freshness(),
+      text: "detailed role receipt",
+      data: {
+        mode: "search",
+        actionability: "edit_ready",
+        targetRoles: roles,
+        nextCall: { tool: "change_plan", reason: "save the exact plan", arguments: { task: "update detailed roles", files: ["src/detailed-edit-0.ts"], saveSnapshot: true } }
+      }
+    };
+    const detailedProjection = canonicalMcpDetailedProjection(packet);
+    expect(detailedProjection.data).toMatchObject({
+      targetRoles: { editableTargets: expect.arrayContaining(["src/detailed-edit-0.ts"]) },
+      truncation: { "targetRoles.editableTargets": { total: 65, returned: 40 } }
+    });
+    const detailed = withMcpDelivery(detailedProjection, {
+      schemaVersion: 1,
+      requestedFormat: "detailed",
+      effectiveFormat: "detailed",
+      detailAvailable: true
+    });
+    expect(detailed.data).toMatchObject({
+      actionability: "blocked",
+      delivery: {
+        detailAvailable: false,
+        detailRequired: true,
+        requiredDetailReason: "target-role-boundaries-truncated"
+      },
+      decisionKernel: {
+        authority: { actionability: "blocked", originalActionability: "edit_ready" },
+        detailsRequired: true
+      }
+    });
+    expect((detailed.data as { systemMessage?: string }).systemMessage).toContain("narrow the target scope");
+    expect(detailed.text).toContain("narrow the target scope");
+    expect(detailed.data).not.toHaveProperty("nextCall");
+    expect((detailed.data as { decisionKernel?: { scope?: { nextCall?: unknown } } }).decisionKernel?.scope?.nextCall).toBeUndefined();
+    const toolResult = toToolResult(detailed, "search", { autoRefresh: false, sessionMemoryMode: "off" });
+    expect((toolResult.content as Array<{ type?: string; text?: string }>).find((entry) => entry.type === "text")?.text).toContain("narrow the target scope");
+    const detailedEnvelope = toolResult.structuredContent as { data: { nextCall?: unknown }; lifecycle: { nextTools: string[] }; nextTools: unknown[] };
+    expect(detailedEnvelope.data.nextCall).toBeUndefined();
+    expect(detailedEnvelope.lifecycle.nextTools).toEqual([]);
+    expect(detailedEnvelope.nextTools).toEqual([]);
+
+    const exactDetailed = withMcpDelivery(canonicalMcpDetailedProjection({
+      freshness: freshness(),
+      text: "complete detailed role receipt",
+      data: {
+        mode: "search",
+        actionability: "edit_ready",
+        targetRoles: {
+          editableTargets: roles.editableTargets.slice(0, 7),
+          readDependencies: roles.readDependencies.slice(0, 7),
+          excludedTargets: roles.excludedTargets.slice(0, 7)
+        }
+      }
+    }), {
+      schemaVersion: 1,
+      requestedFormat: "detailed",
+      effectiveFormat: "detailed",
+      detailAvailable: true
+    });
+    expect(exactDetailed.data).toMatchObject({
+      actionability: "edit_ready",
+      delivery: { detailAvailable: true }
+    });
+  });
+
+  it("keeps a safe detailed resource available when only concise target roles are truncated", () => {
+    const packet: QueryResult = {
+      freshness: freshness(),
+      text: "large but bounded role receipt",
+      data: {
+        mode: "search",
+        actionability: "edit_ready",
+        targetRoles: targetRoles(20, "src/linked"),
+        nextCall: { tool: "change_plan", reason: "save the linked plan", arguments: { task: "update linked roles", files: ["src/linked-edit-0.ts"], saveSnapshot: true } },
+        evidence: Array.from({ length: 250 }, (_, index) => ({ index, detail: "x".repeat(1_000) }))
+      }
+    };
+    const detailed = canonicalMcpDetailedProjection(packet);
+    const concise = compactMcpResult(packet, { format: "concise" });
+    expect(mcpTargetRoleBoundariesTruncated(detailed.data as Record<string, unknown>)).toBe(false);
+    expect(mcpTargetRoleBoundariesTruncated(concise.data as Record<string, unknown>)).toBe(true);
+    const uri = `codexa://repo/mcp-results/rr_${"a".repeat(32)}/mr_${"b".repeat(64)}`;
+    const delivered = withMcpDelivery(concise, {
+      schemaVersion: 1,
+      requestedFormat: "auto",
+      effectiveFormat: "concise",
+      detailAvailable: true,
+      resultUri: uri
+    });
+    expect(delivered.data).toMatchObject({
+      actionability: "blocked",
+      delivery: {
+        detailAvailable: true,
+        detailRequired: true,
+        requiredDetailReason: "target-role-boundaries-truncated",
+        resultUri: uri
+      }
+    });
+    const text = renderMcpConciseText(delivered);
+    expect(text).toContain(uri);
+    expect(text).not.toContain("narrow the target scope");
+    expect(delivered.data).not.toHaveProperty("nextCall");
+    const linkedEnvelope = toToolResult(delivered, "search", { autoRefresh: false, sessionMemoryMode: "off" }).structuredContent as { data: { nextCall?: unknown }; lifecycle: { nextTools: string[] }; nextTools: unknown[] };
+    expect(linkedEnvelope.data.nextCall).toBeUndefined();
+    expect(linkedEnvelope.lifecycle.nextTools).toEqual([]);
+    expect(linkedEnvelope.nextTools).toEqual([]);
+  });
+
+  it("replaces detailed raw text when the delivery budget terminalizes authority", () => {
+    const delivered = withMcpDelivery({
+      freshness: freshness(),
+      text: "Actionability: edit_ready",
+      data: {
+        mode: "search",
+        actionability: "edit_ready",
+        targetRoles: targetRoles(2, "src/terminal"),
+        evidence: Array.from({ length: 200 }, (_, index) => ({ index, detail: "x".repeat(1_000) })),
+        mcp: { targetBytes: 4_000 }
+      }
+    }, {
+      schemaVersion: 1,
+      requestedFormat: "detailed",
+      effectiveFormat: "detailed",
+      detailAvailable: true
+    });
+    expect(delivered.data).toMatchObject({
+      actionability: "blocked",
+      decisionKernel: { authority: { actionability: "blocked", originalActionability: "edit_ready" } }
+    });
+    expect(delivered.text).toContain("Required detailed evidence is omitted");
+    expect(delivered.text).not.toContain("Actionability: edit_ready");
+    const toolResult = toToolResult(delivered, "search", { autoRefresh: false, sessionMemoryMode: "off" });
+    expect((toolResult.content as Array<{ type?: string; text?: string }>).find((entry) => entry.type === "text")?.text).toContain("Required detailed evidence is omitted");
+  });
+
+  it("marks nested and fallback role-boundary loss before detailed artifact persistence", () => {
+    const wideRoles = targetRoles(65, "src/nested");
+    const nestedTyped = canonicalMcpDetailedProjection({
+      freshness: freshness(),
+      text: "nested typed target roles",
+      data: {
+        mode: "change_plan",
+        actionability: "edit_ready",
+        targetRoles: targetRoles(1, "src/root"),
+        focus: { mode: "focus_brief", actionability: "edit_ready", targetRoles: wideRoles },
+        context: { mode: "context_pack", actionability: "edit_ready", targetRoles: wideRoles }
+      }
+    });
+    const genericSearch = canonicalMcpDetailedProjection({
+      freshness: freshness(),
+      text: "generic search target roles",
+      data: { mode: "search", actionability: "edit_ready", search: wideRoles }
+    });
+    const forcedFallback = compactMcpResult({
+      freshness: freshness(),
+      text: "forced fallback target roles",
+      data: {
+        mode: "search",
+        actionability: "edit_ready",
+        scope: targetRoles(12, "src/fallback"),
+        evidence: Array.from({ length: 200 }, (_, index) => ({ index, detail: "x".repeat(1_000) }))
+      }
+    }, { format: "detailed", targetBytes: 4_000 });
+    let deepRoles: Record<string, unknown> = { targetRoles: targetRoles(7, "src/deep") };
+    for (let depth = 0; depth < 129; depth += 1) deepRoles = { [`layer-${depth}`]: deepRoles };
+    const deepGeneric = canonicalMcpDetailedProjection({
+      freshness: freshness(),
+      text: "deep generic target roles",
+      data: { mode: "search", actionability: "edit_ready", ...deepRoles }
+    });
+    const arrayFallback = compactMcpResult({
+      freshness: freshness(),
+      text: "array fallback target roles",
+      data: {
+        mode: "search",
+        actionability: "edit_ready",
+        groups: [{ targetRoles: targetRoles(12, "src/group") }],
+        evidence: Array.from({ length: 200 }, (_, index) => ({ index, detail: "x".repeat(1_000) }))
+      }
+    }, { format: "detailed", targetBytes: 4_000 });
+    for (const projection of [nestedTyped, genericSearch, forcedFallback, deepGeneric, arrayFallback]) {
+      expect((projection.data as Record<string, unknown>).actionability).toBe("edit_ready");
+      expect(mcpTargetRoleBoundariesTruncated(projection.data as Record<string, unknown>)).toBe(true);
+      const delivered = withMcpDelivery(projection, {
+        schemaVersion: 1,
+        requestedFormat: "detailed",
+        effectiveFormat: "detailed",
+        detailAvailable: true
+      });
+      expect(delivered.data).toMatchObject({
+        actionability: "blocked",
+        delivery: {
+          detailAvailable: false,
+          detailRequired: true,
+          requiredDetailReason: "target-role-boundaries-truncated"
+        },
+        decisionKernel: { authority: { actionability: "blocked", originalActionability: "edit_ready" } }
+      });
+      expect(renderMcpConciseText(delivered)).toContain("narrow the target scope");
+    }
+  });
+
   it("preserves partial post-edit review coverage and fails closed even if detailed authority contradicts it", () => {
     process.env.CODEXA_MCP_STRUCTURED_BUDGET_BYTES = "4000";
     const reviewTargets = Array.from({ length: 30 }, (_, index) => `src/review-${index}.ts`);

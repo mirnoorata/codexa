@@ -45,7 +45,7 @@ export function queryResultMode(value: unknown): QueryResultMode | undefined {
 }
 
 function isContextPacketData(value: Record<string, unknown>): boolean {
-  return arraysOrUndefined(value, ["focusFiles", "changedFiles", "changedEntries", "changedSymbols", "unindexedChanged", "groups", "tests", "snippets", "contextSources", "nextReads"]);
+  return arraysOrUndefined(value, ["focusFiles", "changedFiles", "changedEntries", "changedSymbols", "unindexedChanged", "groups", "tests", "snippets", "contextSources", "nextReads", "boundedPlanTargets"]);
 }
 
 function isFocusBriefData(value: Record<string, unknown>): boolean {

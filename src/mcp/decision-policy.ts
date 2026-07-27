@@ -7,6 +7,77 @@ export function modeRequiresExactKernelDetail(mode: string): boolean {
   return mode === "post_edit_review" || mode === "proof_card";
 }
 
+export function mcpKernelRequiresExactDetail(mode: string, data: Record<string, unknown>): boolean { const authority = isRecord(data.authority) ? data.authority : data; return modeRequiresExactKernelDetail(mode) && !mcpPostEditReviewIsAdvisory({ mode, completionAuthority: authority.completionAuthority, inspectMode: authority.inspectMode }); }
+
+const TARGET_ROLE_BOUNDARY_KEYS = ["editableTargets", "readDependencies", "excludedTargets"] as const;
+const TARGET_ROLE_BOUNDARY_SCAN = "__mcp.targetRoleBoundaryScan";
+const MAX_TARGET_ROLE_BOUNDARY_DEPTH = 128;
+const MAX_TARGET_ROLE_BOUNDARY_NODES = 50_000;
+type TargetRoleBoundary = { path: string[]; total: number; uncertain?: boolean };
+
+/** A compact kernel must not authorize edits when it drops any target-role boundary. */
+export function mcpTargetRoleBoundaryRequiresExactDetail(data: Record<string, unknown>, returnedPerRole = 6): boolean {
+  const authority = isRecord(data.authority) ? data.authority : data;
+  return authority.actionability === "edit_ready"
+    && targetRoleBoundaries(data).some((boundary) => boundary.uncertain === true || boundary.total > returnedPerRole);
+}
+
+/** The detailed projection is still bounded; detect an actually omitted role boundary. */
+export function mcpTargetRoleBoundariesTruncated(data: Record<string, unknown>): boolean {
+  const truncation = isRecord(data.truncation) ? data.truncation : undefined;
+  return Object.entries(truncation ?? {}).some(([path, entry]) => (path === TARGET_ROLE_BOUNDARY_SCAN || TARGET_ROLE_BOUNDARY_KEYS.some((key) => path === key || path.endsWith(`.${key}`)))
+    && isRecord(entry) && typeof entry.total === "number" && typeof entry.returned === "number" && entry.total > entry.returned);
+}
+
+/** Preserve an explicit count when a later budget tier removes any nested role boundary. */
+export function mcpTargetRoleBoundaryTruncation(source: Record<string, unknown>, returned: Record<string, unknown>): Record<string, { total: number; returned: number }> {
+  return Object.fromEntries(targetRoleBoundaries(source).flatMap((boundary) => {
+    const value = pathValue(returned, boundary.path);
+    const count = Array.isArray(value) ? value.length : 0;
+    return count < boundary.total ? [[boundary.path.join("."), { total: boundary.total, returned: count }]] : [];
+  }));
+}
+
+function targetRoleBoundaries(value: Record<string, unknown>): TargetRoleBoundary[] {
+  const boundaries: TargetRoleBoundary[] = [];
+  const seen = new WeakSet<object>();
+  const active = new WeakSet<object>();
+  let visited = 0;
+  let uncertain = false;
+  const visit = (entry: unknown, path: string[], depth: number): void => {
+    if (!entry || typeof entry !== "object") return;
+    if (active.has(entry)) {
+      uncertain = true;
+      return;
+    }
+    if (seen.has(entry)) return;
+    if (depth > MAX_TARGET_ROLE_BOUNDARY_DEPTH || ++visited > MAX_TARGET_ROLE_BOUNDARY_NODES) {
+      uncertain = true;
+      return;
+    }
+    seen.add(entry);
+    active.add(entry);
+    if (Array.isArray(entry)) {
+      entry.forEach((child, index) => visit(child, [...path, String(index)], depth + 1));
+    } else if (isRecord(entry)) {
+      for (const key of TARGET_ROLE_BOUNDARY_KEYS) {
+        if (Array.isArray(entry[key])) boundaries.push({ path: [...path, key], total: entry[key].length });
+      }
+      for (const [key, child] of Object.entries(entry)) {
+        if (key !== "decisionKernel" && key !== "mcp" && key !== "truncation") visit(child, [...path, key], depth + 1);
+      }
+    }
+    active.delete(entry);
+  };
+  visit(value, [], 0);
+  if (uncertain) boundaries.push({ path: [TARGET_ROLE_BOUNDARY_SCAN], total: 1, uncertain: true });
+  return boundaries;
+}
+
+function pathValue(value: Record<string, unknown>, path: string[]): unknown {
+  return path.reduce<unknown>((current, key) => Array.isArray(current) ? current[Number(key)] : isRecord(current) ? current[key] : undefined, value);
+}
+
 /** One authority classifier feeds both detailed and compact delivery. */
 export function mcpAuthorityBlockReason(data: Record<string, unknown>, freshness: Record<string, unknown> | undefined): string | undefined {
   if (freshness?.missing === true) return "index-missing";
@@ -17,7 +88,8 @@ export function mcpAuthorityBlockReason(data: Record<string, unknown>, freshness
   if (isRecord(data.snapshotBlock)) return "snapshot-blocked";
   const snapshotLoad = isRecord(data.snapshotLoad) ? data.snapshotLoad : undefined;
   if (snapshotLoad?.ambiguousLatest === true || typeof snapshotLoad?.missingReason === "string") return "snapshot-missing-or-ambiguous";
-  if (nonEmptyArray(data.driftReasons)) return "review-drift";
+  const advisoryReview = mcpPostEditReviewIsAdvisory(data);
+  if (nonEmptyArray(data.driftReasons) && !advisoryReview) return "review-drift";
   const reviewCoverageReason = postEditReviewCoverageBlockReason(data);
   if (reviewCoverageReason) return reviewCoverageReason;
   if (readStringArray(data.gaps).some((gap) => gap.startsWith("worktree state unavailable"))) return "worktree-unavailable";
@@ -28,13 +100,13 @@ export function mcpAuthorityBlockReason(data: Record<string, unknown>, freshness
   const editReadiness = isRecord(data.editReadiness) ? data.editReadiness : undefined;
   if (editReadiness?.editable === false) return "edit-target-not-ready";
   const completionAuthority = stringValue(data.completionAuthority);
-  if (completionAuthority && completionAuthority !== "complete") return `completion-authority:${completionAuthority}`;
+  if (completionAuthority && completionAuthority !== "complete" && !advisoryReview) return `completion-authority:${completionAuthority}`;
   const inspectMode = stringValue(data.inspectMode);
-  if (inspectMode && inspectMode !== "none" && inspectMode !== "not-required") return `inspect-mode:${inspectMode}`;
+  if (inspectMode && inspectMode !== "none" && inspectMode !== "not-required" && !advisoryReview) return `inspect-mode:${inspectMode}`;
   if (data.mode === "post_edit_review" && hasUnresolvedInvariants(data.invariants, data.invariantReviews)) return "invariant-unresolved";
   const loop = isRecord(data.loopReview) ? data.loopReview : undefined;
   if (typeof loop?.status === "string" && !["continue", "resolved", "within-budget"].includes(loop.status)) return `loop:${loop.status}`;
-  if (nonEmptyArray(data.failureSignals) && completionAuthority !== "complete") return "recurring-failure-signal";
+  if (nonEmptyArray(data.failureSignals) && completionAuthority !== "complete" && !advisoryReview) return "recurring-failure-signal";
   if (data.mode === "proof_card") {
     const lifecycle = isRecord(data.lifecycle) ? data.lifecycle : undefined;
     const decisionLog = isRecord(data.decisionLog) ? data.decisionLog : undefined;
@@ -49,6 +121,10 @@ export function mcpAuthorityBlockReason(data: Record<string, unknown>, freshness
     }
   }
   return undefined;
+}
+
+export function mcpPostEditReviewIsAdvisory(data: Record<string, unknown>): boolean {
+  return data.mode === "post_edit_review" && stringValue(data.completionAuthority) === "advisory_inspect" && stringValue(data.inspectMode) === "advisory";
 }
 
 export function postEditReviewCoverageBlockReason(data: Record<string, unknown>, suppliedMode?: string): string | undefined {

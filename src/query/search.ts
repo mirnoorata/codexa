@@ -183,6 +183,7 @@ export async function searchQuery(
       })
     : undefined;
   const boundedTargetReady = retrieval.intentConfidence.mode === "edit" && planFiles.length > 0 && !needsTarget;
+  const unboundedEditTarget = retrieval.intentConfidence.mode === "edit" && planFiles.length === 0 && !needsTarget;
   const nextTools = changePlanNeed
     ? [
         nextTool(
@@ -206,25 +207,46 @@ export async function searchQuery(
         verdict: "edit-ready" as const,
         reasons: uniqueSorted([...retrieval.intentConfidence.reasons, "bounded task target supplies plan authority"])
       }
-    : needsTarget
+    : needsTarget || unboundedEditTarget
       ? {
         ...retrieval.intentConfidence,
         anchors: [],
         selectedAnchorCount: 0,
-        missingAnchors: uniqueSorted([...retrieval.intentConfidence.missingAnchors, ambiguousExplicitTarget ? "ambiguous repository target" : "unresolved repository path"]),
+        missingAnchors: uniqueSorted([
+          ...retrieval.intentConfidence.missingAnchors,
+          needsTarget
+            ? ambiguousExplicitTarget
+              ? "ambiguous repository target"
+              : "unresolved repository path"
+            : "no explicit editable repository target"
+        ]),
         editReady: false,
         verdict: "needs-target" as const,
-        reasons: uniqueSorted([...retrieval.intentConfidence.reasons, ambiguousExplicitTarget ? "ambiguous repository target" : "unresolved repository path"])
+        reasons: uniqueSorted([
+          ...retrieval.intentConfidence.reasons,
+          needsTarget
+            ? ambiguousExplicitTarget
+              ? "ambiguous repository target"
+              : "unresolved repository path"
+            : "ranked retrieval evidence does not supply edit authority"
+        ])
       }
       : retrieval.intentConfidence;
   const effectiveDiagnostics = boundedTargetReady
     ? uniqueSorted([...retrieval.diagnostics.filter((diagnostic) => !/needs explicit|raw search likely|workflow intent had no matching trace/iu.test(diagnostic)), "bounded task target supplies plan authority"])
-    : needsTarget
-      ? uniqueSorted([...retrieval.diagnostics, ambiguousExplicitTarget ? "named target matches multiple repository paths" : "named path does not resolve to an indexed repository file"])
+    : needsTarget || unboundedEditTarget
+      ? uniqueSorted([
+          ...retrieval.diagnostics,
+          ambiguousExplicitTarget
+            ? "named target matches multiple repository paths"
+            : unresolvedExplicitTarget
+              ? "named path does not resolve to an indexed repository file"
+              : "edit prompt lacks one explicit editable repository target"
+        ])
       : retrieval.diagnostics;
   const actionability = boundedTargetReady
     ? "edit_ready"
-    : needsTarget
+    : needsTarget || unboundedEditTarget
       ? "needs_target"
     : raw.sufficient
       ? "raw_search_sufficient"
@@ -233,6 +255,8 @@ export async function searchQuery(
     ? ambiguousExplicitTarget
       ? "Choose one path from targetCandidates and inspect it directly; do not repeat search."
       : "Correct one path from unresolvedTargets before edit planning; do not repeat broad discovery."
+    : unboundedEditTarget
+      ? "Inspect the ranked source targets and choose one bounded edit target; do not repeat broad discovery."
     : boundedTargetReady && searchFiles.length === 0 && !targetRoles.hasReferenceCue && !targetRoles.unresolvedReferenceCue
       ? "Stop Codexa discovery; no indexed source read is required. Proceed with the named new target."
     : raw.sufficient

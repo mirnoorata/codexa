@@ -648,9 +648,10 @@ describe("task lifecycle governance", () => {
       saveSnapshot: true
     }, { autoRefresh: false });
     const before = (valid.data as { snapshot: TaskSnapshot }).snapshot;
-    expect((valid.data as { nextTools: Array<{ tool: string; readOnly: boolean; writes: string[] }> }).nextTools).toEqual([
+    expect((valid.data as { nextTools: Array<{ tool: string; reason: string; readOnly: boolean; writes: string[] }> }).nextTools).toEqual([
       expect.objectContaining({
         tool: "post_edit_review",
+        reason: expect.stringMatching(/ranCommands\/ranTests.*artifactIds.*invariantReviews/u),
         readOnly: false,
         writes: [".codex/cache/codexa-task-lifecycle", ".codex/cache/codexa-outcomes"]
       })

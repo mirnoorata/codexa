@@ -4,7 +4,7 @@ import { compactNextTools, isRecord, stringValue, structuredByteLength } from ".
 import { capabilitiesDecisionKernel, compactCapabilitiesKernel, renderCapabilitiesKernel } from "./capability-kernel.js";
 import { advancedModeDecisionKernel, compactAdvancedModeKernel, renderAdvancedModeKernel } from "./advanced-mode-kernel.js";
 import { renderKernelGuidance, skillGuidanceKernel, terminalGuidanceKernel } from "./decision-guidance.js";
-import { decisionEntryPath, mcpAuthorityBlockReason, mcpProofEscalationReason, modeRequiresExactKernelDetail, postEditReviewCoverageBlockReason, renderDecisionReadScope } from "./decision-policy.js";
+import { decisionEntryPath, mcpAuthorityBlockReason, mcpKernelRequiresExactDetail, mcpProofEscalationReason, mcpTargetRoleBoundariesTruncated, mcpTargetRoleBoundaryRequiresExactDetail, postEditReviewCoverageBlockReason, renderDecisionReadScope } from "./decision-policy.js";
 import { postEditOutcomeKernel, reviewCoverageKernel } from "./review-coverage-kernel.js";
 
 export type McpResponseFormat = "auto" | "concise" | "detailed";
@@ -26,7 +26,7 @@ export interface McpDeliveryMetadata {
 
 const CONCISE_TEXT_MAX_LINES = 30;
 const CONCISE_TEXT_MAX_CHARS = 2_400;
-const TERMINAL_MODE_IDENTITY_KEYS = ["plannedEditTargets", "reviewTargets", "targetFiles", "focusFiles", "files", "symbols", "targetCandidates", "nextReads", "changedSinceSnapshot", "workflows", "rawHits"] as const;
+const TERMINAL_MODE_IDENTITY_KEYS = ["editableTargets", "readDependencies", "excludedTargets", "plannedEditTargets", "reviewTargets", "targetFiles", "focusFiles", "files", "symbols", "targetCandidates", "nextReads", "changedSinceSnapshot", "workflows", "rawHits"] as const;
 
 export function conciseText(text: string): string {
   const lines = text.split(/\r?\n/);
@@ -89,7 +89,7 @@ export function mcpDecisionKernel(data: Record<string, unknown>, suppliedMode?: 
     systemMessage: boundedString(data.systemMessage, 240),
     verificationProvenance: boundedVerificationProvenance(data.verificationProvenance)
   };
-  const kernel = definedRecord({ ...common, ...modeDecisionKernel(mode, data) });
+  const kernel = definedRecord({ ...common, ...modeDecisionKernel(mode, data), detailsRequired: mcpTargetRoleBoundaryRequiresExactDetail({ ...data, authority }) || undefined });
   if (structuredByteLength(kernel) <= 3_200) return kernel;
   const narrowedGaps = kernelStrings(kernel.gaps, 3);
   const narrowed = definedRecord({
@@ -126,68 +126,69 @@ export function mcpDecisionKernel(data: Record<string, unknown>, suppliedMode?: 
     gapsOmitted: Math.max(0, gapCount - narrowedGaps.length),
     nextTools: common.nextTools,
     systemMessage: common.systemMessage,
-    detailsRequired: modeRequiresExactKernelDetail(mode) || undefined
+    detailsRequired: kernel.detailsRequired === true || mcpKernelRequiresExactDetail(mode, data) || undefined
   });
   if (structuredByteLength(narrowed) <= 2_800) return narrowed;
   const emergency = emergencyDecisionKernel(narrowed);
-  return structuredByteLength(emergency) <= 2_600 ? emergency : terminalDecisionKernel(emergency, modeRequiresExactKernelDetail(mode));
+  return structuredByteLength(emergency) <= 2_600 ? emergency : terminalDecisionKernel(emergency, emergency.detailsRequired === true || mcpKernelRequiresExactDetail(mode, data));
 }
 
 export function withMcpDelivery(result: QueryResult, delivery: McpDeliveryMetadata): QueryResult {
   if (!isRecord(result.data)) return result;
   const mode = typeof result.data.mode === "string" ? result.data.mode : inferKernelMode(result.data) ?? "unknown";
   const projected = isRecord(result.data.decisionKernel) ? result.data.decisionKernel : mcpDecisionKernel(result.data, mode, result.freshness);
-  const detailBlocked = delivery.effectiveFormat === "concise"
-    && (projected.detailsRequired === true || (delivery.detailRequired === true && delivery.detailAvailable === false));
+  const targetRoleBoundariesTruncated = isRecord(projected.authority) && projected.authority.actionability === "edit_ready" && mcpTargetRoleBoundariesTruncated(result.data); const detailUnavailable = targetRoleBoundariesTruncated && (delivery.effectiveFormat === "detailed" || delivery.detailAvailable === false);
+  const safeDelivery = targetRoleBoundariesTruncated ? { ...delivery, ...(detailUnavailable ? { resultId: undefined, resultUri: undefined, detailAvailable: false } : {}), detailRequired: true, requiredDetailReason: "target-role-boundaries-truncated", escalationReason: [delivery.escalationReason, "target-role-boundaries-truncated"].filter(Boolean).join("+") } : delivery;
+  const targetRoleKernelDetail = mcpTargetRoleBoundaryRequiresExactDetail(result.data); const detailBlocked = targetRoleBoundariesTruncated || (safeDelivery.effectiveFormat === "concise" && ((projected.detailsRequired === true && (!targetRoleKernelDetail || mcpKernelRequiresExactDetail(mode, result.data))) || (safeDelivery.detailRequired === true && safeDelivery.detailAvailable === false)));
   const kernel = detailBlocked
-    ? failClosedDecisionKernel(projected, delivery.detailAvailable === false, delivery.requiredDetailReason)
+    ? failClosedDecisionKernel(projected, detailUnavailable || safeDelivery.detailAvailable === false, safeDelivery.requiredDetailReason)
     : projected;
-  const authority = isRecord(kernel.authority) ? kernel.authority : {};
+  const deliveredAuthority = isRecord(kernel.authority) ? kernel.authority : {}; const deliveredText = detailBlocked && safeDelivery.effectiveFormat === "detailed" && safeDelivery.detailAvailable === false ? stringValue(kernel.systemMessage) ?? result.text : result.text;
   const delivered = reconcileMcpReturnedBytes({
-    ...result.data,
+    ...(detailBlocked ? withoutNextCall(result.data) : result.data),
     ...(detailBlocked ? { nextTools: [], systemMessage: kernel.systemMessage } : {}),
-    actionability: authority.actionability ?? result.data.actionability,
-    delivery,
+    actionability: deliveredAuthority.actionability ?? result.data.actionability,
+    delivery: safeDelivery,
     decisionKernel: kernel
   });
   const targetBytes = mcpTargetBytes(delivered);
   if (targetBytes === undefined || structuredByteLength(delivered) <= targetBytes) {
-    return { ...result, data: delivered };
+    return { ...result, text: deliveredText, data: delivered };
   }
   // Once adding the delivery reference itself crosses the host budget, use
   // the intrinsically bounded terminal kernel. Omitting detail is an
   // authority boundary even when the pre-delivery kernel narrowly fit.
   const terminalKernel = compactTerminalDecisionKernel(kernel);
-  const terminalAuthority = isRecord(terminalKernel.authority) ? terminalKernel.authority : {};
+  const terminalAuthority = isRecord(terminalKernel.authority) ? terminalKernel.authority : {}; const terminalText = terminalAuthority.actionability === "blocked" ? stringValue(terminalKernel.systemMessage) ?? "Required detailed evidence is omitted from this bounded receipt; do not act from it." : deliveredText;
   const fallback = reconcileMcpReturnedBytes(definedRecord({
     mode,
-    actionability: terminalAuthority.actionability ?? authority.actionability ?? "blocked",
+    actionability: terminalAuthority.actionability ?? deliveredAuthority.actionability ?? "blocked",
     verdict: terminalAuthority.verdict,
     packetVerdict: terminalAuthority.packetVerdict,
     completionAuthority: terminalAuthority.completionAuthority,
     inspectMode: terminalAuthority.inspectMode,
-    delivery,
+    delivery: safeDelivery,
     decisionKernel: terminalKernel,
-    systemMessage: boundedString(result.data.systemMessage, 120),
+    systemMessage: terminalAuthority.actionability === "blocked" ? terminalKernel.systemMessage : boundedString(result.data.systemMessage, 120),
     truncation: { "__mcp.deliveryBudget": { total: structuredByteLength(delivered), returned: targetBytes } },
     mcp: compactMcpMetrics(result.data.mcp, targetBytes)
   }));
-  if (structuredByteLength(fallback) <= targetBytes) return { ...result, data: fallback };
+  if (structuredByteLength(fallback) <= targetBytes) return { ...result, text: terminalText, data: fallback };
 
   const absoluteKernel = absoluteTerminalDecisionKernel(terminalKernel);
-  const absoluteAuthority = isRecord(absoluteKernel.authority) ? absoluteKernel.authority : {};
+  const absoluteAuthority = isRecord(absoluteKernel.authority) ? absoluteKernel.authority : {}; const absoluteText = stringValue(absoluteKernel.systemMessage) ?? "Result detail was omitted to enforce the MCP transport budget; do not edit from this receipt alone.";
   const absolute = reconcileMcpReturnedBytes(definedRecord({
     mode,
     actionability: "blocked",
     verdict: absoluteAuthority.verdict,
     completionAuthority: absoluteAuthority.completionAuthority,
-    delivery,
+    delivery: safeDelivery,
     decisionKernel: absoluteKernel,
     mcp: { compacted: true, targetBytes, hardBudgetEnforced: true, budgetCompaction: "delivery-terminal" }
   }));
   // MIN_MCP_STRUCTURED_DATA_TARGET_BYTES is 4KB; every string and collection
   // in this last tier has a fixed cap whose aggregate is below that floor.
-  return { ...result, data: absolute };
+  return { ...result, text: absoluteText, data: absolute };
 }
 
 export function mcpAuthorityBlocked(data: Record<string, unknown>, freshnessValue?: unknown): boolean {
@@ -252,7 +253,7 @@ export function renderMcpConciseText(result: QueryResult): string {
     delivery.unchangedReceipt === true ? "Detailed result: unchanged from the prior receipt." : undefined,
     stringValue(delivery.resultUri) ? `Detailed result: ${stringValue(delivery.resultUri)}` : undefined,
     delivery.detailAvailable === false && delivery.detailRequired === true
-      ? "Required detailed result unavailable; retry once with responseFormat \"detailed\"."
+      ? delivery.requiredDetailReason === "target-role-boundaries-truncated" ? "Target-role boundaries were truncated; narrow the target scope before requesting detailed evidence." : "Required detailed result unavailable; retry once with responseFormat \"detailed\"."
       : delivery.detailAvailable === false
         ? "Detailed result unavailable; rely only on this bounded decision receipt."
         : undefined
@@ -302,7 +303,7 @@ export function compactDecisionKernelSection(value: unknown): Record<string, unk
 
 export function compactTerminalDecisionKernel(kernel: Record<string, unknown>): Record<string, unknown> {
   const mode = stringValue(kernel.mode) ?? "unknown";
-  return terminalDecisionKernel(emergencyDecisionKernel(kernel), modeRequiresExactKernelDetail(mode));
+  return terminalDecisionKernel(emergencyDecisionKernel(kernel), kernel.detailsRequired === true || mcpKernelRequiresExactDetail(mode, kernel) || mcpTargetRoleBoundaryRequiresExactDetail(kernel, 1));
 }
 
 function narrowKernelSection(value: unknown): Record<string, unknown> | undefined {
@@ -370,7 +371,7 @@ function emergencyDecisionKernel(kernel: Record<string, unknown>): Record<string
     gapCount,
     gaps,
     gapsOmitted: Math.max(0, gapCount - gaps.length),
-    detailsRequired: modeRequiresExactKernelDetail(stringValue(kernel.mode) ?? "unknown") || undefined
+    detailsRequired: kernel.detailsRequired === true || mcpKernelRequiresExactDetail(stringValue(kernel.mode) ?? "unknown", kernel) || mcpTargetRoleBoundaryRequiresExactDetail(kernel, 2) || undefined
   });
 }
 
@@ -458,9 +459,8 @@ function terminalModeSection(value: unknown): Record<string, unknown> | undefine
     if (!Array.isArray(entry) || entry.length === 0) continue;
     output[key] = entry.slice(0, 1).map(kernelEntry);
     kept += 1;
-    if (kept === 2) break;
+    if (kept === 5) break;
   }
-  if (kept < 2 && isRecord(value.nextCall)) output.nextCall = kernelEntry(value.nextCall);
   return definedRecord(output);
 }
 
@@ -691,13 +691,15 @@ function modeDecisionKernel(mode: string, data: Record<string, unknown>): Record
   }
   if (mode === "search") {
     const raw = isRecord(data.raw) ? data.raw : undefined;
-    return { search: definedRecord({ rawSufficient: raw?.sufficient, rawExactHitCount: data.rawExactHitCount, rawExactFileCount: data.rawExactFileCount, patternCount: arrayCount(data.patterns), patterns: kernelStrings(data.patterns, 5), rawFiles: kernelStrings(raw?.files, 5), rawHits: kernelEntries(raw?.hits, 5), fileCount: arrayCount(data.files), files: kernelEntries(data.files, 6), symbolCount: arrayCount(data.symbols), symbols: kernelEntries(data.symbols, 6), usageCount: arrayCount(data.usageSites), diagnosticCount: arrayCount(data.diagnostics), diagnostics: kernelStrings(data.diagnostics, 5) }), verification: definedRecord({ testCount: arrayCount(data.tests), tests: kernelEntries(data.tests, 5), testsOmitted: Math.max(0, arrayCount(data.tests) - 5) }) };
+    return { search: definedRecord({ ...targetRoleDecisionScope(data.targetRoles), rawSufficient: raw?.sufficient, rawExactHitCount: data.rawExactHitCount, rawExactFileCount: data.rawExactFileCount, patternCount: arrayCount(data.patterns), patterns: kernelStrings(data.patterns, 5), rawFiles: kernelStrings(raw?.files, 5), rawHits: kernelEntries(raw?.hits, 5), fileCount: arrayCount(data.files), files: kernelEntries(data.files, 6), symbolCount: arrayCount(data.symbols), symbols: kernelEntries(data.symbols, 6), usageCount: arrayCount(data.usageSites), diagnosticCount: arrayCount(data.diagnostics), diagnostics: kernelStrings(data.diagnostics, 5) }), verification: definedRecord({ testCount: arrayCount(data.tests), tests: kernelEntries(data.tests, 5), testsOmitted: Math.max(0, arrayCount(data.tests) - 5) }) };
   }
-  if (["focus_brief", "session_context", "task_brief", "context_pack"].includes(mode)) {
-    return { scope: definedRecord({ focusFileCount: arrayCount(data.focusFiles), focusFiles: kernelEntries(data.focusFiles, 8), nextReadCount: arrayCount(data.nextReads), nextReads: kernelStrings(data.nextReads, 6), changedFileCount: arrayCount(data.changedFiles), changedFiles: kernelStrings(data.changedFiles, 6), nextCall: kernelEntry(data.nextCall), workflowCount: arrayCount(data.workflows), workflows: kernelEntries(data.workflows, 4) }), guidance: skillGuidanceKernel(data), verification: definedRecord({ testCount: arrayCount(data.tests), tests: kernelEntries(data.tests, 6), commandCount: arrayCount(data.verificationCommands), commands: kernelEntries(data.verificationCommands, 5) }), advanced: advancedModeDecisionKernel(mode, data) };
-  }
+  if (["focus_brief", "session_context", "task_brief", "context_pack"].includes(mode)) return { scope: definedRecord({ focusFileCount: arrayCount(data.focusFiles), focusFiles: kernelEntries(data.focusFiles, 8), nextReadCount: arrayCount(data.nextReads), nextReads: kernelStrings(data.nextReads, 6), boundedPlanTargetCount: arrayCount(data.boundedPlanTargets), boundedPlanTargets: kernelStrings(data.boundedPlanTargets, 8), ...targetRoleDecisionScope(data.targetRoles), changedFileCount: arrayCount(data.changedFiles), changedFiles: kernelStrings(data.changedFiles, 6), nextCall: kernelEntry(data.nextCall), workflowCount: arrayCount(data.workflows), workflows: kernelEntries(data.workflows, 4) }), guidance: skillGuidanceKernel(data), verification: definedRecord({ testCount: arrayCount(data.tests), tests: kernelEntries(data.tests, 6), commandCount: arrayCount(data.verificationCommands), commands: kernelEntries(data.verificationCommands, 5) }), advanced: advancedModeDecisionKernel(mode, data) };
   if (mode === "change_plan") {
-    return { scope: definedRecord({ fileCount: arrayCount(data.files), files: kernelStrings(data.files, 8), plannedEditTargetCount: arrayCount(data.plannedEditTargets), plannedEditTargets: kernelStrings(data.plannedEditTargets, 10), targetCandidateCount: arrayCount(data.targetCandidates), targetCandidates: kernelEntries(data.targetCandidates, 5) }), invariants: compactDeclaredInvariantKernel(snapshotValue(data, "invariants") ?? data.invariants, 16), verification: definedRecord({ testCount: arrayCount(data.tests), tests: kernelEntries(data.tests, 8), workflowCheckCount: arrayLength(data.requiredWorkflowChecks), dependencyCheckCount: arrayLength(data.requiredDependencyChecks), workflowChecks: kernelEntries(data.requiredWorkflowChecks, 5), dependencyChecks: kernelEntries(data.requiredDependencyChecks, 5) }) };
+    return {
+      scope: definedRecord({ fileCount: arrayCount(data.files), files: kernelStrings(data.files, 8), plannedEditTargetCount: arrayCount(data.plannedEditTargets), plannedEditTargets: kernelStrings(data.plannedEditTargets, 10), ...targetRoleDecisionScope(data.targetRoles), reviewOwner: boundedString(data.reviewOwner, 80), targetCandidateCount: arrayCount(data.targetCandidates), targetCandidates: kernelEntries(data.targetCandidates, 5) }),
+      invariants: compactDeclaredInvariantKernel(snapshotValue(data, "invariants") ?? data.invariants, 16),
+      verification: definedRecord({ testCount: arrayCount(data.tests), tests: kernelEntries(data.tests, 8), workflowCheckCount: arrayLength(data.requiredWorkflowChecks), dependencyCheckCount: arrayLength(data.requiredDependencyChecks), workflowChecks: kernelEntries(data.requiredWorkflowChecks, 5), dependencyChecks: kernelEntries(data.requiredDependencyChecks, 5) })
+    };
   }
   if (mode === "test_plan") {
     return { scope: definedRecord({ targetFileCount: arrayCount(data.targetFiles), targetFiles: kernelStrings(data.targetFiles, 10), unindexedTargetFileCount: arrayCount(data.unindexedTargetFiles), unindexedTargetFiles: kernelStrings(data.unindexedTargetFiles, 6), rejectedTargetFileCount: arrayCount(data.rejectedTargetFiles), rejectedTargetFiles: kernelStrings(data.rejectedTargetFiles, 6), changedFileCount: arrayCount(data.changedFiles), changedFiles: kernelStrings(data.changedFiles, 6) }), verification: definedRecord({ testCount: arrayCount(data.tests), tests: kernelEntries(data.tests, 8), commandCount: arrayCount(data.verificationCommands), commands: kernelEntries(data.verificationCommands, 8), testsNotRunCount: arrayCount(data.testsNotRun), testsNotRun: kernelEntries(data.testsNotRun, 6), ledgerCount: arrayCount(data.verificationLedgerPreview), ledger: kernelEntries(data.verificationLedgerPreview, 6) }) };
@@ -711,6 +713,10 @@ function modeDecisionKernel(mode: string, data: Record<string, unknown>): Record
   }
   const advanced = advancedModeDecisionKernel(mode, data);
   return advanced ? { advanced } : {};
+}
+
+function targetRoleDecisionScope(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? { editableTargetCount: arrayCount(value.editableTargets), editableTargets: kernelStrings(value.editableTargets, 6), readDependencyCount: arrayCount(value.readDependencies), readDependencies: kernelStrings(value.readDependencies, 6), excludedTargetCount: arrayCount(value.excludedTargets), excludedTargets: kernelStrings(value.excludedTargets, 6), hasReferenceCue: value.hasReferenceCue, unresolvedReferenceCue: value.unresolvedReferenceCue } : {};
 }
 
 function compactInvariantKernel(invariantsValue: unknown, reviewsValue: unknown, limit: number): unknown[] | undefined {
@@ -736,19 +742,18 @@ function failClosedDecisionKernel(kernel: Record<string, unknown>, detailUnavail
   const authority = isRecord(kernel.authority) ? kernel.authority : {};
   return {
     ...kernel,
+    scope: isRecord(kernel.scope) ? withoutNextCall(kernel.scope) : kernel.scope,
     authority: {
       ...authority,
       originalActionability: authority.actionability,
       actionability: "blocked"
     },
     nextTools: [],
-    systemMessage: detailUnavailable
-      ? `Required detailed evidence is unavailable${reason ? ` (${boundedReceiptValue(reason, 120)})` : ""}; do not act from this receipt. Retry once with responseFormat "detailed".`
-      : "Required detailed evidence is omitted from this concise receipt; read the linked detailed result before acting.",
+    systemMessage: detailUnavailable ? reason === "target-role-boundaries-truncated" ? "Target-role boundaries were truncated before this packet was returned; narrow the target scope before requesting detailed evidence. Do not act from this receipt." : `Required detailed evidence is unavailable${reason ? ` (${boundedReceiptValue(reason, 120)})` : ""}; do not act from this receipt. Retry once with responseFormat "detailed".` : "Required detailed evidence is omitted from this concise receipt; read the linked detailed result before acting.",
     detailsRequired: true
   };
 }
-
+function withoutNextCall(data: Record<string, unknown>): Record<string, unknown> { return Object.fromEntries(Object.entries(data).filter(([key]) => key !== "nextCall")); }
 function loopDecisionKernel(value: unknown): Record<string, unknown> | undefined {
   if (!isRecord(value)) return undefined;
   const growth = isRecord(value.cumulativeDiffGrowth) ? value.cumulativeDiffGrowth : undefined;

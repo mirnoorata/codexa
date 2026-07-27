@@ -39,6 +39,7 @@ import {
 export { compactNextTools } from "./compaction-helpers.js";
 import type { ChangePlanData, CodexaQueryData, ContextPacketData, FocusBriefData, FreshnessInfo, PostEditReviewData, ProofCardData, QueryResult, TestPlanData } from "../types.js";
 import { attachMcpDecisionKernel, compactTerminalDecisionKernel, mcpDecisionKernel } from "./decision-kernel.js";
+import { mcpTargetRoleBoundaryTruncation } from "./decision-policy.js";
 const DEFAULT_MCP_STRUCTURED_DATA_TARGET_BYTES = 96_000;
 const MIN_MCP_STRUCTURED_DATA_TARGET_BYTES = 4_000;
 const MAX_MCP_STRUCTURED_DATA_TARGET_BYTES = 512_000;
@@ -89,7 +90,7 @@ export function compactMcpResult(result: QueryResult, options?: McpCompactionOpt
   const compaction = (typedData ? compactMcpDataByMode(typedData) : undefined) ?? compactGenericMcpData(originalData, effectiveMode);
   const decisionKernel = mcpDecisionKernel(originalData, effectiveMode, result.freshness);
   const clamped = clampLargeStringsPreservingMcpGuidance(compaction.data);
-  const dataWithoutMetrics = attachMcpDecisionKernel(withMergedTruncation(clamped.value as Record<string, unknown>, compaction.truncation), decisionKernel);
+  const dataWithoutMetrics = attachMcpDecisionKernel(withTargetRoleBoundaryTruncation(originalData, withMergedTruncation(clamped.value as Record<string, unknown>, compaction.truncation)), decisionKernel);
   const compactedBytes = structuredByteLength(dataWithoutMetrics);
   const baseTargetBytes = options?.targetBytes === undefined
     ? mcpStructuredDataTargetBytes()
@@ -106,7 +107,7 @@ export function compactMcpResult(result: QueryResult, options?: McpCompactionOpt
   let data = attachMcpMetrics(dataWithoutMetrics, structuredData);
   const returnedBytes = structuredByteLength(data);
   if (returnedBytes > targetBytes) {
-    data = enforceMcpStructuredBudget(dataWithoutMetrics, structuredData, returnedBytes, effectiveMode, targetBytes, decisionKernel);
+    data = enforceMcpStructuredBudget(originalData, dataWithoutMetrics, structuredData, returnedBytes, effectiveMode, targetBytes, decisionKernel);
   }
   return {
     ...result,
@@ -212,7 +213,7 @@ function compactGenericMcpData(data: Record<string, unknown>, mode: string): Mcp
   return { data: dataWithMode, truncation, compacted: true };
 }
 
-function enforceMcpStructuredBudget(
+function enforceMcpStructuredBudget(sourceData: Record<string, unknown>,
   dataWithoutMetrics: Record<string, unknown>,
   structuredData: Record<string, unknown>,
   preEnforcementBytes: number,
@@ -226,10 +227,7 @@ function enforceMcpStructuredBudget(
   const hardCompacted = compactGenericValue(dataWithoutMetrics, { arrayLimit: 12, objectKeyLimit: 40, maxDepth: 6 }, hardTruncation);
   const hardClamped = clampLargeStringsPreservingMcpGuidance(hardCompacted, 240);
   const hardRecord = isRecord(hardClamped.value) ? hardClamped.value : { value: hardClamped.value };
-  const hardData = attachMcpDecisionKernel(
-    withMergedTruncation(reattachGuidanceFields(typeof hardRecord.mode === "string" ? hardRecord : { mode, ...hardRecord }, dataWithoutMetrics, hardTruncation), hardTruncation),
-    decisionKernel
-  );
+  const hardData = attachMcpDecisionKernel(withTargetRoleBoundaryTruncation(sourceData, withMergedTruncation(reattachGuidanceFields(typeof hardRecord.mode === "string" ? hardRecord : { mode, ...hardRecord }, dataWithoutMetrics, hardTruncation), hardTruncation)), decisionKernel);
   const hardResult = attachMcpMetrics(hardData, {
     ...structuredData,
     compacted: true,
@@ -247,7 +245,7 @@ function enforceMcpStructuredBudget(
   });
   const summaryClamped = clampLargeStringsPreservingMcpGuidance(buildMcpBudgetSummaryData(dataWithoutMetrics, mode, summaryTruncation), 160);
   const summaryRecord = isRecord(summaryClamped.value) ? summaryClamped.value : { value: summaryClamped.value };
-  const summaryResult = attachMcpMetrics(attachMcpDecisionKernel(withMergedTruncation(summaryRecord, summaryTruncation), decisionKernel), {
+  const summaryResult = attachMcpMetrics(attachMcpDecisionKernel(withTargetRoleBoundaryTruncation(sourceData, withMergedTruncation(summaryRecord, summaryTruncation)), decisionKernel), {
     ...structuredData,
     compacted: true,
     hardBudgetEnforced: true,
@@ -283,7 +281,7 @@ function enforceMcpStructuredBudget(
     160
   );
   const fallbackRecord = isRecord(fallbackClamped.value) ? fallbackClamped.value : { value: fallbackClamped.value };
-  const fallbackResult = attachMcpMetrics(attachMcpDecisionKernel(fallbackRecord, decisionKernel), {
+  const fallbackResult = attachMcpMetrics(attachMcpDecisionKernel(withTargetRoleBoundaryTruncation(sourceData, fallbackRecord), decisionKernel), {
     ...structuredData,
     compacted: true,
     hardBudgetEnforced: true,
@@ -325,7 +323,7 @@ function enforceMcpStructuredBudget(
     stringTruncations:
       metricNumber(structuredData, "stringTruncations") + hardClamped.stringTruncations + summaryClamped.stringTruncations + fallbackClamped.stringTruncations + minimalClamped.stringTruncations
   };
-  const minimalResult = attachMcpMetrics(attachMcpDecisionKernel(minimalRecord, decisionKernel), minimalMetrics);
+  const minimalResult = attachMcpMetrics(attachMcpDecisionKernel(withTargetRoleBoundaryTruncation(sourceData, minimalRecord), decisionKernel), minimalMetrics);
   if (structuredByteLength(minimalResult) <= targetBytes) {
     return minimalResult;
   }
@@ -379,6 +377,7 @@ function buildMcpBudgetSummaryData(data: Record<string, unknown>, mode: string, 
     systemMessage: stringValue(data.systemMessage),
     files: compactSummaryArray("files", data.files, 12, truncation),
     plannedEditTargets: compactSummaryArray("plannedEditTargets", data.plannedEditTargets, 12, truncation),
+    targetRoles: isRecord(data.targetRoles) ? { editableTargets: compactSummaryArray("targetRoles.editableTargets", data.targetRoles.editableTargets, 6, truncation), readDependencies: compactSummaryArray("targetRoles.readDependencies", data.targetRoles.readDependencies, 6, truncation), excludedTargets: compactSummaryArray("targetRoles.excludedTargets", data.targetRoles.excludedTargets, 6, truncation), hasReferenceCue: data.targetRoles.hasReferenceCue, unresolvedReferenceCue: data.targetRoles.unresolvedReferenceCue } : undefined,
     changedFiles: compactSummaryArray("changedFiles", data.changedFiles, 12, truncation),
     tests: compactSummaryArray("tests", data.tests, 12, truncation, compactTestRecommendation),
     verificationCommands: compactSummaryArray("verificationCommands", data.verificationCommands, 10, truncation),
@@ -463,6 +462,8 @@ function withMergedTruncation(data: Record<string, unknown>, truncation: McpTrun
   }
   return { ...data, truncation: merged };
 }
+
+function withTargetRoleBoundaryTruncation(source: Record<string, unknown>, returned: Record<string, unknown>): Record<string, unknown> { return withMergedTruncation(returned, mcpTargetRoleBoundaryTruncation(source, returned)); }
 
 function mergeTruncation(...records: Array<McpTruncation | undefined>): McpTruncation {
   const merged: McpTruncation = {};
@@ -684,13 +685,9 @@ function compactPostEditTruncation(
 function compactContextPacketData(data: ContextPacketData, mode: ContextPacketData["mode"]): McpCompactionResult {
   const limit = createArrayLimiter();
   const compacted = {
-	    mode,
-	    task: data.task,
-	    changeType: data.changeType,
-	    actionability: data.actionability,
-	    tokenBudget: data.tokenBudget,
-    packetVerdict: data.packetVerdict,
-    focusFiles: limit("focusFiles", data.focusFiles, 20, compactFocusEntry),
+    mode, task: data.task, changeType: data.changeType, actionability: data.actionability, tokenBudget: data.tokenBudget,
+    packetVerdict: data.packetVerdict, boundedPlanTargets: limit("boundedPlanTargets", data.boundedPlanTargets, 64),
+    targetRoles: compactTargetRoles(data.targetRoles, limit), focusFiles: limit("focusFiles", data.focusFiles, 20, compactFocusEntry),
     changedFiles: limit("changedFiles", data.changedFiles, 40),
     changedEntries: limit("changedEntries", data.changedEntries, 40, compactChangedEntry),
     changedSymbols: limit("changedSymbols", data.changedSymbols, 40, compactSymbolLike),
@@ -720,20 +717,17 @@ function compactContextPacketData(data: ContextPacketData, mode: ContextPacketDa
     workspaceGuidance: data.workspaceGuidance,
     skillHints: data.skillHints,
     targetPlaybooks: limit("targetPlaybooks", data.targetPlaybooks, 12),
-    runtime: data.runtime,
-    truncation: Object.keys(limit.truncation).length > 0 ? limit.truncation : undefined
+    runtime: data.runtime
   };
-  return { data: compacted, truncation: limit.truncation, compacted: true };
+  const truncation = mergeTruncation(truncationFromValue(data.truncation), limit.truncation);
+  return { data: { ...compacted, truncation: Object.keys(truncation).length > 0 ? truncation : undefined }, truncation, compacted: true };
 }
 
 function compactFocusBriefData(data: FocusBriefData): McpCompactionResult {
   const limit = createArrayLimiter();
   const compacted = {
-	    mode: data.mode,
-	    task: data.task,
-	    actionability: data.actionability,
-	    retrieval: compactRetrieval(data.retrieval),
-    packetVerdict: data.packetVerdict,
+    mode: data.mode, task: data.task, actionability: data.actionability, retrieval: compactRetrieval(data.retrieval),
+    packetVerdict: data.packetVerdict, targetRoles: compactTargetRoles(data.targetRoles, limit),
     diagnostics: limit("diagnostics", data.diagnostics, 20),
     focusFiles: limit("focusFiles", data.focusFiles, 20, compactFileFact),
     workflows: limit("workflows", data.workflows, 12, compactWorkflow),
@@ -770,8 +764,8 @@ function compactChangePlanData(data: ChangePlanData): McpCompactionResult {
     steps: limit("steps", data.steps, 12),
     focus: compactFocus?.data,
     context: compactContext?.data,
-    files: limit("files", data.files, 30),
-    plannedEditTargets: limit("plannedEditTargets", data.plannedEditTargets, 30),
+    files: limit("files", data.files, 30), plannedEditTargets: limit("plannedEditTargets", data.plannedEditTargets, 30),
+    targetRoles: compactTargetRoles(data.targetRoles, limit), reviewOwner: data.reviewOwner,
     tests: limit("tests", data.tests, 30, compactTestRecommendation),
     recipes: limit("recipes", data.recipes, 12),
     quality: data.quality,
@@ -828,6 +822,11 @@ function compactChangePlanData(data: ChangePlanData): McpCompactionResult {
     ...prefixTruncation("context", compactContext?.truncation)
   };
   return { data: compacted, truncation, compacted: true };
+}
+
+function compactTargetRoles(value: unknown, limit: ReturnType<typeof createArrayLimiter>): Record<string, unknown> | undefined {
+  if (!isRecord(value)) return undefined;
+  return { editableTargets: limit("targetRoles.editableTargets", value.editableTargets, 64), readDependencies: limit("targetRoles.readDependencies", value.readDependencies, 64), excludedTargets: limit("targetRoles.excludedTargets", value.excludedTargets, 64), hasReferenceCue: value.hasReferenceCue, unresolvedReferenceCue: value.unresolvedReferenceCue };
 }
 
 function compactSnapshotBlock(value: unknown): unknown {

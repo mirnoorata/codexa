@@ -91,7 +91,9 @@ export async function buildPostEditLifecycleDecision(input: PostEditLifecycleInp
     taskId: input.lifecycleTaskId,
     planRevision: input.planRevision,
     attemptId,
-    attemptStatus: preliminaryDecision.completionAuthority === "complete" ? "resolved" : "unresolved",
+    attemptStatus: preliminaryDecision.completionAuthority === "complete" || preliminaryDecision.completionAuthority === "advisory_inspect"
+      ? "resolved"
+      : "unresolved",
     failureSignals,
     diffFootprint,
     changedFiles: input.changedFiles,

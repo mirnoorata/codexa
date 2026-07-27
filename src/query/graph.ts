@@ -279,8 +279,12 @@ export function ambiguousFocusSymbolTargetCandidateGroups(task: string, symbols:
 }
 
 function naturalSymbolEntryAllowed(task: string, label: string, paths: Set<string>): boolean {
-  if (![...paths].every(isTestPath)) return true;
+  if (![...paths].every((filePath) => isTestPath(filePath) || isDocumentationSymbolPath(filePath))) return true;
   return task.toLowerCase().includes(`\`${label.toLowerCase()}\``);
+}
+
+function isDocumentationSymbolPath(filePath: string): boolean {
+  return /\.(?:adoc|md|mdx|rst)$/iu.test(filePath);
 }
 
 export function hasAmbiguousFocusTarget(task: string, repositoryFiles: string[]): boolean {
@@ -420,7 +424,7 @@ function isExplicitSymbolOccurrence(task: string, label: string, index: number):
 
 function isStrongExplicitSymbolOccurrence(task: string, label: string, index: number): boolean {
   if (index < 0) return false;
-  return /[A-Z_$.:]/u.test(label) || task.toLowerCase().includes(`\`${label.toLowerCase()}\``) || explicitSymbolListOccurrence(task, label, index);
+  return /[_$.:]/u.test(label) || /[A-Z]/u.test(label.slice(1)) || task.toLowerCase().includes(`\`${label.toLowerCase()}\``) || explicitSymbolListOccurrence(task, label, index);
 }
 
 function isAmbiguousExplicitSymbolOccurrence(task: string, label: string, index: number): boolean {
