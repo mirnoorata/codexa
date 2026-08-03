@@ -1,7 +1,8 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { isManagedArtifactSegment, readManagedArtifactText, requireManagedArtifactDirectory } from "./managed-artifacts.js";
 import type { PostEditOutcome } from "./post-edit-outcomes.js";
-import { normalizePath, uniqueSorted } from "./util.js";
+import { mapLimit, normalizePath, uniqueSorted } from "./util.js";
 
 const OUTCOME_DIR = ".codex/cache/codexa-outcomes";
 const LATEST_OUTCOME_POINTER = "latest.json";
@@ -19,17 +20,23 @@ export async function loadOutcomeRankSignals(repoRoot: string, headCommit: strin
   const outcomeDir = path.join(repoRoot, OUTCOME_DIR);
   let entries: Array<{ name: string; mtimeMs: number; size: number }>;
   try {
-    entries = (
-      await Promise.all(
-        (await fs.readdir(outcomeDir, { withFileTypes: true })).flatMap(async (entry) => {
-          if (!entry.isFile() || !entry.name.endsWith(".json") || entry.name === LATEST_OUTCOME_POINTER) {
-            return [];
-          }
-          const stat = await fs.stat(path.join(outcomeDir, entry.name)).catch(() => null);
-          return stat ? [{ name: entry.name, mtimeMs: stat.mtimeMs, size: stat.size }] : [];
-        })
+    const directory = await requireManagedArtifactDirectory(repoRoot, outcomeDir);
+    const candidates = (await fs.readdir(directory.directory, { withFileTypes: true }))
+      .filter(
+        (entry) =>
+          isManagedArtifactSegment(entry.name) &&
+          entry.name.endsWith(".json") &&
+          entry.name !== LATEST_OUTCOME_POINTER
       )
-    ).flat();
+      .map((entry) => entry.name)
+      .sort();
+    const inspected = await mapLimit(candidates, 8, async (name) => {
+      const stat = await fs.lstat(path.join(directory.directory, name)).catch(() => undefined);
+      return stat?.isFile() && !stat.isSymbolicLink() && stat.nlink === 1
+        ? { name, mtimeMs: stat.mtimeMs, size: stat.size }
+        : undefined;
+    });
+    entries = inspected.filter((entry): entry is { name: string; mtimeMs: number; size: number } => Boolean(entry));
   } catch {
     return empty;
   }
@@ -42,7 +49,9 @@ export async function loadOutcomeRankSignals(repoRoot: string, headCommit: strin
     }
     let parsed: Partial<PostEditOutcome>;
     try {
-      parsed = JSON.parse(await fs.readFile(path.join(outcomeDir, entry.name), "utf8")) as Partial<PostEditOutcome>;
+      parsed = JSON.parse(
+        await readManagedArtifactText(repoRoot, [...OUTCOME_DIR.split("/"), entry.name], MAX_OUTCOME_BYTES)
+      ) as Partial<PostEditOutcome>;
     } catch {
       continue;
     }

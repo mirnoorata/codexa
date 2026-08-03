@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, unlink, writeFile } from "node:fs/promises";
+import { link, mkdir, mkdtemp, readFile, symlink, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -8,9 +8,62 @@ import { latestCompletedPostEditReviewMatches } from "../src/post-edit-outcomes.
 import { createPostEditReviewCoverage, postEditReviewTargetDigest } from "../src/post-edit-review-coverage.js";
 import { proveQuery } from "../src/prove.js";
 import { postEditDecision } from "../src/query/post-edit/decision.js";
+import { hasRelevantVerificationEvidence } from "../src/query/post-edit/support.js";
 import { changePlanQuery, postEditReviewQuery } from "../src/queries.js";
+import { CURRENT_VERIFICATION_PROVENANCE } from "../src/types.js";
 
 describe("post-edit review target coverage", () => {
+  it("requires Cypress runner provenance for fallback verification relevance", () => {
+    const cypressPath = "cypress/e2e/login.cy.ts";
+    const base = {
+      verificationLedger: [],
+      ranTests: [],
+      tests: [],
+      workflowChecks: [],
+      dependencyChecks: [],
+      reviewTargets: [cypressPath],
+      editPaths: [cypressPath]
+    };
+    const coverage = (testRunner: "vitest" | "playwright" | "cypress", targeted: boolean) => ({
+      kind: "javascript-tests" as const,
+      command: `${testRunner} run`,
+      source: testRunner,
+      confidence: "authoritative" as const,
+      trustTier: "reported" as const,
+      scope: ".",
+      ...(targeted ? { targetPath: cypressPath } : {}),
+      testRunner,
+      details: []
+    });
+
+    for (const wrongRunner of ["vitest", "playwright"] as const) {
+      expect(
+        hasRelevantVerificationEvidence({
+          ...base,
+          verificationCoverage: [coverage(wrongRunner, false)]
+        })
+      ).toBe(false);
+      expect(
+        hasRelevantVerificationEvidence({
+          ...base,
+          verificationCoverage: [coverage(wrongRunner, true)]
+        })
+      ).toBe(false);
+    }
+    expect(
+      hasRelevantVerificationEvidence({
+        ...base,
+        verificationCoverage: [coverage("cypress", false)]
+      })
+    ).toBe(true);
+    expect(
+      hasRelevantVerificationEvidence({
+        ...base,
+        verificationCoverage: [coverage("cypress", true)]
+      })
+    ).toBe(true);
+  });
+
   it("covers more targets than the per-pass limit and persists the aggregate receipt", async () => {
     const { repo, files } = await createManyFileRepo(11);
     await buildIndex({ repoRoot: repo });
@@ -142,7 +195,42 @@ describe("post-edit review target coverage", () => {
     expect(await latestCompletedPostEditReviewMatches(completionIdentity)).toBe(true);
 
     const completeOutcomePath = path.join(repo, completeData.outcome.path);
+    const authoritativeOutcomeText = await readFile(completeOutcomePath, "utf8");
+    const redirectedOutcome = path.join(repo, ".codex", "cache", "redirected-outcome.json");
+    await writeFile(redirectedOutcome, authoritativeOutcomeText, "utf8");
+    await unlink(completeOutcomePath);
+    await link(redirectedOutcome, completeOutcomePath);
+    expect(await latestCompletedPostEditReviewMatches(completionIdentity)).toBe(false);
+    await unlink(completeOutcomePath);
+    await writeFile(completeOutcomePath, authoritativeOutcomeText, "utf8");
+    if (process.platform !== "win32") {
+      await unlink(completeOutcomePath);
+      await symlink(redirectedOutcome, completeOutcomePath);
+      expect(await latestCompletedPostEditReviewMatches(completionIdentity)).toBe(false);
+      await unlink(completeOutcomePath);
+      await writeFile(completeOutcomePath, authoritativeOutcomeText, "utf8");
+    }
     const legacyOutcome = JSON.parse(await readFile(completeOutcomePath, "utf8"));
+    const validVerificationProvenance = legacyOutcome.verificationProvenance;
+    delete legacyOutcome.verificationProvenance;
+    await writeFile(completeOutcomePath, `${JSON.stringify(legacyOutcome, null, 2)}\n`, "utf8");
+    expect(await latestCompletedPostEditReviewMatches(completionIdentity)).toBe(false);
+
+    legacyOutcome.verificationProvenance = { ...validVerificationProvenance };
+    delete legacyOutcome.verificationProvenance.commandCoverageClassifier;
+    await writeFile(completeOutcomePath, `${JSON.stringify(legacyOutcome, null, 2)}\n`, "utf8");
+    expect(await latestCompletedPostEditReviewMatches(completionIdentity)).toBe(false);
+
+    legacyOutcome.verificationProvenance = {
+      ...CURRENT_VERIFICATION_PROVENANCE,
+      commandCoverageClassifierVersion: "command-coverage-v6",
+      verificationCoverageVersion: "verification-coverage-v4",
+      verificationLedgerVersion: "verification-ledger-v3"
+    };
+    await writeFile(completeOutcomePath, `${JSON.stringify(legacyOutcome, null, 2)}\n`, "utf8");
+    expect(await latestCompletedPostEditReviewMatches(completionIdentity)).toBe(false);
+    legacyOutcome.verificationProvenance = validVerificationProvenance;
+
     const validCompleteCoverage = legacyOutcome.reviewCoverage;
     delete legacyOutcome.reviewCoverage;
     await writeFile(completeOutcomePath, `${JSON.stringify(legacyOutcome, null, 2)}\n`, "utf8");

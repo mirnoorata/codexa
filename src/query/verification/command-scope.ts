@@ -1,6 +1,15 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
-import type { CodexaIndex, Confidence, VerificationCommandEnvelope, VerificationCommandPlanEntry, VerificationCoverage, VerificationCoverageKind, VerificationWaiver } from "../../types.js";
+import type {
+  CodexaIndex,
+  Confidence,
+  VerificationCommandEnvelope,
+  VerificationCommandPlanEntry,
+  VerificationCoverage,
+  VerificationCoverageKind,
+  VerificationTestRunner,
+  VerificationWaiver
+} from "../../types.js";
 import { uniqueSorted } from "../../util.js";
 import { isEnvironmentAssignment, shellWords, splitShellSequence, stripLeadingEnvironment, stripQuotes, type ShellControlOperator } from "./shell.js";
 import { strongerVerificationTrustTier, verificationTrustTierOrNone } from "./trust.js";
@@ -29,6 +38,7 @@ export interface CoverageAddInput {
   confidence?: Confidence;
   scope?: string;
   targetPath?: string;
+  testRunner?: VerificationTestRunner;
   details?: string[];
   exitCode?: number;
   durationMs?: number;
@@ -425,7 +435,17 @@ export function normalizePackageRoot(value: string): string {
 export function dedupeCoverage(coverage: VerificationCoverage[]): VerificationCoverage[] {
   const byKey = new Map<string, VerificationCoverage>();
   for (const entry of coverage) {
-    const key = [entry.kind, entry.command, entry.source, entry.scope ?? "", entry.targetPath ?? "", entry.exitCode ?? "", entry.durationMs ?? "", entry.outputSummary ?? ""].join("\0");
+    const key = [
+      entry.kind,
+      entry.command,
+      entry.source,
+      entry.scope ?? "",
+      entry.targetPath ?? "",
+      entry.testRunner ?? "",
+      entry.exitCode ?? "",
+      entry.durationMs ?? "",
+      entry.outputSummary ?? ""
+    ].join("\0");
     const existing = byKey.get(key);
     if (existing) {
       existing.details = uniqueSorted([...existing.details, ...entry.details]);

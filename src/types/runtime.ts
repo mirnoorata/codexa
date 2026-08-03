@@ -54,6 +54,7 @@ export interface ParseResult {
 
 export interface IndexOptions {
   repoRoot: string;
+  /** When provided, must resolve to the repository-managed `.codex/codebase` directory. */
   outputDir?: string;
   writeArtifacts?: boolean;
 }

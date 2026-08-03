@@ -60,7 +60,7 @@ describe("Python unittest discovery and node test glob verification credit", () 
       expect(result.coverage.filter((entry) => entry.kind === "python-tests"), command).toMatchObject([
         { targetPath: "tests/test_service.py", scope: "tests" }
       ]);
-      expect(result.commandEnvelopes[0].classifierVersion, command).toBe("command-coverage-v6");
+      expect(result.commandEnvelopes[0].classifierVersion, command).toBe("command-coverage-v7");
     }
   });
 

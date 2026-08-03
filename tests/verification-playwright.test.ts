@@ -94,9 +94,9 @@ describe("Playwright verification credit", () => {
       expect(result.coverage.some((entry) => entry.kind === "javascript-tests" && entry.targetPath === target), command).toBe(true);
       expect(result.coverage.some((entry) => entry.kind === "targeted-test" && entry.targetPath === target), command).toBe(true);
       expect(result.commandEnvelopes, command).toHaveLength(1);
-      expect(result.commandEnvelopes[0].classifierVersion, command).toBe("command-coverage-v6");
+      expect(result.commandEnvelopes[0].classifierVersion, command).toBe("command-coverage-v7");
     }
-    expect(CURRENT_VERIFICATION_PROVENANCE.commandCoverageClassifierVersion).toBe("command-coverage-v6");
+    expect(CURRENT_VERIFICATION_PROVENANCE.commandCoverageClassifierVersion).toBe("command-coverage-v7");
   });
 
   it("keeps bare Cypress runs unscoped and credits only an explicit indexed spec", () => {
@@ -123,7 +123,41 @@ describe("Playwright verification credit", () => {
       });
       expect(result.coverage.some((entry) => entry.kind === "javascript-tests" && entry.targetPath === "cypress/e2e/login.cy.ts"), command).toBe(true);
       expect(result.coverage.some((entry) => entry.kind === "targeted-test" && entry.targetPath === "cypress/e2e/login.cy.ts"), command).toBe(true);
+      expect(result.coverage.filter((entry) => entry.targetPath === "cypress/e2e/login.cy.ts").every((entry) => entry.testRunner === "cypress"), command).toBe(true);
     }
+  });
+
+  it("requires Cypress runner provenance before crediting a Cypress spec", () => {
+    for (const command of ["vitest run", "jest", "npm test"]) {
+      const result = classify({ command, cwd: repo, exitCode: 0 });
+      expect(result.ledger.find((entry) => entry.target === "tests/unit.test.ts"), command).toMatchObject({
+        status: "covered",
+        trustTier: "reported"
+      });
+      expect(result.ledger.find((entry) => entry.target === "cypress/e2e/login.cy.ts"), command).toMatchObject({
+        status: "missing",
+        trustTier: "none"
+      });
+      expect(result.coverage.some((entry) => entry.kind === "javascript-tests" && !entry.targetPath), command).toBe(true);
+    }
+
+    const targetedVitest = classify({ command: "vitest run cypress/e2e/login.cy.ts", cwd: repo, exitCode: 0 });
+    expect(targetedVitest.ledger.find((entry) => entry.target === "cypress/e2e/login.cy.ts")).toMatchObject({ status: "missing", trustTier: "none" });
+    expect(targetedVitest.coverage.some((entry) => entry.kind === "javascript-tests" || entry.kind === "targeted-test")).toBe(false);
+    expect(targetedVitest.coverage).toContainEqual(expect.objectContaining({ kind: "unknown" }));
+
+    const reportedVitest = classify({
+      command: "vitest run",
+      cwd: repo,
+      packageManager: "vitest",
+      packageRoot: ".",
+      scriptName: "vitest",
+      args: ["run"],
+      exitCode: 0
+    });
+    expect(reportedVitest.ledger.find((entry) => entry.target === "tests/unit.test.ts")).toMatchObject({ status: "covered", trustTier: "reported" });
+    expect(reportedVitest.ledger.find((entry) => entry.target === "cypress/e2e/login.cy.ts")).toMatchObject({ status: "missing", trustTier: "none" });
+    expect(reportedVitest.coverage).toContainEqual(expect.objectContaining({ kind: "javascript-tests", testRunner: "vitest" }));
   });
 
   it("keeps unscoped, non-running, zero-test-tolerant, and unknown Playwright invocations uncredited", () => {
@@ -253,7 +287,7 @@ describe("Playwright verification credit", () => {
         packageManager: "vitest",
         scriptName: "vitest",
         args: ["run", "--project", "tests/unit.test.ts", "tests/e2e.spec.ts"],
-        classifierVersion: "command-coverage-v6"
+        classifierVersion: "command-coverage-v7"
       }
     ]);
 
@@ -263,7 +297,7 @@ describe("Playwright verification credit", () => {
     ] as const) {
       const launched = classify({ command, cwd: repo, exitCode: 0 });
       expect(launched.ledger.find((entry) => entry.target === "tests/unit.test.ts"), command).toMatchObject({ status: "covered", trustTier: "reported" });
-      expect(launched.commandEnvelopes, command).toMatchObject([{ packageManager: runner, scriptName: runner, classifierVersion: "command-coverage-v6" }]);
+      expect(launched.commandEnvelopes, command).toMatchObject([{ packageManager: runner, scriptName: runner, classifierVersion: "command-coverage-v7" }]);
     }
   });
 
@@ -287,7 +321,7 @@ describe("Playwright verification credit", () => {
         args: ["test", "tests/e2e.spec.ts"],
         source: "reported",
         scopeStatus: "repo",
-        classifierVersion: "command-coverage-v6"
+        classifierVersion: "command-coverage-v7"
       }
     ]);
     expect(result.ledger.find((entry) => entry.target === "tests/e2e.spec.ts")).toMatchObject({ status: "covered", trustTier: "reported" });

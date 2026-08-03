@@ -1,5 +1,5 @@
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
-import { mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { link, mkdtemp, mkdir, readFile, readdir, rm, stat, symlink, writeFile } from "node:fs/promises";
 import http from "node:http";
 import os from "node:os";
 import path from "node:path";
@@ -454,15 +454,46 @@ it("discovers module and playbook resources after auto-refresh without restartin
     });
     const client = new Client({ name: "codexa-test", version: "0.1.0" });
     await client.connect(transport);
-    await client.callTool({ name: "repo_map", arguments: { limit: 3 } });
-    const resources = await client.listResources();
-    const moduleUri = resources.resources.map((resource) => resource.uri).find((uri) => uri.startsWith("codexa://repo/codebase/modules/"));
-    const playbookUri = resources.resources.map((resource) => resource.uri).find((uri) => uri.startsWith("codexa://repo/codebase/playbooks/") && !uri.endsWith("/README.md"));
-    expect(moduleUri).toBeTruthy();
-    expect(playbookUri).toBeTruthy();
-    expect((await client.readResource({ uri: moduleUri! })).contents?.[0]?.text).toContain("# Module:");
-    expect((await client.readResource({ uri: playbookUri! })).contents?.[0]?.text).toContain("Playbook");
-    await client.close();
+    const outside = await mkdtemp(path.join(os.tmpdir(), "codexa-mcp-dynamic-resources-target-"));
+    const sentinel = path.join(outside, "sentinel.md");
+    try {
+      await client.callTool({ name: "repo_map", arguments: { limit: 3 } });
+      await mkdir(path.join(repo, ".codex/codebase/modules/manual.md"), { recursive: true });
+      await mkdir(path.join(repo, ".codex/codebase/playbooks/manual.md"), { recursive: true });
+      await writeFile(sentinel, "external MCP sentinel\n", "utf8");
+      await link(sentinel, path.join(repo, ".codex/codebase/modules/hardlinked.md"));
+      if (process.platform !== "win32") {
+        await symlink(sentinel, path.join(repo, ".codex/codebase/modules/redirected.md"));
+        await writeFile(path.join(repo, ".codex/codebase/modules/stream.md:secret.md"), "hidden stream-shaped name\n", "utf8");
+      }
+      const resources = await client.listResources();
+      const resourceUris = resources.resources.map((resource) => resource.uri);
+      expect(resourceUris).not.toContain("codexa://repo/codebase/modules/manual.md");
+      expect(resourceUris).not.toContain("codexa://repo/codebase/playbooks/manual.md");
+      expect(resourceUris).not.toContain("codexa://repo/codebase/modules/redirected.md");
+      expect(resourceUris).not.toContain("codexa://repo/codebase/modules/hardlinked.md");
+      expect(resourceUris).not.toContain("codexa://repo/codebase/modules/stream.md%3Asecret.md");
+      const moduleUri = resourceUris.find((uri) => uri.startsWith("codexa://repo/codebase/modules/"));
+      const playbookUri = resourceUris.find((uri) => uri.startsWith("codexa://repo/codebase/playbooks/") && !uri.endsWith("/README.md"));
+      expect(moduleUri).toBeTruthy();
+      expect(playbookUri).toBeTruthy();
+      expect((await client.readResource({ uri: moduleUri! })).contents?.[0]?.text).toContain("# Module:");
+      expect((await client.readResource({ uri: playbookUri! })).contents?.[0]?.text).toContain("Playbook");
+      if (process.platform !== "win32") {
+        await expect(client.readResource({ uri: "codexa://repo/codebase/modules/redirected.md" })).rejects.toThrow();
+        await expect(client.readResource({ uri: "codexa://repo/codebase/modules/stream.md%3Asecret.md" })).rejects.toThrow();
+      }
+      await expect(client.readResource({ uri: "codexa://repo/codebase/modules/hardlinked.md" })).rejects.toThrow();
+      expect(await readFile(sentinel, "utf8")).toBe("external MCP sentinel\n");
+      const moduleIndex = await client.readResource({ uri: "codexa://repo/codebase/modules" });
+      expect(moduleIndex.contents?.[0]?.text).not.toContain("manual.md");
+      expect(moduleIndex.contents?.[0]?.text).not.toContain("redirected.md");
+      expect(moduleIndex.contents?.[0]?.text).not.toContain("hardlinked.md");
+      expect(moduleIndex.contents?.[0]?.text).not.toContain("stream.md:secret.md");
+    } finally {
+      await client.close();
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 
 it("returns a bounded missing-index packet instead of a tool error when auto-refresh is disabled", async () => {

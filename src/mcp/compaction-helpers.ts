@@ -367,6 +367,7 @@ export function compactVerificationCoverage(value: unknown): unknown {
     trustTier: verificationTrustTierOrNone(record.trustTier),
     scope: record.scope,
     targetPath: record.targetPath,
+    testRunner: record.testRunner,
     details: details.value,
     exitCode: record.exitCode,
     durationMs: record.durationMs,

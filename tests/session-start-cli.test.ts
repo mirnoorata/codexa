@@ -310,14 +310,14 @@ describe("Codexa SessionStart CLI receipt", () => {
       [
         'import { promises as fs } from "node:fs";',
         'import path from "node:path";',
-        "const originalReadFile = fs.readFile.bind(fs);",
+        "const originalOpen = fs.open.bind(fs);",
         "let delayed = false;",
-        "fs.readFile = async (file, ...args) => {",
+        "fs.open = async (file, ...args) => {",
         "  if (!delayed && path.resolve(String(file)) === path.resolve(process.env.CODEXA_DELAYED_INDEX)) {",
         "    delayed = true;",
         "    await new Promise((resolve) => setTimeout(resolve, 1500));",
         "  }",
-        "  return originalReadFile(file, ...args);",
+        "  return originalOpen(file, ...args);",
         "};",
         ""
       ].join("\n"),

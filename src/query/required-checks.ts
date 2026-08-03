@@ -2,6 +2,7 @@ import { isTestPath } from "../language.js";
 import type { PostEditCheckResult } from "../post-edit-outcomes.js";
 import type { GraphEdgeFact, TaskSnapshotRequiredCheck, TestRecommendation, VerificationCoverage, VerificationTrustTier, WorkflowTraceFact } from "../types.js";
 import { strongestVerificationTrustTier } from "./verification/trust.js";
+import { verificationTestRunnerCoversPath } from "./verification/test-runner.js";
 
 export function evaluateRequiredChecks(
   checks: TaskSnapshotRequiredCheck[],
@@ -51,20 +52,26 @@ function dependencyCheckVerificationEvidence(
     verificationCoverage: VerificationCoverage[];
   }
 ): { covered: boolean; trustTier: VerificationTrustTier } {
-  const checkPaths = check.paths.map(normalizePathLike);
   const testPaths = check.paths.filter(isTestPath);
   const directTestEvidence = testPaths.some((testPath) =>
     input.ranTests.some((ranTest) => normalizePathLike(ranTest) === normalizePathLike(testPath))
   );
   const testCoverage = input.verificationCoverage.filter((coverage) =>
     testPaths.some(
-      (testPath) => coverage.kind === (testPath.endsWith(".py") ? "python-tests" : "javascript-tests") && coverageCoversPath(coverage, testPath)
+      (testPath) =>
+        coverage.kind === (testPath.endsWith(".py") ? "python-tests" : "javascript-tests") &&
+        verificationTestRunnerCoversPath(coverage, testPath) &&
+        coverageCoversPath(coverage, testPath)
     )
   );
   const sourcePaths = check.paths.filter((filePath) => !isTestPath(filePath));
   const sourceCoverage = input.verificationCoverage.filter((coverage) => {
     if (coverage.targetPath) {
-      return checkPaths.includes(normalizePathLike(coverage.targetPath)) && coverageKindCompatibleWithSourcePath(coverage.kind, coverage.targetPath);
+      return sourcePaths.some(
+        (filePath) =>
+          normalizePathLike(filePath) === normalizePathLike(coverage.targetPath!) &&
+          coverageKindCompatibleWithSourcePath(coverage.kind, filePath)
+      );
     }
     return sourcePaths.some((filePath) => coverageKindCompatibleWithSourcePath(coverage.kind, filePath) && coverageCoversPath(coverage, filePath));
   });

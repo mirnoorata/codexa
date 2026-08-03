@@ -1,6 +1,8 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { isGeneratedPath, isTestPath, languageForPath } from "../language.js";
+import { isGitTrackedAsync } from "../init-portability.js";
+import { ensureManagedArtifactDirectory, readManagedArtifactText, writeManagedArtifactText } from "../managed-artifacts.js";
 import { parseFile } from "../parser.js";
 import { MAX_INDEXED_SOURCE_BYTES, type RepoSkippedFile, type RepoSourceFile } from "../repo-files.js";
 import type { ParseResult } from "../types.js";
@@ -8,6 +10,9 @@ import { mapLimit, stableId } from "../util.js";
 
 const PARSE_CACHE_VERSION = "parse-cache-v1-shallow-rust-go-java-20260606";
 const PARSE_CACHE_PATH = ".codex/cache/codexa-parse-cache.json";
+// Match the index reader's bounded headroom so large monorepos retain their
+// incremental parse benefit without accepting unbounded local cache input.
+const MAX_PARSE_CACHE_BYTES = 512 * 1024 * 1024;
 const PYTHON_SEMANTIC_SOURCE_TOTAL_BYTES = 16 * 1024 * 1024;
 
 interface ParseCache {
@@ -72,11 +77,9 @@ export async function parseRepoSources(input: {
 }
 
 export async function writeParseCache(repoRoot: string, cache: ParseCache): Promise<void> {
-  const target = path.join(repoRoot, PARSE_CACHE_PATH);
-  const temp = `${target}.tmp-${process.pid}-${Date.now()}`;
-  await fs.mkdir(path.dirname(target), { recursive: true });
-  await fs.writeFile(temp, `${JSON.stringify(cache)}\n`, "utf8");
-  await fs.rename(temp, target);
+  if (!(await canUseParseCache(repoRoot))) return;
+  const cacheDirectory = await ensureManagedArtifactDirectory(repoRoot, path.join(repoRoot, ".codex", "cache"));
+  await writeManagedArtifactText(cacheDirectory, "codexa-parse-cache.json", `${JSON.stringify(cache)}\n`);
 }
 
 export async function loadPythonSemanticSourceFiles(files: RepoSourceFile[]): Promise<Array<{ path: string; sourceText: string; contentHash: string }>> {
@@ -112,7 +115,10 @@ export function formatBytes(bytes: number): string {
 
 async function loadParseCache(repoRoot: string): Promise<ParseCache> {
   try {
-    const parsed = JSON.parse(await fs.readFile(path.join(repoRoot, PARSE_CACHE_PATH), "utf8")) as ParseCache;
+    if (!(await canUseParseCache(repoRoot))) return emptyParseCache();
+    const parsed = JSON.parse(
+      await readManagedArtifactText(repoRoot, PARSE_CACHE_PATH.split("/"), MAX_PARSE_CACHE_BYTES)
+    ) as ParseCache;
     if (parsed.version === PARSE_CACHE_VERSION && parsed.entries && typeof parsed.entries === "object") {
       return {
         version: parsed.version,
@@ -124,6 +130,23 @@ async function loadParseCache(repoRoot: string): Promise<ParseCache> {
   } catch {
     // Missing or corrupt caches are safe to ignore; Codexa can always rebuild from source.
   }
+  return emptyParseCache();
+}
+
+async function canUseParseCache(repoRoot: string): Promise<boolean> {
+  try {
+    // Parse results are executable-quality derived facts. A repository author
+    // can force-add ignored files, so only Codexa's untracked local cache is a
+    // trusted optimization; tracked cache data must never become index input.
+    return !(await isGitTrackedAsync(repoRoot, PARSE_CACHE_PATH));
+  } catch {
+    // Cache provenance is optional. If Git cannot prove the path is untracked,
+    // fail closed on reuse/write and perform the authoritative source parse.
+    return false;
+  }
+}
+
+function emptyParseCache(): ParseCache {
   return { version: PARSE_CACHE_VERSION, entries: {} };
 }
 

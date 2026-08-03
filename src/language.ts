@@ -114,6 +114,11 @@ export function isTestPath(filePath: string): boolean {
   );
 }
 
+export function isCypressTestPath(filePath: string): boolean {
+  const normalized = filePath.replace(/\\/gu, "/").toLowerCase();
+  return /(^|\/)[^/]+\.cy\.[cm]?[jt]sx?$/u.test(normalized);
+}
+
 export function moduleNameForPath(filePath: string): string {
   const parts = filePath.split("/");
   if (parts.length <= 1) {
