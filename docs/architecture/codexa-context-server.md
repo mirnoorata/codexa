@@ -315,7 +315,7 @@ does not claim first-party symbols, imports, calls, or test relationships for
 those languages. Richer relationships require an imported static-analysis or
 symbol report.
 
-Unchanged files are reused from a content-hash parse cache at `.codex/cache/codexa-parse-cache.json`. The cache stores pre-resolution parse results and rebases snapshot metadata on reuse. The resolver still runs over the full current index, so changed files can relink against cached unchanged files. Cache misses, corrupt caches, parser-version changes, and missing entries fall back to normal parsing.
+Unchanged files are reused from a content-hash parse cache at `.codex/cache/codexa-parse-cache.json`. The cache stores pre-resolution parse results and rebases snapshot metadata on reuse. The resolver still runs over the full current index, so changed files can relink against cached unchanged files. Cache misses, corrupt caches, parser-version changes, missing entries, Git-inspection failures, and repository-tracked cache files fall back to normal parsing. Codexa does not overwrite a tracked parse cache: only its untracked local derived state is eligible for reuse or publication.
 
 The resolver reads TypeScript `tsconfig.json` path aliases and project-reference
 metadata from indexed files. Import edges preserve both the exported/imported

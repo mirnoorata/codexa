@@ -1,36 +1,63 @@
+import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
+import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { writeArtifacts } from "../artifacts.js";
+import {
+  ensureManagedArtifactDirectory,
+  requireManagedArtifactDirectory,
+  writeManagedArtifact,
+  writeManagedArtifactText,
+  type ManagedArtifactDirectory
+} from "../managed-artifacts.js";
 import type { CodexaFact, CodexaIndex } from "../types.js";
 
 const FACTS_NDJSON_WRITE_BUFFER_BYTES = 1024 * 1024;
+const CODEBASE_RELATIVE_DIR = path.join(".codex", "codebase");
 
 export async function persistIndex(index: CodexaIndex, outputDir: string): Promise<void> {
-  await fs.mkdir(path.join(outputDir, "modules"), { recursive: true });
-  await fs.writeFile(path.join(outputDir, "index.json"), `${JSON.stringify(index)}\n`, "utf8");
-  await fs.writeFile(path.join(outputDir, "freshness.json"), `${JSON.stringify(index.freshness, null, 2)}\n`, "utf8");
-  await writeFactsNdjson(path.join(outputDir, "facts.ndjson"), allFacts(index));
+  const output = await ensureManagedArtifactDirectory(index.snapshot.repoRoot, outputDir);
+  await ensureManagedArtifactDirectory(index.snapshot.repoRoot, path.join(output.directory, "modules"));
+  await writeManagedArtifactText(output, "index.json", `${JSON.stringify(index)}\n`);
+  await writeManagedArtifactText(output, "freshness.json", `${JSON.stringify(index.freshness, null, 2)}\n`);
+  await writeFactsNdjson(output, allFacts(index));
 }
 
 export async function writeIndexBundle(index: CodexaIndex, outputDir: string): Promise<void> {
-  const parentDir = path.dirname(outputDir);
-  const tempDir = path.join(parentDir, `.codebase.tmp-${process.pid}-${Date.now()}`);
-  const backupDir = path.join(parentDir, `.codebase.backup-${process.pid}-${Date.now()}`);
-  await fs.mkdir(parentDir, { recursive: true });
-  await fs.rm(tempDir, { recursive: true, force: true });
-  await persistIndex(index, tempDir);
-  await writeArtifacts(index, tempDir);
+  const repoRoot = path.resolve(index.snapshot.repoRoot);
+  const expectedOutputDir = path.join(repoRoot, CODEBASE_RELATIVE_DIR);
+  if (path.resolve(outputDir) !== expectedOutputDir) {
+    throw new Error(`Codexa index output must use the managed repository path: ${expectedOutputDir}`);
+  }
+  const parent = await ensureManagedArtifactDirectory(repoRoot, path.dirname(expectedOutputDir));
+  const existingOutput = await fs.lstat(path.join(parent.directory, "codebase")).catch((error: unknown) => {
+    if (errorCode(error) === "ENOENT") return undefined;
+    throw error;
+  });
+  if (existingOutput) {
+    await requireManagedArtifactDirectory(repoRoot, expectedOutputDir);
+  }
+  const tempDir = await fs.mkdtemp(path.join(parent.directory, ".codebase.tmp-"));
+  await requireManagedArtifactDirectory(repoRoot, tempDir);
+  const backupDir = path.join(parent.directory, `.codebase.backup-${process.pid}-${randomUUID()}`);
   try {
-    await fs.rm(backupDir, { recursive: true, force: true });
-    if (await pathExists(outputDir)) {
-      await fs.rename(outputDir, backupDir);
+    await persistIndex(index, tempDir);
+    await writeArtifacts(index, tempDir);
+    if (await pathExists(expectedOutputDir)) {
+      await requireManagedArtifactDirectory(repoRoot, expectedOutputDir);
+      await fs.rename(expectedOutputDir, backupDir);
+      await requireManagedArtifactDirectory(repoRoot, backupDir);
     }
-    await fs.rename(tempDir, outputDir);
+    await requireManagedArtifactDirectory(repoRoot, tempDir);
+    await fs.rename(tempDir, expectedOutputDir);
+    await requireManagedArtifactDirectory(repoRoot, expectedOutputDir);
     await fs.rm(backupDir, { recursive: true, force: true });
   } catch (error) {
     await fs.rm(tempDir, { recursive: true, force: true }).catch(() => undefined);
-    if (!(await pathExists(outputDir)) && (await pathExists(backupDir))) {
-      await fs.rename(backupDir, outputDir).catch(() => undefined);
+    if (!(await pathExists(expectedOutputDir)) && (await pathExists(backupDir))) {
+      await requireManagedArtifactDirectory(repoRoot, backupDir)
+        .then(() => fs.rename(backupDir, expectedOutputDir))
+        .catch(() => undefined);
     }
     throw error;
   }
@@ -52,31 +79,44 @@ function allFacts(index: CodexaIndex): CodexaFact[] {
   ];
 }
 
-async function writeFactsNdjson(filePath: string, facts: CodexaFact[]): Promise<void> {
-  const handle = await fs.open(filePath, "w");
-  try {
+async function writeFactsNdjson(output: ManagedArtifactDirectory, facts: CodexaFact[]): Promise<void> {
+  await writeManagedArtifact(output, "facts.ndjson", async (handle) => {
     let buffer = "";
     for (const fact of facts) {
       const line = `${JSON.stringify(fact)}\n`;
       if (buffer.length + line.length > FACTS_NDJSON_WRITE_BUFFER_BYTES && buffer.length > 0) {
-        await handle.write(buffer);
+        await writeAll(handle, buffer);
         buffer = "";
       }
       buffer += line;
     }
     if (buffer.length > 0) {
-      await handle.write(buffer);
+      await writeAll(handle, buffer);
     }
-  } finally {
-    await handle.close();
+  });
+}
+
+async function writeAll(handle: FileHandle, contents: string): Promise<void> {
+  const bytes = Buffer.from(contents, "utf8");
+  let offset = 0;
+  while (offset < bytes.length) {
+    const { bytesWritten } = await handle.write(bytes, offset, bytes.length - offset);
+    if (bytesWritten < 1) throw new Error("Codexa managed fact publication made no write progress");
+    offset += bytesWritten;
   }
 }
 
 async function pathExists(candidate: string): Promise<boolean> {
   try {
-    await fs.stat(candidate);
+    await fs.lstat(candidate);
     return true;
   } catch {
     return false;
   }
+}
+
+function errorCode(error: unknown): string {
+  return error && typeof error === "object" && "code" in error
+    ? String((error as { code?: unknown }).code)
+    : "";
 }

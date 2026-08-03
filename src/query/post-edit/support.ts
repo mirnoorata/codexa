@@ -15,6 +15,7 @@ import {
 } from "../../post-edit-review-coverage.js";
 import { stableId, uniqueSorted } from "../../util.js";
 import { autoVerifySnapshotDigest } from "./runner-review.js";
+import { verificationTestRunnerCoversPath } from "../verification/test-runner.js";
 
 export function buildAutoVerifyCandidates(input: { snapshot: TaskSnapshot | undefined; testsNotRun: TestRecommendation[]; reviewTargets: string[]; repoRoot: string }): AutoVerifyCandidate[] {
   if (!input.snapshot) return [];
@@ -113,9 +114,23 @@ function autoVerifyCandidateSource(provenance: TestRecommendationProvenance | un
 function coverageIsRelevantProof(coverage: VerificationCoverage, changedTargets: string[], recommendedTests: Set<string>): boolean {
   if (["unknown", "audit", "privacy", "lint"].includes(coverage.kind)) return false;
   const target = coverage.targetPath ? normalizeReviewPath(coverage.targetPath) : undefined;
-  if (target) return changedTargets.includes(target) || recommendedTests.has(target) || changedTargets.some((changed) => pathIntersects(target, changed));
+  if (target) {
+    if (!verificationTestRunnerCoversPath(coverage, target)) return false;
+    return (
+      (recommendedTests.has(target) && verificationTestRunnerCoversPath(coverage, target)) ||
+      changedTargets.some(
+        (changed) =>
+          verificationTestRunnerCoversPath(coverage, changed) &&
+          pathIntersects(target, changed)
+      )
+    );
+  }
   if (coverage.kind === "javascript-tests" || coverage.kind === "python-tests" || coverage.kind === "targeted-test") {
-    return recommendedTests.size === 0 && changedTargets.some((changed) => scopeCoversReviewPath(coverage.scope ?? ".", changed));
+    return recommendedTests.size === 0 && changedTargets.some(
+      (changed) =>
+        verificationTestRunnerCoversPath(coverage, changed) &&
+        scopeCoversReviewPath(coverage.scope ?? ".", changed)
+    );
   }
   if (coverage.kind === "build" || coverage.kind === "typescript-syntax") {
     return changedTargets.some((changed) => sourcePathFitsCoverageKind(changed, coverage.kind) && scopeCoversReviewPath(coverage.scope ?? ".", changed));

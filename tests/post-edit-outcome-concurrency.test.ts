@@ -1,14 +1,17 @@
+import { createHash } from "node:crypto";
 import { mkdir, mkdtemp, readFile, readdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   recordCodexaHookEvent,
+  postEditHookReviewSignature,
   savePostEditHookReviewState,
   savePostEditOutcome,
   type PostEditOutcomeInput
 } from "../src/post-edit-outcomes.js";
 import { createPostEditReviewCoverage } from "../src/post-edit-review-coverage.js";
+import { CURRENT_VERIFICATION_PROVENANCE } from "../src/types.js";
 
 afterEach(() => {
   vi.useRealTimers();
@@ -16,6 +19,33 @@ afterEach(() => {
 });
 
 describe("post-edit persistence concurrency", () => {
+  it("invalidates duplicate-review signatures when verification provenance changes", () => {
+    const freshness = outcomeInput("/path/to/project", []).freshness;
+    const legacyPayload = {
+      taskId: "outcome-collision",
+      autoVerifyMode: "autoverify:off",
+      snapshotId: freshness.snapshotId,
+      indexedAt: freshness.indexedAt,
+      headCommit: freshness.headCommit,
+      dirtyFiles: freshness.dirtyFiles,
+      dirtyFileHashes: freshness.dirtyFileHashes
+    };
+    const currentPayload = {
+      taskId: "outcome-collision",
+      autoVerifyMode: "autoverify:off",
+      verificationProvenance: CURRENT_VERIFICATION_PROVENANCE,
+      snapshotId: freshness.snapshotId,
+      indexedAt: freshness.indexedAt,
+      headCommit: freshness.headCommit,
+      dirtyFiles: freshness.dirtyFiles,
+      dirtyFileHashes: freshness.dirtyFileHashes
+    };
+    const digest = (value: unknown) => createHash("sha1").update(JSON.stringify(value)).digest("hex");
+
+    expect(postEditHookReviewSignature({ freshness, taskId: "outcome-collision" })).toBe(digest(currentPayload));
+    expect(digest(currentPayload)).not.toBe(digest(legacyPayload));
+  });
+
   it("serializes hook review pointer writers and uses collision-safe atomic temp files", async () => {
     const repo = await managedRepo("codexa-hook-review-concurrency-");
     vi.spyOn(Date, "now").mockReturnValue(1_700_000_000_000);

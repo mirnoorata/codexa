@@ -1,14 +1,19 @@
 import { ResourceTemplate, type McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { isManagedArtifactSegment, readManagedArtifactText, requireManagedArtifactDirectory } from "../managed-artifacts.js";
 import { statusQuery } from "../queries.js";
 import { loadSkillHints, renderSkillHintsResource } from "../skill-hints.js";
+import { mapLimit } from "../util.js";
 import {
   readMcpResultArtifact,
   requireMcpResultArtifactId,
   requireMcpResultArtifactRepoLocator,
   type McpResultArtifactRouter
 } from "./result-artifacts.js";
+
+const MCP_ARTIFACT_LIST_LIMIT = 80;
+const MCP_ARTIFACT_LIST_CANDIDATE_LIMIT = 512;
 
 export interface McpDetailedResultReadEvent {
   repoRoot?: string;
@@ -76,14 +81,15 @@ export async function registerArtifactResources(
     },
     async () => {
       const repoRoot = await resolveReadyRepoRoot();
-      const modulesDir = path.join(repoRoot, ".codex/codebase/modules");
       let text = "# Codexa Modules\n\n";
       try {
-        const allNames = (await fs.readdir(modulesDir)).filter((name) => name.endsWith(".md")).sort();
-        const names = allNames.slice(0, 80);
+        const modules = await requireManagedArtifactDirectory(repoRoot, path.join(repoRoot, ".codex", "codebase", "modules"));
+        const listed = await regularSingleLinkMarkdownNames(modules.directory);
+        const names = listed.names.slice(0, MCP_ARTIFACT_LIST_LIMIT);
         text += names.map((name) => `- codexa://repo/codebase/modules/${encodeURIComponent(name)}`).join("\n") || "- none";
-        if (allNames.length > names.length) {
-          text += `\n- ... ${allNames.length - names.length} more modules omitted from this bounded index`;
+        const omitted = listed.names.length - names.length + listed.omittedCandidates;
+        if (omitted > 0) {
+          text += `\n- ... ${omitted} more module candidates omitted from this bounded index`;
         }
       } catch {
         text += "- modules unavailable; run `codexa index <repo>` first";
@@ -217,7 +223,7 @@ function emitDetailedResultRead(callback: ((event: McpDetailedResultReadEvent) =
 
 async function readArtifact(repoRoot: string, relativePath: string): Promise<string> {
   try {
-    return await fs.readFile(path.join(repoRoot, relativePath), "utf8");
+    return await readManagedArtifactText(repoRoot, relativePath.split("/"));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Codexa artifact missing: ${relativePath}. Run: codexa index ${repoRoot}. ${message}`);
@@ -238,8 +244,9 @@ async function listMarkdownArtifacts(
   include: (name: string) => boolean = () => true
 ) {
   try {
-    const names = (await fs.readdir(path.join(repoRoot, relativeDir))).filter((name) => name.endsWith(".md") && include(name)).sort().slice(0, 80);
-    return names.map((name) => ({
+    const directory = await requireManagedArtifactDirectory(repoRoot, path.join(repoRoot, ...relativeDir.split("/")));
+    const listed = await regularSingleLinkMarkdownNames(directory.directory, include);
+    return listed.names.slice(0, MCP_ARTIFACT_LIST_LIMIT).map((name) => ({
       name: `${titlePrefix} ${name}`,
       uri: `${uriPrefix}/${encodeURIComponent(name)}`,
       title: `${titlePrefix} ${name}`,
@@ -251,9 +258,36 @@ async function listMarkdownArtifacts(
   }
 }
 
+async function regularSingleLinkMarkdownNames(
+  directory: string,
+  include: (name: string) => boolean = () => true
+): Promise<{ names: string[]; omittedCandidates: number }> {
+  const entries = await fs.readdir(directory, { withFileTypes: true });
+  const candidates = entries
+    .filter(
+      (entry) =>
+        isManagedArtifactSegment(entry.name) &&
+        entry.name.endsWith(".md") &&
+        include(entry.name)
+    )
+    .map((entry) => entry.name)
+    .sort();
+  const inspected = candidates.slice(0, MCP_ARTIFACT_LIST_CANDIDATE_LIMIT);
+  const names = await mapLimit(inspected, 16, async (name) => {
+    const artifact = await fs.lstat(path.join(directory, name)).catch(() => undefined);
+    return artifact?.isFile() && !artifact.isSymbolicLink() && artifact.nlink === 1
+      ? name
+      : undefined;
+  });
+  return {
+    names: names.filter((name): name is string => Boolean(name)),
+    omittedCandidates: Math.max(0, candidates.length - inspected.length)
+  };
+}
+
 function artifactNameVariable(value: string | string[]): string {
   const name = Array.isArray(value) ? value.join("/") : value;
-  if (!name || name.includes("/") || name.includes("\\") || name === "." || name === ".." || !name.endsWith(".md")) {
+  if (!isManagedArtifactSegment(name) || !name.endsWith(".md")) {
     throw new Error(`Invalid Codexa artifact name: ${name}`);
   }
   return name;

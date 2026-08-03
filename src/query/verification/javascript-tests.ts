@@ -1,9 +1,9 @@
 import path from "node:path";
-import type { CodexaIndex } from "../../types.js";
+import type { CodexaIndex, VerificationTestRunner } from "../../types.js";
 import { uniqueSorted } from "../../util.js";
 import { normalizeCandidateTarget, normalizePathLike, type CoverageAddInput } from "./command-scope.js";
 
-type JavaScriptTestRunner = "vitest" | "jest" | "node-test" | "playwright";
+type JavaScriptTestRunner = VerificationTestRunner;
 
 interface JavaScriptCoverageContext {
   index: Pick<CodexaIndex, "files">;
@@ -18,7 +18,7 @@ export function addJavaScriptTestCoverage(
   cwd: string,
   commandText: string,
   source: string,
-  runner: Exclude<JavaScriptTestRunner, "playwright">,
+  runner: Exclude<JavaScriptTestRunner, "playwright" | "cypress">,
   ctx: JavaScriptCoverageContext
 ): void {
   if (hasNonRunningJavaScriptTestArg(runner, args)) {
@@ -48,7 +48,7 @@ export function addJavaScriptTestCoverage(
     return;
   }
   if (parsed.targets.length === 0) {
-    ctx.addCoverage({ kind: "javascript-tests", command: commandText, source, scope: cwd, details: args });
+    ctx.addCoverage({ kind: "javascript-tests", command: commandText, source, scope: cwd, testRunner: runner, details: args });
     return;
   }
   const expanded = runner === "node-test" ? expandNodeTestGlobs(parsed.targets, ctx.index) : { ok: true as const, targets: parsed.targets };
@@ -56,7 +56,7 @@ export function addJavaScriptTestCoverage(
     ctx.addCoverage({ kind: "unknown", command: commandText, source: expanded.reason, confidence: "derived", scope: cwd, details: args });
     return;
   }
-  addTargetedJavaScriptTestCoverage(expanded.targets, args, cwd, commandText, source, ctx);
+  addTargetedJavaScriptTestCoverage(expanded.targets, args, cwd, commandText, source, runner, ctx);
 }
 
 function expandNodeTestGlobs(
@@ -208,7 +208,7 @@ export function addPlaywrightCommandCoverage(
     });
     return;
   }
-  addTargetedJavaScriptTestCoverage(parsed.targets, testArgs, cwd, commandText, source, ctx);
+  addTargetedJavaScriptTestCoverage(parsed.targets, testArgs, cwd, commandText, source, "playwright", ctx);
 }
 
 export function addCypressCommandCoverage(
@@ -259,7 +259,7 @@ export function addCypressCommandCoverage(
     });
     return;
   }
-  addTargetedJavaScriptTestCoverage([target], runArgs, cwd, commandText, source, ctx);
+  addTargetedJavaScriptTestCoverage([target], runArgs, cwd, commandText, source, "cypress", ctx);
 }
 
 function addTargetedJavaScriptTestCoverage(
@@ -268,11 +268,12 @@ function addTargetedJavaScriptTestCoverage(
   cwd: string,
   commandText: string,
   source: string,
+  testRunner: JavaScriptTestRunner,
   ctx: Pick<JavaScriptCoverageContext, "addCoverage">
 ): void {
   for (const target of targets) {
-    ctx.addCoverage({ kind: "javascript-tests", command: commandText, source, scope: cwd, targetPath: target, details: args });
-    ctx.addCoverage({ kind: "targeted-test", command: commandText, source, scope: cwd, targetPath: target, details: args });
+    ctx.addCoverage({ kind: "javascript-tests", command: commandText, source, scope: cwd, targetPath: target, testRunner, details: args });
+    ctx.addCoverage({ kind: "targeted-test", command: commandText, source, scope: cwd, targetPath: target, testRunner, details: args });
   }
 }
 
@@ -330,7 +331,7 @@ function playwrightTestTargets(args: string[], cwd: string, repoRoot: string): {
 }
 
 function javaScriptTestTargets(
-  runner: Exclude<JavaScriptTestRunner, "playwright">,
+  runner: Exclude<JavaScriptTestRunner, "playwright" | "cypress">,
   args: string[],
   cwd: string,
   repoRoot: string

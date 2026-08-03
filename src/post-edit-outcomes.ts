@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { acquireCacheLock } from "./cache-lock.js";
 import { assertSafeManagedDirectory, assertSafeManagedFile, ensureSafeManagedStateDirectory } from "./init-portability.js";
+import { readManagedArtifactText } from "./managed-artifacts.js";
 import {
   isCompletionBearingPostEditReviewCoverage,
   postEditReviewCoverageDigest,
@@ -382,11 +383,13 @@ export async function latestCompletedPostEditReviewMatches(input: {
     return false;
   }
   const repoRoot = path.resolve(input.repoRoot);
-  const dir = path.join(repoRoot, OUTCOME_DIR);
   let pointer: LatestPostEditOutcomePointer;
   let outcome: Partial<PostEditOutcome>;
   try {
-    const parsedPointer = JSON.parse(await fs.readFile(path.join(dir, LATEST_FILE), "utf8")) as unknown;
+    const outcomeSegments = OUTCOME_DIR.split("/");
+    const parsedPointer = JSON.parse(
+      await readManagedArtifactText(repoRoot, [...outcomeSegments, LATEST_FILE])
+    ) as unknown;
     if (!isLatestPostEditOutcomePointer(parsedPointer)) {
       return false;
     }
@@ -394,7 +397,9 @@ export async function latestCompletedPostEditReviewMatches(input: {
     if (pointer.path !== `${pointer.outcomeId}.json` || path.basename(pointer.path) !== pointer.path) {
       return false;
     }
-    outcome = JSON.parse(await fs.readFile(path.join(dir, pointer.path), "utf8")) as Partial<PostEditOutcome>;
+    outcome = JSON.parse(
+      await readManagedArtifactText(repoRoot, [...outcomeSegments, pointer.path])
+    ) as Partial<PostEditOutcome>;
   } catch {
     return false;
   }
@@ -420,6 +425,7 @@ export async function latestCompletedPostEditReviewMatches(input: {
     outcome.snapshotCreatedAt === pointer.snapshotCreatedAt &&
     outcome.snapshotPublicationSequence === pointer.snapshotPublicationSequence &&
     outcome.completionAuthority === pointer.completionAuthority &&
+    verificationProvenanceMatchesCurrent(outcome.verificationProvenance) &&
     Array.isArray(outcome.reviewTargets) &&
     outcome.reviewTargets.every((target) => typeof target === "string") &&
     isCompletionBearingPostEditReviewCoverage(outcome.reviewCoverage, {
@@ -458,6 +464,7 @@ export function postEditHookReviewSignature(input: { freshness: FreshnessInfo; t
       JSON.stringify({
         taskId: input.taskId ?? null,
         autoVerifyMode: input.autoVerifyMode ?? "autoverify:off",
+        verificationProvenance: CURRENT_VERIFICATION_PROVENANCE,
         snapshotId: input.freshness.snapshotId,
         indexedAt: input.freshness.indexedAt,
         headCommit: input.freshness.headCommit,
@@ -468,9 +475,24 @@ export function postEditHookReviewSignature(input: { freshness: FreshnessInfo; t
     .digest("hex");
 }
 
+function verificationProvenanceMatchesCurrent(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const provenance = value as Partial<VerificationProvenance>;
+  return (
+    provenance.schemaVersion === CURRENT_VERIFICATION_PROVENANCE.schemaVersion &&
+    provenance.commandCoverageClassifier === CURRENT_VERIFICATION_PROVENANCE.commandCoverageClassifier &&
+    provenance.commandCoverageClassifierVersion === CURRENT_VERIFICATION_PROVENANCE.commandCoverageClassifierVersion &&
+    provenance.commandEnvelopeRulesetVersion === CURRENT_VERIFICATION_PROVENANCE.commandEnvelopeRulesetVersion &&
+    provenance.verificationCoverageVersion === CURRENT_VERIFICATION_PROVENANCE.verificationCoverageVersion &&
+    provenance.verificationLedgerVersion === CURRENT_VERIFICATION_PROVENANCE.verificationLedgerVersion
+  );
+}
+
 export async function loadPostEditHookReviewState(repoRoot: string): Promise<PostEditHookReviewState | null> {
   try {
-    const parsed = JSON.parse(await fs.readFile(path.join(path.resolve(repoRoot), OUTCOME_DIR, LATEST_HOOK_REVIEW_FILE), "utf8")) as Partial<PostEditHookReviewState>;
+    const parsed = JSON.parse(
+      await readManagedArtifactText(path.resolve(repoRoot), [...OUTCOME_DIR.split("/"), LATEST_HOOK_REVIEW_FILE])
+    ) as Partial<PostEditHookReviewState>;
     if (parsed.schemaVersion === 1 && typeof parsed.signature === "string" && typeof parsed.createdAt === "string") {
       return {
         schemaVersion: 1,
@@ -530,7 +552,9 @@ export async function recordCodexaHookEvent(repoRoot: string, input: CodexaHookE
 
 export async function loadLatestCodexaHookEvent(repoRoot: string): Promise<CodexaHookEvent | null> {
   try {
-    const parsed = JSON.parse(await fs.readFile(path.join(path.resolve(repoRoot), HOOK_EVENT_DIR, LATEST_HOOK_EVENT_FILE), "utf8")) as Partial<CodexaHookEvent>;
+    const parsed = JSON.parse(
+      await readManagedArtifactText(path.resolve(repoRoot), [...HOOK_EVENT_DIR.split("/"), LATEST_HOOK_EVENT_FILE])
+    ) as Partial<CodexaHookEvent>;
     if (
       parsed.schemaVersion === 1 &&
       parsed.repoRoot === "." &&

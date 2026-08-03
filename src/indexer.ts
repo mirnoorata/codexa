@@ -1,7 +1,9 @@
+import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { acquireCacheLock } from "./cache-lock.js";
 import { ensureSafeManagedStateDirectory } from "./init-portability.js";
+import { isManagedArtifactSegment, readManagedArtifactText, requireManagedArtifactDirectory } from "./managed-artifacts.js";
 import { discoverRepoFreshness } from "./repo-files.js";
 import { relinkUsageIds, resolveIndexLinks } from "./resolver.js";
 import { externalRiskReportSnapshot, loadExternalRiskSignalReport } from "./risk-ingest.js";
@@ -24,12 +26,15 @@ import type {
   IndexOptions,
   RepoSnapshotFact
 } from "./types.js";
-import { stableId } from "./util.js";
+import { mapLimit, stableId } from "./util.js";
 
 export const CODEBASE_DIR = ".codex/codebase";
 export { persistIndex, writeIndexBundle } from "./indexer/artifact-writing.js";
 const INDEX_LOCK_DIR = ".codex/cache/codexa-index.lock";
 const INDEX_LOCK_STALE_MS = 120_000;
+// Keep automatic reads bounded while leaving substantial headroom for the
+// graph-heavy indexes produced by large polyglot repositories.
+const MAX_INDEX_ARTIFACT_BYTES = 512 * 1024 * 1024;
 
 interface BuildIndexPipelineContext {
   options: IndexOptions;
@@ -48,6 +53,9 @@ interface BuildIndexPipelineContext {
 
 export async function buildIndex(options: IndexOptions): Promise<CodexaIndex> {
   const repoRoot = path.resolve(options.repoRoot);
+  if (options.writeArtifacts ?? true) {
+    await ensureSafeManagedStateDirectory(repoRoot, "cache");
+  }
   const finalContext = await runIndexPipeline<BuildIndexPipelineContext>(
     { options, repoRoot },
     [
@@ -304,12 +312,13 @@ export async function buildIndexLocked(options: IndexOptions): Promise<CodexaInd
 }
 
 export async function loadIndex(repoRoot: string, options: { recover?: boolean } = {}): Promise<CodexaIndex | null> {
-  const outputDir = path.join(path.resolve(repoRoot), CODEBASE_DIR);
-  const index = await readIndexBundle(outputDir);
+  const repo = path.resolve(repoRoot);
+  const outputDir = path.join(repo, CODEBASE_DIR);
+  const index = await readIndexBundle(repo, outputDir);
   if (index || options.recover === false) {
     return index;
   }
-  return recoverIndexBundle(outputDir);
+  return recoverIndexBundle(repo, outputDir);
 }
 
 export async function loadIndexReadOnly(repoRoot: string): Promise<CodexaIndex | null> {
@@ -317,52 +326,77 @@ export async function loadIndexReadOnly(repoRoot: string): Promise<CodexaIndex |
 }
 
 export async function loadFreshnessReadOnly(repoRoot: string): Promise<FreshnessInfo | null> {
-  return readFreshnessBundle(path.join(path.resolve(repoRoot), CODEBASE_DIR));
+  const repo = path.resolve(repoRoot);
+  return readFreshnessBundle(repo, path.join(repo, CODEBASE_DIR));
 }
 
-async function readIndexBundle(outputDir: string): Promise<CodexaIndex | null> {
+async function readIndexBundle(repoRoot: string, outputDir: string): Promise<CodexaIndex | null> {
   try {
-    return normalizeLoadedIndex(JSON.parse(await fs.readFile(path.join(outputDir, "index.json"), "utf8")) as Partial<CodexaIndex>);
+    const relativeDir = path.relative(repoRoot, outputDir).split(path.sep);
+    return normalizeLoadedIndex(
+      JSON.parse(await readManagedArtifactText(repoRoot, [...relativeDir, "index.json"], MAX_INDEX_ARTIFACT_BYTES)) as Partial<CodexaIndex>
+    );
   } catch {
     return null;
   }
 }
 
-async function readFreshnessBundle(outputDir: string): Promise<FreshnessInfo | null> {
+async function readFreshnessBundle(repoRoot: string, outputDir: string): Promise<FreshnessInfo | null> {
   try {
-    return normalizeLoadedFreshness(JSON.parse(await fs.readFile(path.join(outputDir, "freshness.json"), "utf8")) as Partial<FreshnessInfo>);
+    const relativeDir = path.relative(repoRoot, outputDir).split(path.sep);
+    return normalizeLoadedFreshness(
+      JSON.parse(await readManagedArtifactText(repoRoot, [...relativeDir, "freshness.json"])) as Partial<FreshnessInfo>
+    );
   } catch {
     return null;
   }
 }
 
-async function recoverIndexBundle(outputDir: string): Promise<CodexaIndex | null> {
+async function recoverIndexBundle(repoRoot: string, outputDir: string): Promise<CodexaIndex | null> {
   const parentDir = path.dirname(outputDir);
   let entries: Array<{ name: string; mtimeMs: number }> = [];
   try {
-    entries = await Promise.all(
-      (await fs.readdir(parentDir, { withFileTypes: true }))
-        .filter((entry) => entry.isDirectory() && entry.name.startsWith(".codebase.backup-"))
-        .map(async (entry) => ({ name: entry.name, mtimeMs: (await fs.stat(path.join(parentDir, entry.name))).mtimeMs }))
-    );
+    const parent = await requireManagedArtifactDirectory(repoRoot, parentDir);
+    const candidates = (await fs.readdir(parent.directory, { withFileTypes: true }))
+      .filter((entry) => isManagedArtifactSegment(entry.name) && entry.name.startsWith(".codebase.backup-"))
+      .map((entry) => entry.name)
+      .sort((left, right) => right.localeCompare(left));
+    const inspected = await mapLimit(candidates, 8, async (name) => {
+      const backup = await requireManagedArtifactDirectory(repoRoot, path.join(parent.directory, name)).catch(() => undefined);
+      return backup ? { name, mtimeMs: (await fs.lstat(backup.directory)).mtimeMs } : undefined;
+    });
+    entries = inspected.filter((entry): entry is { name: string; mtimeMs: number } => Boolean(entry));
   } catch {
     return null;
   }
   for (const entry of entries.sort((a, b) => b.mtimeMs - a.mtimeMs || a.name.localeCompare(b.name))) {
     const backupDir = path.join(parentDir, entry.name);
-    const recovered = await readIndexBundle(backupDir);
+    const recovered = await readIndexBundle(repoRoot, backupDir);
     if (!recovered) {
       continue;
     }
     if (await pathExists(outputDir)) {
-      const corruptDir = path.join(parentDir, `.codebase.corrupt-${process.pid}-${Date.now()}`);
-      await fs.rm(corruptDir, { recursive: true, force: true }).catch(() => undefined);
-      await fs.rename(outputDir, corruptDir).catch(() => undefined);
+      try {
+        await requireManagedArtifactDirectory(repoRoot, outputDir);
+      } catch {
+        return null;
+      }
+      const corruptDir = path.join(parentDir, `.codebase.corrupt-${process.pid}-${randomUUID()}`);
+      try {
+        await fs.rename(outputDir, corruptDir);
+      } catch {
+        continue;
+      }
     }
     if (!(await pathExists(outputDir))) {
-      await fs.rename(backupDir, outputDir).catch(() => undefined);
+      try {
+        await requireManagedArtifactDirectory(repoRoot, backupDir);
+        await fs.rename(backupDir, outputDir);
+      } catch {
+        continue;
+      }
     }
-    return recovered;
+    return (await readIndexBundle(repoRoot, outputDir)) ?? recovered;
   }
   return null;
 }
@@ -482,7 +516,7 @@ async function acquireIndexLock(repoRoot: string): Promise<() => Promise<void>> 
 
 async function pathExists(candidate: string): Promise<boolean> {
   try {
-    await fs.stat(candidate);
+    await fs.lstat(candidate);
     return true;
   } catch {
     return false;

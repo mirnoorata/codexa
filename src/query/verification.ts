@@ -87,6 +87,7 @@ import {
   type NormalizedCommandReport
 } from "./verification/command-envelope.js";
 import { strongerVerificationTrustTier, strongestVerificationTrustTier, verificationTrustTierOrNone } from "./verification/trust.js";
+import { verificationTestRunnerCoversPath } from "./verification/test-runner.js";
 
 interface VerificationEvidenceResult {
   coverage: VerificationCoverage[];
@@ -160,6 +161,7 @@ export function verificationEvidenceForCommandReports(
         trustTier: report.trustTier,
         scope: input.scope,
         targetPath: input.targetPath,
+        testRunner: input.testRunner,
         details: uniqueSorted([...redactSecretDetails(input.details ?? []), ...reportDetails]),
         exitCode: report.exitCode,
         durationMs: report.durationMs,
@@ -558,6 +560,9 @@ function testVerificationEvidence(
 function coverageCoversTest(coverage: VerificationCoverage, testPath: string, packageRoots: string[], indexedPaths: Set<string>): boolean {
   const expected = testPath.endsWith(".py") ? "python-tests" : "javascript-tests";
   if (coverage.kind !== expected) {
+    return false;
+  }
+  if (!verificationTestRunnerCoversPath(coverage, testPath)) {
     return false;
   }
   if (coverage.targetPath) {

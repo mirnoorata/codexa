@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { renderCodexUseContract } from "./codex-contract.js";
+import { ensureManagedArtifactDirectory, writeManagedArtifactText } from "./managed-artifacts.js";
 import { CORE_PROFILE_TOOL_NAMES, DISPATCHABLE_MCP_TOOL_NAMES, NO_SOURCE_MUTATION_CONTRACT } from "./mcp-tool-catalog.js";
 import { moduleArtifactFileName } from "./module-artifact-name.js";
 import { isPlaceholderRisk, placeholderCategory } from "./placeholder-signals.js";
@@ -8,37 +9,36 @@ import type { CodexaIndex, FileFact, ModuleClusterFact, WorkflowTraceFact, Symbo
 import { escapeMarkdown, formatPathLine, topBy } from "./util.js";
 
 export async function writeArtifacts(index: CodexaIndex, outputDir: string): Promise<void> {
-  const modulesDir = path.join(outputDir, "modules");
-  const playbooksDir = path.join(outputDir, "playbooks");
-  await fs.mkdir(modulesDir, { recursive: true });
-  await fs.mkdir(playbooksDir, { recursive: true });
+  const output = await ensureManagedArtifactDirectory(index.snapshot.repoRoot, outputDir);
+  const modules = await ensureManagedArtifactDirectory(index.snapshot.repoRoot, path.join(output.directory, "modules"));
+  const playbooks = await ensureManagedArtifactDirectory(index.snapshot.repoRoot, path.join(output.directory, "playbooks"));
   const moduleFileNames = index.modules.slice(0, 40).map(moduleArtifactFileName);
   const playbookFileNames = index.modules.slice(0, 20).map(moduleArtifactFileName);
   // A filename scheme change or a removed module must not leave stale
   // generated resources discoverable through MCP after the next index build.
   await Promise.all([
-    pruneGeneratedMarkdown(modulesDir, new Set(moduleFileNames)),
-    pruneGeneratedMarkdown(playbooksDir, new Set(["README.md", ...playbookFileNames]))
+    pruneGeneratedMarkdown(modules.directory, new Set(moduleFileNames)),
+    pruneGeneratedMarkdown(playbooks.directory, new Set(["README.md", ...playbookFileNames]))
   ]);
   await Promise.all([
-    fs.writeFile(path.join(outputDir, "README.md"), renderReadme(index), "utf8"),
-    fs.writeFile(path.join(outputDir, "codex-contract.md"), renderCodexUseContract(index.freshness), "utf8"),
-    fs.writeFile(path.join(outputDir, "repo-map.md"), renderRepoMap(index), "utf8"),
-    fs.writeFile(path.join(outputDir, "relational-packets.md"), renderRelationalPackets(index), "utf8"),
-    fs.writeFile(path.join(outputDir, "relational-packets.json"), renderRelationalPacketsJson(index), "utf8"),
-    fs.writeFile(path.join(outputDir, "relational-graph.json"), renderRelationalGraphJson(index), "utf8"),
-    fs.writeFile(path.join(outputDir, "packet-summary-prompts.ndjson"), renderPacketSummaryPrompts(index), "utf8"),
-    fs.writeFile(path.join(outputDir, "risk-map.md"), renderRiskMap(index), "utf8"),
-    fs.writeFile(path.join(outputDir, "placeholder-map.md"), renderPlaceholderMap(index), "utf8"),
-    fs.writeFile(path.join(outputDir, "test-map.md"), renderTestMap(index), "utf8"),
-    fs.writeFile(path.join(outputDir, "conventions.md"), renderConventions(index), "utf8"),
-    fs.writeFile(path.join(outputDir, "workflows.md"), renderWorkflows(index), "utf8"),
-    fs.writeFile(path.join(outputDir, "playbooks", "README.md"), renderPlaybookIndex(index), "utf8"),
+    writeManagedArtifactText(output, "README.md", renderReadme(index)),
+    writeManagedArtifactText(output, "codex-contract.md", renderCodexUseContract(index.freshness)),
+    writeManagedArtifactText(output, "repo-map.md", renderRepoMap(index)),
+    writeManagedArtifactText(output, "relational-packets.md", renderRelationalPackets(index)),
+    writeManagedArtifactText(output, "relational-packets.json", renderRelationalPacketsJson(index)),
+    writeManagedArtifactText(output, "relational-graph.json", renderRelationalGraphJson(index)),
+    writeManagedArtifactText(output, "packet-summary-prompts.ndjson", renderPacketSummaryPrompts(index)),
+    writeManagedArtifactText(output, "risk-map.md", renderRiskMap(index)),
+    writeManagedArtifactText(output, "placeholder-map.md", renderPlaceholderMap(index)),
+    writeManagedArtifactText(output, "test-map.md", renderTestMap(index)),
+    writeManagedArtifactText(output, "conventions.md", renderConventions(index)),
+    writeManagedArtifactText(output, "workflows.md", renderWorkflows(index)),
+    writeManagedArtifactText(playbooks, "README.md", renderPlaybookIndex(index)),
     ...index.modules.slice(0, 40).map((module) =>
-      fs.writeFile(path.join(outputDir, "modules", moduleArtifactFileName(module)), renderModule(index, module), "utf8")
+      writeManagedArtifactText(modules, moduleArtifactFileName(module), renderModule(index, module))
     ),
     ...index.modules.slice(0, 20).map((module) =>
-      fs.writeFile(path.join(outputDir, "playbooks", moduleArtifactFileName(module)), renderModulePlaybook(index, module), "utf8")
+      writeManagedArtifactText(playbooks, moduleArtifactFileName(module), renderModulePlaybook(index, module))
     )
   ]);
 }
@@ -47,7 +47,11 @@ async function pruneGeneratedMarkdown(directory: string, retainedNames: Set<stri
   const entries = await fs.readdir(directory, { withFileTypes: true });
   await Promise.all(
     entries
-      .filter((entry) => entry.name.endsWith(".md") && !retainedNames.has(entry.name))
+      .filter(
+        (entry) =>
+          entry.name.endsWith(".md") &&
+          (entry.isSymbolicLink() || (entry.isFile() && !retainedNames.has(entry.name)))
+      )
       .map((entry) => fs.rm(path.join(directory, entry.name), { force: true }))
   );
 }

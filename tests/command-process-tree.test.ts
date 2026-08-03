@@ -92,7 +92,10 @@ describe("runCommand process-tree termination", () => {
 
     const startedAt = Date.now();
     const result = await runCommand(process.execPath, [script], {
-      timeoutMs: 150,
+      // This case validates post-timeout settlement when a detached descendant
+      // retains inherited pipes. Leave enough time for the fixture's nested
+      // Node process to start even while other integration workers are active.
+      timeoutMs: 1_000,
       maxBufferBytes: 16 * 1024
     });
     expect(result.ok).toBe(false);

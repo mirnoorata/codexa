@@ -34,6 +34,7 @@ import {
   workflowPathQuery
 } from "../src/queries.js";
 import { createFixtureRepo, createDocFixtureRepo, createBroadWorkflowFixtureRepo, createVerificationCoverageFixtureRepo, createSemanticDefaultRepo, createManifestGateFixtureRepo, createDottedReferenceFixtureRepo, createManifestLocalityFixtureRepo, mkdirp } from "./indexer-fixtures.js";
+const itPosix = process.platform === "win32" ? it.skip : it;
 describe("Codexa indexer", () => {
 it.each([
   ["tied", 0],
@@ -70,6 +71,23 @@ it.each([
     const signals = await loadOutcomeRankSignals(repo, null, new Set(["src/main.ts"]));
     expect(signals.boosts.get("src/main.ts")).toBeCloseTo(0.2);
     expect(signals.reasons.get("src/main.ts")).toContain("outcome: recent changed file");
+  });
+
+itPosix("ignores outcome ranking state redirected through a symbolic link", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-outcome-ranking-symlink-"));
+    const outside = await mkdtemp(path.join(os.tmpdir(), "codexa-outcome-ranking-symlink-target-"));
+    await mkdir(path.join(repo, ".codex", "cache"), { recursive: true });
+    await writeFile(
+      path.join(outside, "external.json"),
+      JSON.stringify({ schemaVersion: 1, outcomeId: "external", unplannedEditedFiles: ["src/main.ts"] }),
+      "utf8"
+    );
+    await symlink(outside, path.join(repo, ".codex", "cache", "codexa-outcomes"), "dir");
+
+    const signals = await loadOutcomeRankSignals(repo, null, new Set(["src/main.ts"]));
+
+    expect(signals.boosts.size).toBe(0);
+    expect(signals.reasons.size).toBe(0);
   });
 
 it("reserves fixed risk-path symbol reports after known custom symbol reports", async () => {
