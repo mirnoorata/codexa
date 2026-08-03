@@ -21,20 +21,11 @@ import type {
 } from "../types.js";
 import { normalizePath, stableId, uniqueSorted } from "../util.js";
 import {
-  COMPACTIONS_DIR,
-  EVENTS_FILE,
-  LATEST_FILE,
   MAX_DETAILS_CHARS,
-  MAX_EVENTS_BYTES,
-  MAX_EVENTS_LINES,
   MAX_EVENT_REPLAY_BYTES,
   MAX_EVIDENCE_PER_ENTRY,
-  MAX_MEMORY_JSON_BYTES,
   MAX_REFS_PER_ENTRY,
   MAX_SUMMARY_CHARS,
-  MEMORY_FILE,
-  MEMORY_LOCK_STALE_MS,
-  MEMORY_LOCK_TIMEOUT_MS,
   SESSION_MEMORY_DIR,
   SESSION_MEMORY_LOCK_DIR,
   type LatestSessionMemoryPointer,
@@ -51,17 +42,21 @@ import { derivedEntriesForTool, isOrientationOnlyChangePlan, refsFromQueryResult
 import {
   acquireSessionMemoryLock,
   appendSessionMemoryEvent,
+  assertSessionMemoryCompactionDirectory,
   atomicJsonWrite,
-  atomicTextWrite,
   countEventLines,
+  ensureSessionMemoryCompactionDirectory,
   memoryStorePath,
   readJson,
+  readSessionMemoryEventsText,
+  readSessionMemoryStoreJson,
   relativeMemoryPath,
   resolveSessionId,
+  resolveSessionIdWithProvenance,
   rewriteEvents,
-  sessionDir,
   sessionMemoryCacheDir,
   shouldCompactEvents,
+  writeLatestSessionPointer,
   writeStoreAndLatest
 } from "./event-log.js";
 import { bucketMemory, filterEntries, renderSessionMemoryMarkdown } from "./formatting.js";
@@ -99,23 +94,55 @@ export async function loadSessionMemory(input: { repoRoot: string; sessionId?: s
   const sessionId = await resolveSessionId(repoRoot, input.sessionId);
   const memoryPath = memoryStorePath(repoRoot, sessionId);
   const warnings: string[] = [];
-  const parsed = await readJson<SessionMemoryStore>(memoryPath);
-  if (parsed.ok && isSessionMemoryStore(parsed.value, sessionId)) {
-    return {
-      store: markStoreStaleness(sanitizeStoreTrust(parsed.value), input.freshness),
-      path: memoryPath,
-      warnings
-    };
-  }
-  if (parsed.ok) {
+  const parsed = await readSessionMemoryStoreJson<SessionMemoryStore>(repoRoot, sessionId);
+  const stored = parsed.ok && isSessionMemoryStore(parsed.value, sessionId) ? sanitizeStoreTrust(parsed.value) : undefined;
+  if (parsed.ok && !stored) {
     warnings.push("session memory store invalid: schema is invalid");
   }
   if (!parsed.ok && !parsed.missing) {
     warnings.push(`session memory store invalid: ${parsed.error}`);
   }
-  const replay = await replaySessionMemoryEvents(repoRoot, sessionId, input.freshness);
+  // events.ndjson is the bounded write-ahead authority. Always inspect it,
+  // including when memory.json is valid, so an event made durable immediately
+  // before a failed store publication is not silently lost.
+  const replay = await replaySessionMemoryEvents(repoRoot, sessionId);
   warnings.push(...replay.warnings);
-  return { ...replay, path: memoryPath, warnings };
+  let store = replay.store;
+  if (stored) {
+    if (!replay.completeDeltaChain && stored.revision > replay.store.revision) {
+      store = stored;
+      warnings.push(
+        `session memory event delta chain is incomplete; using valid memory.json revision ${stored.revision}`
+      );
+    } else if (replay.store.revision > stored.revision) {
+      warnings.push(
+        replay.completeDeltaChain
+          ? `session memory recovered newer event revision ${replay.store.revision} over store revision ${stored.revision}; using events.ndjson authority`
+          : `session memory recovered newer contiguous event revision ${replay.store.revision} over store revision ${stored.revision}; later gapped events were ignored`
+      );
+    } else if (stored.revision > replay.store.revision) {
+      store = stored;
+      warnings.push(
+        `session memory store revision ${stored.revision} is newer than event revision ${replay.store.revision}; using memory.json authority`
+      );
+    } else if (
+      replay.appliedEventCount === 0 ||
+      sessionMemoryReconciliationDigest(stored) === sessionMemoryReconciliationDigest(replay.store)
+    ) {
+      // Preserve memory.json's non-semantic metadata (for example, complete
+      // compaction counts) when both durable representations agree.
+      store = stored;
+    } else {
+      warnings.push(
+        `session memory revision ${stored.revision} diverges between memory.json and events.ndjson; using events.ndjson write-ahead authority`
+      );
+    }
+  }
+  return {
+    store: markStoreStaleness(store, input.freshness),
+    path: memoryPath,
+    warnings
+  };
 }
 
 export async function recordSessionMemory(input: SessionMemoryRecordInput): Promise<SessionMemoryResult> {
@@ -126,8 +153,23 @@ async function recordSessionMemoryInternal(input: SessionMemoryRecordInput, skip
   const repoRoot = path.resolve(input.repoRoot);
   const release = await acquireSessionMemoryLock(repoRoot);
   try {
-    const sessionId = await resolveSessionId(repoRoot, input.sessionId);
-    const loaded = await loadSessionMemory({ repoRoot, sessionId, freshness: input.freshness });
+    const resolution = await resolveSessionIdWithProvenance(repoRoot, input.sessionId);
+    const { sessionId } = resolution;
+    let loaded: SessionMemoryLoadResult;
+    try {
+      loaded = await loadSessionMemory({ repoRoot, sessionId, freshness: input.freshness });
+    } catch (error) {
+      if (!resolution.generated) throw error;
+      // Preserve reachability for a new implicit session even when its session
+      // directory cannot be inspected or created. The pointer is published
+      // below before the checked append retries the unsafe path and fails
+      // closed without writing through it.
+      loaded = {
+        store: emptyStore(sessionId),
+        path: memoryStorePath(repoRoot, sessionId),
+        warnings: [`session memory store unavailable: ${error instanceof Error ? error.message : String(error)}`]
+      };
+    }
     let store = loaded.store;
     const warnings = [...loaded.warnings];
     const effectiveTaskId = normalizeIdentifier(input.taskId) ?? store.activeTaskId;
@@ -185,6 +227,12 @@ async function recordSessionMemoryInternal(input: SessionMemoryRecordInput, skip
       updatedAt: now,
       revision: loaded.store.revision + 1
     };
+    // An implicit first session has no caller-held identifier to recover from.
+    // Publish its pointer before the first event so any event that becomes
+    // durable is already reachable even if memory.json publication is lost.
+    if (resolution.generated && loaded.store.revision === 0) {
+      await writeLatestSessionPointer(repoRoot, store, effectiveTaskId);
+    }
     await appendSessionMemoryEvent(repoRoot, store, {
       schemaVersion: 1,
       eventId: stableId("session-memory-event", sessionId, now, recordedIds.join("\n"), String(store.revision)),
@@ -223,7 +271,7 @@ async function recordSessionMemoryInternal(input: SessionMemoryRecordInput, skip
 }
 
 async function isRegularFile(filePath: string): Promise<boolean> {
-  return fs.stat(filePath).then((entry) => entry.isFile()).catch(() => false);
+  return fs.lstat(filePath).then((entry) => entry.isFile() && !entry.isSymbolicLink() && entry.nlink === 1).catch(() => false);
 }
 
 function sessionMemorySemanticDigest(store: SessionMemoryStore): string {
@@ -241,6 +289,19 @@ function sessionMemorySemanticDigest(store: SessionMemoryStore): string {
       })
     )
     .digest("hex");
+}
+
+function sessionMemoryReconciliationDigest(store: SessionMemoryStore): string {
+  return sessionMemorySemanticDigest({
+    ...store,
+    entries: store.entries.map(({ staleBecause: _staleBecause, status, ...entry }) => ({
+      ...entry,
+      // Staleness is a read-time freshness projection. It is intentionally
+      // excluded when deciding whether the two durable representations agree.
+      status: status === "stale" ? "active" : status,
+      staleBecause: []
+    }))
+  });
 }
 
 function semanticallyUniqueEvidence(evidence: SessionMemoryEvidence[]): unknown[] {
@@ -354,14 +415,18 @@ export async function readArchivedSessionMemoryEntries(input: {
   maxArchives?: number;
   maxEntries?: number;
 }): Promise<SessionMemoryEntryFact[]> {
-  const sessionId = await resolveSessionId(path.resolve(input.repoRoot), input.sessionId);
+  const repoRoot = path.resolve(input.repoRoot);
+  const sessionId = await resolveSessionId(repoRoot, input.sessionId);
   const wanted = new Set((input.entryIds ?? []).slice(0, 20));
   if (wanted.size === 0 && !input.taskId) {
     return [];
   }
   const maxEntries = Math.max(1, Math.min(input.maxEntries ?? 80, 200));
-  const compactionDir = path.join(sessionDir(input.repoRoot, sessionId), COMPACTIONS_DIR);
-  const files = (await fs.readdir(compactionDir).catch(() => []))
+  const compactionDir = await assertSessionMemoryCompactionDirectory(repoRoot, sessionId);
+  const files = (await fs.readdir(compactionDir).catch((error: unknown) => {
+    if (errorCode(error) === "ENOENT") return [];
+    throw error;
+  }))
     .filter((entry) => /^\d+\.json$/u.test(entry))
     .sort((left, right) => Number.parseInt(right, 10) - Number.parseInt(left, 10))
     .slice(0, Math.max(1, Math.min(input.maxArchives ?? 8, 20)));
@@ -374,6 +439,7 @@ export async function readArchivedSessionMemoryEntries(input: {
     for (const entry of parsed.value.droppedEntries) {
       if (
         isSessionMemoryEntry(entry) &&
+        entry.sessionId === sessionId &&
         (wanted.has(entry.id) || (input.taskId !== undefined && entry.taskId === input.taskId)) &&
         !found.has(entry.id) &&
         found.size < maxEntries
@@ -468,8 +534,7 @@ async function compactSessionMemoryStore(repoRoot: string, store: SessionMemoryS
       droppedEntryCount: droppedEntries.length
     }
   };
-  const compactionDir = path.join(sessionDir(repoRoot, store.sessionId), COMPACTIONS_DIR);
-  await fs.mkdir(compactionDir, { recursive: true });
+  const compactionDir = await ensureSessionMemoryCompactionDirectory(repoRoot, store.sessionId);
   const archive: SessionMemoryCompactionArchive = {
     schemaVersion: 1,
     sessionId: store.sessionId,
@@ -492,35 +557,109 @@ async function compactSessionMemoryStore(repoRoot: string, store: SessionMemoryS
   return compacted;
 }
 
-async function replaySessionMemoryEvents(repoRoot: string, sessionId: string, freshness?: FreshnessInfo): Promise<SessionMemoryLoadResult> {
+interface SessionMemoryReplayResult extends SessionMemoryLoadResult {
+  appliedEventCount: number;
+  completeDeltaChain: boolean;
+}
+
+async function replaySessionMemoryEvents(repoRoot: string, sessionId: string): Promise<SessionMemoryReplayResult> {
   const warnings: string[] = [];
   const base = emptyStore(sessionId);
-  const eventsPath = path.join(sessionDir(repoRoot, sessionId), EVENTS_FILE);
   let store = base;
+  let appliedEventCount = 0;
+  let completeDeltaChain = true;
+  const seenEventIds = new Map<string, string>();
   try {
-    const stat = await fs.stat(eventsPath);
-    if (stat.size > MAX_EVENT_REPLAY_BYTES) {
-      warnings.push(`session memory replay skipped: events.ndjson exceeds ${MAX_EVENT_REPLAY_BYTES} bytes`);
+    const read = await readSessionMemoryEventsText(repoRoot, sessionId, MAX_EVENT_REPLAY_BYTES);
+    if (!read.ok) {
+      if (!read.missing) {
+        warnings.push(
+          read.tooLarge
+            ? `session memory replay skipped: events.ndjson exceeds ${MAX_EVENT_REPLAY_BYTES} bytes`
+            : `session memory replay failed: ${read.error}`
+        );
+      }
       return {
-        store: markStoreStaleness(sanitizeStoreTrust(store), freshness),
+        store: sanitizeStoreTrust(store),
         path: memoryStorePath(repoRoot, sessionId),
-        warnings
+        warnings,
+        appliedEventCount,
+        completeDeltaChain
       };
     }
-    const text = await fs.readFile(eventsPath, "utf8");
-    for (const line of text.split(/\r?\n/u).filter(Boolean)) {
+    const text = read.value;
+    if (Buffer.byteLength(text, "utf8") > MAX_EVENT_REPLAY_BYTES) {
+      warnings.push(`session memory replay skipped: events.ndjson exceeds ${MAX_EVENT_REPLAY_BYTES} bytes`);
+      return {
+        store: sanitizeStoreTrust(store),
+        path: memoryStorePath(repoRoot, sessionId),
+        warnings,
+        appliedEventCount,
+        completeDeltaChain
+      };
+    }
+    const lines = text.split(/\r?\n/u);
+    const terminated = /[\r\n]$/u.test(text);
+    for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+      const line = lines[lineIndex];
+      if (!line.trim()) {
+        continue;
+      }
       try {
         const event = JSON.parse(line) as Partial<SessionMemoryEvent>;
-        if (!isSessionMemoryEvent(event, sessionId)) {
+        if (!isReplayableSessionMemoryEvent(event, sessionId)) {
           warnings.push("ignored invalid session memory event");
           continue;
         }
-        for (const entry of event.entries) {
-          store = upsertEntry(store, entry);
+        const eventDigest = canonicalJson(event);
+        const seenDigest = seenEventIds.get(event.eventId);
+        if (seenDigest !== undefined) {
+          if (seenDigest !== eventDigest) {
+            warnings.push(`ignored conflicting duplicate session memory event id ${event.eventId}`);
+          }
+          continue;
         }
-        store = { ...store, revision: Math.max(store.revision, event.revision), updatedAt: event.createdAt };
+        seenEventIds.set(event.eventId, eventDigest);
+        if (event.revision <= store.revision) {
+          warnings.push(
+            `ignored non-monotonic session memory event revision ${event.revision} after revision ${store.revision}`
+          );
+          continue;
+        }
+        if (event.event === "compact") {
+          store = replayCompactionEvent(store, event);
+          // A compact event carries a complete state snapshot, so it repairs
+          // any earlier gap in the retained delta log.
+          completeDeltaChain = true;
+        } else {
+          const expectedRevision = store.revision + 1;
+          if (event.revision !== expectedRevision) {
+            completeDeltaChain = false;
+            warnings.push(
+              `ignored gapped session memory event revision ${event.revision}; expected ${expectedRevision}`
+            );
+            continue;
+          }
+          for (const entry of event.entries) {
+            store = upsertEntry(store, entry);
+          }
+          store = {
+            ...store,
+            createdAt: appliedEventCount === 0 ? event.createdAt : store.createdAt,
+            updatedAt: event.createdAt,
+            revision: event.revision,
+            activeTaskId: event.taskId ?? store.activeTaskId,
+            entries: sortEntries(store.entries)
+          };
+        }
+        appliedEventCount += 1;
       } catch (error) {
-        warnings.push(`ignored invalid session memory event: ${error instanceof Error ? error.message : String(error)}`);
+        const partialTrailingLine = !terminated && lineIndex === lines.length - 1;
+        warnings.push(
+          `${partialTrailingLine ? "ignored partial trailing" : "ignored invalid"} session memory event: ${
+            error instanceof Error ? error.message : String(error)
+          }`
+        );
       }
     }
   } catch (error) {
@@ -530,9 +669,47 @@ async function replaySessionMemoryEvents(repoRoot: string, sessionId: string, fr
     }
   }
   return {
-    store: markStoreStaleness(sanitizeStoreTrust(store), freshness),
+    store: sanitizeStoreTrust(store),
     path: memoryStorePath(repoRoot, sessionId),
-    warnings
+    warnings,
+    appliedEventCount,
+    completeDeltaChain
+  };
+}
+
+function isReplayableSessionMemoryEvent(value: Partial<SessionMemoryEvent>, sessionId: string): value is SessionMemoryEvent {
+  return (
+    isSessionMemoryEvent(value, sessionId) &&
+    typeof value.eventId === "string" &&
+    value.eventId.length > 0 &&
+    value.eventId.length <= 240 &&
+    typeof value.createdAt === "string" &&
+    value.createdAt.length > 0 &&
+    Number.isSafeInteger(value.revision) &&
+    value.revision > 0 &&
+    (value.taskId === undefined || typeof value.taskId === "string") &&
+    value.entries.every((entry) => entry.sessionId === sessionId)
+  );
+}
+
+function replayCompactionEvent(store: SessionMemoryStore, event: SessionMemoryEvent): SessionMemoryStore {
+  return {
+    schemaVersion: 1,
+    sessionId: store.sessionId,
+    repoRoot: ".",
+    createdAt: store.revision === 0 ? event.createdAt : store.createdAt,
+    updatedAt: event.createdAt,
+    revision: event.revision,
+    activeTaskId: event.taskId,
+    // A compact event is a complete state replacement. Merging here would
+    // resurrect resolved/rejected entries that compaction intentionally removed.
+    entries: sortEntries(event.entries),
+    compaction: {
+      compactedAt: event.createdAt,
+      sourceEventCount: 1,
+      retainedEntryCount: event.entries.length,
+      droppedEntryCount: 0
+    }
   };
 }
 
@@ -547,4 +724,8 @@ function canonicalJson(value: unknown): string {
     return `{${entries.map(([key, entry]) => `${JSON.stringify(key)}:${canonicalJson(entry)}`).join(",")}}`;
   }
   return JSON.stringify(value);
+}
+
+function errorCode(error: unknown): string {
+  return error && typeof error === "object" && "code" in error ? String((error as { code?: unknown }).code) : "";
 }

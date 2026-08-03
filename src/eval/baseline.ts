@@ -74,7 +74,7 @@ function isUnsafeBaselineArgument(value: string): boolean {
 
 function runRipgrepBaseline(args: string[], cwd: string): string {
   try {
-    return execFileSync("rg", args, {
+    return execFileSync("rg", ["--no-config", ...args], {
       cwd,
       encoding: "utf8",
       timeout: 10_000,
@@ -94,7 +94,7 @@ function runGitGrepBaseline(rgArgs: string[], cwd: string): string {
   if (!parsed) {
     return "";
   }
-  return runBaselineCommand(["git", "grep", "-n", "-E", "-m", "25", "-e", parsed.pattern, "--", ...parsed.paths, ":(exclude).codex/**"], cwd);
+  return runBaselineCommand(["git", "--no-pager", "-c", "color.ui=false", "-c", "color.grep=false", "grep", "-n", "-E", "-m", "25", "-e", parsed.pattern, "--", ...parsed.paths, ":(exclude).codex/**"], cwd);
 }
 
 function parseRipgrepBaselineArgs(args: string[]): { pattern: string; paths: string[] } | undefined {

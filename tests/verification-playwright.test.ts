@@ -13,7 +13,8 @@ describe("Playwright verification credit", () => {
   let index: CodexaIndex;
   const tests: TestRecommendation[] = [
     { path: "tests/e2e.spec.ts", reason: "browser behavior", rank: 10 },
-    { path: "tests/unit.test.ts", reason: "unit behavior", rank: 9 }
+    { path: "tests/unit.test.ts", reason: "unit behavior", rank: 9 },
+    { path: "tests/test_python.py", reason: "python behavior", rank: 8 }
   ];
 
   beforeAll(async () => {
@@ -41,6 +42,7 @@ describe("Playwright verification credit", () => {
     );
     await writeFile(path.join(repo, "tests/e2e.spec.ts"), "export const browserTest = true\n", "utf8");
     await writeFile(path.join(repo, "tests/unit.test.ts"), "export const unitTest = true\n", "utf8");
+    await writeFile(path.join(repo, "tests/test_python.py"), "def test_python():\n    assert True\n", "utf8");
     execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
     execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
     execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "playwright verification fixture"], {
@@ -257,6 +259,91 @@ describe("Playwright verification credit", () => {
       }
     ]);
     expect(result.ledger.find((entry) => entry.target === "tests/e2e.spec.ts")).toMatchObject({ status: "covered", trustTier: "reported" });
+  });
+
+  it("does not turn outside-repository selectors into aggregate test credit", () => {
+    const reports: VerificationCommandReport[] = [
+      {
+        command: "vitest run /tmp/codexa-outside.test.ts",
+        cwd: repo,
+        packageManager: "vitest",
+        packageRoot: ".",
+        scriptName: "vitest",
+        args: ["run", "/tmp/codexa-outside.test.ts"],
+        exitCode: 0
+      },
+      {
+        command: "pytest /tmp/codexa_outside_test.py",
+        cwd: repo,
+        packageManager: "pytest",
+        packageRoot: ".",
+        scriptName: "pytest",
+        args: ["/tmp/codexa_outside_test.py"],
+        exitCode: 0
+      },
+      {
+        command: "vitest /tmp/tests",
+        cwd: repo,
+        packageManager: "vitest",
+        packageRoot: ".",
+        scriptName: "vitest",
+        args: ["/tmp/tests"],
+        exitCode: 0
+      },
+      {
+        command: "jest widget",
+        cwd: repo,
+        packageManager: "jest",
+        packageRoot: ".",
+        scriptName: "jest",
+        args: ["widget"],
+        exitCode: 0
+      },
+      {
+        command: "pytest -k widget",
+        cwd: repo,
+        packageManager: "pytest",
+        packageRoot: ".",
+        scriptName: "pytest",
+        args: ["-k", "widget"],
+        exitCode: 0
+      },
+      {
+        command: "pytest --lf",
+        cwd: repo,
+        packageManager: "pytest",
+        packageRoot: ".",
+        scriptName: "pytest",
+        args: ["--lf"],
+        exitCode: 0
+      },
+      {
+        command: "vitest run '>not-a-test'",
+        cwd: repo,
+        exitCode: 0
+      },
+      {
+        command: "vitest run '2>&1'",
+        cwd: repo,
+        exitCode: 0
+      },
+      {
+        command: "vitest run tests/unit.test.ts >",
+        cwd: repo,
+        exitCode: 0
+      }
+    ];
+    for (const report of reports) {
+      const result = classify(report);
+      expect(result.ledger.every((entry) => entry.status === "missing"), report.command).toBe(true);
+      expect(
+        result.coverage.some(
+          (entry) => entry.kind === "javascript-tests" || entry.kind === "python-tests" || entry.kind === "targeted-test"
+        ),
+        report.command
+      ).toBe(false);
+      expect(result.coverage.some((entry) => entry.kind === "unknown"), report.command).toBe(true);
+    }
   });
 
   function classify(report: VerificationCommandReport) {

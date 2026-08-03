@@ -24,6 +24,9 @@ interface RankedSearchResult {
   reasons: Map<string, string[]>;
 }
 
+const QUERY_SCORE_CACHE_LIMIT = 4_096;
+const SEARCH_REASONS_PER_FILE_LIMIT = 24;
+
 export async function repoMapQuery(input: QuerySessionInput, limit = 20, options: QueryOptions = {}, tokenBudget = 1500): Promise<QueryResult> {
   const session = await ensureQuerySession(input, options);
   const { index, freshness, refresh } = session;
@@ -436,44 +439,52 @@ function formatRawHit(hit: RawSearchHit, multiPattern: boolean): string {
 }
 
 export function rankedSearch(index: CodexaIndex, query: string, limit: number): RankedSearchResult {
+  const fileByPath = new Map(index.files.map((file) => [file.path, file]));
+  const scoreMatch = createSearchMatcher(query);
   const scores = new Map<string, number>();
   const reasons = new Map<string, string[]>();
-  const symbolHits: Array<{ symbol: SymbolFact; score: number }> = [];
-  const usageHits: Array<{ usage: UsageSiteFact; score: number }> = [];
+  const exactTargetPaths = new Set<string>();
+  const symbolHits: Array<{ symbol: SymbolFact; score: number; fileRank: number }> = [];
+  const usageHits: Array<{ usage: UsageSiteFact; score: number; fileRank: number }> = [];
   const addScore = (filePath: string, reason: string, score: number) => {
-    const file = findFile(index, filePath);
+    const file = fileByPath.get(filePath);
     if (!file || score <= 0) {
       return;
     }
     scores.set(file.path, (scores.get(file.path) ?? 0) + score);
+    if (reason.includes("exact") || reason.includes("stem")) {
+      exactTargetPaths.add(file.path);
+    }
     const existing = reasons.get(file.path) ?? [];
-    existing.push(reason);
+    if (existing.length < SEARCH_REASONS_PER_FILE_LIMIT && !existing.includes(reason)) {
+      existing.push(reason);
+    }
     reasons.set(file.path, existing);
   };
 
   for (const file of index.files) {
-    const score = Math.max(matchScore(query, file.path), matchScore(query, path.posix.basename(file.path)));
+    const score = Math.max(scoreMatch(file.path), scoreMatch(path.posix.basename(file.path)));
     addScore(file.path, `file ${matchReason(score)}`, score);
   }
 
   for (const symbol of index.symbols) {
-    const score = Math.max(matchScore(query, symbol.name), matchScore(query, symbol.qualifiedName), matchScore(query, symbol.path));
+    const score = Math.max(scoreMatch(symbol.name), scoreMatch(symbol.qualifiedName), scoreMatch(symbol.path));
     if (score > 0) {
-      symbolHits.push({ symbol, score });
+      symbolHits.push({ symbol, score, fileRank: fileByPath.get(symbol.path)?.rank ?? 0 });
       addScore(symbol.path, `symbol ${matchReason(score)} ${symbol.qualifiedName}`, score + (score >= 9 ? 20 : 0) + (symbol.exported ? 2 : 0));
     }
   }
 
   for (const usage of index.usageSites) {
-    const score = Math.max(matchScore(query, usage.name), matchScore(query, usage.text), matchScore(query, usage.path));
+    const score = Math.max(scoreMatch(usage.name), scoreMatch(usage.text), scoreMatch(usage.path));
     if (score > 0) {
-      usageHits.push({ usage, score });
+      usageHits.push({ usage, score, fileRank: fileByPath.get(usage.path)?.rank ?? 0 });
       addScore(usage.path, `usage ${matchReason(score)} ${usage.name} (${usage.confidence})`, Math.max(1, score - 1));
     }
   }
 
   const files = [...scores.entries()]
-    .map(([filePath, score]) => ({ file: findFile(index, filePath), score }))
+    .map(([filePath, score]) => ({ file: fileByPath.get(filePath), score }))
     .filter((entry): entry is { file: FileFact; score: number } => Boolean(entry.file))
     .sort((a, b) => b.score - a.score || b.file.rank - a.file.rank || a.file.path.localeCompare(b.file.path))
     .slice(0, limit)
@@ -482,7 +493,7 @@ export function rankedSearch(index: CodexaIndex, query: string, limit: number): 
     .sort(
       (a, b) =>
         b.score - a.score ||
-        (findFile(index, b.symbol.path)?.rank ?? 0) - (findFile(index, a.symbol.path)?.rank ?? 0) ||
+        b.fileRank - a.fileRank ||
         a.symbol.qualifiedName.localeCompare(b.symbol.qualifiedName)
     )
     .slice(0, limit)
@@ -491,51 +502,71 @@ export function rankedSearch(index: CodexaIndex, query: string, limit: number): 
     .sort(
       (a, b) =>
         b.score - a.score ||
-        (findFile(index, b.usage.path)?.rank ?? 0) - (findFile(index, a.usage.path)?.rank ?? 0) ||
+        b.fileRank - a.fileRank ||
         a.usage.path.localeCompare(b.usage.path)
     )
     .slice(0, limit)
     .map((entry) => entry.usage);
-  const exactTargets = files.filter((file) => (reasons.get(file.path) ?? []).some((reason) => reason.includes("exact") || reason.includes("stem")));
+  const exactTargets = files.filter((file) => exactTargetPaths.has(file.path));
   return { files, symbols, usageSites, exactTargets, reasons };
 }
 
 export function matchScore(query: string, value: string): number {
+  return createSearchMatcher(query)(value);
+}
+
+export function createSearchMatcher(query: string): (value: string) => number {
   const q = normalizeSearchText(query);
-  const v = normalizeSearchText(value);
-  if (!q || !v) {
-    return 0;
-  }
   const decoyPattern = /(?:^|\b|[._/-])(decoy|mock|old|backup|copy|fixture)(?:$|\b|[._/-])/;
   const compactDecoyPattern = /(decoy|mock|backup|fixture)/;
-  const spacedValue = v.replace(/[_-]/g, " ");
   const spacedQuery = q.replace(/[_-]/g, " ");
-  const compactValue = v.replace(/[^a-z0-9]+/g, "");
   const compactQuery = q.replace(/[^a-z0-9]+/g, "");
-  const decoyish = decoyPattern.test(spacedValue) || compactDecoyPattern.test(compactValue);
   const queryAllowsDecoy = decoyPattern.test(spacedQuery) || compactDecoyPattern.test(compactQuery);
   const terms = uniqueSorted([q, ...queryTerms(query)]);
-  let best = 0;
-  const basenameStem = path.posix.basename(v).replace(/\.[^.]+$/, "");
-  const valueTokens = tokenSet(value);
-  for (const term of terms) {
-    if (!term) {
-      continue;
-    }
-    if (v === term) {
-      best = Math.max(best, 10);
-    } else if (basenameStem === term) {
-      best = Math.max(best, 9);
-    } else if (valueTokens.has(term)) {
-      best = Math.max(best, 6);
-    } else if (v.includes(term)) {
-      best = Math.max(best, 2);
-    }
+  if (!q) {
+    return () => 0;
   }
-  if (decoyish && !queryAllowsDecoy && best < 9) {
-    return 0;
-  }
-  return best;
+  const scoreCache = new Map<string, number>();
+  const remember = (value: string, score: number): number => {
+    if (scoreCache.size < QUERY_SCORE_CACHE_LIMIT) {
+      scoreCache.set(value, score);
+    }
+    return score;
+  };
+  return (value: string): number => {
+    const cached = scoreCache.get(value);
+    if (cached !== undefined) {
+      return cached;
+    }
+    const v = normalizeSearchText(value);
+    if (!v) {
+      return remember(value, 0);
+    }
+    const spacedValue = v.replace(/[_-]/g, " ");
+    const compactValue = v.replace(/[^a-z0-9]+/g, "");
+    const decoyish = decoyPattern.test(spacedValue) || compactDecoyPattern.test(compactValue);
+    let best = 0;
+    const basenameStem = path.posix.basename(v).replace(/\.[^.]+$/, "");
+    const valueTokens = tokenSet(v);
+    for (const term of terms) {
+      if (!term) {
+        continue;
+      }
+      if (v === term) {
+        best = Math.max(best, 10);
+      } else if (basenameStem === term) {
+        best = Math.max(best, 9);
+      } else if (valueTokens.has(term)) {
+        best = Math.max(best, 6);
+      } else if (v.includes(term)) {
+        best = Math.max(best, 2);
+      }
+    }
+    if (decoyish && !queryAllowsDecoy && best < 9) {
+      return remember(value, 0);
+    }
+    return remember(value, best);
+  };
 }
 
 export function matchReason(score: number): string {

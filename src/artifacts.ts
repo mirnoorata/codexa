@@ -2,13 +2,24 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { renderCodexUseContract } from "./codex-contract.js";
 import { CORE_PROFILE_TOOL_NAMES, DISPATCHABLE_MCP_TOOL_NAMES, NO_SOURCE_MUTATION_CONTRACT } from "./mcp-tool-catalog.js";
+import { moduleArtifactFileName } from "./module-artifact-name.js";
 import { isPlaceholderRisk, placeholderCategory } from "./placeholder-signals.js";
 import type { CodexaIndex, FileFact, ModuleClusterFact, WorkflowTraceFact, SymbolFact } from "./types.js";
 import { escapeMarkdown, formatPathLine, topBy } from "./util.js";
 
 export async function writeArtifacts(index: CodexaIndex, outputDir: string): Promise<void> {
-  await fs.mkdir(path.join(outputDir, "modules"), { recursive: true });
-  await fs.mkdir(path.join(outputDir, "playbooks"), { recursive: true });
+  const modulesDir = path.join(outputDir, "modules");
+  const playbooksDir = path.join(outputDir, "playbooks");
+  await fs.mkdir(modulesDir, { recursive: true });
+  await fs.mkdir(playbooksDir, { recursive: true });
+  const moduleFileNames = index.modules.slice(0, 40).map(moduleArtifactFileName);
+  const playbookFileNames = index.modules.slice(0, 20).map(moduleArtifactFileName);
+  // A filename scheme change or a removed module must not leave stale
+  // generated resources discoverable through MCP after the next index build.
+  await Promise.all([
+    pruneGeneratedMarkdown(modulesDir, new Set(moduleFileNames)),
+    pruneGeneratedMarkdown(playbooksDir, new Set(["README.md", ...playbookFileNames]))
+  ]);
   await Promise.all([
     fs.writeFile(path.join(outputDir, "README.md"), renderReadme(index), "utf8"),
     fs.writeFile(path.join(outputDir, "codex-contract.md"), renderCodexUseContract(index.freshness), "utf8"),
@@ -24,12 +35,21 @@ export async function writeArtifacts(index: CodexaIndex, outputDir: string): Pro
     fs.writeFile(path.join(outputDir, "workflows.md"), renderWorkflows(index), "utf8"),
     fs.writeFile(path.join(outputDir, "playbooks", "README.md"), renderPlaybookIndex(index), "utf8"),
     ...index.modules.slice(0, 40).map((module) =>
-      fs.writeFile(path.join(outputDir, "modules", `${safeModuleName(module.name)}.md`), renderModule(index, module), "utf8")
+      fs.writeFile(path.join(outputDir, "modules", moduleArtifactFileName(module)), renderModule(index, module), "utf8")
     ),
     ...index.modules.slice(0, 20).map((module) =>
-      fs.writeFile(path.join(outputDir, "playbooks", `${safeModuleName(module.name)}.md`), renderModulePlaybook(index, module), "utf8")
+      fs.writeFile(path.join(outputDir, "playbooks", moduleArtifactFileName(module)), renderModulePlaybook(index, module), "utf8")
     )
   ]);
+}
+
+async function pruneGeneratedMarkdown(directory: string, retainedNames: Set<string>): Promise<void> {
+  const entries = await fs.readdir(directory, { withFileTypes: true });
+  await Promise.all(
+    entries
+      .filter((entry) => entry.name.endsWith(".md") && !retainedNames.has(entry.name))
+      .map((entry) => fs.rm(path.join(directory, entry.name), { force: true }))
+  );
 }
 
 function renderReadme(index: CodexaIndex): string {
@@ -568,7 +588,7 @@ how to approach changes safely without loading the whole graph.
 
 ## Module Playbooks
 
-${index.modules.slice(0, 20).map((module) => `- \`playbooks/${safeModuleName(module.name)}.md\` - ${module.files.length} files, rank ${module.rank.toFixed(2)}`).join("\n")}
+${index.modules.slice(0, 20).map((module) => `- \`playbooks/${moduleArtifactFileName(module)}\` - ${module.files.length} files, rank ${module.rank.toFixed(2)}`).join("\n")}
 `;
 }
 
@@ -722,8 +742,4 @@ function table(headers: string[], rows: string[][]): string {
     `| ${headers.map(() => "---").join(" | ")} |`,
     ...escapedRows.map((row) => `| ${row.join(" | ")} |`)
   ].join("\n");
-}
-
-function safeModuleName(name: string): string {
-  return name.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "root";
 }

@@ -25,7 +25,7 @@ export async function rawSearch(repoRoot: string, query: string | string[], limi
   const patterns = normalizeRawSearchPatterns(query);
   assertRawSearchPatternLimit(patterns);
   if (patterns.length === 0) {
-    return { hits: [], files: [], sufficient: false, command: "rg -n --fixed-strings .", patterns: [] };
+    return { hits: [], files: [], sufficient: false, command: "rg --no-config -n --fixed-strings .", patterns: [] };
   }
   const command = rawSearchCommand(patterns);
   const rgResult = await runCommand("rg", rawSearchArgs(patterns), {
@@ -59,8 +59,8 @@ export async function baselineSearchSummary(repoRoot: string, queryText: string)
   if (terms.length === 0) {
     return undefined;
   }
-  const args = ["-n", "--fixed-strings", "--max-count", "25", "--glob", "!.codex/**", ...terms.flatMap((term) => ["-e", term]), "."];
-  const command = `rg -n --fixed-strings ${terms.map((term) => `-e ${JSON.stringify(term)}`).join(" ")} .`;
+  const args = ["--no-config", "-n", "--fixed-strings", "--max-count", "25", "--glob", "!.codex/**", ...terms.flatMap((term) => ["-e", term]), "."];
+  const command = `rg --no-config -n --fixed-strings ${terms.map((term) => `-e ${JSON.stringify(term)}`).join(" ")} .`;
   const rgResult = await runCommand("rg", args, {
     cwd: repoRoot,
     okExitCodes: [0, 1],
@@ -101,7 +101,7 @@ export function normalizeRawSearchPatterns(query: string | string[]): string[] {
 }
 
 function rawSearchArgs(patterns: string[]): string[] {
-  const base = ["-n", "--fixed-strings", "--max-count", "25", "--glob", "!.codex/**"];
+  const base = ["--no-config", "-n", "--fixed-strings", "--max-count", "25", "--glob", "!.codex/**"];
   if (patterns.length === 1) {
     return [...base, "--", patterns[0], "."];
   }
@@ -110,13 +110,13 @@ function rawSearchArgs(patterns: string[]): string[] {
 
 function rawSearchCommand(patterns: string[]): string {
   if (patterns.length === 1) {
-    return `rg -n --fixed-strings -- ${JSON.stringify(patterns[0])} .`;
+    return `rg --no-config -n --fixed-strings -- ${JSON.stringify(patterns[0])} .`;
   }
-  return `rg -n --fixed-strings ${patterns.map((pattern) => `-e ${JSON.stringify(pattern)}`).join(" ")} .`;
+  return `rg --no-config -n --fixed-strings ${patterns.map((pattern) => `-e ${JSON.stringify(pattern)}`).join(" ")} .`;
 }
 
 async function gitGrep(repoRoot: string, terms: string[]) {
-  return await runCommand("git", ["grep", "-n", "-F", "--max-count", "25", ...terms.flatMap((term) => ["-e", term]), "--", ".", ":(exclude).codex/**"], {
+  return await runCommand("git", ["--no-pager", "-c", "color.ui=false", "-c", "color.grep=false", "grep", "-n", "-F", "--max-count", "25", ...terms.flatMap((term) => ["-e", term]), "--", ".", ":(exclude).codex/**"], {
     cwd: repoRoot,
     okExitCodes: [0, 1],
     timeoutMs: RG_TIMEOUT_MS,

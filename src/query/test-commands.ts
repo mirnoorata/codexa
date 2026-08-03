@@ -1,7 +1,15 @@
 import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import type { Confidence } from "../types.js";
-import { shellQuote } from "./verification/shell.js";
+import { resolveToolInvocation } from "./verification/script-credit.js";
+import {
+  shellQuote,
+  shellWords,
+  splitShellSequence,
+  stripLeadingEnvironment,
+  stripPackageManagerFlags,
+  stripShellControlWords
+} from "./verification/shell.js";
 
 export interface CandidateTestCommand {
   command: string;
@@ -45,16 +53,22 @@ function packageTestCommand(repoRoot: string, packageDir: string, relativeTestPa
     const parsed = JSON.parse(readFileSync(packageJsonPath, "utf8")) as { scripts?: Record<string, string> };
     const scripts = parsed.scripts ?? {};
     const scriptName =
-      scripts.test && /\b(vitest|jest|node --test|tsx|tsc)\b/.test(scripts.test)
+      scripts.test && isKnownVerificationScript(scripts.test)
         ? "test"
-        : Object.keys(scripts).find((name) => /^test:/u.test(name) && /\b(vitest|jest|node --test|tsx|tsc)\b/.test(scripts[name])) ?? (scripts.test ? "test" : undefined);
+        : Object.keys(scripts).find((name) => /^test:/u.test(name) && isKnownVerificationScript(scripts[name])) ?? (scripts.test ? "test" : undefined);
     if (!scriptName) {
       return undefined;
     }
     const packageManager = packageManagerFor(packageRoot, repoRoot);
     const cwd = packageDir === "." ? repoRoot : path.join(repoRoot, packageDir);
     const runner = packageManager === "npm" ? ["npm", "run", scriptName] : [packageManager, "run", scriptName];
-    const args = [...runner.slice(1), "--", relativeTestPath];
+    // Compile-only and unknown scripts are useful repository checks, but they
+    // do not accept a test-file selector. Passing a path to `tsc --noEmit`, for
+    // example, changes project-mode semantics and can bypass the tsconfig.
+    const selectorArgs = testPathArguments(scripts[scriptName], relativeTestPath);
+    const args = selectorArgs
+      ? [...runner.slice(1), "--", ...selectorArgs]
+      : runner.slice(1);
     return {
       command: shellJoin(["cd", cwd]) + " && " + shellJoin([runner[0], ...args]),
       commandCwd: cwd,
@@ -66,6 +80,40 @@ function packageTestCommand(repoRoot: string, packageDir: string, relativeTestPa
   } catch {
     return undefined;
   }
+}
+
+function testPathArguments(script: string, testPath: string): string[] | undefined {
+  const runner = selectorForwardingRunner(script);
+  if (!runner) return undefined;
+  return runner === "cypress" ? ["--spec", testPath] : [testPath];
+}
+
+function selectorForwardingRunner(script: string): "vitest" | "jest" | "playwright" | "cypress" | "node-test" | undefined {
+  const segments = splitShellSequence(script);
+  if (segments.length !== 1 || segments[0]?.operator !== "start" || /(?:\$\(|`|[<>])/u.test(script)) {
+    return undefined;
+  }
+  const words = stripPackageManagerFlags(
+    stripShellControlWords(stripLeadingEnvironment(shellWords(segments[0].text)))
+  );
+  const invocation = resolveToolInvocation(words);
+  if (!invocation.executesResolvedTool) return undefined;
+  if (invocation.command === "vitest" && (invocation.args.length === 0 || (invocation.args.length === 1 && invocation.args[0] === "run"))) {
+    return "vitest";
+  }
+  if (invocation.command === "jest" && invocation.args.length === 0) return "jest";
+  if (invocation.command === "playwright" && invocation.args.length === 1 && invocation.args[0] === "test") return "playwright";
+  if (invocation.command === "cypress" && invocation.args.length === 1 && invocation.args[0] === "run") return "cypress";
+  if (invocation.command === "node" && invocation.args.length === 1 && invocation.args[0] === "--test") return "node-test";
+  return undefined;
+}
+
+function supportsTestPath(script: string): boolean {
+  return /\b(?:vitest|jest|mocha|ava|tap|playwright\s+test|cypress\s+run|node\s+--test|bun\s+test|deno\s+test|tsx\s+--test)\b/u.test(script);
+}
+
+function isKnownVerificationScript(script: string): boolean {
+  return supportsTestPath(script) || /\b(?:tsc|vue-tsc)\b/u.test(script);
 }
 
 function packageManagerFor(packageRoot: string, repoRoot: string): "npm" | "pnpm" | "yarn" {

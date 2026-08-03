@@ -13,15 +13,25 @@ export function addJavaScriptTestCoverage(
   cwd: string,
   commandText: string,
   source: string,
-  runner: JavaScriptTestRunner,
+  runner: Exclude<JavaScriptTestRunner, "playwright">,
   ctx: JavaScriptCoverageContext
 ): void {
   if (hasNonRunningJavaScriptTestArg(runner, args)) {
     return;
   }
-  const targetArgs = runner === "vitest" ? withoutCommandOptionValues(args, ["--project"]) : args;
-  const targets = targetArgs.map((arg) => normalizeCandidateTarget(arg, cwd, ctx.repoRoot)).filter((arg): arg is string => Boolean(arg));
-  if (targets.length === 0 && runner === "vitest" && hasCommandOption(args, ["--project"])) {
+  const parsed = javaScriptTestTargets(runner, args, cwd, ctx.repoRoot);
+  if (!parsed.ok) {
+    ctx.addCoverage({
+      kind: "unknown",
+      command: commandText,
+      source: parsed.reason,
+      confidence: "derived",
+      scope: cwd,
+      details: args
+    });
+    return;
+  }
+  if (parsed.targets.length === 0 && parsed.requiresExplicitTarget) {
     ctx.addCoverage({
       kind: "unknown",
       command: commandText,
@@ -32,11 +42,23 @@ export function addJavaScriptTestCoverage(
     });
     return;
   }
-  if (targets.length === 0) {
+  if (parsed.targets.length === 0) {
     ctx.addCoverage({ kind: "javascript-tests", command: commandText, source, scope: cwd, details: args });
     return;
   }
-  addTargetedJavaScriptTestCoverage(targets, args, cwd, commandText, source, ctx);
+  addTargetedJavaScriptTestCoverage(parsed.targets, args, cwd, commandText, source, ctx);
+}
+
+export function looksLikeExplicitTestSelector(
+  arg: string,
+  language: "javascript" | "python"
+): boolean {
+  if (/(?:<abs-path>|<outside-repo>|__outside_repo__:)/u.test(arg)) return true;
+  const clean = arg.replace(/::.+$/u, "").replace(/:\d+(?::\d+)?$/u, "");
+  if (language === "python") {
+    return /(?:^|[\\/])tests?(?:[\\/]|$)/iu.test(clean) || /(?:^|[\\/])[^\\/]+\.py$/iu.test(clean) || /^[^\\/]+\.py$/iu.test(clean);
+  }
+  return /(?:^|[\\/])[^\\/]+\.(?:test|spec)\.[cm]?[jt]sx?$/iu.test(clean) || /^[^\\/]+\.(?:test|spec)\.[cm]?[jt]sx?$/iu.test(clean);
 }
 
 export function addPlaywrightCommandCoverage(
@@ -82,6 +104,50 @@ export function addPlaywrightCommandCoverage(
     return;
   }
   addTargetedJavaScriptTestCoverage(parsed.targets, testArgs, cwd, commandText, source, ctx);
+}
+
+export function addCypressCommandCoverage(
+  args: string[],
+  cwd: string,
+  commandText: string,
+  source: string,
+  ctx: JavaScriptCoverageContext
+): void {
+  if (args[0] !== "run" || hasPresentFlag(args, ["--help", "-h", "--version", "-v"])) {
+    ctx.addCoverage({
+      kind: "unknown",
+      command: commandText,
+      source: "Cypress invocation does not prove a completed Cypress run",
+      confidence: "derived",
+      scope: cwd,
+      details: args
+    });
+    return;
+  }
+  const runArgs = args.slice(1);
+  if (runArgs.length === 0) {
+    ctx.addCoverage({ kind: "javascript-tests", command: commandText, source, scope: cwd, details: args });
+    return;
+  }
+  const spec =
+    runArgs[0] === "--spec" && runArgs.length === 2
+      ? runArgs[1]
+      : runArgs.length === 1 && runArgs[0].startsWith("--spec=")
+        ? runArgs[0].slice("--spec=".length)
+        : undefined;
+  const target = spec ? normalizeCandidateTarget(spec, cwd, ctx.repoRoot) : undefined;
+  if (!target || !/\.(?:test|spec)\.[cm]?[jt]sx?$/iu.test(target)) {
+    ctx.addCoverage({
+      kind: "unknown",
+      command: commandText,
+      source: "Cypress run must use one explicit in-repository --spec test path",
+      confidence: "derived",
+      scope: cwd,
+      details: runArgs
+    });
+    return;
+  }
+  addTargetedJavaScriptTestCoverage([target], runArgs, cwd, commandText, source, ctx);
 }
 
 function addTargetedJavaScriptTestCoverage(
@@ -151,24 +217,70 @@ function playwrightTestTargets(args: string[], cwd: string, repoRoot: string): {
   return { ok: true, targets: uniqueSorted(targets) };
 }
 
-function hasCommandOption(args: string[], options: string[]): boolean {
-  return args.some((arg) => options.some((option) => arg === option || arg.startsWith(`${option}=`)));
-}
-
-function withoutCommandOptionValues(args: string[], options: string[]): string[] {
-  const remaining: string[] = [];
+function javaScriptTestTargets(
+  runner: Exclude<JavaScriptTestRunner, "playwright">,
+  args: string[],
+  cwd: string,
+  repoRoot: string
+): { ok: true; targets: string[]; requiresExplicitTarget: boolean } | { ok: false; reason: string } {
+  const neutralSwitches = new Set(
+    runner === "vitest"
+      ? ["--coverage", "--globals", "--isolate", "--no-isolate", "--silent", "--logHeapUsage"]
+      : runner === "jest"
+        ? ["--ci", "--coverage", "--detectOpenHandles", "--forceExit", "--logHeapUsage", "--runInBand", "--silent", "--verbose"]
+        : ["--test", "--experimental-test-coverage", "--test-force-exit"]
+  );
+  const neutralValueOptions = new Set(
+    runner === "vitest"
+      ? ["--bail", "--hookTimeout", "--maxWorkers", "--minWorkers", "--pool", "--reporter", "--retry", "--testTimeout"]
+      : runner === "jest"
+        ? ["--maxConcurrency", "--maxWorkers", "--reporters", "--testTimeout"]
+        : ["--test-concurrency", "--test-reporter", "--test-reporter-destination", "--test-timeout"]
+  );
+  const targets: string[] = [];
+  let requiresExplicitTarget = false;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
-    if (options.some((option) => arg.startsWith(`${option}=`))) {
+    if (arg === "--") {
       continue;
     }
-    if (options.includes(arg)) {
+    if (runner === "vitest" && index === 0 && arg === "run") {
+      continue;
+    }
+    if (runner === "vitest" && (arg === "--project" || arg.startsWith("--project="))) {
+      requiresExplicitTarget = true;
+      if (arg === "--project") {
+        if (!args[index + 1]) {
+          return { ok: false, reason: "Vitest project filter is missing its value" };
+        }
+        index += 1;
+      }
+      continue;
+    }
+    const inlineOption = arg.startsWith("-") && arg.includes("=") ? arg.slice(0, arg.indexOf("=")) : undefined;
+    if (inlineOption && neutralValueOptions.has(inlineOption)) {
+      continue;
+    }
+    if (neutralValueOptions.has(arg)) {
+      if (!args[index + 1]) {
+        return { ok: false, reason: `JavaScript test option ${arg} is missing its value` };
+      }
       index += 1;
       continue;
     }
-    remaining.push(arg);
+    if (neutralSwitches.has(arg)) {
+      continue;
+    }
+    if (arg.startsWith("-")) {
+      return { ok: false, reason: `JavaScript test option ${arg} has unsupported scope semantics` };
+    }
+    const target = normalizeCandidateTarget(arg, cwd, repoRoot);
+    if (!target || !/\.(?:test|spec)\.[cm]?[jt]sx?$/iu.test(target)) {
+      return { ok: false, reason: `JavaScript test selector ${arg} is not an explicit in-repository test path` };
+    }
+    targets.push(target);
   }
-  return remaining;
+  return { ok: true, targets: uniqueSorted(targets), requiresExplicitTarget };
 }
 
 function hasNonRunningJavaScriptTestArg(runner: JavaScriptTestRunner, args: string[]): boolean {

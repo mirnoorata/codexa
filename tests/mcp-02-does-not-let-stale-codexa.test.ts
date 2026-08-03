@@ -333,10 +333,10 @@ it("exposes bounded context tools with stale-index auto-refresh over stdio", asy
         decisionKernel?: { verification?: { testCount?: number; recommendedCommandCount?: number }; gapCount?: number };
       };
     };
-    expect(cleanProofCardData.actionability).toBe("needs_target");
-    expect(cleanProofCardData.data?.actionability).toBe("needs_target");
+    expect(cleanProofCardData.actionability).toBe("blocked");
+    expect(cleanProofCardData.data?.actionability).toBe("blocked");
     expect(cleanProofCardData.data?.delivery).toMatchObject({ effectiveFormat: "concise", resultUri: expect.stringMatching(/^codexa:\/\/repo\/mcp-results\//u) });
-    expect(cleanProofCardData.data?.decisionKernel?.verification).toMatchObject({ testCount: 0, recommendedCommandCount: 0 });
+    expect(cleanProofCardData.data?.decisionKernel?.verification).toMatchObject({ testCount: 1, recommendedCommandCount: 2 });
     expect(cleanProofCardData.data?.decisionKernel?.gapCount).toBeGreaterThan(0);
 
     const targetedProofCard = await client.callTool({ name: "proof_card", arguments: { files: ["src/index.ts"], diff: false, responseFormat: "detailed" } });
@@ -697,6 +697,13 @@ it("does not execute AutoVerify through MCP even when CODEXA_AUTOVERIFY is enabl
         arguments: { task: "change main safely", files: ["src/main.js"], saveSnapshot: true, taskId: "mcp-autoverify-no-exec", limit: 5, tokenBudget: 1000, responseFormat: "detailed" }
       });
       expect(JSON.stringify(changePlan)).toContain("Task snapshot: mcp-autoverify-no-exec");
+      expect(JSON.stringify(changePlan)).toContain("AutoVerify: enabled (full-access via env:CODEXA_AUTOVERIFY); trusted execution remains hook-post-edit only.");
+      expect((changePlan.structuredContent as { data?: { autoVerify?: unknown } }).data?.autoVerify).toMatchObject({
+        enabled: true,
+        mode: "full-access",
+        source: "env:CODEXA_AUTOVERIFY",
+        trustBoundary: "hook-post-edit-only"
+      });
       await writeFile(path.join(repo, "src/main.js"), "export function main() {\n  return 1;\n}\n", "utf8");
 
       const postEdit = await client.callTool({

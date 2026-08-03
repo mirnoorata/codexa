@@ -195,6 +195,14 @@ export interface FocusBriefData extends BaseQueryData {
   targetRoles?: QueryObject;
 }
 
+export interface ChangePlanAutoVerifyData extends QueryObject {
+  enabled: boolean;
+  mode: "read-only" | "full-access";
+  source: "env:CODEXA_AUTOVERIFY" | "env:CODEXA_AUTONOMY" | "user-repo-policy" | "user-default-policy" | "default";
+  trustBoundary: "hook-post-edit-only";
+  enableCommand?: string;
+}
+
 export interface ChangePlanData extends BaseQueryData {
   mode: "change_plan";
   editReadiness?: QueryObject;
@@ -208,6 +216,7 @@ export interface ChangePlanData extends BaseQueryData {
   plannedEditTargets?: string[];
   targetRoles?: QueryObject;
   reviewOwner?: string;
+  autoVerify?: ChangePlanAutoVerifyData;
   tests?: TestRecommendation[];
   recipes?: string[];
   requiredWorkflowChecks?: TaskSnapshotRequiredCheck[];

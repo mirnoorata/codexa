@@ -1,7 +1,7 @@
 import path from "node:path";
 import { focusBriefQuery, testPlanQuery } from "./queries.js";
 import { loadPolicyPack, type PolicyPackSummary } from "./policy-pack.js";
-import { loadTaskSnapshot } from "./task-snapshots.js";
+import { loadTaskSnapshot, type TaskSnapshotLoadResult } from "./task-snapshots.js";
 import { freshnessBanner } from "./query/runtime.js";
 import { createQuerySession } from "./query/session.js";
 import { evaluateRequiredChecks } from "./query/required-checks.js";
@@ -16,6 +16,7 @@ import {
 } from "./query/verification-display.js";
 import { pruneMissingFiles, prunedFilesGap } from "./query/prune-missing.js";
 import { verificationTrustTierOrNone } from "./query/verification/trust.js";
+import { latestCompletedPostEditReviewMatches } from "./post-edit-outcomes.js";
 import { readArchivedSessionMemoryEntries, readSessionMemory, sessionMemoryPointerDigest } from "./session-memory.js";
 import { evaluateVerificationArtifacts, loadVerificationArtifacts, type VerificationArtifactEvaluation } from "./verification-artifacts.js";
 import { loadTaskLifecycleState, pendingTaskLifecycleReplan, type TaskLifecycleState, type TaskLifecycleStop } from "./task-lifecycle.js";
@@ -40,6 +41,7 @@ import type {
 } from "./types.js";
 import { CURRENT_VERIFICATION_PROVENANCE as VERIFICATION_PROVENANCE } from "./types.js";
 import { limitText, uniqueSorted } from "./util.js";
+import { proofNextCommands } from "./prove-next-commands.js";
 
 export interface ProveOptions extends QueryOptions {
   task?: string;
@@ -132,6 +134,10 @@ export interface ProveLifecycle {
   invariantReviews: TaskLifecycleState["latestInvariantReviews"];
   attempts: TaskLifecycleState["attempts"];
   pendingStop?: TaskLifecycleStop;
+  resolvedAttemptDrift?: {
+    attemptId: string;
+    reason: string;
+  };
   error?: string;
 }
 
@@ -169,17 +175,30 @@ export async function proveQuery(repoRoot: string, options: ProveOptions = {}): 
   const task = options.task?.trim() || "Codexa proof card";
   const diff = options.diff ?? true;
   const session = await createQuerySession(repo, options);
-  const [focus, testPlan, snapshotLoad, policies] = await Promise.all([
-    focusBriefQuery(session, { task, diff, tokenBudget: Math.min(options.tokenBudget ?? 1800, 3000), limit: 8 }, options),
-    testPlanQuery(session, diff, { ...options, files: options.files, changeType: options.changeType ?? "unknown" }),
-    loadTaskSnapshot(repo, options.taskId),
-    loadPolicyPack(repo)
+  const focusPromise = focusBriefQuery(session, { task, diff, tokenBudget: Math.min(options.tokenBudget ?? 1800, 3000), limit: 8 }, options);
+  const policiesPromise = loadPolicyPack(repo);
+  const snapshotLoad = await loadTaskSnapshot(repo, options.taskId);
+  const proofFiles = (options.files?.length ?? 0) > 0 ? options.files : snapshotLoad.snapshot?.plannedEditTargets;
+  const [focus, testPlan, policies] = await Promise.all([
+    focusPromise,
+    testPlanQuery(session, diff, { ...options, files: proofFiles, changeType: options.changeType ?? "unknown" }),
+    policiesPromise
   ]);
   const focusData = asRecord(focus.data);
   const testData = asRecord(testPlan.data);
   const actionability = typeof testData.actionability === "string" ? testData.actionability : "verify";
-  const changedFiles = stringArray(testData.changedFiles);
-  const worktree = worktreeFromData(focusData.worktree, changedFiles, stringArray(focusData.worktreeDegradationReasons), Array.isArray(testData.changedFiles));
+  const planChangedFiles = stringArray(testData.changedFiles);
+  const changedFiles = diff && Array.isArray(testData.changedFiles) ? planChangedFiles : session.freshness.dirtyFiles;
+  const worktreeDegradationReasons = uniqueSorted([
+    ...stringArray(focusData.worktreeDegradationReasons),
+    ...session.worktreeDegradationReasons
+  ]);
+  const worktree = worktreeFromData(
+    focusData.worktree,
+    changedFiles,
+    worktreeDegradationReasons,
+    session.worktreeDegradationReasons.length === 0
+  );
   const snapshot = snapshotSummary(snapshotLoad.snapshot, {
     taskId: snapshotLoad.latestTaskId,
     reason: snapshotLoad.error ?? snapshotLoad.missingReason ?? snapshotLoad.blockedSnapshot?.reason,
@@ -192,7 +211,12 @@ export async function proveQuery(repoRoot: string, options: ProveOptions = {}): 
   const ledgerPreview = verificationLedgerFromData(testData.verificationLedgerPreview);
   const tests = testRecommendationsFromData(testData.tests);
   const decisionLog = await decisionLogForSnapshot(repo, snapshotLoad.snapshot, session.freshness);
-  const lifecycle = await lifecycleForProof(repo, snapshotLoad.snapshot);
+  const lifecycle = await lifecycleForProof(
+    repo,
+    snapshotLoad.snapshot,
+    snapshotLoad,
+    session.freshness
+  );
   // Historical artifact refs remain visible in the decision log, but proof
   // credit is explicit-only so stale prior runs cannot silently satisfy a new
   // handoff.
@@ -233,7 +257,7 @@ export async function proveQuery(repoRoot: string, options: ProveOptions = {}): 
   if (readFirstPrune.prunedCount > 0) {
     gaps.push(prunedFilesGap(readFirstPrune.prunedCount));
   }
-  const data: ProveData = {
+  const proofData: Omit<ProveData, "nextCommands"> = {
     mode: "proof_card",
     actionability,
     task,
@@ -255,9 +279,9 @@ export async function proveQuery(repoRoot: string, options: ProveOptions = {}): 
     lifecycle,
     policies,
     gaps,
-    trustPosture: trustPosture(),
-    nextCommands: nextCommands(repo, task, snapshot.status)
+    trustPosture: trustPosture()
   };
+  const data: ProveData = { ...proofData, nextCommands: proofNextCommands(proofData) };
   return {
     freshness: session.freshness,
     refresh: session.refresh,
@@ -267,8 +291,8 @@ export async function proveQuery(repoRoot: string, options: ProveOptions = {}): 
 }
 
 function renderProofCard(data: ProveData, freshness: FreshnessInfo, refresh: RefreshInfo | undefined): string {
-  const worktreeLine = data.worktree.degraded
-    ? `unknown (${data.worktree.degradedReasons.join("; ")})`
+  const worktreeLine = data.worktree.degraded || data.worktree.unknown
+    ? `unknown (${data.worktree.degradedReasons.join("; ") || "no authoritative worktree signal"})`
     : data.worktree.knownClean
       ? "clean"
       : `${data.worktree.dirtyFileCount ?? data.worktree.changedFiles.length} changed file(s)`;
@@ -279,33 +303,38 @@ function renderProofCard(data: ProveData, freshness: FreshnessInfo, refresh: Ref
     `Repo: ${data.repoRoot}`,
     `Worktree: ${worktreeLine}`,
     `Snapshot: ${formatSnapshot(data.snapshot)}`,
+    `Actionability: ${data.actionability}`,
+    `Status: ${proofStatus(data)}`,
+    `Proof gaps: ${data.gaps.length}`,
     "",
     "Read first:",
     ...formatReadFirst(data.readFirst),
-    "",
-    "Verification preview (not proof until reported):",
-    ...formatCommands(data.verification.recommendedCommands),
-    "",
-    "Verification ledger preview:",
-    ...formatVerificationLedger(data.verification.ledgerPreview),
-    "",
-    "Reported verification evidence:",
-    ...formatReportedEvidence(data.verification.reported),
-    "",
-    "Reported verification coverage:",
-    ...formatVerificationCoverage(data.verification.reported.coverage),
-    "",
-    "Reported verification ledger:",
-    ...formatReportedLedger(data.verification.reported),
-    "",
-    "External verification artifacts:",
-    ...formatVerificationArtifacts(data.verification.artifacts.selected),
-    "",
-    "Decision log:",
-    ...formatDecisionLog(data.decisionLog),
-    "",
-    "Task lifecycle:",
-    ...formatProofLifecycle(data.lifecycle),
+    ...proofSection(
+      "Verification preview (not proof until reported):",
+      data.verification.recommendedCommands.length > 0 ? formatCommands(data.verification.recommendedCommands) : []
+    ),
+    ...proofSection(
+      "Verification ledger preview:",
+      data.verification.ledgerPreview.length > 0 ? formatVerificationLedger(data.verification.ledgerPreview) : []
+    ),
+    ...proofSection(
+      "Reported verification evidence:",
+      data.verification.reported.hasEvidence ? formatReportedEvidence(data.verification.reported) : []
+    ),
+    ...proofSection(
+      "Reported verification coverage:",
+      data.verification.reported.hasEvidence ? formatVerificationCoverage(data.verification.reported.coverage) : []
+    ),
+    ...proofSection(
+      "Reported verification ledger:",
+      shouldRenderReportedLedger(data) ? formatReportedLedger(data.verification.reported) : []
+    ),
+    ...proofSection(
+      "External verification artifacts:",
+      data.verification.artifacts.selected.length > 0 ? formatVerificationArtifacts(data.verification.artifacts.selected) : []
+    ),
+    ...proofSection("Decision log:", shouldRenderDecisionLog(data.decisionLog) ? formatDecisionLog(data.decisionLog) : []),
+    ...proofSection("Task lifecycle:", shouldRenderLifecycle(data.lifecycle) ? formatProofLifecycle(data.lifecycle) : []),
     "",
     "Local policies:",
     ...formatPolicies(data.policies),
@@ -315,11 +344,53 @@ function renderProofCard(data: ProveData, freshness: FreshnessInfo, refresh: Ref
     "",
     "Remaining proof gaps:",
     ...formatGaps(data.gaps),
-    "",
-    "Next commands:",
-    ...data.nextCommands.map((command) => `- ${command}`)
+    ...(data.nextCommands.length > 0
+      ? ["", "Next commands:", ...data.nextCommands.map((command) => `- ${command}`)]
+      : data.actionability === "needs_target"
+        ? ["", "Next action:", "- Choose explicit file or symbol targets, or create a dirty diff, before requesting proof."]
+        : [])
   ];
   return limitText(lines.join("\n"), 8000);
+}
+
+function proofSection(title: string, lines: string[]): string[] {
+  return lines.length > 0 ? ["", title, ...lines] : [];
+}
+
+function shouldRenderReportedLedger(data: ProveData): boolean {
+  return data.verification.reported.hasEvidence || data.verification.artifacts.selected.length > 0;
+}
+
+function shouldRenderDecisionLog(decisionLog: ProveDecisionLog): boolean {
+  return decisionLog.status !== "not_recorded" || decisionLog.warnings.length > 0;
+}
+
+function shouldRenderLifecycle(lifecycle: ProveLifecycle): boolean {
+  return (
+    lifecycle.status !== "missing" ||
+    lifecycle.invariants.length > 0 ||
+    lifecycle.invariantReviews.length > 0 ||
+    lifecycle.attempts.length > 0 ||
+    Boolean(lifecycle.pendingStop) ||
+    Boolean(lifecycle.error)
+  );
+}
+
+function proofStatus(data: ProveData): "blocked" | "needs target" | "action required" | "ready" {
+  if (
+    data.freshness.stale ||
+    data.worktree.degraded ||
+    data.worktree.unknown ||
+    data.snapshot.status === "blocked" ||
+    data.lifecycle.status === "invalid" ||
+    data.lifecycle.pendingStop
+  ) {
+    return "blocked";
+  }
+  if (data.actionability === "needs_target") {
+    return "needs target";
+  }
+  return data.gaps.length > 0 || data.nextCommands.length > 0 ? "action required" : "ready";
 }
 
 function freshnessData(freshness: FreshnessInfo): ProveData["freshness"] {
@@ -385,11 +456,19 @@ function worktreeFromData(value: unknown, changedFiles: string[], fallbackDegrad
   if (!hasSignal) {
     return { knownClean: false, unknown: true, degraded: false, dirtyFileCount: 0, changedFiles: [], degradedReasons: [] };
   }
+  const dirtyFileCount = Math.max(
+    typeof shape.dirtyFileCount === "number" ? (shape.dirtyFileCount as number) : 0,
+    changedFilesKnown ? changedFiles.length : 0
+  );
   return {
-    knownClean: typeof shape.knownClean === "boolean" ? (shape.knownClean as boolean) : changedFiles.length === 0 && degradedReasons.length === 0,
+    knownClean:
+      shape.knownClean !== false &&
+      shape.degraded !== true &&
+      dirtyFileCount === 0 &&
+      degradedReasons.length === 0,
     unknown: false,
     degraded: typeof shape.degraded === "boolean" ? (shape.degraded as boolean) : degradedReasons.length > 0,
-    dirtyFileCount: typeof shape.dirtyFileCount === "number" ? (shape.dirtyFileCount as number) : changedFiles.length,
+    dirtyFileCount,
     changedFiles: changedFiles.slice(0, 120),
     degradedReasons
   };
@@ -643,6 +722,7 @@ function proofGaps(input: {
   return uniqueSorted([
     ...(input.freshness.stale ? [`index stale: ${input.freshness.reason}`] : []),
     ...(input.worktree.degraded ? input.worktree.degradedReasons.map((reason) => `worktree state unavailable: ${reason}`) : []),
+    ...(input.worktree.unknown ? ["worktree state unavailable: no authoritative worktree signal"] : []),
     ...(input.snapshot.status === "missing" ? [`no saved change-plan snapshot${input.snapshot.reason ? `: ${input.snapshot.reason}` : ""}`] : []),
     ...(input.snapshot.status === "blocked" ? [`latest change-plan snapshot blocked${input.snapshot.reason ? `: ${input.snapshot.reason}` : ""}`] : []),
     ...(input.policies.missing.length > 0 ? [`policy pack missing: ${input.policies.missing.join(", ")}`] : []),
@@ -667,6 +747,14 @@ function proofGaps(input: {
     ...(input.decisionLog.summaryHashValid === false ? ["task-bound decision log content differs from the plan-time canonical digest"] : []),
     ...(input.lifecycle.status === "invalid" ? [`task lifecycle state is invalid${input.lifecycle.error ? `: ${input.lifecycle.error}` : ""}`] : []),
     ...(input.lifecycle.pendingStop ? [`task lifecycle requires replan: ${input.lifecycle.pendingStop.reasons.join("; ")}`] : []),
+    ...(input.lifecycle.resolvedAttemptDrift
+      ? [`worktree changed since resolved post-edit review: ${input.lifecycle.resolvedAttemptDrift.attemptId}`]
+      : []),
+    ...(input.lifecycle.attempts.at(-1)?.attemptStatus === "resolved" &&
+    !input.reported.hasEvidence &&
+    input.artifacts.selected.length === 0
+      ? ["resolved lifecycle history is not explicit verification evidence in the current proof packet"]
+      : []),
     ...unresolvedPostEditReviewCoverageGaps(input.lifecycle),
     ...input.lifecycle.invariants.flatMap((invariant) => {
       const review = input.lifecycle.invariantReviews.find((entry) => entry.invariantId === invariant.id);
@@ -690,14 +778,64 @@ function unresolvedPostEditReviewCoverageGaps(lifecycle: ProveLifecycle): string
     .map((target) => `latest post-edit review is unresolved: ${target.replace(/^post-edit-review-scope:/u, "")}`);
 }
 
-async function lifecycleForProof(repoRoot: string, snapshot: TaskSnapshot | undefined): Promise<ProveLifecycle> {
-  if (!snapshot) return { status: "missing", invariants: [], invariantReviews: [], attempts: [] };
+async function lifecycleForProof(
+  repoRoot: string,
+  snapshot: TaskSnapshot | undefined,
+  snapshotLoad?: TaskSnapshotLoadResult,
+  freshness?: FreshnessInfo
+): Promise<ProveLifecycle> {
+  if (!snapshot) {
+    return snapshotLoad?.error?.includes("task lifecycle")
+      ? {
+          status: "invalid",
+          invariants: [],
+          invariantReviews: [],
+          attempts: [],
+          error: snapshotLoad.error
+        }
+      : { status: "missing", invariants: [], invariantReviews: [], attempts: [] };
+  }
   try {
     const state = await loadTaskLifecycleState(repoRoot, snapshot.taskId);
     const pendingStop = await pendingTaskLifecycleReplan(repoRoot, snapshot);
-    return state
-      ? { status: "loaded", planRevision: state.planRevision, invariants: state.invariants, invariantReviews: state.latestInvariantReviews, attempts: state.attempts.slice(-3), pendingStop }
-      : { status: "missing", planRevision: snapshot.planRevision, invariants: snapshot.invariants ?? [], invariantReviews: [], attempts: [], pendingStop };
+    if (!state) {
+      return {
+        status: "missing",
+        planRevision: snapshot.planRevision,
+        invariants: snapshot.invariants ?? [],
+        invariantReviews: [],
+        attempts: [],
+        pendingStop
+      };
+    }
+    const latestAttempt = state.attempts.at(-1);
+    const resolvedAttemptMatches =
+      latestAttempt?.attemptStatus !== "resolved" ||
+      (freshness !== undefined &&
+        (await latestCompletedPostEditReviewMatches({
+          repoRoot,
+          freshness,
+          taskId: snapshot.taskId,
+          planRevision: snapshot.planRevision ?? 1,
+          snapshotCreatedAt: snapshot.createdAt,
+          snapshotPublicationSequence: snapshot.publicationSequence
+        })));
+    const resolvedAttemptDrift =
+      latestAttempt?.attemptStatus === "resolved" && !resolvedAttemptMatches
+        ? {
+            attemptId: latestAttempt.attemptId,
+            reason: "latest completion outcome does not exactly match the current plan and workspace state"
+          }
+        : undefined;
+    return {
+      status: "loaded",
+      planRevision: state.planRevision,
+      invariants: state.invariants,
+      invariantReviews: state.latestInvariantReviews,
+      attempts: state.attempts.slice(-3),
+      pendingStop,
+      resolvedAttemptDrift
+    };
   } catch (error) {
     return {
       status: "invalid",
@@ -720,6 +858,9 @@ function formatProofLifecycle(lifecycle: ProveLifecycle): string[] {
       return `- ${invariant.id}: ${review?.status ?? "unreviewed"}; ${invariant.statement}`;
     }),
     ...lifecycle.attempts.map((attempt) => `- attempt ${attempt.attemptId}: ${attempt.attemptStatus}; ${attempt.failureSignals.length} failure signal(s); ${attempt.changedFiles.length} changed file(s)`),
+    ...(lifecycle.resolvedAttemptDrift
+      ? [`- drift: worktree changed after resolved attempt ${lifecycle.resolvedAttemptDrift.attemptId}`]
+      : []),
     ...(lifecycle.pendingStop ? lifecycle.pendingStop.reasons.map((reason) => `- stop: ${reason}`) : [])
   ];
 }
@@ -732,17 +873,6 @@ function trustPosture(): string[] {
     "verification trust is explicit: executed-by-autoverify > witnessed > artifact-corroborated > reported > none",
     "unauthenticated imported manifests remain reported evidence; artifact-corroborated is reserved for a future authenticated or witnessed producer lane",
     "repository policy text is bounded local evidence, not executable code"
-  ];
-}
-
-function nextCommands(repo: string, task: string, snapshotStatus: ProveData["snapshot"]["status"]): string[] {
-  const quotedTask = shellQuote(task);
-  return [
-    snapshotStatus === "loaded"
-      ? `codexa post-edit-review ${shellQuote(repo)} --task ${quotedTask} --ran-command "<command-you-ran>"`
-      : `codexa change-plan ${shellQuote(repo)} --task ${quotedTask} --save-snapshot`,
-    `codexa test-plan ${shellQuote(repo)} --diff`,
-    `codexa prove ${shellQuote(repo)} --task ${quotedTask} --diff`
   ];
 }
 
@@ -850,8 +980,4 @@ function asRecord(value: unknown): Record<string, unknown> {
 
 function stringArray(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\"'\"'")}'`;
 }

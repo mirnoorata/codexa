@@ -87,7 +87,7 @@ it("compacts events deterministically and drops resolved entries only after writ
     const archive = JSON.parse(await readFile(path.join(sessionDir, "compactions", compactions[0]), "utf8")) as {
       preCompactionDigest?: string;
       retainedEntryIds?: string[];
-      droppedEntries?: Array<{ id?: string; summary?: string; status?: string }>;
+      droppedEntries?: Array<{ id?: string; summary?: string; status?: string; sessionId?: string }>;
     };
     expect(archive.preCompactionDigest).toMatch(/^[a-f0-9]{64}$/u);
     expect(archive.retainedEntryIds).toHaveLength(1);
@@ -100,6 +100,23 @@ it("compacts events deterministically and drops resolved entries only after writ
       entryIds: (archive.droppedEntries ?? []).map((entry) => entry.id).filter((entry): entry is string => Boolean(entry))
     });
     expect(archived.map((entry) => entry.summary)).toContain("Resolved question.");
+    const foreignArchive = structuredClone(archive);
+    if (foreignArchive.droppedEntries?.[0]) {
+      foreignArchive.droppedEntries[0].sessionId = "sid-foreign";
+    }
+    await writeFile(
+      path.join(sessionDir, "compactions", compactions[0]),
+      `${JSON.stringify(foreignArchive, null, 2)}\n`,
+      "utf8"
+    );
+    const isolatedArchive = await readArchivedSessionMemoryEntries({
+      repoRoot: repo,
+      sessionId: "sid-compact",
+      entryIds: (foreignArchive.droppedEntries ?? [])
+        .map((entry) => entry.id)
+        .filter((entry): entry is string => Boolean(entry))
+    });
+    expect(isolatedArchive).toEqual([]);
     const events = (await readFile(path.join(sessionDir, "events.ndjson"), "utf8")).trim().split(/\r?\n/u);
     expect(events).toHaveLength(1);
     expect(events[0]).toContain("\"event\":\"compact\"");
