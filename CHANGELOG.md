@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.18.0](https://github.com/mirnoorata/codexa/compare/v0.17.1...v0.18.0) (2026-08-03)
+
+
+### Features
+
+* harden Codexa proof and runtime workflows ([511481c](https://github.com/mirnoorata/codexa/commit/511481c68831898c81c5cb984d7dc6b9f21e1d65))
+
+
+### Bug Fixes
+
+* close human workflow and MCP interop gaps ([9787258](https://github.com/mirnoorata/codexa/commit/9787258353656ae19e435e49a53e4f9927c6d673))
+* close PR review and artifact boundary gaps ([ca0b3c4](https://github.com/mirnoorata/codexa/commit/ca0b3c4cdc1af2b3efc06a34d7a1f624b61e0781))
+* **proof:** scope Cypress verification credit ([7aa2bf7](https://github.com/mirnoorata/codexa/commit/7aa2bf79e7f09f9a00e7987b17e28bc5af371151))
+
 ## [0.17.1](https://github.com/mirnoorata/codexa/compare/v0.17.0...v0.17.1) (2026-07-27)
 
 
