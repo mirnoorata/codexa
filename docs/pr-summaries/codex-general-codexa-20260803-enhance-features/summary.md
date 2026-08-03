@@ -3,19 +3,23 @@
 PR summary for `codex/enhance-features` against `main`.
 
 - Base: `834bd5e` (`v0.17.1`)
-- Source head before summary artifacts: `46104e9`
-- Source delta: 68 files, 5,016 insertions, 474 deletions
-- Commits: 3 Conventional Commits
+- Final source head before this evidence refresh: `01d204f`
+- Branch delta at that head: 88 files, 6,413 insertions, 598 deletions
+- Commits before this evidence refresh: 6 Conventional Commits
   - `d04c5c2` — `feat: harden Codexa proof and runtime workflows`
   - `5ef56da` — `fix: close human workflow and MCP interop gaps`
   - `46104e9` — `fix(proof): scope Cypress verification credit`
+  - `5afb683` — `docs: add enhancement PR summary`
+  - `9864579` — `docs: correct final gate evidence`
+  - `01d204f` — `fix: close PR review and artifact boundary gaps`
 
 ## Executive Outcome
 
 The sweep concentrated on the highest-ROI trust boundaries: proof authority,
-verification credit, durable local state, real multi-language workflows, MCP
-coexistence, hot-path bounds, and release supply-chain integrity. The result is
-a more deterministic completion system that fails closed when evidence is
+verification credit, durable local state, managed-artifact boundaries, real
+multi-language workflows, MCP coexistence, hot-path bounds, stable CI fan-out,
+and release supply-chain integrity. The result is a more deterministic
+completion system that fails closed when evidence or local provenance is
 ambiguous, survives concurrent and interrupted writers, and remains useful in
 ordinary Python, JavaScript, TypeScript, monorepo, nested-repository, and
 multi-MCP use.
@@ -34,6 +38,10 @@ every raw byte. Verification recipes did not cover enough real-world runner and
 package layouts. MCP cleanup could also mistake an unrelated Graphify server for
 Codexa when its executable path happened to contain the word `codexa`, while
 release automation still depended on floating action and publisher downloads.
+The final boundary sweep additionally found that generated files, parse caches,
+MCP resources, and outcome receipts needed one shared protection model against
+directory redirection, symlink/hardlink substitution, unsafe portable names,
+unbounded reads, partial writes, and repository-authored cache poisoning.
 
 ## Highest-ROI Adjustments
 
@@ -46,14 +54,15 @@ release automation still depended on floating action and publisher downloads.
 - Binds review authority to exact raw workspace content across dirty-to-commit
   transitions, nested repositories, line-ending normalization, file-mode
   changes, and status-hidden edits.
-- Credits only bounded, executable test scopes through command-classifier v6.
+- Credits only bounded, executable test scopes through command-classifier v7.
   Python unittest discovery, Node test globs, Playwright, and Cypress are
   supported; filtered, unsafe, unmatched, ambiguous, and outside-repository
   invocations fail closed.
-- Command-classifier v6 also keeps a bare `cypress run` uncredited because its
-  config-defined discovery cannot prove coverage of unrelated Jest/Vitest
-  recommendations; one explicit indexed `--spec` remains target-only evidence,
-  including conventional `*.cy.ts/js` Cypress filenames.
+- Runner provenance now travels with coverage, ledger, compaction, and required
+  checks. Cypress recommendations accept only Cypress evidence; generic
+  JavaScript, Jest, Vitest, Playwright, legacy, broad, fallback, and stale
+  coverage cannot receive Cypress credit. One explicit indexed `--spec`
+  remains target-only evidence, including conventional `*.cy.ts/js` filenames.
 
 ### 2. Real workflow coverage
 
@@ -70,7 +79,22 @@ release automation still depended on floating action and publisher downloads.
 - Recovers from interrupted log tails without trusting damaged evidence.
 - Maps non-portable session identifiers to deterministic filesystem-safe names.
 
-### 4. Bounded retrieval and portable artifacts
+### 4. Managed-artifact integrity
+
+- Centralizes component-wise repository containment and non-symlink directory
+  validation for all generated artifacts.
+- Publishes through exclusive random staging files and atomic rename, verifies
+  single-link regular-file identity, loops across partial writes, and bounds
+  reads and directory-scan concurrency.
+- Excludes redirected, hardlinked, malformed, oversized, and non-portable
+  module/MCP/outcome entries from both direct reads and advertised listings.
+- Treats the parse cache as local derived state only: a force-tracked cache or
+  any failed Git provenance inspection is neither read nor overwritten, so a
+  repository author cannot inject valid-hash forged parse facts.
+- Restricts index publication to the managed `.codex/codebase` boundary and
+  safely recovers the newest valid backup without following external state.
+
+### 5. Bounded retrieval and portable artifacts
 
 - Uses bounded compiled matcher caches with parity between search and retrieval
   scoring.
@@ -78,11 +102,14 @@ release automation still depended on floating action and publisher downloads.
 - Gives generated module artifacts deterministic, collision-safe filenames even
   when names collapse to the same slug or run on case-insensitive filesystems.
 
-### 5. MCP and release integrity
+### 6. MCP, CI, and release integrity
 
 - Preserves unrelated Graphify MCP configuration during Codexa initialization.
 - Compiles the main development gate once instead of rebuilding for each test
   phase.
+- Caps process-heavy Vitest file fan-out at two workers and gives the escaped-
+  pipe fixture a realistic startup window, eliminating scheduler-induced false
+  deadline failures without relaxing production timeout assertions.
 - Pins GitHub Actions to immutable commits.
 - Pins MCP Publisher by version and SHA-256 before extraction.
 
@@ -90,18 +117,18 @@ release automation still depended on floating action and publisher downloads.
 
 ### Deterministic release gate
 
-The final source head completed compile/build and all 117 Claude command/hook
-integration smokes. In the constrained local sandbox, the 102-file built suite
-reported 1,184 passing tests, 1 intentional skip, and 2 wall-clock-only
-failures: process-tree cleanup exceeded a 12-second ceiling and concurrent lock
-handoff exceeded 20 seconds. Both affected files passed immediately in an
-isolated rerun (4/4 tests). No behavioral assertion remained failing. The exact
-GitHub Check run on the pushed head is therefore the authoritative full-suite
-merge gate.
+The exact clean source head `01d204f` completed the full
+`npm run security:check` gate. Compile/build, source hygiene, privacy, and all 117 Claude
+command/hook integration smokes passed. The bounded two-worker built suite
+passed 103/103 files with 1,206 tests passing and 1 intentional platform skip;
+no timing waiver or isolated-rerun substitution is used for the final result.
 
 - npm audit reported 0 vulnerabilities.
-- Clean public snapshot, package hygiene, plugin hygiene, startup-context
-  budget, and the 31-check packaged-install smoke passed.
+- The clean one-commit public snapshot, package hygiene, plugin hygiene, and
+  startup-context budget passed.
+- The packed npm tarball installed into a fresh consumer and passed all 31
+  smoke checks, including CLI, review, hooks, direct MCP startup, plugin MCP
+  startup, Claude Code launcher startup, and workspace-focus routing.
 - The eval gate passed 21/21 scenarios with score 1 and no raw-rg wins.
 - The exact CI-scaled benchmark passed 11/12 metrics locally; one `cli.repo_map`
   p95 sample was 4.725 seconds against the 4.5-second shared-runner ceiling
@@ -115,7 +142,8 @@ merge gate.
 ### Human workflow simulations
 
 Four disposable repositories were changed, tested, committed, and reopened as
-a developer would use them:
+a developer would use them. They were then re-indexed and strict-reopened again
+with final-head `01d204f`:
 
 - Python `src/` layout: 5 unittest cases passed with the repository-declared
   `PYTHONPATH=src` recipe.
@@ -124,21 +152,21 @@ a developer would use them:
 - JavaScript service with Graphify: 6 Node test cases passed after pricing and
   order-validation changes.
 
-Strict reopen checks correctly rejected two indexes whose HEAD changed after a
-commit, emitted the exact `codexa index` recovery action, and passed after the
-indexes were refreshed. The other two repositories reopened with fresh,
-identity-matched indexes. This exercises the intended fail-closed path rather
-than hiding staleness.
+The final rerun produced fresh, identity-matched indexes with zero parser errors
+for all four repositories. Earlier commit/reopen phases correctly rejected two
+indexes whose HEAD changed after a commit, emitted the exact `codexa index`
+recovery action, and passed after refresh. This exercises the intended
+fail-closed path rather than hiding staleness.
 
 ### Graphify MCP interoperation
 
 The same project configuration retained both Graphify and Codexa server blocks.
-Fresh stdio client sessions initialized both servers, listed their tools, and
-made real calls:
+Fresh final-head stdio client sessions initialized both servers, listed their
+tools, and made real calls:
 
 - Graphify `graph_stats`: 26 nodes and 32 edges; no tool error.
-- Codexa `search("shipping threshold")`: returned
-  `raw_search_sufficient` and a content-addressed detailed result; no tool error.
+- Codexa `change_plan`: returned `edit_ready`, saved the task snapshot, and
+  supplied runner-aware verification and dependency checks; no tool error.
 
 The current Graphify Python environment required an `mcp<2` constraint because
 of Graphify's upstream dependency compatibility. That workaround is independent
@@ -153,11 +181,18 @@ performance bounds, compatibility, and release operations.
 
 The first independent pass found one high-severity over-credit path: a bare
 `cypress run` could cover unrelated JavaScript recommendations. Commit
-`46104e9` closes it fail-closed, preserves explicit `--spec` credit, adds
-conventional `*.cy.ts/js` recognition, bumps classifier provenance, and adds
-direct/script/candidate-command regression coverage. Re-review found no
-remaining critical, high, medium, or low findings: residual score 0, merge
-recommended.
+`46104e9` closed the broad case. Automated PR review then found two additional
+gaps: Cypress files could still receive generic JavaScript credit, and a stale
+`.md` directory could reach file deletion logic. The final adversarial boundary
+review expanded this into one shared managed-artifact fix and found a
+medium-severity force-tracked parse-cache poisoning path. Commit `01d204f`
+closes every reproduced path with exact regressions.
+
+Three independent final reviews covered Cypress provenance, managed-artifact
+boundaries, and overall risk. Their final result is 0 critical, 0 high, 0
+medium, 0 low; residual score 0 and merge recommended. Static symlink/hardlink,
+tracked-cache poison, Windows-invalid names, MCP direct/list reads, recovery,
+outcome authority, stale provenance, and exact runner coverage were exercised.
 
 ### Operational Watch Items (Not Scored Findings)
 
@@ -166,6 +201,9 @@ recommended.
   state-bound verification manifest.
 - Exact identity and review scans are bounded, so unusually large or actively
   mutating worktrees fail closed instead of claiming readiness.
+- Same-user concurrent path substitution remains a theoretical operating-system
+  boundary where Node lacks directory-handle/openat publication APIs; no static
+  repository exploit remains.
 - Session reconciliation can surface recovery warnings for damaged legacy local
   state rather than silently trusting it.
 - Commit-pinned actions and publisher tools require deliberate maintenance
@@ -192,8 +230,3 @@ Before publication, revert the feature commits and regenerate local Codexa
 cache/state as needed. After npm publication, do not overwrite or silently yank
 the immutable version: revert on `main`, publish a corrective patch, and
 deprecate the affected version only if its behavior is materially unsafe.
-
-## Summary Artifacts
-
-- Markdown: `docs/pr-summaries/codex-general-codexa-20260803-enhance-features/summary.md`
-- PDF: `docs/pr-summaries/codex-general-codexa-20260803-enhance-features/summary.pdf`
