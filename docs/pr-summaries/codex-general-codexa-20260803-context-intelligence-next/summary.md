@@ -3,13 +3,16 @@
 PR summary for `codex/context-intelligence-next` against `main`.
 
 - Base: `c306c1d` (`v0.18.0`)
-- Validated local source head: `0474276`
-- Published source head: `869257e`
-- Source tree identity: `989bb4b0fffdd821a005feeeadb2f48d91abcada` locally and on GitHub
-- Source delta before this evidence commit: 50 files, 4,473 insertions, 228 deletions
-- Source commits: 2 Conventional Commits
+- Validated feature source head: `0474276`; published as `869257e`
+- CI hardening head: `41118bb`; published as `9c29408`
+- Feature source tree: `989bb4b0fffdd821a005feeeadb2f48d91abcada` locally and on GitHub
+- CI hardening tree: `669241b02638c0a7c0c175ace6f51567a2a63d7e` locally and on GitHub
+- Branch delta before this evidence refresh: 54 files, 4,661 insertions, 229 deletions
+- Commits before this evidence refresh: 4 Conventional Commits
   - `6591e60` — `feat: add bounded causal change intelligence`
   - `0474276` — `test: accept SDK validation wording`
+  - `d18637f` — `docs: add context intelligence PR summary`
+  - `41118bb` — `fix(bootstrap): preserve first terminal condition`
 
 ## Executive Outcome
 
@@ -129,6 +132,15 @@ Additional release evidence:
 The SDK update initially exposed one brittle assertion that accepted only the
 old validator wording. `0474276` widened that test to accept both stable wording
 forms, after which the complete security gate passed without a waiver.
+
+The first PR run then exposed a pre-existing Windows bootstrap race: an output
+cap could start process-tree termination, but the still-armed stage timer could
+fire during slow `taskkill` teardown and relabel the earlier output-cap failure
+as a timeout. `41118bb` preserves the first terminal condition and makes the
+regression deterministic by forcing teardown across the timer boundary. The
+focused test passed 3/3 with typecheck, lint, release-path verification, and
+`git diff --check`; independent review found no P0–P2 issue. No deadline or log
+bound was relaxed.
 
 ## Risk-Budgeted Review
 
