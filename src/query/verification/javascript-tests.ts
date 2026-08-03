@@ -163,7 +163,7 @@ export function looksLikeExplicitTestSelector(
   if (language === "python") {
     return /(?:^|[\\/])tests?(?:[\\/]|$)/iu.test(clean) || /(?:^|[\\/])[^\\/]+\.py$/iu.test(clean) || /^[^\\/]+\.py$/iu.test(clean);
   }
-  return /(?:^|[\\/])[^\\/]+\.(?:test|spec)\.[cm]?[jt]sx?$/iu.test(clean) || /^[^\\/]+\.(?:test|spec)\.[cm]?[jt]sx?$/iu.test(clean);
+  return /(?:^|[\\/])[^\\/]+\.(?:test|spec|cy)\.[cm]?[jt]sx?$/iu.test(clean) || /^[^\\/]+\.(?:test|spec|cy)\.[cm]?[jt]sx?$/iu.test(clean);
 }
 
 export function addPlaywrightCommandCoverage(
@@ -231,7 +231,14 @@ export function addCypressCommandCoverage(
   }
   const runArgs = args.slice(1);
   if (runArgs.length === 0) {
-    ctx.addCoverage({ kind: "javascript-tests", command: commandText, source, scope: cwd, details: args });
+    ctx.addCoverage({
+      kind: "unknown",
+      command: commandText,
+      source: "Cypress run lacks an explicit indexed --spec test path",
+      confidence: "derived",
+      scope: cwd,
+      details: args
+    });
     return;
   }
   const spec =
@@ -241,7 +248,7 @@ export function addCypressCommandCoverage(
         ? runArgs[0].slice("--spec=".length)
         : undefined;
   const target = spec ? normalizeCandidateTarget(spec, cwd, ctx.repoRoot) : undefined;
-  if (!target || !/\.(?:test|spec)\.[cm]?[jt]sx?$/iu.test(target)) {
+  if (!target || !/\.(?:test|spec|cy)\.[cm]?[jt]sx?$/iu.test(target)) {
     ctx.addCoverage({
       kind: "unknown",
       command: commandText,
