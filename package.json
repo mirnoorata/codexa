@@ -83,7 +83,7 @@
     "zod": "4.4.3"
   },
   "devDependencies": {
-    "@types/node": "22.20.0",
+    "@types/node": "22.20.1",
     "tsx": "4.23.0",
     "vitest": "4.1.9"
   },
