@@ -8,8 +8,9 @@ import { verificationLedgerForPostEdit } from "./verification.js";
 import { ensureQuerySession, type QuerySession, type QuerySessionInput } from "./session.js";
 import { isCodexaControlPath } from "./worktree.js";
 import { isTaskSnapshot, loadTaskSnapshot } from "../task-snapshots.js";
-import type { ChangeType, ChangedFileEntry, CodexaIndex, QueryOptions, QueryResult, TaskSnapshot, TestRecommendation, VerificationCommandReport, VerificationCoverage, VerificationLedgerEntry } from "../types.js";
+import type { ChangeEvidenceBundleV1, ChangeType, ChangedFileEntry, CodexaIndex, QueryOptions, QueryResult, TaskSnapshot, TestRecommendation, VerificationCommandReport, VerificationCoverage, VerificationLedgerEntry } from "../types.js";
 import { isSubpath, limitText, normalizePath, uniqueSorted } from "../util.js";
+import { buildChangeEvidenceChains, formatChangeEvidenceChains } from "./change-plan/evidence-chains.js";
 
 const MAX_REF_LENGTH = 256;
 const MAX_CHANGED_FILES = 1_000;
@@ -71,6 +72,7 @@ export interface ChangeReviewData {
     truncated: boolean;
     affectedFiles: Array<{ path: string; depth: number; tier: string; reasons: string[]; sourceFiles: string[] }>;
   };
+  evidenceChains: ChangeEvidenceBundleV1;
   plan: {
     status: "loaded" | "not_requested" | "unavailable";
     source?: "local" | "portable";
@@ -133,6 +135,14 @@ export async function changeReviewQuery(input: QuerySessionInput, reviewInput: C
   const recommendedTests = recommendTests(session.index, changedFiles, session.repoRoot, changeType).slice(0, 40).map((test) => portableTestRecommendation(test, session.repoRoot));
   const impact = aggregateImpact(session.index, indexedChanged);
   const plan = await reviewPlan(session.repoRoot, reviewInput, entries, mergeBaseCommit);
+  const evidenceChains = buildChangeEvidenceChains({
+    index: session.index,
+    task: `Committed change ${mergeBaseCommit}...${headCommit}`,
+    anchors: rankCommittedEvidenceAnchors(session.index, indexedChanged, impact).map((filePath) => ({ path: filePath, authority: "committed-change" as const })),
+    editTargets: plan.status === "loaded" ? plan.plannedFiles : [],
+    tests: recommendedTests,
+    freshness: session.freshness
+  });
   const commandReports = boundedCommandReports(reviewInput.ranCommandReports ?? []);
   const ranCommands = boundedReportedCommands([
     ...(reviewInput.ranCommands ?? []),
@@ -192,6 +202,7 @@ export async function changeReviewQuery(input: QuerySessionInput, reviewInput: C
     identity: { baseRef, headRef, baseCommit, headCommit, mergeBaseCommit, indexHeadCommit, comparison: "merge-base...head" },
     change: { changedFileCount: entries.length, changedFiles, entries, indexedChanged, unindexedChanged, ...stats },
     impact,
+    evidenceChains,
     plan,
     verification: {
       recommendedTests,
@@ -229,7 +240,10 @@ export function renderChangeReviewText(data: ChangeReviewData): string {
     "",
     "Recommended tests:",
     ...(data.verification.recommendedTests.length > 0 ? data.verification.recommendedTests.slice(0, 30).map((test) => `- ${safeDisplay(test.path)}${test.command ? `: ${safeDisplay(test.command)}` : ""}`) : ["- none"]),
-    ...(data.nextActions.length > 0 ? ["", "Next actions:", ...data.nextActions.map((action) => `- ${safeDisplay(action)}`)] : [])
+    ...(data.nextActions.length > 0 ? ["", "Next actions:", ...data.nextActions.map((action) => `- ${safeDisplay(action)}`)] : []),
+    "",
+    "Causal change evidence:",
+    ...formatChangeEvidenceChains(data.evidenceChains).map(safeDisplay)
   ].join("\n");
 }
 
@@ -249,6 +263,9 @@ export function renderChangeReviewMarkdown(data: ChangeReviewData): string {
     "",
     "### Recommended tests",
     ...(data.verification.recommendedTests.length > 0 ? data.verification.recommendedTests.slice(0, 30).map((test) => `- \`${escapeMarkdownCode(test.path)}\`${test.command ? `: \`${escapeMarkdownCode(test.command)}\`` : ""}`) : ["- None"]),
+    "",
+    "### Causal change evidence",
+    ...formatChangeEvidenceChains(data.evidenceChains).map((line) => escapeMarkdownCell(line)),
     ""
   ].join("\n");
 }
@@ -347,6 +364,24 @@ function aggregateImpact(index: CodexaIndex, changedFiles: string[]): ChangeRevi
   }
   const affectedFiles = [...aggregated.values()].sort((left, right) => tierRank(left.tier) - tierRank(right.tier) || left.depth - right.depth || left.path.localeCompare(right.path)).slice(0, 200);
   return { affectedFileCount: aggregated.size, sourceFileCount: changedFiles.length, analyzedSourceFileCount: analyzedSources.length, truncated: analyzedSources.length < changedFiles.length, affectedFiles };
+}
+
+function rankCommittedEvidenceAnchors(index: CodexaIndex, changedFiles: string[], impact: ChangeReviewData["impact"]): string[] {
+  const files = new Map(index.files.map((file) => [file.path, file]));
+  const impactReach = new Map(changedFiles.map((filePath) => [filePath, 0]));
+  for (const affected of impact.affectedFiles) {
+    for (const source of affected.sourceFiles) {
+      if (impactReach.has(source)) impactReach.set(source, (impactReach.get(source) ?? 0) + 1);
+    }
+  }
+  return [...changedFiles].sort((left, right) => {
+    const leftFile = files.get(left);
+    const rightFile = files.get(right);
+    return (rightFile?.riskScore ?? 0) - (leftFile?.riskScore ?? 0)
+      || (impactReach.get(right) ?? 0) - (impactReach.get(left) ?? 0)
+      || (rightFile?.rank ?? 0) - (leftFile?.rank ?? 0)
+      || left.localeCompare(right);
+  });
 }
 
 async function reviewPlan(repoRoot: string, input: ChangeReviewInput, entries: ChangedFileEntry[], mergeBaseCommit: string): Promise<ChangeReviewData["plan"]> {

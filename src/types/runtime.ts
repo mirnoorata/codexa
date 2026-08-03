@@ -2,6 +2,8 @@ import type { CodexaFact, FileFact, GraphEdgeFact, ImportEdgeFact, LanguageId, M
 
 export interface FreshnessInfo {
   schemaVersion: 1;
+  /** Absent only on readable legacy schema-v1 bundles that require rebuilding. */
+  indexRevision?: number;
   snapshotId: string;
   repoRoot: string;
   gitRoot: string | null;
@@ -28,6 +30,8 @@ export interface FreshnessInfo {
 
 export interface CodexaIndex {
   schemaVersion: 1;
+  /** Absent only on readable legacy schema-v1 bundles that require rebuilding. */
+  indexRevision?: number;
   snapshot: RepoSnapshotFact;
   freshness: FreshnessInfo;
   files: FileFact[];

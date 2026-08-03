@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { acquireCacheLock } from "./cache-lock.js";
+import { CODEXA_INDEX_REVISION, CODEXA_INDEX_SCHEMA_VERSION } from "./index-revision.js";
 import { ensureSafeManagedStateDirectory } from "./init-portability.js";
 import { isManagedArtifactSegment, readManagedArtifactText, requireManagedArtifactDirectory } from "./managed-artifacts.js";
 import { discoverRepoFreshness } from "./repo-files.js";
@@ -29,6 +30,7 @@ import type {
 import { mapLimit, stableId } from "./util.js";
 
 export const CODEBASE_DIR = ".codex/codebase";
+export { CODEXA_INDEX_REVISION, CODEXA_INDEX_SCHEMA_VERSION } from "./index-revision.js";
 export { persistIndex, writeIndexBundle } from "./indexer/artifact-writing.js";
 const INDEX_LOCK_DIR = ".codex/cache/codexa-index.lock";
 const INDEX_LOCK_STALE_MS = 120_000;
@@ -115,10 +117,12 @@ function parseStage(): IndexPipelineStage<BuildIndexPipelineContext> {
       const parsed = parsedSources.parsed;
       const aliases = await loadImportAliases(context.repoRoot, discovered.files.map((file) => file.path));
       const index: CodexaIndex = {
-        schemaVersion: 1,
+        schemaVersion: CODEXA_INDEX_SCHEMA_VERSION,
+        indexRevision: CODEXA_INDEX_REVISION,
         snapshot,
         freshness: {
-          schemaVersion: 1,
+          schemaVersion: CODEXA_INDEX_SCHEMA_VERSION,
+          indexRevision: CODEXA_INDEX_REVISION,
           snapshotId,
           repoRoot: context.repoRoot,
           gitRoot: discovered.git.gitRoot,
@@ -403,7 +407,7 @@ async function recoverIndexBundle(repoRoot: string, outputDir: string): Promise<
 
 function normalizeLoadedIndex(index: Partial<CodexaIndex>): CodexaIndex {
   if (
-    index.schemaVersion !== 1 ||
+    index.schemaVersion !== CODEXA_INDEX_SCHEMA_VERSION ||
     !index.snapshot ||
     !index.freshness ||
     !Array.isArray(index.files) ||
@@ -417,8 +421,16 @@ function normalizeLoadedIndex(index: Partial<CodexaIndex>): CodexaIndex {
   ) {
     throw new Error("Codexa index bundle is incomplete or unsupported");
   }
+  const indexRevision = normalizeStoredIndexRevision(index.indexRevision, "index");
+  const freshness = normalizeLoadedFreshness(index.freshness);
+  // A schema-v1 bundle remains readable when the revision is absent, but the
+  // nested freshness revision is authoritative only when both persisted
+  // copies agree. Any legacy or torn publication therefore becomes stale.
+  const consistentFreshnessRevision = indexRevision === freshness.indexRevision ? indexRevision : undefined;
   return {
     ...(index as CodexaIndex),
+    indexRevision,
+    freshness: { ...freshness, indexRevision: consistentFreshnessRevision },
     graphEdges: index.graphEdges ?? [],
     workflows: index.workflows ?? []
   };
@@ -426,7 +438,7 @@ function normalizeLoadedIndex(index: Partial<CodexaIndex>): CodexaIndex {
 
 function normalizeLoadedFreshness(freshness: Partial<FreshnessInfo>): FreshnessInfo {
   if (
-    freshness.schemaVersion !== 1 ||
+    freshness.schemaVersion !== CODEXA_INDEX_SCHEMA_VERSION ||
     typeof freshness.snapshotId !== "string" ||
     typeof freshness.repoRoot !== "string" ||
     typeof freshness.indexedAt !== "string" ||
@@ -443,7 +455,20 @@ function normalizeLoadedFreshness(freshness: Partial<FreshnessInfo>): FreshnessI
   ) {
     throw new Error("Codexa freshness bundle is incomplete or unsupported");
   }
-  return freshness as FreshnessInfo;
+  return {
+    ...(freshness as FreshnessInfo),
+    indexRevision: normalizeStoredIndexRevision(freshness.indexRevision, "freshness")
+  };
+}
+
+function normalizeStoredIndexRevision(value: unknown, artifact: "index" | "freshness"): number | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (!Number.isSafeInteger(value) || (value as number) < 1) {
+    throw new Error(`Codexa ${artifact} index revision is invalid`);
+  }
+  return value as number;
 }
 
 export async function getFreshness(repoRoot: string, index?: CodexaIndex | null, options: { recover?: boolean } = {}): Promise<FreshnessInfo> {

@@ -57,6 +57,32 @@ export function compactContextData(data: unknown): unknown {
   };
 }
 
+export function compactSnapshotForData(snapshot: TaskSnapshot | undefined): unknown {
+  if (!snapshot) return undefined;
+  const evidenceGaps = snapshot.evidenceChains
+    ? new Set([...snapshot.evidenceChains.gaps, ...snapshot.evidenceChains.chains.flatMap((chain) => chain.gaps)]).size
+    : 0;
+  return {
+    taskId: snapshot.taskId, planRevision: snapshot.planRevision, publicationSequence: snapshot.publicationSequence,
+    createdAt: snapshot.createdAt,
+    origin: snapshot.origin,
+    changeType: snapshot.changeType,
+    plannedEditTargets: limitArray(snapshot.plannedEditTargets, 30),
+    plannedFiles: limitArray(snapshot.plannedFiles, 40),
+    plannedTests: limitArray(snapshot.plannedTests, 20),
+    evidenceChains: snapshot.evidenceChains
+      ? {
+          schemaVersion: snapshot.evidenceChains.schemaVersion,
+          fingerprint: snapshot.evidenceChains.fingerprint,
+          chainCount: snapshot.evidenceChains.chains.length,
+          gapCount: evidenceGaps
+        }
+      : undefined,
+    requiredWorkflowCheckCount: snapshot.requiredWorkflowChecks.length,
+    requiredDependencyCheckCount: snapshot.requiredDependencyChecks.length
+  };
+}
+
 export function hasRelevantVerificationEvidence(input: {
   verificationLedger: VerificationLedgerEntry[];
   verificationCoverage: VerificationCoverage[];
@@ -158,4 +184,8 @@ function normalizeReviewPath(value: string): string {
   const normalized = value.replace(/\\/gu, "/").replace(/^\.\/+/u, "");
   const collapsed = path.posix.normalize(normalized);
   return collapsed === "." ? "." : collapsed.replace(/^\/+/u, "");
+}
+
+export function limitArray<T>(value: T[], limit: number): T[] {
+  return value.slice(0, limit);
 }

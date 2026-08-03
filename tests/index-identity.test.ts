@@ -5,7 +5,8 @@ import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { afterEach, describe, expect, it } from "vitest";
-import { buildIndex } from "../src/indexer.js";
+import { buildIndex, getFreshness } from "../src/indexer.js";
+import { CODEXA_INDEX_REVISION } from "../src/index-revision.js";
 import { findContextQuery, statusQuery } from "../src/queries.js";
 
 const cleanupPaths: string[] = [];
@@ -15,6 +16,36 @@ afterEach(async () => {
 });
 
 describe("index checkout identity", () => {
+  it("auto-refreshes an unchanged readable legacy index revision", async () => {
+    const repo = await createRepo("codexa-identity-revision-");
+    await buildIndex({ repoRoot: repo });
+    const head = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+    const indexPath = path.join(repo, ".codex/codebase/index.json");
+    const freshnessPath = path.join(repo, ".codex/codebase/freshness.json");
+    const legacyIndex = JSON.parse(await readFile(indexPath, "utf8"));
+    const legacyFreshness = JSON.parse(await readFile(freshnessPath, "utf8"));
+    delete legacyIndex.indexRevision;
+    delete legacyIndex.freshness.indexRevision;
+    legacyIndex.symbols = [];
+    delete legacyFreshness.indexRevision;
+    await writeFile(indexPath, `${JSON.stringify(legacyIndex)}\n`, "utf8");
+    await writeFile(freshnessPath, `${JSON.stringify(legacyFreshness, null, 2)}\n`, "utf8");
+
+    const standaloneFreshness = await getFreshness(repo, undefined, { recover: false });
+    expect(standaloneFreshness).toMatchObject({ stale: true, reason: "index-revision-changed", headCommit: head });
+    const status = await statusQuery(repo, { recover: false });
+    expect(status.freshness).toMatchObject({ stale: true, reason: "index-revision-changed", headCommit: head });
+
+    const repaired = await findContextQuery(repo, "identityValue", 5, { autoRefresh: true });
+    expect(repaired.freshness).toMatchObject({ stale: false, indexRevision: CODEXA_INDEX_REVISION, headCommit: head });
+    expect(repaired.text).toContain("auto-refreshed from index-revision-changed");
+    expect(repaired.text).toContain("identityValue");
+    const rebuiltIndex = JSON.parse(await readFile(indexPath, "utf8"));
+    const rebuiltFreshness = JSON.parse(await readFile(freshnessPath, "utf8"));
+    expect(rebuiltIndex).toMatchObject({ indexRevision: CODEXA_INDEX_REVISION, freshness: { indexRevision: CODEXA_INDEX_REVISION } });
+    expect(rebuiltFreshness).toMatchObject({ indexRevision: CODEXA_INDEX_REVISION, stale: false, headCommit: head });
+  });
+
   it("rejects a stale HEAD without auto-refresh and repairs it when enabled", async () => {
     const repo = await createRepo("codexa-identity-head-");
     await buildIndex({ repoRoot: repo });

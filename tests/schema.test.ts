@@ -4,6 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { buildIndex, buildIndexLocked, loadIndex } from "../src/indexer.js";
+import { CODEXA_INDEX_REVISION } from "../src/index-revision.js";
 import { statusQuery } from "../src/queries.js";
 import { CURRENT_VERIFICATION_PROVENANCE } from "../src/types.js";
 
@@ -29,31 +30,40 @@ describe("Codexa schema contracts", () => {
     const facts = (await readFile(path.join(codebaseDir, "facts.ndjson"), "utf8")).trim().split(/\r?\n/u).map((line) => JSON.parse(line));
 
     expect(index.schemaVersion).toBe(1);
+    expect(index.indexRevision).toBe(CODEXA_INDEX_REVISION);
     expect(freshness.schemaVersion).toBe(1);
+    expect(freshness.indexRevision).toBe(CODEXA_INDEX_REVISION);
     expect(relationalPackets.schemaVersion).toBe(1);
     expect(relationalGraph.schemaVersion).toBe(1);
     expect(summaryPrompts.every((prompt) => prompt.schemaVersion === 1)).toBe(true);
     expect(index.freshness.schemaVersion).toBe(1);
+    expect(index.freshness.indexRevision).toBe(CODEXA_INDEX_REVISION);
     expect(index.graphEdges).toBeInstanceOf(Array);
     expect(index.workflows).toBeInstanceOf(Array);
     expect(facts.length).toBeGreaterThan(0);
     expect(facts.every((fact) => typeof fact.id === "string" && typeof fact.type === "string" && fact.snapshotId === index.freshness.snapshotId)).toBe(true);
   });
 
-  it("loads older v1 bundles that predate graph and workflow arrays", async () => {
+  it("loads older v1 bundles as readable but stale compatibility inputs", async () => {
     const repo = await createSchemaFixtureRepo();
     await buildIndex({ repoRoot: repo });
 
     const indexPath = path.join(repo, ".codex/codebase/index.json");
     const index = JSON.parse(await readFile(indexPath, "utf8"));
+    delete index.indexRevision;
+    delete index.freshness.indexRevision;
     delete index.graphEdges;
     delete index.workflows;
     await writeFile(indexPath, `${JSON.stringify(index, null, 2)}\n`, "utf8");
 
     const loaded = await loadIndex(repo);
     expect(loaded?.schemaVersion).toBe(1);
+    expect(loaded?.indexRevision).toBeUndefined();
+    expect(loaded?.freshness.indexRevision).toBeUndefined();
     expect(loaded?.graphEdges).toEqual([]);
     expect(loaded?.workflows).toEqual([]);
+    const status = await statusQuery(repo, { recover: false });
+    expect(status.freshness).toMatchObject({ stale: true, reason: "index-revision-changed" });
   });
 
   it("reports a corrupt index bundle without recovering or trusting detached freshness metadata", async () => {

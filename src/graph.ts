@@ -14,6 +14,10 @@ import type {
 } from "./types.js";
 import { moduleNameForPath } from "./language.js";
 import { rankLog2, stableId, uniqueSorted } from "./util.js";
+import { buildWorkflowEvidenceIndex, type WorkflowEvidenceIndex } from "./graph/workflow-evidence.js";
+
+const WORKFLOW_RELATED_FILE_LIMIT = 40;
+const WORKFLOW_TEST_LIMIT = 20;
 
 export interface GraphTarget {
   id: string;
@@ -513,37 +517,45 @@ function matchingAdaptersForKey(adapters: FileFact[], adapterKey: string, manife
 }
 
 export function extractWorkflowTraces(index: CodexaIndex): WorkflowTraceFact[] {
-  const symbolsById = new Map(index.symbols.map((symbol) => [symbol.id, symbol]));
+  const evidence = buildWorkflowEvidenceIndex(index);
   const fileRank = new Map(index.files.map((file) => [file.path, file.rank]));
   const workflows: WorkflowTraceFact[] = [];
 
-  const entrySymbols = index.symbols.filter((symbol) => symbol.kind === "route" || isJobSymbol(symbol));
+  const entrySymbols = index.symbols.filter((symbol) => symbol.kind === "route" || isJobSymbol(symbol) || executionSurfaceTitle(symbol));
   for (const symbol of entrySymbols) {
-    const workflowKind = symbol.kind === "route" ? "route" : "job";
-    const steps = entryStepsForSymbol(index, symbol, symbolsById);
+    const executionTitle = executionSurfaceTitle(symbol);
+    const executionTruncation = executionTitle ? executionSurfaceTruncation(symbol) : undefined;
+    const workflowKind: WorkflowTraceFact["workflowKind"] = executionTitle ? "module" : symbol.kind === "route" ? "route" : "job";
+    const title = executionTitle ?? `${workflowKind} ${symbol.qualifiedName}`;
+    const steps = entryStepsForSymbol(symbol, evidence);
     const relatedFiles = uniqueSorted(steps.flatMap((step) => [step.path, step.targetPath]).filter((filePath): filePath is string => Boolean(filePath)));
-    const tests = relatedTests(index, relatedFiles);
+    const tests = relatedTests(evidence, relatedFiles);
+    const relatedFileSet = new Set(relatedFiles);
     for (const testPath of tests.slice(0, 8)) {
       steps.push({
         kind: "test",
         label: testPath,
         path: testPath,
         targetPath: symbol.path,
-        confidence: "authoritative",
+        confidence: relatedTestStepConfidence(evidence, testPath, relatedFileSet, symbol.path),
         reason: "covers workflow-related file"
       });
     }
-    workflows.push(workflowFact(index, {
+    const workflow = workflowFact(index, {
       workflowKind,
-      title: `${workflowKind} ${symbol.qualifiedName}`,
+      title,
       entryPath: symbol.path,
       entrySymbolId: symbol.id,
+      entrySymbol: symbol,
       steps,
       relatedFiles: uniqueSorted([...relatedFiles, ...tests]),
       tests,
-      rank: workflowRank(relatedFiles, tests, fileRank, workflowKind),
-      summary: summarizeWorkflow(workflowKind, symbol.qualifiedName, relatedFiles, tests)
-    }));
+      rank: workflowRank(relatedFiles, tests, fileRank, workflowKind, Boolean(executionTitle)),
+      summary: summarizeWorkflow(workflowKind, executionTitle ?? symbol.qualifiedName, relatedFiles, tests),
+      stepTotal: executionStepTotal(steps, tests.length, executionTruncation?.handlerCalls),
+      executionSurfaces: executionTruncation?.executionSurfaces
+    });
+    workflows.push(executionTitle ? { ...workflow, confidence: "derived" } : workflow);
   }
 
   for (const symbol of index.symbols.filter((candidate) => candidate.kind === "node")) {
@@ -558,7 +570,7 @@ export function extractWorkflowTraces(index: CodexaIndex): WorkflowTraceFact[] {
         reason: "node manifest"
       }
     ];
-    for (const usage of index.usageSites.filter((site) => site.targetSymbolId === symbol.id || site.name === symbol.name).slice(0, 20)) {
+    for (const usage of nodeUsages(symbol, evidence).slice(0, 20)) {
       steps.push({
         kind: usage.kind === "call" ? "call" : "reference",
         label: usage.name,
@@ -570,7 +582,7 @@ export function extractWorkflowTraces(index: CodexaIndex): WorkflowTraceFact[] {
         reason: usage.text
       });
     }
-    for (const edge of index.graphEdges.filter((candidate) => candidate.edgeKind === "ADAPTER_REFERENCED_BY_MANIFEST" && candidate.fromPath === symbol.path).slice(0, 12)) {
+    for (const edge of (evidence.graphEdgesByFromPath.get(symbol.path) ?? []).filter((candidate) => candidate.edgeKind === "ADAPTER_REFERENCED_BY_MANIFEST").slice(0, 12)) {
       steps.push({
         kind: "adapter",
         label: edge.reason,
@@ -582,12 +594,13 @@ export function extractWorkflowTraces(index: CodexaIndex): WorkflowTraceFact[] {
       });
     }
     const relatedFiles = uniqueSorted(steps.flatMap((step) => [step.path, step.targetPath]).filter((filePath): filePath is string => Boolean(filePath)));
-    const tests = relatedTests(index, relatedFiles);
+    const tests = relatedTests(evidence, relatedFiles);
     workflows.push(workflowFact(index, {
       workflowKind: "manifest",
       title: `manifest ${symbol.name}`,
       entryPath: symbol.path,
       entrySymbolId: symbol.id,
+      entrySymbol: symbol,
       steps,
       relatedFiles: uniqueSorted([...relatedFiles, ...tests]),
       tests,
@@ -601,7 +614,15 @@ export function extractWorkflowTraces(index: CodexaIndex): WorkflowTraceFact[] {
     .sort((a, b) => b.rank - a.rank || a.title.localeCompare(b.title));
 }
 
-function entryStepsForSymbol(index: CodexaIndex, entry: SymbolFact, symbolsById: Map<string, SymbolFact>): WorkflowStep[] {
+function nodeUsages(symbol: SymbolFact, evidence: WorkflowEvidenceIndex): UsageSiteFact[] {
+  const matches = new Set([
+    ...(evidence.usagesByTargetSymbolId.get(symbol.id) ?? []),
+    ...(evidence.usagesByName.get(symbol.name) ?? [])
+  ]);
+  return [...matches].sort((left, right) => (evidence.usageOrder.get(left) ?? 0) - (evidence.usageOrder.get(right) ?? 0));
+}
+
+function entryStepsForSymbol(entry: SymbolFact, evidence: WorkflowEvidenceIndex): WorkflowStep[] {
   const steps: WorkflowStep[] = [
     {
       kind: "entry",
@@ -613,12 +634,11 @@ function entryStepsForSymbol(index: CodexaIndex, entry: SymbolFact, symbolsById:
       reason: `${entry.kind} entry`
     }
   ];
-  const directUsages = index.usageSites
-    .filter((usage) => usage.usedBySymbolId === entry.id)
+  const directUsages = [...(evidence.usagesByUsedBySymbolId.get(entry.id) ?? [])]
     .sort((a, b) => (a.range?.startLine ?? 0) - (b.range?.startLine ?? 0) || a.name.localeCompare(b.name))
     .slice(0, 30);
   for (const usage of directUsages) {
-    const target = usage.targetSymbolId ? symbolsById.get(usage.targetSymbolId) : undefined;
+    const target = usage.targetSymbolId ? evidence.symbolsById.get(usage.targetSymbolId) : undefined;
     steps.push({
       kind: usage.kind === "call" ? "call" : usage.kind === "import" ? "import" : "reference",
       label: target?.qualifiedName ?? usage.name,
@@ -631,8 +651,8 @@ function entryStepsForSymbol(index: CodexaIndex, entry: SymbolFact, symbolsById:
       reason: usage.text
     });
   }
-  steps.push(...typedWorkflowStepsForEntry(index, entry));
-  for (const risk of index.risks.filter((candidate) => candidate.path === entry.path && rangesOverlap(candidate.range, entry.range)).slice(0, 12)) {
+  steps.push(...typedWorkflowStepsForEntry(evidence, entry));
+  for (const risk of (evidence.risksByPath.get(entry.path) ?? []).filter((candidate) => rangesOverlap(candidate.range, entry.range)).slice(0, 12)) {
     steps.push({
       kind: "risk",
       label: risk.signal,
@@ -646,9 +666,9 @@ function entryStepsForSymbol(index: CodexaIndex, entry: SymbolFact, symbolsById:
   return steps;
 }
 
-function typedWorkflowStepsForEntry(index: CodexaIndex, entry: SymbolFact): WorkflowStep[] {
+function typedWorkflowStepsForEntry(evidence: WorkflowEvidenceIndex, entry: SymbolFact): WorkflowStep[] {
   const steps: WorkflowStep[] = [];
-  const routeEdges = index.graphEdges.filter((edge) => edge.fromSymbolId === entry.id && ["ROUTE_HANDLES", "ROUTE_CALLS_STORE"].includes(edge.edgeKind));
+  const routeEdges = (evidence.graphEdgesByFromSymbolId.get(entry.id) ?? []).filter((edge) => ["ROUTE_HANDLES", "ROUTE_CALLS_STORE"].includes(edge.edgeKind));
   const endpointIds = new Set(routeEdges.filter((edge) => edge.edgeKind === "ROUTE_HANDLES").map((edge) => edge.toId));
   for (const edge of routeEdges) {
     steps.push({
@@ -663,7 +683,11 @@ function typedWorkflowStepsForEntry(index: CodexaIndex, entry: SymbolFact): Work
       reason: edge.edgeKind
     });
   }
-  for (const edge of index.graphEdges.filter((candidate) => endpointIds.has(candidate.toId) && ["UI_CALLS_ENDPOINT", "TEST_COVERS_WORKFLOW"].includes(candidate.edgeKind))) {
+  const endpointEdges = [...endpointIds]
+    .flatMap((endpointId) => evidence.graphEdgesByToId.get(endpointId) ?? [])
+    .filter((candidate) => ["UI_CALLS_ENDPOINT", "TEST_COVERS_WORKFLOW"].includes(candidate.edgeKind))
+    .sort((left, right) => (evidence.graphEdgeOrder.get(left) ?? 0) - (evidence.graphEdgeOrder.get(right) ?? 0));
+  for (const edge of endpointEdges) {
     steps.push({
       kind: edge.edgeKind === "UI_CALLS_ENDPOINT" ? "ui" : "test",
       label: edge.reason,
@@ -675,11 +699,15 @@ function typedWorkflowStepsForEntry(index: CodexaIndex, entry: SymbolFact): Work
       reason: edge.edgeKind
     });
     if (edge.edgeKind === "UI_CALLS_ENDPOINT" && edge.fromPath) {
-      steps.push(...uiFlowExpansionSteps(index, edge.fromPath));
+      steps.push(...uiFlowExpansionSteps(evidence, edge.fromPath));
     }
   }
   const storePaths = new Set(routeEdges.filter((edge) => edge.edgeKind === "ROUTE_CALLS_STORE").flatMap((edge) => [edge.toPath].filter((value): value is string => Boolean(value))));
-  for (const edge of index.graphEdges.filter((candidate) => storePaths.has(candidate.fromPath ?? "") && candidate.edgeKind === "STORE_DISPATCHES_ADAPTER")) {
+  const storeEdges = [...storePaths]
+    .flatMap((storePath) => evidence.graphEdgesByFromPath.get(storePath) ?? [])
+    .filter((candidate) => candidate.edgeKind === "STORE_DISPATCHES_ADAPTER")
+    .sort((left, right) => (evidence.graphEdgeOrder.get(left) ?? 0) - (evidence.graphEdgeOrder.get(right) ?? 0));
+  for (const edge of storeEdges) {
     steps.push({
       kind: "adapter",
       label: edge.reason,
@@ -694,10 +722,10 @@ function typedWorkflowStepsForEntry(index: CodexaIndex, entry: SymbolFact): Work
   return steps.sort((a, b) => a.kind.localeCompare(b.kind) || a.path.localeCompare(b.path) || (a.line ?? 0) - (b.line ?? 0));
 }
 
-function uiFlowExpansionSteps(index: CodexaIndex, uiPath: string): WorkflowStep[] {
+function uiFlowExpansionSteps(evidence: WorkflowEvidenceIndex, uiPath: string): WorkflowStep[] {
   const interesting = /use[-_]?run[-_]?polling|useRunPolling|queue-dashboard|useQueueDashboard|polling|run-view|QueueDashboard/i;
-  return index.graphEdges
-    .filter((edge) => edge.fromPath === uiPath && ["CALLS", "REFERENCES", "IMPORTS"].includes(edge.edgeKind))
+  return (evidence.graphEdgesByFromPath.get(uiPath) ?? [])
+    .filter((edge) => ["CALLS", "REFERENCES", "IMPORTS"].includes(edge.edgeKind))
     .filter((edge) => interesting.test(edge.toPath ?? "") || interesting.test(edge.reason))
     .slice(0, 12)
     .map((edge) => ({
@@ -719,19 +747,21 @@ function workflowFact(
     title: string;
     entryPath: string;
     entrySymbolId?: string;
+    entrySymbol: SymbolFact;
     steps: WorkflowStep[];
     relatedFiles: string[];
     tests: string[];
     rank: number;
     summary: string;
+    stepTotal?: number;
+    executionSurfaces?: { total: number; returned: number };
   }
 ): WorkflowTraceFact {
-  const entrySymbol = input.entrySymbolId ? index.symbols.find((symbol) => symbol.id === input.entrySymbolId) : undefined;
   const relatedModules = uniqueSorted(input.relatedFiles.filter((filePath) => !isTestLikePath(filePath)).map((filePath) => moduleNameForPath(filePath)));
   const terminalFiles = terminalWorkflowFiles(input.steps, input.entryPath);
   const stepCounts = countWorkflowSteps(input.steps);
   const evidenceCounts = countStepEvidence(input.steps);
-  const entryScore = workflowEntryScore(input.workflowKind, input.entryPath, entrySymbol, input.steps);
+  const entryScore = workflowEntryScore(input.workflowKind, input.entryPath, input.entrySymbol, input.steps);
   const processKind = relatedModules.length > 1 ? "cross-module-process" : input.steps.length > 1 ? "intra-module-process" : "entry-process";
   return {
     id: stableId("workflow", input.workflowKind, input.entryPath, input.entrySymbolId, input.title),
@@ -745,8 +775,8 @@ function workflowFact(
     title: input.title,
     entryPath: input.entryPath,
     entrySymbolId: input.entrySymbolId,
-    relatedFiles: input.relatedFiles,
-    tests: input.tests,
+    relatedFiles: boundedWorkflowRelatedFiles(input.relatedFiles, input.entryPath),
+    tests: input.tests.slice(0, WORKFLOW_TEST_LIMIT),
     steps: input.steps,
     summary: enrichWorkflowSummary(input.summary, {
       processKind,
@@ -760,11 +790,19 @@ function workflowFact(
     stepCounts,
     evidenceCounts,
     truncation: {
-      relatedFiles: { total: input.relatedFiles.length, returned: Math.min(input.relatedFiles.length, 40) },
-      tests: { total: input.tests.length, returned: Math.min(input.tests.length, 20) },
-      steps: { total: input.steps.length, returned: Math.min(input.steps.length, 16) }
+      relatedFiles: { total: input.relatedFiles.length, returned: Math.min(input.relatedFiles.length, WORKFLOW_RELATED_FILE_LIMIT) },
+      tests: { total: input.tests.length, returned: Math.min(input.tests.length, WORKFLOW_TEST_LIMIT) },
+      steps: { total: Math.max(input.steps.length, input.stepTotal ?? 0), returned: Math.min(input.steps.length, 16) },
+      executionSurfaces: input.executionSurfaces
     }
   };
+}
+
+function boundedWorkflowRelatedFiles(relatedFiles: string[], entryPath: string): string[] {
+  const entry = relatedFiles.includes(entryPath) ? [entryPath] : [];
+  const production = relatedFiles.filter((filePath) => filePath !== entryPath && !isTestLikePath(filePath));
+  const tests = relatedFiles.filter(isTestLikePath);
+  return [...entry, ...production, ...tests].slice(0, WORKFLOW_RELATED_FILE_LIMIT);
 }
 
 function terminalWorkflowFiles(steps: WorkflowStep[], entryPath: string): string[] {
@@ -834,11 +872,12 @@ function workflowConfidence(steps: WorkflowStep[]): Confidence {
   return "heuristic";
 }
 
-function workflowRank(files: string[], tests: string[], fileRank: Map<string, number>, kind: WorkflowTraceFact["workflowKind"]): number {
+function workflowRank(files: string[], tests: string[], fileRank: Map<string, number>, kind: WorkflowTraceFact["workflowKind"], derivedExecutionSurface = false): number {
   const base = kind === "route" ? 8 : kind === "job" ? 7 : kind === "manifest" ? 6 : 4;
+  const testBonus = derivedExecutionSurface ? Math.min(tests.length * 2, 1) : tests.length * 2;
   // Clamp: a generated file can carry a small negative rank (generatedPenalty),
   // and log2 of a value <= 0 yields NaN/-Infinity that would poison the sum.
-  return base + files.reduce((sum, file) => sum + rankLog2(fileRank.get(file) ?? 0), 0) + tests.length * 2;
+  return base + files.reduce((sum, file) => sum + rankLog2(fileRank.get(file) ?? 0), 0) + testBonus;
 }
 
 function summarizeWorkflow(kind: WorkflowTraceFact["workflowKind"], title: string, relatedFiles: string[], tests: string[]): string {
@@ -847,18 +886,56 @@ function summarizeWorkflow(kind: WorkflowTraceFact["workflowKind"], title: strin
   return `${kind} workflow ${title} touches ${relatedFiles.length} file(s): ${fileText}. Tests: ${testText}.`;
 }
 
-function relatedTests(index: CodexaIndex, relatedFiles: string[]): string[] {
-  const related = new Set(relatedFiles);
-  return uniqueSorted(
-    index.testEdges
-      .filter((edge) => edge.targetPath && related.has(edge.targetPath))
-      .map((edge) => edge.path)
-      .filter((pathValue) => pathValue)
-  );
+function relatedTests(evidence: WorkflowEvidenceIndex, relatedFiles: string[]): string[] {
+  return uniqueSorted(relatedFiles.flatMap((filePath) => (evidence.testEdgesByTargetPath.get(filePath) ?? []).map((edge) => edge.path)));
+}
+
+function relatedTestStepConfidence(evidence: WorkflowEvidenceIndex, testPath: string, relatedFiles: Set<string>, entryPath: string): Confidence {
+  const candidates = (evidence.testEdgesByPath.get(testPath) ?? [])
+    .filter((edge) => edge.targetPath && relatedFiles.has(edge.targetPath))
+    .map((edge) => edge.targetPath === entryPath ? edge.confidence : edge.confidence === "authoritative" ? "derived" : edge.confidence);
+  if (candidates.includes("authoritative")) return "authoritative";
+  if (candidates.includes("derived")) return "derived";
+  return "heuristic";
 }
 
 function isJobSymbol(symbol: SymbolFact): boolean {
   return symbol.decorators.some((decorator) => /(task|job|worker|celery|rq)/i.test(decorator));
+}
+
+function executionSurfaceTitle(symbol: SymbolFact): string | undefined {
+  if (symbol.decorators.includes("codexa:commander-command")) {
+    return `command ${symbol.name}`;
+  }
+  if (symbol.decorators.includes("codexa:mcp-tool")) {
+    return `MCP tool ${symbol.name}`;
+  }
+  return undefined;
+}
+
+function executionSurfaceTruncation(symbol: SymbolFact): {
+  handlerCalls?: { total: number; returned: number };
+  executionSurfaces?: { total: number; returned: number };
+} {
+  return {
+    handlerCalls: decoratorTruncation(symbol, "codexa:execution-handler-calls"),
+    executionSurfaces: decoratorTruncation(symbol, "codexa:execution-surfaces")
+  };
+}
+
+function decoratorTruncation(symbol: SymbolFact, prefix: string): { total: number; returned: number } | undefined {
+  const marker = symbol.decorators.find((decorator) => decorator.startsWith(`${prefix}:`));
+  const match = marker ? new RegExp(`^${prefix}:(\\d{1,9}):(\\d{1,9})$`, "u").exec(marker) : undefined;
+  if (!match) return undefined;
+  const total = Number.parseInt(match[1], 10);
+  const returned = Number.parseInt(match[2], 10);
+  return { total: Math.max(total, returned), returned: Math.min(total, returned) };
+}
+
+function executionStepTotal(steps: WorkflowStep[], testCount: number, handlerCalls?: { total: number; returned: number }): number | undefined {
+  if (!handlerCalls) return undefined;
+  const omittedCalls = Math.max(0, handlerCalls.total - handlerCalls.returned);
+  return Math.max(steps.length + omittedCalls, 1 + testCount + handlerCalls.total);
 }
 
 function fileTarget(file: FileFact): GraphTarget {

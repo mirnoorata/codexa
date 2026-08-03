@@ -93,10 +93,13 @@ describe("Codexa proof cards", () => {
       expect(result.text).toContain("Status: action required");
       expect(result.text).toContain(`Proof gaps: ${data.gaps.length}`);
       expect(result.text).toContain("Local policies:");
+      expect(result.text).toContain("Causal change evidence:");
       expect(data.actionability).toBe("verify");
       expect(data.freshness.stale).toBe(false);
       expect(data.snapshot.status).toBe("loaded");
       expect(data.snapshot.plannedEditTargets).toContain("src/widget.ts");
+      expect(data.evidenceChains.chains.every((chain) => chain.anchor.authority === "proof-target")).toBe(true);
+      expect(data.evidenceChains.chains.flatMap((chain) => chain.roles.editTargets).every((filePath) => filePath === "src/widget.ts")).toBe(true);
       expect(data.policies.policies.map((policy) => policy.kind).sort()).toEqual(["complexity", "security", "verification"]);
       expect(data.nextCommands.some((command) => command.includes("post-edit-review"))).toBe(true);
       expect(data.nextCommands.every((command) => !command.includes("codexa prove") && !command.includes("codexa test-plan"))).toBe(true);
@@ -108,6 +111,47 @@ describe("Codexa proof cards", () => {
       expect(data.verification.commandPlan.every((entry) => entry.trustTier === "none")).toBe(true);
       expect(data.verification.ledgerPreview.every((entry) => entry.trustTier === "none")).toBe(true);
       expect(data.trustPosture.join("\n")).toContain("executed-by-autoverify > witnessed > artifact-corroborated > reported > none");
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps causal-evidence gaps out of proof gaps and actionability", async () => {
+    const repo = await createProofFixtureRepo();
+    try {
+      await writeFile(path.join(repo, "src/isolated.ts"), "export const isolated = 1\n", "utf8");
+      execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
+      execFileSync("git", ["-c", "user.name=Codexa Test", "-c", "user.email=codexa@example.invalid", "commit", "-m", "test: add isolated proof target"], {
+        cwd: repo,
+        stdio: "ignore"
+      });
+      await buildIndexLocked({ repoRoot: repo, writeArtifacts: true });
+      await changePlanQuery(
+        repo,
+        {
+          task: "change isolated behavior",
+          files: ["src/isolated.ts"],
+          saveSnapshot: true,
+          taskId: "prove-advisory-evidence",
+          changeType: "behavior"
+        },
+        { autoRefresh: false }
+      );
+
+      const result = await proveQuery(repo, {
+        task: "change isolated behavior",
+        taskId: "prove-advisory-evidence",
+        changeType: "behavior",
+        autoRefresh: false
+      });
+      const data = result.data as ProveData;
+
+      expect(data.evidenceChains.chains).toEqual([]);
+      expect(data.evidenceChains.gaps).toContain("no evidence-backed causal chain was proven for src/isolated.ts");
+      expect(data.actionability).toBe("verify");
+      expect(data.snapshot).toMatchObject({ status: "loaded", taskId: "prove-advisory-evidence" });
+      for (const evidenceGap of data.evidenceChains.gaps) expect(data.gaps).not.toContain(evidenceGap);
+      expect(result.text).toContain(`Proof gaps: ${data.gaps.length}`);
     } finally {
       await rm(repo, { recursive: true, force: true });
     }

@@ -623,7 +623,7 @@ function inferTestTarget(testPath: string, files: Set<string>): string | undefin
 export function relinkUsageIds(index: CodexaIndex): CodexaIndex {
   const usageSites = index.usageSites.map((usage) => ({
     ...usage,
-    id: stableId("usage", usage.path, usage.name, usage.kind, usage.range?.startByte ?? 0, usage.targetSymbolId)
+    id: stableId("usage", usage.path, usage.name, usage.kind, usage.range?.startByte ?? 0, usage.targetSymbolId, usage.usedBySymbolId)
   }));
   return { ...index, usageSites };
 }

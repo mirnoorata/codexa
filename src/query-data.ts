@@ -1,4 +1,5 @@
 import type { ChangePlanData, CodexaQueryData, ContextPacketData, FocusBriefData, PostEditReviewData, ProofCardData, QueryResultMode, TestPlanData } from "./types.js";
+import { isChangeEvidenceBundleV1 } from "./types/change-evidence.js";
 
 const typedCompactionModes = new Set<QueryResultMode>(["context_pack", "task_brief", "focus_brief", "session_context", "change_plan", "post_edit_review", "test_plan", "proof_card"]);
 
@@ -53,7 +54,8 @@ function isFocusBriefData(value: Record<string, unknown>): boolean {
 }
 
 function isChangePlanData(value: Record<string, unknown>): boolean {
-  return arraysOrUndefined(value, ["targetCandidates", "steps", "files", "plannedEditTargets", "tests", "recipes", "requiredWorkflowChecks", "requiredDependencyChecks"]);
+  return arraysOrUndefined(value, ["targetCandidates", "steps", "files", "plannedEditTargets", "tests", "recipes", "requiredWorkflowChecks", "requiredDependencyChecks"])
+    && optionalEvidenceBundle(value.evidenceChains);
 }
 
 function isPostEditReviewData(value: Record<string, unknown>): boolean {
@@ -100,7 +102,7 @@ function isPostEditReviewData(value: Record<string, unknown>): boolean {
     "nextActions",
     "autoVerifyCandidates",
     "autoVerifyRunnerEvidence"
-  ]);
+  ]) && optionalEvidenceBundle(value.evidenceChains);
 }
 
 function isTestPlanData(value: Record<string, unknown>): boolean {
@@ -122,7 +124,12 @@ function isTestPlanData(value: Record<string, unknown>): boolean {
 }
 
 function isProofCardData(value: Record<string, unknown>): boolean {
-  return arraysOrUndefined(value, ["readFirst", "trustPosture", "nextCommands", "gaps"]);
+  return arraysOrUndefined(value, ["readFirst", "trustPosture", "nextCommands", "gaps"])
+    && optionalEvidenceBundle(value.evidenceChains);
+}
+
+function optionalEvidenceBundle(value: unknown): boolean {
+  return value === undefined || isChangeEvidenceBundleV1(value);
 }
 
 function arraysOrUndefined(value: Record<string, unknown>, keys: string[]): boolean {

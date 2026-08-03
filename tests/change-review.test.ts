@@ -1,5 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
-import { mkdir, mkdtemp, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -27,7 +27,71 @@ describe("committed change review", () => {
     expect(data.impact.affectedFiles.map((entry) => entry.path)).toContain("tests/main.test.ts");
     expect(data.verification.recommendedTests.map((entry) => entry.path)).toContain("tests/main.test.ts");
     expect(data.verification.recommendedTests.every((entry) => !entry.command?.includes(repo))).toBe(true);
+    expect(first.text).toContain("Causal change evidence:");
+    expect(data.evidenceChains.chains.every((chain) => chain.anchor.authority === "committed-change")).toBe(true);
+    expect(data.evidenceChains.chains.flatMap((chain) => chain.roles.editTargets)).toEqual([]);
+    expect(data.verdict.blocking).toBe(false);
     expect(second.data).toEqual(first.data);
+  });
+
+  it("keeps missing causal chains advisory to a fail-mode verdict", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-change-review-advisory-evidence-"));
+    try {
+      git(repo, "init");
+      git(repo, "config", "user.email", "tests@codexa.local");
+      git(repo, "config", "user.name", "Codexa Tests");
+      await mkdir(path.join(repo, "src"), { recursive: true });
+      await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+      await writeFile(path.join(repo, "src/isolated.ts"), "export const isolated = 1\n", "utf8");
+      commitAll(repo, "test: create isolated fixture");
+      const base = git(repo, "rev-parse", "HEAD");
+      await writeFile(path.join(repo, "src/isolated.ts"), "export const isolated = 2\n", "utf8");
+      commitAll(repo, "feat: update isolated file");
+      await buildIndex({ repoRoot: repo });
+
+      const data = (await changeReviewQuery(repo, { base, mode: "fail" }, { autoRefresh: false })).data as ChangeReviewData;
+
+      expect(data.change.indexedChanged).toEqual(["src/isolated.ts"]);
+      expect(data.evidenceChains.chains).toEqual([]);
+      expect(data.evidenceChains.gaps).toContain("no evidence-backed causal chain was proven for src/isolated.ts");
+      expect(data.verdict).toEqual({ status: "pass", blocking: false, reasons: [] });
+      expect(data.gaps).toEqual([]);
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
+  });
+
+  it("spends the bounded evidence target budget on higher-risk committed files", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-change-review-ranked-evidence-"));
+    try {
+      git(repo, "init");
+      git(repo, "config", "user.email", "tests@codexa.local");
+      git(repo, "config", "user.name", "Codexa Tests");
+      await mkdir(path.join(repo, "src"), { recursive: true });
+      await writeFile(path.join(repo, ".gitignore"), ".codex/\n", "utf8");
+      for (let index = 0; index < 9; index += 1) {
+        await writeFile(path.join(repo, `src/a-${index}.ts`), `export const value${index} = ${index}\n`, "utf8");
+      }
+      await writeFile(path.join(repo, "src/z-risk.ts"), "export const dangerouslySetInnerHTML = { __html: '<p>v1</p>' }\n", "utf8");
+      commitAll(repo, "test: create ranking fixture");
+      const base = git(repo, "rev-parse", "HEAD");
+      for (let index = 0; index < 9; index += 1) {
+        await writeFile(path.join(repo, `src/a-${index}.ts`), `export const value${index} = ${index + 10}\n`, "utf8");
+      }
+      await writeFile(path.join(repo, "src/z-risk.ts"), "export const dangerouslySetInnerHTML = { __html: '<p>v2</p>' }\n", "utf8");
+      commitAll(repo, "feat: update ranked files");
+      await buildIndex({ repoRoot: repo });
+
+      const data = (await changeReviewQuery(repo, { base }, { autoRefresh: false })).data as ChangeReviewData;
+
+      expect(data.change.indexedChanged).toHaveLength(10);
+      expect(data.evidenceChains.requestedTargetCount).toBe(10);
+      expect(data.evidenceChains.analyzedTargetCount).toBe(8);
+      expect(data.evidenceChains.chains[0]?.anchor.path).toBe("src/z-risk.ts");
+      expect(data.evidenceChains.chains[0]?.purpose).toBe("risk");
+    } finally {
+      await rm(repo, { recursive: true, force: true });
+    }
   });
 
   it("compares a local change-plan snapshot and only blocks deterministic drift in fail mode", async () => {

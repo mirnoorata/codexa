@@ -44,20 +44,48 @@ export function compactDiffGroup(group: DiffImpactGroup): CompactDiffImpactGroup
   };
 }
 
-export function compactWorkflowTrace(workflow: WorkflowTraceFact): Pick<WorkflowTraceFact, "id" | "workflowKind" | "title" | "entryPath" | "entrySymbolId" | "relatedFiles" | "tests" | "rank" | "confidence" | "summary"> & { steps: WorkflowTraceFact["steps"] } {
+export function compactWorkflowTrace(workflow: WorkflowTraceFact): Pick<WorkflowTraceFact, "id" | "workflowKind" | "title" | "entryPath" | "entrySymbolId" | "relatedFiles" | "tests" | "rank" | "confidence" | "summary" | "truncation"> & { steps: WorkflowTraceFact["steps"] } {
+  const steps = workflow.steps.slice(0, 16);
+  const relatedFiles = workflow.relatedFiles.slice(0, 40);
+  const tests = workflow.tests.slice(0, 20);
   return {
     id: workflow.id,
     workflowKind: workflow.workflowKind,
     title: workflow.title,
     entryPath: workflow.entryPath,
     entrySymbolId: workflow.entrySymbolId,
-    steps: workflow.steps.slice(0, 16),
-    relatedFiles: workflow.relatedFiles.slice(0, 40),
-    tests: workflow.tests.slice(0, 20),
+    steps,
+    relatedFiles,
+    tests,
     rank: workflow.rank,
     confidence: workflow.confidence,
-    summary: workflow.summary
+    summary: workflow.summary,
+    truncation: compactWorkflowTruncation(workflow, { steps: steps.length, relatedFiles: relatedFiles.length, tests: tests.length })
   };
+}
+
+function compactWorkflowTruncation(
+  workflow: WorkflowTraceFact,
+  returned: Record<"steps" | "relatedFiles" | "tests", number>
+): WorkflowTraceFact["truncation"] {
+  const truncation: NonNullable<WorkflowTraceFact["truncation"]> = {};
+  for (const field of ["steps", "relatedFiles", "tests"] as const) {
+    const sourceTotal = workflow[field].length;
+    const priorTotal = validCount(workflow.truncation?.[field]?.total);
+    const total = Math.max(sourceTotal, priorTotal ?? 0);
+    if (total > returned[field]) truncation[field] = { total, returned: returned[field] };
+  }
+  const executionSurfaces = workflow.truncation?.executionSurfaces;
+  const surfaceTotal = validCount(executionSurfaces?.total);
+  const surfaceReturned = validCount(executionSurfaces?.returned);
+  if (surfaceTotal !== undefined && surfaceReturned !== undefined && surfaceTotal > surfaceReturned) {
+    truncation.executionSurfaces = { total: surfaceTotal, returned: surfaceReturned };
+  }
+  return Object.keys(truncation).length > 0 ? truncation : undefined;
+}
+
+function validCount(value: number | undefined): number | undefined {
+  return Number.isSafeInteger(value) && (value ?? -1) >= 0 ? value : undefined;
 }
 
 export function compactRetrievalResult(retrieval: RetrievalResult): Omit<RetrievalResult, "matches" | "workflows" | "modules"> & {

@@ -1,5 +1,6 @@
 import type { EvidenceTier, FileFact, GraphEdgeFact, SymbolFact, WorkflowTraceFact } from "./facts.js";
 import type { ChangeType } from "./change.js";
+import type { ChangeEvidenceBundleV1 } from "./change-evidence.js";
 import type { GuidedNextToolV1 } from "./runtime.js";
 import type { DiffFootprintV1, TaskInvariant, TaskInvariantReview, TaskLoopFailureSignal, TaskLoopReview, TaskSnapshot, TaskSnapshotRequiredCheck } from "./snapshots.js";
 import type { ChangedFileEntry, DiffImpactGroup, PostEditReviewCoverage, TestRecommendation, VerificationArtifactSummary, VerificationCommandEnvelope, VerificationCommandPlanEntry, VerificationCommandReport, VerificationCoverage, VerificationLedgerEntry, VerificationProvenance, VerificationWaiver } from "./verification.js";
@@ -218,6 +219,7 @@ export interface ChangePlanData extends BaseQueryData {
   reviewOwner?: string;
   autoVerify?: ChangePlanAutoVerifyData;
   tests?: TestRecommendation[];
+  evidenceChains?: ChangeEvidenceBundleV1;
   recipes?: string[];
   requiredWorkflowChecks?: TaskSnapshotRequiredCheck[];
   requiredDependencyChecks?: TaskSnapshotRequiredCheck[];
@@ -261,6 +263,7 @@ export interface PostEditReviewData extends BaseQueryData {
   riskDeltas?: QueryObject[];
   affectedEdges?: GraphEdgeFact[];
   affectedTests?: TestRecommendation[];
+  evidenceChains?: ChangeEvidenceBundleV1;
   tests?: TestRecommendation[];
   degradedSnapshotTests?: TestRecommendation[];
   supersededDegradedSnapshotTests?: TestRecommendation[];
@@ -302,6 +305,7 @@ export interface ChangeReviewQueryData extends BaseQueryData {
   identity?: QueryObject;
   change?: QueryObject;
   impact?: QueryObject;
+  evidenceChains?: ChangeEvidenceBundleV1;
   plan?: QueryObject;
   verification?: QueryObject;
   nextActions?: string[];
@@ -335,6 +339,7 @@ export interface ProofCardData extends BaseQueryData {
   repoRoot?: string;
   freshness?: QueryObject;
   readFirst?: QueryObject[];
+  evidenceChains?: ChangeEvidenceBundleV1;
   snapshot?: QueryObject;
   verification?: QueryObject;
   decisionLog?: QueryObject;
