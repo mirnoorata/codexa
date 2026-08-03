@@ -90,15 +90,27 @@ release automation still depended on floating action and publisher downloads.
 
 ### Deterministic release gate
 
-`npm run security:check` passed on the source head:
+The final source head completed compile/build and all 117 Claude command/hook
+integration smokes. In the constrained local sandbox, the 102-file built suite
+reported 1,184 passing tests, 1 intentional skip, and 2 wall-clock-only
+failures: process-tree cleanup exceeded a 12-second ceiling and concurrent lock
+handoff exceeded 20 seconds. Both affected files passed immediately in an
+isolated rerun (4/4 tests). No behavioral assertion remained failing. The exact
+GitHub Check run on the pushed head is therefore the authoritative full-suite
+merge gate.
 
-- 102 test files passed.
-- 1,186 tests passed; 1 intentionally skipped.
-- 117 Claude command/hook integration smokes passed.
 - npm audit reported 0 vulnerabilities.
 - Clean public snapshot, package hygiene, plugin hygiene, startup-context
   budget, and the 31-check packaged-install smoke passed.
+- The eval gate passed 21/21 scenarios with score 1 and no raw-rg wins.
+- The exact CI-scaled benchmark passed 11/12 metrics locally; one `cli.repo_map`
+  p95 sample was 4.725 seconds against the 4.5-second shared-runner ceiling
+  while its median was 0.960 seconds. The GitHub benchmark job must pass before
+  merge.
 - `git diff --check` passed.
+- Current-snapshot privacy checks passed. `privacy:history` reports only four
+  pre-existing commits already reachable from `origin/main`; published history
+  is not rewritten as part of this change.
 
 ### Human workflow simulations
 
