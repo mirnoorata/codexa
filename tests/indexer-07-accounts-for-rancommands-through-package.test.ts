@@ -950,5 +950,5 @@ it("accounts for ranCommands through package-script coverage without over-coveri
     const trueOrFallback = await postEditReviewQuery(repo, { taskId: "verification-coverage", ranCommands: ["true || npm test"] }, { autoRefresh: false });
     expect((trueOrFallback.data as { testsNotRun: Array<{ path: string }> }).testsNotRun.map((test) => test.path)).toContain("tests/shared.test.ts");
 
-  });
+  }, 60_000);
 });

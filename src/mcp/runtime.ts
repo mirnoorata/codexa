@@ -9,7 +9,7 @@ export interface McpRuntime {
   resolveActiveRepoRoot(): Promise<string>;
   resolveActiveRepoRootResolution(): Promise<McpRepoRootResolution>;
   consumeActiveRepoRootChanged(): boolean;
-  createQuerySession(activeRepoRoot: string): Promise<QuerySession>;
+  createQuerySession(resolution: McpRepoRootResolution): Promise<QuerySession>;
 }
 
 export interface CreateMcpRuntimeOptions {
@@ -91,12 +91,15 @@ export function createMcpRuntime({ configuredRepoRoot, queryOptions }: CreateMcp
       activeRepoRootChanged = false;
       return changed;
     },
-    async createQuerySession(activeRepoRoot: string): Promise<QuerySession> {
+    async createQuerySession(resolution: McpRepoRootResolution): Promise<QuerySession> {
+      const activeRepoRoot = resolution.repoRoot;
       const state = await loadIndexState(activeRepoRoot);
-      const activeWorkspaceSessionId = activeResolution?.repoRoot === activeRepoRoot ? activeResolution.workspaceSessionId : undefined;
       return createQuerySessionFromIndexState(activeRepoRoot, state, {
         ...queryOptions,
-        workspaceSessionId: activeWorkspaceSessionId ?? queryOptions.workspaceSessionId
+        // Request identity must come from the resolution captured by this
+        // call. Reading the mutable activeResolution here lets two
+        // concurrent same-repo calls bind each other's workspace session.
+        workspaceSessionId: resolution.workspaceSessionId ?? queryOptions.workspaceSessionId
       });
     }
   };

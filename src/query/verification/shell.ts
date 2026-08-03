@@ -323,7 +323,21 @@ export function segmentTruthiness(segment: string): ShellTruthiness {
 }
 
 export function shellWords(value: string): string[] {
-  return [...value.matchAll(/'([^']*)'|"([^"]*)"|(\S+)/gu)].map((match) => stripQuotes(match[1] ?? match[2] ?? match[3] ?? ""));
+  return shellWordTokens(value).map((token) => token.value);
+}
+
+interface ShellWordToken {
+  raw: string;
+  value: string;
+  quoted: boolean;
+}
+
+function shellWordTokens(value: string): ShellWordToken[] {
+  return [...value.matchAll(/'([^']*)'|"([^"]*)"|(\S+)/gu)].map((match) => ({
+    raw: match[0],
+    value: stripQuotes(match[1] ?? match[2] ?? match[3] ?? ""),
+    quoted: match[1] !== undefined || match[2] !== undefined
+  }));
 }
 
 export function shellQuote(value: string): string {
@@ -448,6 +462,41 @@ export function stripShellControlWords(words: string[]): string[] {
     index += 1;
   }
   return words.slice(index);
+}
+
+// Shell redirections affect file descriptors, not the invoked program's argv.
+// Parse them before quote provenance is discarded: quoted `"2>&1"` is a real
+// argv literal and must remain, while an incomplete unquoted redirect fails
+// closed instead of laundering a malformed command into test credit.
+export function shellWordsWithoutRedirections(value: string):
+  | { ok: true; words: string[] }
+  | { ok: false; reason: string } {
+  const tokens = shellWordTokens(value);
+  const stripped: string[] = [];
+  for (let index = 0; index < tokens.length; index += 1) {
+    const token = tokens[index];
+    const match = token.quoted
+      ? undefined
+      : /^(?:\d*|&)(?:<<<|<<|<>|>>|>&|<&|>|<)(.*)$/u.exec(token.raw);
+    if (!match) {
+      stripped.push(token.value);
+      continue;
+    }
+    if (match[1] === "") {
+      const destination = tokens[index + 1];
+      if (!destination) {
+        return { ok: false, reason: `shell redirection ${token.raw} is missing its destination` };
+      }
+      if (
+        !destination.quoted &&
+        /^(?:\d*|&)(?:<<<|<<|<>|>>|>&|<&|>|<)/u.test(destination.raw)
+      ) {
+        return { ok: false, reason: `shell redirection ${token.raw} has an invalid destination` };
+      }
+      index += 1;
+    }
+  }
+  return { ok: true, words: stripped };
 }
 
 export function isEnvironmentAssignment(value: string | undefined): boolean {

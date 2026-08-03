@@ -58,12 +58,12 @@ requireText(".github/workflows/npm-publish.yml", [
   "contents: read",
   "id-token: write",
   "permissions:",
-  "actions/checkout@v7",
+  "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1",
   "ref: ${{ github.event.release.tag_name }}",
   "fetch-depth: 0",
-  "actions/setup-node@v6",
+  "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0",
   "node-version: \"24.x\"",
-  "npm install -g npm@^11.10.0 --registry \"${NPM_REGISTRY}\" --ignore-scripts",
+  "npm install -g npm@11.10.0 --registry \"${NPM_REGISTRY}\" --ignore-scripts",
   "RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}",
   "DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}",
   "git merge-base --is-ancestor HEAD \"refs/remotes/origin/${DEFAULT_BRANCH}\"",
@@ -77,7 +77,10 @@ requireText(".github/workflows/npm-publish.yml", [
   "npm view \"${PACKAGE_NAME}@${PACKAGE_VERSION}\" version --json --registry \"${NPM_REGISTRY}\"",
   "npm-view-final.err",
   "was published after the security gate; skipping npm publish.",
-  "npm publish --registry \"${NPM_REGISTRY}\" --access public --tag latest --provenance --ignore-scripts"
+  "npm publish --registry \"${NPM_REGISTRY}\" --access public --tag latest --provenance --ignore-scripts",
+  "MCP_PUBLISHER_VERSION: v1.8.0",
+  "MCP_PUBLISHER_SHA256: 1370446bbe74d562608e8005a6ccce02d146a661fbd78674e11cc70b9618d6cf",
+  "sha256sum --check --strict"
 ]);
 requireText(".github/workflows/release-please.yml", [
   "name: Release Please",
@@ -88,10 +91,15 @@ requireText(".github/workflows/release-please.yml", [
   "github.repository == 'mirnoorata/codexa'",
   "secrets.RELEASE_PLEASE_TOKEN",
   "release: published",
-  "googleapis/release-please-action@v5",
+  "googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0",
   "config-file: release-please-config.json",
   "manifest-file: .release-please-manifest.json"
 ]);
+requireText("action.yml", ["actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0"]);
+requireTextCount(".github/workflows/check.yml", "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1", 4);
+requireTextCount(".github/workflows/check.yml", "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0", 4);
+requireTextCount(".github/workflows/check.yml", "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1", 2);
+requireTextCount(".github/workflows/npm-publish.yml", "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1", 2);
 requireTextCount(".github/workflows/npm-publish.yml", "id-token: write", 1);
 requireTextCount(".github/workflows/npm-publish.yml", "ACTIONS_ID_TOKEN_REQUEST_URL: \"\"", 4);
 requireTextCount(".github/workflows/npm-publish.yml", "ACTIONS_ID_TOKEN_REQUEST_TOKEN: \"\"", 4);

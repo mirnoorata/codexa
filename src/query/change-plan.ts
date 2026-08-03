@@ -47,6 +47,7 @@ import { formatTaskInvariants, nextTaskPlanLifecycle } from "../task-lifecycle.j
 import { changePlanEditReadiness, normalizeTargetCandidateSelector, resolveChangePlanFollowBaseInput } from "./change-plan/readiness.js";
 import { candidateSymbols, canonicalCandidateReplayFiles, dedupeTargetCandidates, followedReplaySnapshotTargets, formatTargetCandidates, meaningfulTaskTokens, rawSearchQueries, uniqueInOrder, withTargetCandidateId } from "./change-plan/candidate-helpers.js";
 import { validateChangePlanTargetCandidate } from "./change-plan/candidate-validation.js";
+import { buildChangePlanExecutionPolicy } from "./change-plan/execution-policy.js";
 export { validateChangePlanTargetCandidate } from "./change-plan/candidate-validation.js";
 export async function changePlanQuery(
   sessionInput: QuerySessionInput,
@@ -280,7 +281,7 @@ export async function changePlanQuery(
       snapshotLoad: followBase?.snapshotLoad
     });
   }
-  const completionReview = editReadiness.editable && managedCompletionReviewAvailable();
+  const { completionReview, autoVerify, autoVerifySummary } = await buildChangePlanExecutionPolicy(repoRoot, editReadiness.editable);
   const planSteps = editReadiness.editable
     ? [
         editReadiness.source === "dirty-worktree"
@@ -413,6 +414,7 @@ export async function changePlanQuery(
     "Codexa change plan",
     effectiveInput.task ? `Task: ${effectiveInput.task}` : undefined,
     `Edit readiness: ${editReadiness.status}; ${editReadiness.reason}`,
+    autoVerifySummary,
     savedSnapshot ? `Task snapshot: ${savedSnapshot.snapshot.taskId}` : undefined,
     savedSnapshot ? `Plan revision: ${savedSnapshot.snapshot.planRevision ?? 1}` : undefined,
     effectiveInput.saveSnapshot && !editReadiness.editable ? "Task snapshot: not saved because this packet is orientation-only." : undefined,
@@ -462,11 +464,12 @@ export async function changePlanQuery(
       targetCandidates,
       quality,
       requiredWorkflowChecks: editReadiness.editable ? requiredWorkflowChecks : [],
-	      requiredDependencyChecks: editReadiness.editable ? requiredDependencyChecks : [],
-	      complexityReview,
-	      reviewOwner: completionReview ? "managed-completion-gate" : "agent-final-review",
-	      nextTools: structuredNextTools,
-	      systemMessage: completionReview
+      requiredDependencyChecks: editReadiness.editable ? requiredDependencyChecks : [],
+      complexityReview,
+      autoVerify,
+      reviewOwner: completionReview ? "managed-completion-gate" : "agent-final-review",
+      nextTools: structuredNextTools,
+      systemMessage: completionReview
           ? "Run the planned verification, then stop; the managed host completion gate owns post-edit review."
           : structuredNextTools[0]?.reason,
 	      snapshot: savedSnapshot?.snapshot,
@@ -481,12 +484,6 @@ export async function changePlanQuery(
   };
 }
 
-function managedCompletionReviewAvailable(): boolean {
-  // Only a host integration with a true completion/Stop hook may set this.
-  // Edit-scoped PostToolUse hooks run before later shell verification and must
-  // leave the final post_edit_review route available.
-  return process.env.CODEXA_MANAGED_POST_EDIT === "1";
-}
 function changePlanFreshnessBlockedResult(input: {
   freshness: FreshnessInfo;
   refresh?: RefreshInfo;

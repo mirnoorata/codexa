@@ -6,6 +6,7 @@ import { rankLog2, uniqueSorted } from "./util.js";
 import { BROAD_WORKFLOW_TERMS, LANE_WEIGHTS, RETRIEVAL_RUNTIME_CACHE_LIMIT, SEMANTIC_ANCHOR_MIN_SCORE, SUPPORT_WORKFLOW_TERMS, SYNONYMS } from "./retrieval/constants.js";
 import { activeRetrievalLanes as activeLanes, isDecoyLikePath, queryAllowsDecoy, tokenizeRetrievalText as tokenize } from "./retrieval/helpers.js";
 import { promptModeForTask } from "./retrieval/intent.js";
+import { createRetrievalQueryMatcher, type RetrievalQueryMatcher } from "./retrieval/query-matcher.js";
 
 export type TaskIntent =
   | "architecture"
@@ -134,14 +135,15 @@ const retrievalRuntimeCache = new Map<string, RetrievalRuntime>();
 export async function retrieveForTask(index: CodexaIndex, query: string, limit = 12, semanticOptions?: SemanticQueryOptions): Promise<RetrievalResult> {
   const rawTerms = tokenize(query);
   const terms = expandedQueryTerms(query);
+  const matcher = createRetrievalQueryMatcher(query, terms);
   const intents = classifyTaskIntent(query);
   const allowDecoys = queryAllowsDecoy(query);
   const runtime = retrievalRuntimeForIndex(index);
   const bm25Entries = runtime.docs
     .map((doc) => scoreDocument(doc, terms, intents, runtime.docFreq, runtime.docs.length, runtime.avgLength))
     .filter((entry): entry is LaneEntry => entry !== null && entry.score > 0);
-  const exactEntries = exactLaneEntries(index, query);
-  const symbolEntries = symbolLaneEntries(index, query, runtime.fileByPath);
+  const exactEntries = exactLaneEntries(index, matcher);
+  const symbolEntries = symbolLaneEntries(index, matcher, runtime.fileByPath);
   const semanticResult = semanticOptions
     ? await semanticLaneEntriesForQuery(index, query, runtime.fileByPath, semanticOptions)
     : {
@@ -157,8 +159,8 @@ export async function retrieveForTask(index: CodexaIndex, query: string, limit =
     .filter((match) => allowDecoys || !isDecoyLikePath(match.file.path))
     .slice(0, Math.max(limit * 2, 20));
   const workflows = rankWorkflows(index, terms, preliminaryMatches).slice(0, Math.max(3, Math.min(10, limit)));
-  const workflowEntries = workflowLaneEntries(index, workflows, query, runtime.fileByPath);
-  const testEntries = testLaneEntries(index, [...preliminaryMatches.map((match) => match.file.path), ...workflowEntries.map((entry) => entry.file.path)], workflows, query, runtime.fileByPath);
+  const workflowEntries = workflowLaneEntries(index, workflows, matcher, runtime.fileByPath);
+  const testEntries = testLaneEntries(index, [...preliminaryMatches.map((match) => match.file.path), ...workflowEntries.map((entry) => entry.file.path)], workflows, matcher, runtime.fileByPath);
   const dirtyEntries = dirtyLaneEntries(index, intents);
   const graphEntries = graphLaneEntries(index, intents, [
     ...bm25Entries,
@@ -181,7 +183,7 @@ export async function retrieveForTask(index: CodexaIndex, query: string, limit =
     .filter((match) => allowDecoys || !isDecoyLikePath(match.file.path))
     .slice(0, limit);
   const modules = rankModules(index, matches, terms).slice(0, Math.max(3, Math.min(8, limit)));
-  const anchors = buildRetrievalAnchors(index, matches, query, Math.max(4, Math.min(12, limit)));
+  const anchors = buildRetrievalAnchors(index, matches, query, matcher, Math.max(4, Math.min(12, limit)));
   const processGroups = buildProcessGroups(workflows, matches).slice(0, Math.max(3, Math.min(8, limit)));
   const clusterGroups = buildClusterGroups(index, modules, matches).slice(0, Math.max(3, Math.min(8, limit)));
   const broad = rawTerms.length <= 2 || intents.includes("architecture") || intents.includes("workflow");
@@ -384,20 +386,20 @@ function scoreDocument(
   };
 }
 
-function exactLaneEntries(index: CodexaIndex, query: string): LaneEntry[] {
+function exactLaneEntries(index: CodexaIndex, matcher: RetrievalQueryMatcher): LaneEntry[] {
   const entries: LaneEntry[] = [];
   for (const file of index.files) {
     const basename = path.posix.basename(file.path);
     const stem = basename.replace(/\.[^.]+$/, "");
-    const score = Math.max(matchScore(query, file.path), matchScore(query, basename), matchScore(query, stem));
+    const score = Math.max(matcher.score(file.path), matcher.score(basename), matcher.score(stem));
     if (score >= 6) {
-      entries.push({ file, score: score + 8, reasons: [`exact file/path ${stem}`], matchedTerms: matchedQueryTerms(query, `${file.path} ${basename} ${stem}`) });
+      entries.push({ file, score: score + 8, reasons: [`exact file/path ${stem}`], matchedTerms: matcher.matchedTerms(`${file.path} ${basename} ${stem}`) });
     }
   }
   return entries.sort(sortLaneEntry);
 }
 
-function symbolLaneEntries(index: CodexaIndex, query: string, fileByPath: Map<string, FileFact>): LaneEntry[] {
+function symbolLaneEntries(index: CodexaIndex, matcher: RetrievalQueryMatcher, fileByPath: Map<string, FileFact>): LaneEntry[] {
   const byPath = new Map<string, LaneEntry>();
   const add = (filePath: string, score: number, reason: string, haystack: string) => {
     const file = fileByPath.get(filePath);
@@ -407,26 +409,26 @@ function symbolLaneEntries(index: CodexaIndex, query: string, fileByPath: Map<st
     const existing = byPath.get(file.path) ?? { file, score: 0, reasons: [], matchedTerms: [] };
     existing.score += score;
     existing.reasons.push(reason);
-    existing.matchedTerms.push(...matchedQueryTerms(query, haystack));
+    existing.matchedTerms.push(...matcher.matchedTerms(haystack));
     byPath.set(file.path, existing);
   };
   for (const symbol of index.symbols) {
     const haystack = `${symbol.name} ${symbol.qualifiedName} ${symbol.kind} ${symbol.decorators.join(" ")}`;
-    const score = Math.max(matchScore(query, symbol.name), matchScore(query, symbol.qualifiedName), matchScore(query, symbol.path));
+    const score = Math.max(matcher.score(symbol.name), matcher.score(symbol.qualifiedName), matcher.score(symbol.path));
     if (score > 0) {
       add(symbol.path, score + (symbol.exported ? 4 : 1), `symbol ${symbol.qualifiedName}`, haystack);
     }
   }
   for (const edge of index.imports) {
     const haystack = `${edge.specifier} ${edge.importedName ?? ""} ${edge.localName ?? ""} ${edge.resolvedPath ?? ""}`;
-    const score = Math.max(matchScore(query, edge.specifier), matchScore(query, edge.importedName ?? ""), matchScore(query, edge.localName ?? ""), matchScore(query, edge.resolvedPath ?? ""));
+    const score = Math.max(matcher.score(edge.specifier), matcher.score(edge.importedName ?? ""), matcher.score(edge.localName ?? ""), matcher.score(edge.resolvedPath ?? ""));
     if (score > 0) {
       add(edge.path, score + 1, `import ${edge.specifier}`, haystack);
     }
   }
   for (const usage of index.usageSites) {
     const haystack = `${usage.name} ${usage.kind} ${usage.text}`;
-    const score = Math.max(matchScore(query, usage.name), matchScore(query, usage.text), matchScore(query, usage.path));
+    const score = Math.max(matcher.score(usage.name), matcher.score(usage.text), matcher.score(usage.path));
     add(usage.path, Math.max(0, score - 1), `usage ${usage.name}`, haystack);
   }
   return [...byPath.values()]
@@ -434,7 +436,7 @@ function symbolLaneEntries(index: CodexaIndex, query: string, fileByPath: Map<st
     .sort(sortLaneEntry);
 }
 
-function workflowLaneEntries(index: CodexaIndex, workflows: WorkflowTraceFact[], query: string, fileByPath: Map<string, FileFact>): LaneEntry[] {
+function workflowLaneEntries(index: CodexaIndex, workflows: WorkflowTraceFact[], matcher: RetrievalQueryMatcher, fileByPath: Map<string, FileFact>): LaneEntry[] {
   const byPath = new Map<string, LaneEntry>();
   const add = (filePath: string | undefined, score: number, reason: string) => {
     if (!filePath) {
@@ -447,7 +449,7 @@ function workflowLaneEntries(index: CodexaIndex, workflows: WorkflowTraceFact[],
     const existing = byPath.get(file.path) ?? { file, score: 0, reasons: [], matchedTerms: [] };
     existing.score += score;
     existing.reasons.push(reason);
-    existing.matchedTerms.push(...matchedQueryTerms(query, `${file.path} ${reason}`));
+    existing.matchedTerms.push(...matcher.matchedTerms(`${file.path} ${reason}`));
     byPath.set(file.path, existing);
   };
   for (const workflow of workflows) {
@@ -477,7 +479,7 @@ function workflowLaneEntries(index: CodexaIndex, workflows: WorkflowTraceFact[],
     .sort(sortLaneEntry);
 }
 
-function testLaneEntries(index: CodexaIndex, seedPaths: string[], workflows: WorkflowTraceFact[], query: string, fileByPath: Map<string, FileFact>): LaneEntry[] {
+function testLaneEntries(index: CodexaIndex, seedPaths: string[], workflows: WorkflowTraceFact[], matcher: RetrievalQueryMatcher, fileByPath: Map<string, FileFact>): LaneEntry[] {
   const seeds = new Set(seedPaths);
   for (const workflow of workflows) {
     for (const file of workflow.relatedFiles) {
@@ -502,7 +504,7 @@ function testLaneEntries(index: CodexaIndex, seedPaths: string[], workflows: Wor
     const existing = byPath.get(file.path) ?? { file, score: 0, reasons: [], matchedTerms: [] };
     existing.score += score;
     existing.reasons.push(reason);
-    existing.matchedTerms.push(...matchedQueryTerms(query, `${file.path} ${reason}`));
+    existing.matchedTerms.push(...matcher.matchedTerms(`${file.path} ${reason}`));
     byPath.set(file.path, existing);
   };
   for (const workflow of workflows) {
@@ -516,7 +518,7 @@ function testLaneEntries(index: CodexaIndex, seedPaths: string[], workflows: Wor
     }
   }
   for (const file of index.files.filter((candidate) => candidate.test)) {
-    const score = Math.max(matchScore(query, file.path), matchScore(query, path.posix.basename(file.path)));
+    const score = Math.max(matcher.score(file.path), matcher.score(path.posix.basename(file.path)));
     if (score > 0) {
       add(file.path, score + 4, "test path matches query");
     }
@@ -749,41 +751,6 @@ function sortLaneEntry(a: LaneEntry, b: LaneEntry): number {
   return b.score - a.score || b.file.rank - a.file.rank || a.file.path.localeCompare(b.file.path);
 }
 
-function matchedQueryTerms(query: string, haystack: string): string[] {
-  const haystackTokens = new Set(tokenize(haystack));
-  return expandedQueryTerms(query).filter((term) => haystackTokens.has(term));
-}
-
-function matchScore(query: string, value: string): number {
-  const queryText = normalizeForMatch(query);
-  const valueText = normalizeForMatch(value);
-  if (!queryText || !valueText) {
-    return 0;
-  }
-  if (valueText === queryText) {
-    return 14;
-  }
-  if (valueText.includes(queryText)) {
-    return 10;
-  }
-  const valueTokens = new Set(tokenize(value));
-  const terms = expandedQueryTerms(query);
-  const tokenHits = terms.filter((term) => valueTokens.has(term)).length;
-  if (tokenHits > 0) {
-    return Math.min(9, tokenHits * 2 + (tokenHits === terms.length ? 2 : 0));
-  }
-  const partialHits = terms.filter((term) => term.length >= 4 && valueText.includes(term)).length;
-  return partialHits > 0 ? Math.min(6, partialHits * 1.5) : 0;
-}
-
-function normalizeForMatch(value: string): string {
-  return value
-    .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/g, " ")
-    .trim();
-}
-
 function intentBoost(file: FileFact, intents: TaskIntent[]): number {
   let boost = 0;
   const p = file.path;
@@ -871,7 +838,7 @@ function rankModules(index: CodexaIndex, matches: RetrievalMatch[], terms: strin
     .sort((a, b) => b.score - a.score || a.name.localeCompare(b.name));
 }
 
-function buildRetrievalAnchors(index: CodexaIndex, matches: RetrievalMatch[], query: string, limit: number): RetrievalAnchor[] {
+function buildRetrievalAnchors(index: CodexaIndex, matches: RetrievalMatch[], query: string, matcher: RetrievalQueryMatcher, limit: number): RetrievalAnchor[] {
   const matchByPath = new Map(matches.map((match) => [match.file.path, match]));
   const allowTests = /\b(test|tests|spec|pytest|vitest|coverage|verification)\b/i.test(query);
   const symbolAnchors = index.symbols
@@ -879,7 +846,7 @@ function buildRetrievalAnchors(index: CodexaIndex, matches: RetrievalMatch[], qu
     .filter((symbol) => allowTests || (!isTestPath(symbol.path) && symbol.kind !== "test" && symbol.kind !== "fixture"))
     .map((symbol) => {
       const match = matchByPath.get(symbol.path)!;
-      const queryScore = Math.max(matchScore(query, symbol.name), matchScore(query, symbol.qualifiedName));
+      const queryScore = Math.max(matcher.score(symbol.name), matcher.score(symbol.qualifiedName));
       const score = match.score + queryScore * 1.8 + symbolAnchorBoost(symbol);
       return {
         kind: "symbol" as const,

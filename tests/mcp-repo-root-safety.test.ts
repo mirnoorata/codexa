@@ -4,6 +4,7 @@ import { link, mkdir, mkdtemp, readFile, symlink, writeFile } from "node:fs/prom
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { buildIndex } from "../src/indexer.js";
 import { createMcpRuntime } from "../src/mcp/runtime.js";
 
 afterEach(() => {
@@ -11,6 +12,28 @@ afterEach(() => {
 });
 
 describe("MCP default focus-file safety", () => {
+  it("keeps concurrent same-repo query sessions bound to each call's captured workspace session", async () => {
+    const repo = await createRepo("codexa-mcp-session-isolation-");
+    await buildIndex({ repoRoot: repo });
+    const runtime = createMcpRuntime({
+      configuredRepoRoot: repo,
+      queryOptions: { autoRefresh: false, workspaceSessionId: "ambient-session" }
+    });
+    const baseResolution = {
+      configuredRoot: repo,
+      repoRoot: repo,
+      source: "configured-root" as const
+    };
+
+    const [first, second] = await Promise.all([
+      runtime.createQuerySession({ ...baseResolution, workspaceSessionId: "session-a" }),
+      runtime.createQuerySession({ ...baseResolution, workspaceSessionId: "session-b" })
+    ]);
+
+    expect(first.options.workspaceSessionId).toBe("session-a");
+    expect(second.options.workspaceSessionId).toBe("session-b");
+  });
+
   it("resolves an implicit focus from one stable file snapshot", async () => {
     const workspace = await createRepo("codexa-mcp-focus-single-read-");
     const nestedRepo = await createNestedRepo(workspace);

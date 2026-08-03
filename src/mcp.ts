@@ -393,7 +393,7 @@ async function createCodexaMcpServer(
     let rawResult: QueryResult;
     try {
       rawResult = await safeQuery(async () => {
-          const session = await mcpRuntime.createQuerySession(activeRepoRoot);
+          const session = await mcpRuntime.createQuerySession(activeResolution);
           const runtimeResult = withSessionRuntime(await producer(session), session, activeResolution);
           const memoryResult = autoRecord && autoRecordSessionMemory ? await withAutoRecordedSessionMemory(session, runtimeResult, autoRecord.toolName, autoRecord.input) : runtimeResult;
           await notifyResourceListChangedAfterRefresh(server, session);
@@ -634,8 +634,10 @@ async function createCodexaMcpServer(
     return activeRepoRoot;
   };
   await registerArtifactResources(server, resolveResourceRepoRoot, async () => {
-    const activeRepoRoot = await resolveResourceRepoRoot();
-    const session = await mcpRuntime.createQuerySession(activeRepoRoot);
+    const activeResolution = await mcpRuntime.resolveActiveRepoRootResolution();
+    await notifyActiveRepoRootChanged();
+    const activeRepoRoot = activeResolution.repoRoot;
+    const session = await mcpRuntime.createQuerySession(activeResolution);
     if (session.freshness.stale) {
       throw new Error(
         `Codexa generated artifacts unavailable: index stale (${session.freshness.reason}) for ${activeRepoRoot}. ` +

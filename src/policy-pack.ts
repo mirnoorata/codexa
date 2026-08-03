@@ -293,6 +293,10 @@ async function assertDirectoryIfExists(filePath: string, label: string): Promise
 }
 
 async function assertWritableExistingDirectory(filePath: string, label: string): Promise<void> {
+  const info = await lstat(filePath);
+  if (process.platform !== "win32" && (info.mode & 0o222) === 0) {
+    throw new Error(`${label} is not writable; refusing to write policy pack`);
+  }
   const probe = path.join(filePath, `.codexa-policy-write-probe-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.tmp`);
   try {
     await writeFile(probe, "", { flag: "wx" });

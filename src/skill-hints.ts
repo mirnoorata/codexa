@@ -1,6 +1,7 @@
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { moduleArtifactFileName } from "./module-artifact-name.js";
 import type { CodexaIndex } from "./types.js";
 import { limitText, uniqueSorted } from "./util.js";
 
@@ -140,14 +141,14 @@ export async function targetPlaybookHints(repoRoot: string, index: CodexaIndex, 
     if (!module.files.some((filePath) => normalizedTargets.has(normalizeCodexPath(filePath)))) {
       continue;
     }
-    const safeName = safeModuleName(module.name);
-    const relativePath = `.codex/codebase/playbooks/${safeName}.md`;
+    const fileName = moduleArtifactFileName(module);
+    const relativePath = `.codex/codebase/playbooks/${fileName}`;
     if (!(await exists(path.join(repoRoot, relativePath)))) {
       continue;
     }
     playbooks.push({
       module: module.name,
-      uri: `codexa://repo/codebase/playbooks/${encodeURIComponent(`${safeName}.md`)}`,
+      uri: `codexa://repo/codebase/playbooks/${encodeURIComponent(fileName)}`,
       path: relativePath
     });
   }
@@ -475,10 +476,6 @@ function globPatternToRegExpSource(glob: string): string {
 
 function normalizeCodexPath(value: string): string {
   return value.trim().replace(/\\/gu, "/").replace(/^\.\//u, "");
-}
-
-function safeModuleName(name: string): string {
-  return name.replace(/[^A-Za-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "") || "root";
 }
 
 function escapeRegExp(value: string): string {

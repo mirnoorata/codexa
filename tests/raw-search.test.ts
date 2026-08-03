@@ -5,7 +5,43 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { baselineSearchSummary, rawSearch } from "../src/query/raw-search.js";
 
+const ripgrepAvailable = (() => {
+  try {
+    execFileSync("rg", ["--version"], { stdio: "ignore" });
+    return true;
+  } catch {
+    return false;
+  }
+})();
+
 describe("raw search fallback", () => {
+  it.skipIf(!ripgrepAvailable)("ignores ambient ripgrep configuration", async () => {
+    const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-raw-search-config-"));
+    execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
+    await writeFile(
+      path.join(repo, "marker.ts"),
+      "export const codexa_hostile_config_marker = true\nexport const second_codexa_hostile_config_marker = true\n",
+      "utf8"
+    );
+    const configPath = path.join(repo, "hostile-ripgrep.conf");
+    await writeFile(configPath, "--files-with-matches\n", "utf8");
+    const previous = process.env.RIPGREP_CONFIG_PATH;
+    process.env.RIPGREP_CONFIG_PATH = configPath;
+    try {
+      const result = await rawSearch(repo, "codexa_hostile_config_marker", 5);
+      expect(result.command).toContain("--no-config");
+      expect(result.hits).toHaveLength(2);
+      expect(result.hits[0]).toMatchObject({ path: "marker.ts", line: 1 });
+      await expect(baselineSearchSummary(repo, "codexa_hostile_config_marker")).resolves.toMatchObject({
+        command: expect.stringContaining("--no-config"),
+        lines: 2
+      });
+    } finally {
+      if (previous === undefined) delete process.env.RIPGREP_CONFIG_PATH;
+      else process.env.RIPGREP_CONFIG_PATH = previous;
+    }
+  });
+
   it("searches multiple literal patterns in one pass", async () => {
     const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-raw-search-"));
     execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });

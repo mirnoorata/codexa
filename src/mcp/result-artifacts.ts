@@ -891,7 +891,9 @@ async function readProcessStartToken(pid: number): Promise<string | undefined> {
 async function processIdentityIsLive(pid: number, expectedStartToken?: string): Promise<boolean> {
   const currentStartToken = await readProcessStartToken(pid);
   if (expectedStartToken && currentStartToken) return expectedStartToken === currentStartToken;
-  if (process.platform === "linux" && !currentStartToken) return false;
+  // `/proc` may be hidden by hidepid/container policy even for a live owner.
+  // When either identity token is unavailable, conservatively fall back to
+  // signal-0 liveness; only a comparable token mismatch proves PID reuse.
   try {
     process.kill(pid, 0);
     return true;

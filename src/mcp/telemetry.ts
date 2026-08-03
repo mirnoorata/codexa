@@ -295,6 +295,9 @@ async function appendTelemetryBatch(filePath: string, writer: TelemetryWriter, b
     if (!stat.isFile() || stat.nlink !== 1) {
       throw new Error("telemetry destination must be one regular, non-hardlinked file");
     }
+    if (process.platform !== "win32" && (stat.mode & 0o200) === 0) {
+      throw new Error("telemetry destination is not owner-writable");
+    }
     if (writer.fileIdentity && (stat.dev !== writer.fileIdentity.dev || stat.ino !== writer.fileIdentity.ino)) {
       throw new Error("telemetry destination changed during the MCP session");
     }

@@ -34,6 +34,17 @@ describePosix("verification shell differential safety", () => {
       await writeFile(path.join(binDir, runner), stub, "utf8");
       await chmod(path.join(binDir, runner), 0o755);
     }
+    const timeStub = [
+      "#!/bin/sh",
+      "if [ \"${1:-}\" = -o ] && [ \"$#\" -ge 2 ]; then",
+      "  : > \"$2\"",
+      "  shift 2",
+      "fi",
+      "exec \"$@\"",
+      ""
+    ].join("\n");
+    await writeFile(path.join(binDir, "time"), timeStub, "utf8");
+    await chmod(path.join(binDir, "time"), 0o755);
     const npxStub = [
       "#!/bin/sh",
       "case \"${1:-}\" in",
@@ -105,7 +116,7 @@ describePosix("verification shell differential safety", () => {
       "npx -c 'printf metadata >/dev/null' playwright test tests/generated.test.ts",
       "npm run --version",
       "command env --chdir playwright true tests/generated.test.ts",
-      "time -o vitest true tests/generated.test.ts"
+      "command time -o vitest true tests/generated.test.ts"
     ];
     for (const command of commands) {
       const observed = await execute(command);

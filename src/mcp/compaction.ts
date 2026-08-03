@@ -765,7 +765,7 @@ function compactChangePlanData(data: ChangePlanData): McpCompactionResult {
     focus: compactFocus?.data,
     context: compactContext?.data,
     files: limit("files", data.files, 30), plannedEditTargets: limit("plannedEditTargets", data.plannedEditTargets, 30),
-    targetRoles: compactTargetRoles(data.targetRoles, limit), reviewOwner: data.reviewOwner,
+    targetRoles: compactTargetRoles(data.targetRoles, limit), reviewOwner: data.reviewOwner, autoVerify: data.autoVerify,
     tests: limit("tests", data.tests, 30, compactTestRecommendation),
     recipes: limit("recipes", data.recipes, 12),
     quality: data.quality,

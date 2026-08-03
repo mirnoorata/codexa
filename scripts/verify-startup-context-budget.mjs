@@ -66,7 +66,13 @@ assert.equal(exposure.firstTaskResultDecodedPayloadReductionPercent, 0);
 assert.equal(exposure.repeatedTaskResultDecodedPayloadReductionPercent, 0);
 
 assert.match(packageJson.scripts["benchmark:transport:exposure"], /--baseline-tools full --candidate-tools core/);
-assert.match(packageJson.scripts.check, /startup:context-check/);
+assert.match(packageJson.scripts.test, /npm run build/);
+assert.match(packageJson.scripts["startup:context-check"], /npm run build/);
+assert.match(packageJson.scripts.check, /^npm run build\b/u);
+assert.match(packageJson.scripts.check, /npm run test:built\b/u);
+assert.match(packageJson.scripts.check, /npm run startup:context-check:built\b/u);
+assert.equal(packageJson.scripts.check.match(/npm run build\b/gu)?.length, 1, "check should compile TypeScript exactly once");
+assert.doesNotMatch(packageJson.scripts.check, /npm run (?:typecheck|test)(?:\s|&&|$)/u);
 assert.match(projectKernel, /README `Codex Project Worktrees And Local Setup`/);
 assert.match(projectKernel, /README `Release Automation`/);
 assert.match(readme, /Codex Project Worktrees And Local Setup/);

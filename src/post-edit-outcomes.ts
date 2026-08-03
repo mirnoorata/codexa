@@ -1,6 +1,7 @@
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { acquireCacheLock } from "./cache-lock.js";
 import { assertSafeManagedDirectory, assertSafeManagedFile, ensureSafeManagedStateDirectory } from "./init-portability.js";
 import {
   isCompletionBearingPostEditReviewCoverage,
@@ -37,9 +38,11 @@ import { exactWorkspaceStateDigest, workspaceStateDigest } from "./workspace-sta
 type OutcomeCommandReport = VerificationCommandReport & { runner?: AutoVerifyReportRunner };
 
 const OUTCOME_DIR = ".codex/cache/codexa-outcomes";
+const OUTCOME_WRITE_LOCK_DIR = ".codex/cache/codexa-outcomes-write.lock";
 const LATEST_FILE = "latest.json";
 const LATEST_HOOK_REVIEW_FILE = "latest-hook-review.json";
 const HOOK_EVENT_DIR = ".codex/cache/codexa-hooks";
+const HOOK_EVENT_WRITE_LOCK_DIR = ".codex/cache/codexa-hooks-write.lock";
 const HOOK_EVENTS_FILE = "events.ndjson";
 const LATEST_HOOK_EVENT_FILE = "latest.json";
 const MAX_HOOK_EVENTS_BYTES = 512 * 1024;
@@ -236,7 +239,11 @@ export interface CodexaHookEvent extends CodexaHookEventInput {
   repoRoot: ".";
 }
 
-export function buildPostEditOutcome(input: PostEditOutcomeInput, createdAt = new Date().toISOString()): PostEditOutcome {
+export function buildPostEditOutcome(
+  input: PostEditOutcomeInput,
+  createdAt = new Date().toISOString(),
+  outcomeIdNonce?: string
+): PostEditOutcome {
   const repoRoot = path.resolve(input.repoRoot);
   const coverageValidation = validatePostEditReviewCoverage(input.reviewCoverage, {
     taskId: input.taskId ?? null,
@@ -247,7 +254,7 @@ export function buildPostEditOutcome(input: PostEditOutcomeInput, createdAt = ne
     analyzedTargets: input.reviewTargets
   });
   if (!coverageValidation.valid) throw new Error(`refusing to build post-edit outcome with invalid review coverage: ${coverageValidation.reason}`);
-  const outcomeId = stableOutcomeId(repoRoot, input, createdAt);
+  const outcomeId = stableOutcomeId(repoRoot, input, createdAt, outcomeIdNonce);
   return {
     schemaVersion: 1,
     outcomeId,
@@ -314,37 +321,42 @@ export function buildPostEditOutcome(input: PostEditOutcomeInput, createdAt = ne
 
 export async function savePostEditOutcome(input: PostEditOutcomeInput): Promise<{ outcome: PostEditOutcome; path: string; relativePath: string }> {
   const repoRoot = path.resolve(input.repoRoot);
-  const createdAt = new Date().toISOString();
-  const outcome = buildPostEditOutcome(input, createdAt);
-  // Persist the stricter completion identity when the checkout can be observed
-  // exactly. The legacy content-only digest remains useful for ordinary outcome
-  // records, but completion probes will never trust it as a skip authority.
-  outcome.workspaceStateDigest = (await exactWorkspaceStateDigest(repoRoot, input.freshness)) ?? outcome.workspaceStateDigest;
-  const dir = await ensureSafeManagedStateDirectory(repoRoot, "cache", "codexa-outcomes");
-  const outcomePath = path.join(dir, `${outcome.outcomeId}.json`);
-  const latestPath = path.join(dir, LATEST_FILE);
-  const reviewCoverageDigest = postEditReviewCoverageDigest(outcome.reviewCoverage);
-  if (!reviewCoverageDigest) throw new Error("refusing to save post-edit outcome with invalid review coverage");
-  await assertSafeManagedFile(outcomePath);
-  await assertSafeManagedFile(latestPath);
-  await atomicJsonWrite(outcomePath, outcome);
-  await atomicJsonWrite(latestPath, {
-    schemaVersion: 1,
-    outcomeId: outcome.outcomeId,
-    path: path.basename(outcomePath),
-    createdAt,
-    verdict: outcome.verdict,
-    completionAuthority: outcome.completionAuthority,
-    taskId: outcome.taskId,
-    planRevision: outcome.planRevision ?? 1,
-    snapshotCreatedAt: outcome.snapshotCreatedAt,
-    snapshotPublicationSequence: outcome.snapshotPublicationSequence,
-    headCommit: outcome.headCommit,
-    indexSnapshotId: outcome.indexSnapshotId,
-    workspaceStateDigest: outcome.workspaceStateDigest,
-    reviewCoverageDigest
-  } satisfies LatestPostEditOutcomePointer);
-  return { outcome, path: outcomePath, relativePath: path.posix.join(OUTCOME_DIR, `${outcome.outcomeId}.json`) };
+  const release = await acquireCacheLock({ repoRoot, lockDir: OUTCOME_WRITE_LOCK_DIR, label: "Codexa post-edit outcomes" });
+  try {
+    const createdAt = new Date().toISOString();
+    const outcome = buildPostEditOutcome(input, createdAt, randomUUID());
+    // Persist the stricter completion identity when the checkout can be observed
+    // exactly. The legacy content-only digest remains useful for ordinary outcome
+    // records, but completion probes will never trust it as a skip authority.
+    outcome.workspaceStateDigest = (await exactWorkspaceStateDigest(repoRoot, input.freshness)) ?? outcome.workspaceStateDigest;
+    const dir = await ensureSafeManagedStateDirectory(repoRoot, "cache", "codexa-outcomes");
+    const outcomePath = path.join(dir, `${outcome.outcomeId}.json`);
+    const latestPath = path.join(dir, LATEST_FILE);
+    const reviewCoverageDigest = postEditReviewCoverageDigest(outcome.reviewCoverage);
+    if (!reviewCoverageDigest) throw new Error("refusing to save post-edit outcome with invalid review coverage");
+    await assertSafeManagedFile(outcomePath);
+    await assertSafeManagedFile(latestPath);
+    await atomicJsonWrite(outcomePath, outcome);
+    await atomicJsonWrite(latestPath, {
+      schemaVersion: 1,
+      outcomeId: outcome.outcomeId,
+      path: path.basename(outcomePath),
+      createdAt,
+      verdict: outcome.verdict,
+      completionAuthority: outcome.completionAuthority,
+      taskId: outcome.taskId,
+      planRevision: outcome.planRevision ?? 1,
+      snapshotCreatedAt: outcome.snapshotCreatedAt,
+      snapshotPublicationSequence: outcome.snapshotPublicationSequence,
+      headCommit: outcome.headCommit,
+      indexSnapshotId: outcome.indexSnapshotId,
+      workspaceStateDigest: outcome.workspaceStateDigest,
+      reviewCoverageDigest
+    } satisfies LatestPostEditOutcomePointer);
+    return { outcome, path: outcomePath, relativePath: path.posix.join(OUTCOME_DIR, `${outcome.outcomeId}.json`) };
+  } finally {
+    await release();
+  }
 }
 
 /**
@@ -460,32 +472,42 @@ export async function loadPostEditHookReviewState(repoRoot: string): Promise<Pos
 
 export async function savePostEditHookReviewState(repoRoot: string, input: { signature: string; outcome?: PostEditOutcome; autoVerifyStatus?: PostEditHookReviewState["autoVerifyStatus"] }): Promise<void> {
   const repo = path.resolve(repoRoot);
-  const dir = await ensureSafeManagedStateDirectory(repo, "cache", "codexa-outcomes");
-  const reviewPath = path.join(dir, LATEST_HOOK_REVIEW_FILE);
-  await assertSafeManagedFile(reviewPath);
-  await atomicJsonWrite(reviewPath, {
-    schemaVersion: 1,
-    signature: input.signature,
-    createdAt: new Date().toISOString(),
-    outcomeId: input.outcome?.outcomeId,
-    taskId: input.outcome?.taskId,
-    verdict: input.outcome?.verdict,
-    autoVerifyStatus: input.autoVerifyStatus
-  });
+  const release = await acquireCacheLock({ repoRoot: repo, lockDir: OUTCOME_WRITE_LOCK_DIR, label: "Codexa post-edit outcomes" });
+  try {
+    const dir = await ensureSafeManagedStateDirectory(repo, "cache", "codexa-outcomes");
+    const reviewPath = path.join(dir, LATEST_HOOK_REVIEW_FILE);
+    await assertSafeManagedFile(reviewPath);
+    await atomicJsonWrite(reviewPath, {
+      schemaVersion: 1,
+      signature: input.signature,
+      createdAt: new Date().toISOString(),
+      outcomeId: input.outcome?.outcomeId,
+      taskId: input.outcome?.taskId,
+      verdict: input.outcome?.verdict,
+      autoVerifyStatus: input.autoVerifyStatus
+    });
+  } finally {
+    await release();
+  }
 }
 
 export async function recordCodexaHookEvent(repoRoot: string, input: CodexaHookEventInput): Promise<void> {
   const repo = path.resolve(repoRoot);
   const dir = await prepareHookEventDirectory(repo);
   if (!dir) return;
-  const event = compactHookEvent(repo, input);
-  const eventsPath = path.join(dir, HOOK_EVENTS_FILE);
-  const latestPath = path.join(dir, LATEST_HOOK_EVENT_FILE);
-  await assertSafeManagedFile(eventsPath);
-  await assertSafeManagedFile(latestPath);
-  await trimHookEventsIfNeeded(eventsPath);
-  await fs.appendFile(eventsPath, `${JSON.stringify(event)}\n`, "utf8");
-  await atomicJsonWrite(latestPath, event);
+  const release = await acquireCacheLock({ repoRoot: repo, lockDir: HOOK_EVENT_WRITE_LOCK_DIR, label: "Codexa hook events" });
+  try {
+    const event = compactHookEvent(repo, input);
+    const eventsPath = path.join(dir, HOOK_EVENTS_FILE);
+    const latestPath = path.join(dir, LATEST_HOOK_EVENT_FILE);
+    await assertSafeManagedFile(eventsPath);
+    await assertSafeManagedFile(latestPath);
+    await trimHookEventsIfNeeded(eventsPath);
+    await fs.appendFile(eventsPath, `${JSON.stringify(event)}\n`, "utf8");
+    await atomicJsonWrite(latestPath, event);
+  } finally {
+    await release();
+  }
 }
 
 export async function loadLatestCodexaHookEvent(repoRoot: string): Promise<CodexaHookEvent | null> {
@@ -524,9 +546,23 @@ export function codexaHookEventsRelativePath(): string {
   return path.posix.join(HOOK_EVENT_DIR, HOOK_EVENTS_FILE);
 }
 
-function stableOutcomeId(repoRoot: string, input: PostEditOutcomeInput, createdAt: string): string {
+function stableOutcomeId(
+  repoRoot: string,
+  input: PostEditOutcomeInput,
+  createdAt: string,
+  outcomeIdNonce?: string
+): string {
   const task = (input.taskId ?? input.task).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 40) || "post-edit";
-  const suffix = stableId("post-edit-outcome", repoRoot, input.taskId, input.task, input.verdict, input.changedFiles.join("\n"), createdAt);
+  const suffix = stableId(
+    "post-edit-outcome",
+    repoRoot,
+    input.taskId,
+    input.task,
+    input.verdict,
+    input.changedFiles.join("\n"),
+    createdAt,
+    outcomeIdNonce
+  );
   return `${task}-${createdAt.replace(/[-:TZ.]/g, "").slice(0, 14)}-${suffix}`.slice(0, 120);
 }
 
@@ -908,7 +944,11 @@ function calibrationLabels(input: PostEditOutcomeInput): string[] {
 }
 
 async function atomicJsonWrite(filePath: string, value: unknown): Promise<void> {
-  const tmp = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  await fs.writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, "utf8");
-  await fs.rename(tmp, filePath);
+  const tmp = `${filePath}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    await fs.writeFile(tmp, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", flag: "wx" });
+    await fs.rename(tmp, filePath);
+  } finally {
+    await fs.rm(tmp, { force: true }).catch(() => undefined);
+  }
 }

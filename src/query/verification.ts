@@ -19,7 +19,6 @@ import { wasTestRun } from "./tests.js";
 import {
   hasBalancedQuotes,
   hasNonRunningCommandArg,
-  hasNonRunningPythonTestArg,
   hasPnpmWorkspaceFlag,
   isNonRunningCommand,
   segmentTruthiness,
@@ -31,10 +30,16 @@ import {
   stripLeadingEnvironment,
   stripPackageManagerFlags,
   stripShellControlWords,
+  shellWordsWithoutRedirections,
   type ShellTruthiness
 } from "./verification/shell.js";
 import { commandNeedsFullMaskingAnalysis, segmentMasksExit, stripFlowPrefix } from "./verification/masking.js";
-import { addJavaScriptTestCoverage, addPlaywrightCommandCoverage } from "./verification/javascript-tests.js";
+import {
+  addCypressCommandCoverage,
+  addJavaScriptTestCoverage,
+  addPlaywrightCommandCoverage
+} from "./verification/javascript-tests.js";
+import { addPythonTestCoverage } from "./verification/python-tests.js";
 import {
   isNonCompilingTscCommand,
   isPackageManagerRunInformationalWord,
@@ -51,7 +56,6 @@ import {
   dedupeCoverage,
   maskedCoverageCtx,
   mergeConfidence,
-  normalizeCandidateTarget,
   normalizeCwd,
   normalizePathLike,
   packageManagerRunCommand,
@@ -290,6 +294,10 @@ function analyzeCommandEnvelope(
   }
   if (manager === "playwright" || scriptName === "playwright") {
     addPlaywrightCommandCoverage(args, cwd, commandText, "reported command envelope playwright", ctx);
+    return true;
+  }
+  if (manager === "cypress" || scriptName === "cypress") {
+    addCypressCommandCoverage(args, cwd, commandText, "reported command envelope cypress", ctx);
     return true;
   }
   if (manager === "pytest" || scriptName === "pytest") {
@@ -730,11 +738,23 @@ function analyzeSegment(
     addCoverage: (coverage: CoverageAddInput) => void;
   }
 ): void {
-  const words = stripShellControlWords(stripLeadingEnvironment(shellWords(segment)));
+  const commandText = [...chain, segment].join(" -> ");
+  const redirectionParsed = shellWordsWithoutRedirections(segment);
+  if (!redirectionParsed.ok) {
+    ctx.addCoverage({
+      kind: "unknown",
+      command: commandText,
+      source: redirectionParsed.reason,
+      confidence: "derived",
+      scope: cwd,
+      details: chain
+    });
+    return;
+  }
+  const words = stripShellControlWords(stripLeadingEnvironment(redirectionParsed.words));
   if (words.length === 0 || isNonRunningCommand(words)) {
     return;
   }
-  const commandText = [...chain, segment].join(" -> ");
   const shellWrapped = shellWrappedCommand(words);
   if (shellWrapped) {
     // The word tokenizer cannot represent nested or escaped quoting, so a
@@ -781,6 +801,10 @@ function analyzeSegment(
   }
   if (invocation.command === "playwright") {
     addPlaywrightCommandCoverage(invocation.args, cwd, commandText, "direct playwright command", ctx);
+    return;
+  }
+  if (invocation.command === "cypress") {
+    addCypressCommandCoverage(invocation.args, cwd, commandText, "direct cypress command", ctx);
     return;
   }
   if (invocation.command === "vitest" || invocation.command === "jest") {
@@ -901,27 +925,5 @@ function addScriptNameCoverage(
   }
   if ((allowNameOnly && lowerName.includes("audit")) || evidence.audit) {
     ctx.addCoverage({ kind: "audit", command: commandText, source: script.source, scope: script.packageRoot, details: [script.command] });
-  }
-}
-
-function addPythonTestCoverage(
-  args: string[],
-  cwd: string,
-  commandText: string,
-  source: string,
-  ctx: { repoRoot: string; addCoverage: (coverage: CoverageAddInput) => void }
-): void {
-  if (hasNonRunningPythonTestArg(args) || args.some((arg) => ["--collect-only", "--co", "--fixtures"].includes(arg))) {
-    return;
-  }
-  const targets = args.map((arg) => normalizeCandidateTarget(arg, cwd, ctx.repoRoot)).filter((arg): arg is string => Boolean(arg));
-  const testTargets = targets.filter((target) => target.endsWith(".py") || target.startsWith("tests/"));
-  if (testTargets.length === 0) {
-    ctx.addCoverage({ kind: "python-tests", command: commandText, source, scope: cwd, details: args });
-    return;
-  }
-  for (const target of testTargets) {
-    ctx.addCoverage({ kind: "python-tests", command: commandText, source, scope: cwd, targetPath: target, details: args });
-    ctx.addCoverage({ kind: "targeted-test", command: commandText, source, scope: cwd, targetPath: target, details: args });
   }
 }

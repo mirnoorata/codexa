@@ -8,6 +8,16 @@ import { describe, expect, it } from "vitest";
 const execFileAsync = promisify(execFile);
 
 describe("Codexa plugin package", () => {
+  it("keeps the Claude brief command aligned with selective Codexa routing", async () => {
+    const brief = await readFile(path.join(process.cwd(), "integrations", "claude-code", "commands", "codexa-brief.md"), "utf8");
+    const readme = await readFile(path.join(process.cwd(), "integrations", "claude-code", "README.md"), "utf8");
+
+    expect(brief).toContain("when the scope is ambiguous");
+    expect(brief).toMatch(/Skip this command when direct\s+source evidence/u);
+    expect(brief).not.toContain("first call before any");
+    expect(readme).toContain("exact/local/source-sufficient -> source tools, zero Codexa calls");
+  });
+
   it("keeps MCP registry metadata in sync with package.json", async () => {
     const pkg = JSON.parse(await readFile(path.join(process.cwd(), "package.json"), "utf8")) as {
       version: string;

@@ -386,9 +386,14 @@ export function isSessionMemoryStore(value: unknown, sessionId: string): value i
     record.schemaVersion === 1 &&
     record.sessionId === sessionId &&
     record.repoRoot === "." &&
+    typeof record.createdAt === "string" &&
+    typeof record.updatedAt === "string" &&
     Array.isArray(record.entries) &&
-    record.entries.every(isSessionMemoryEntry) &&
-    typeof record.revision === "number"
+    record.entries.every((entry) => isSessionMemoryEntry(entry) && entry.sessionId === sessionId) &&
+    Number.isSafeInteger(record.revision) &&
+    Number(record.revision) >= 0 &&
+    (record.activeTaskId === undefined || typeof record.activeTaskId === "string") &&
+    isSessionMemoryCompaction(record.compaction)
   );
 }
 
@@ -402,8 +407,19 @@ export function isSessionMemoryEvent(value: unknown, sessionId: string): value i
     record.sessionId === sessionId &&
     (record.event === "record" || record.event === "compact") &&
     Array.isArray(record.entries) &&
-    record.entries.every(isSessionMemoryEntry) &&
-    typeof record.revision === "number"
+    record.entries.every((entry) => isSessionMemoryEntry(entry) && entry.sessionId === sessionId) &&
+    Number.isSafeInteger(record.revision) &&
+    Number(record.revision) > 0
+  );
+}
+
+function isSessionMemoryCompaction(value: unknown): value is SessionMemoryStore["compaction"] {
+  if (!isRecord(value)) return false;
+  return (
+    (value.compactedAt === undefined || typeof value.compactedAt === "string") &&
+    [value.sourceEventCount, value.retainedEntryCount, value.droppedEntryCount].every(
+      (count) => Number.isSafeInteger(count) && Number(count) >= 0
+    )
   );
 }
 
