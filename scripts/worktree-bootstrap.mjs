@@ -295,6 +295,10 @@ function runBoundedChild(command, args, options) {
       spawnError = error;
     });
     const timeout = setTimeout(() => {
+      // Preserve the first terminal condition. Process-tree teardown can take
+      // longer than the remaining stage budget, especially under taskkill on
+      // Windows, but that must not relabel an output-cap failure as a timeout.
+      if (terminating) return;
       timedOut = true;
       terminate();
     }, options.timeoutMs);

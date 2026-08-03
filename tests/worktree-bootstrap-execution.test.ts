@@ -142,6 +142,7 @@ async function createBootstrapExecutionFixture(
       '  process.on("SIGTERM", () => undefined);',
       "  setInterval(() => undefined, 1_000);",
       '} else if (process.env.CODEXA_BOOTSTRAP_TEST_MODE === "noisy") {',
+      '  process.on("SIGTERM", () => undefined);',
       '  const chunk = Buffer.alloc(16 * 1024, "x");',
       "  const pump = () => {",
       "    while (process.stdout.write(chunk)) {}",
@@ -186,7 +187,7 @@ function runBootstrapProbe(fixture: {
         PATH: `${fixture.fakeBin}${path.delimiter}${process.env.PATH ?? ""}`,
         CODEXA_BOOTSTRAP_TESTING: "1",
         CODEXA_BOOTSTRAP_TEST_STAGE_TIMEOUT_MS: "250",
-        CODEXA_BOOTSTRAP_TEST_TERMINATION_GRACE_MS: "100",
+        CODEXA_BOOTSTRAP_TEST_TERMINATION_GRACE_MS: fixture.mode === "noisy" ? "500" : "100",
         CODEXA_BOOTSTRAP_TEST_LOG_MAX_BYTES: "4096",
         CODEXA_BOOTSTRAP_TEST_MODE: fixture.mode,
         CODEXA_BOOTSTRAP_TEST_PID_PATH: fixture.pidPath
