@@ -69,6 +69,7 @@ import { postEditExplicitSymbolTargets, postEditReviewContext, postEditReviewPas
 import { evaluateVerificationArtifacts, loadVerificationArtifacts } from "../verification-artifacts.js";
 import { validateArtifactIds } from "../lifecycle-contract.js";
 import { buildChangeEvidenceChains, formatChangeEvidenceChains } from "./change-plan/evidence-chains.js";
+import { workflowMatchesAnyPath } from "../workflow-membership.js";
 interface PostEditReviewInternalInput { trustedRunnerReports?: AutoVerifyCommandReport[]; }
 
 export async function postEditReviewQuery(
@@ -267,7 +268,7 @@ async function postEditReviewQueryInternal(
     .filter((file) => file.riskScore >= 4 || unplannedEditedFileSet.has(file.path))
     .sort((a, b) => b.riskScore - a.riskScore || b.rank - a.rank || a.path.localeCompare(b.path));
   const workflows = index.workflows
-    .filter((workflow) => workflow.relatedFiles.some((filePath) => reviewTargetSet.has(filePath)) || reviewTargetSet.has(workflow.entryPath))
+    .filter((workflow) => workflowMatchesAnyPath(workflow, reviewTargetSet))
     .sort((a, b) => b.rank - a.rank || a.title.localeCompare(b.title));
   const rawWorkflowChecks = evaluateRequiredChecks(snapshot?.requiredWorkflowChecks ?? [], {
     editPaths,

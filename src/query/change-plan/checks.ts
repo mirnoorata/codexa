@@ -1,5 +1,8 @@
 import type { ChangeType, CodexaIndex, EvidenceTier, TaskSnapshotRequiredCheck, WorkflowTraceFact } from "../../types.js";
 import { uniqueSorted } from "../../util.js";
+import { retainedWorkflowPaths, workflowMatchesAnyPath } from "../../workflow-membership.js";
+
+const MAX_REQUIRED_WORKFLOW_SCOPE_PATHS = 64;
 
 export function requiredWorkflowChecksForPlan(
   workflows: WorkflowTraceFact[],
@@ -7,19 +10,29 @@ export function requiredWorkflowChecksForPlan(
   changeType: ChangeType
 ): TaskSnapshotRequiredCheck[] {
   return workflows
-    .filter((workflow) => workflow.relatedFiles.some((filePath) => pathScope.has(filePath)) || pathScope.has(workflow.entryPath))
+    .filter((workflow) => workflowMatchesAnyPath(workflow, pathScope))
     .sort((a, b) => b.rank - a.rank || a.title.localeCompare(b.title))
-    .map((workflow) => ({
-      kind: "workflow" as const,
-      target: workflow.title,
-      reason:
-        changeType === "style"
-          ? "workflow is adjacent to the planned edit; spot-check only if behavior changed"
-          : `planned edit intersects ${workflow.workflowKind} workflow evidence`,
-      evidenceTier: workflow.confidence === "authoritative" ? "authoritative" : workflow.confidence === "derived" ? "derived" : "heuristic",
-      confidence: workflow.confidence,
-      paths: uniqueSorted([workflow.entryPath, ...workflow.relatedFiles, ...workflow.tests]).slice(0, 20)
-    }));
+    .map((workflow) => {
+      const retainedPaths = retainedWorkflowPaths(workflow);
+      const scopedPaths = retainedPaths.filter((filePath) => pathScope.has(filePath));
+      const adjacentPaths = retainedPaths.filter((filePath) => !pathScope.has(filePath));
+      const retainedScope = scopedPaths.slice(0, MAX_REQUIRED_WORKFLOW_SCOPE_PATHS);
+      const adjacentLimit = Math.max(0, 20 - retainedScope.length);
+      return {
+        kind: "workflow" as const,
+        target: workflow.title,
+        reason:
+          changeType === "style"
+            ? "workflow is adjacent to the planned edit; spot-check only if behavior changed"
+            : `planned edit intersects ${workflow.workflowKind} workflow evidence`,
+        evidenceTier: workflow.confidence === "authoritative" ? "authoritative" : workflow.confidence === "derived" ? "derived" : "heuristic",
+        confidence: workflow.confidence,
+        // Every change-plan target (bounded to 64 by the public input schema)
+        // must survive the smaller context receipt, or a later review can
+        // incorrectly mark this workflow check as not applicable.
+        paths: [...retainedScope, ...adjacentPaths.slice(0, adjacentLimit)]
+      };
+    });
 }
 
 export function requiredDependencyChecksForPlan(index: CodexaIndex, paths: string[], changeType: ChangeType): TaskSnapshotRequiredCheck[] {

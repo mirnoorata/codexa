@@ -49,6 +49,7 @@ import { candidateSymbols, canonicalCandidateReplayFiles, dedupeTargetCandidates
 import { validateChangePlanTargetCandidate } from "./change-plan/candidate-validation.js";
 import { buildChangePlanExecutionPolicy } from "./change-plan/execution-policy.js";
 import { buildChangePlanEvidence, formatChangeEvidenceSection } from "./change-plan/evidence-chains.js";
+import { workflowIncludesPath, workflowMatchesAnyPath } from "../workflow-membership.js";
 export { validateChangePlanTargetCandidate } from "./change-plan/candidate-validation.js";
 export async function changePlanQuery(
   sessionInput: QuerySessionInput,
@@ -229,9 +230,7 @@ export async function changePlanQuery(
   const focusPathSet = new Set(files);
   const explicitWorkflowPaths = new Set(normalizeInputPaths(effectiveInput.files ?? [], repoRoot));
   const workflowMatchPaths = explicitWorkflowPaths.size > 0 ? explicitWorkflowPaths : focusPathSet;
-  const relatedWorkflow = session.index.workflows.find(
-    (workflow) => workflow.relatedFiles.some((filePath) => workflowMatchPaths.has(filePath)) || workflowMatchPaths.has(workflow.entryPath)
-  );
+  const relatedWorkflow = session.index.workflows.find((workflow) => workflowMatchesAnyPath(workflow, workflowMatchPaths));
   const requiredWorkflowChecks = requiredWorkflowChecksForPlan(session.index.workflows, workflowMatchPaths, effectiveInput.changeType ?? "unknown").slice(0, 8);
   const requiredDependencyChecks = requiredDependencyChecksForPlan(session.index, plannedEditTargets, effectiveInput.changeType ?? "unknown").slice(0, 12);
   const dirtyScopeTests =
@@ -790,7 +789,7 @@ function changePlanTargetCandidates(input: {
     if (file.test && input.focusFiles.some((candidate) => !candidate.file.test)) {
       continue;
     }
-    const workflowHits = input.workflows.filter((workflow) => workflow.entryPath === file.path || workflow.relatedFiles.includes(file.path));
+    const workflowHits = input.workflows.filter((workflow) => workflowIncludesPath(workflow, file.path));
     const graphHits = input.index.graphEdges.filter((edge) => edge.fromPath === file.path || edge.toPath === file.path).slice(0, 6);
     const fileEvidence = candidateEvidence({
       file,

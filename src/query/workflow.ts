@@ -12,6 +12,7 @@ import { findFile, resolveGraphTarget, type ResolvedGraphTarget } from "./target
 import { retrieveForTask } from "../retrieval.js";
 import { semanticOptionsFromQueryOptions } from "../semantic-retrieval.js";
 import { workflowTierCounts } from "./graph-traversal.js";
+import { workflowMatchesAnyPath } from "../workflow-membership.js";
 
 export async function workflowPathQuery(
   input: QuerySessionInput,
@@ -223,7 +224,7 @@ export function workflowMatchesTarget(workflow: WorkflowTraceFact, target: Resol
       (isAdapterPath(target.symbol.path) && workflow.steps.some((step) => step.targetPath === target.symbol?.path || step.path === target.symbol?.path))
     );
   }
-  return workflow.relatedFiles.some((file) => target.paths.has(file));
+  return workflowMatchesAnyPath(workflow, target.paths);
 }
 
 export function formatWorkflow(workflow: WorkflowTraceFact): string[] {

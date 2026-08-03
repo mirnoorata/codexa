@@ -14,6 +14,7 @@ import { CHANGE_EVIDENCE_LIMITS, CHANGE_EVIDENCE_TEXT_LIMITS } from "../../types
 import { stableId, uniqueSorted } from "../../util.js";
 import { redactRepoPath } from "../../task-snapshot-storage.js";
 import { edgeEvidenceForGraphEdges } from "../edge-evidence.js";
+import { workflowMatchesAnyPath } from "../../workflow-membership.js";
 
 const MAX_TARGETS = 8;
 const MAX_START_NODES_PER_TARGET = 128;
@@ -577,7 +578,7 @@ function testSupportsPaths(test: TestRecommendation, paths: string[], anchorPath
 function matchingSubsystem(index: CodexaIndex, anchorPath: string, paths: string[]): ChangeEvidenceChainV1["subsystem"] {
   const pathSet = new Set([anchorPath, ...paths]);
   const workflow = index.workflows
-    .filter((candidate) => pathSet.has(candidate.entryPath) || candidate.relatedFiles.some((filePath) => pathSet.has(filePath)))
+    .filter((candidate) => workflowMatchesAnyPath(candidate, pathSet))
     .sort((left, right) => right.rank - left.rank || left.id.localeCompare(right.id))[0];
   if (workflow) {
     return {
