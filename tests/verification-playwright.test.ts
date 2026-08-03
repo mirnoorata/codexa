@@ -14,12 +14,14 @@ describe("Playwright verification credit", () => {
   const tests: TestRecommendation[] = [
     { path: "tests/e2e.spec.ts", reason: "browser behavior", rank: 10 },
     { path: "tests/unit.test.ts", reason: "unit behavior", rank: 9 },
-    { path: "tests/test_python.py", reason: "python behavior", rank: 8 }
+    { path: "tests/test_python.py", reason: "python behavior", rank: 8 },
+    { path: "cypress/e2e/login.cy.ts", reason: "Cypress browser behavior", rank: 7 }
   ];
 
   beforeAll(async () => {
     repo = await mkdtemp(path.join(os.tmpdir(), "codexa-playwright-verification-"));
     await mkdir(path.join(repo, "tests"), { recursive: true });
+    await mkdir(path.join(repo, "cypress/e2e"), { recursive: true });
     await writeFile(
       path.join(repo, "package.json"),
       `${JSON.stringify(
@@ -30,6 +32,8 @@ describe("Playwright verification credit", () => {
             "e2e:all": "playwright test",
             dlx: "playwright test tests/e2e.spec.ts",
             exec: "playwright test tests/e2e.spec.ts",
+            "cypress:all": "cypress run",
+            "cypress:target": "cypress run --spec cypress/e2e/login.cy.ts",
             help: "playwright test tests/e2e.spec.ts",
             "--version": "playwright test tests/e2e.spec.ts",
             test: "vitest run"
@@ -43,6 +47,7 @@ describe("Playwright verification credit", () => {
     await writeFile(path.join(repo, "tests/e2e.spec.ts"), "export const browserTest = true\n", "utf8");
     await writeFile(path.join(repo, "tests/unit.test.ts"), "export const unitTest = true\n", "utf8");
     await writeFile(path.join(repo, "tests/test_python.py"), "def test_python():\n    assert True\n", "utf8");
+    await writeFile(path.join(repo, "cypress/e2e/login.cy.ts"), "export const cypressTest = true\n", "utf8");
     execFileSync("git", ["init"], { cwd: repo, stdio: "ignore" });
     execFileSync("git", ["add", "."], { cwd: repo, stdio: "ignore" });
     execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "playwright verification fixture"], {
@@ -89,9 +94,36 @@ describe("Playwright verification credit", () => {
       expect(result.coverage.some((entry) => entry.kind === "javascript-tests" && entry.targetPath === target), command).toBe(true);
       expect(result.coverage.some((entry) => entry.kind === "targeted-test" && entry.targetPath === target), command).toBe(true);
       expect(result.commandEnvelopes, command).toHaveLength(1);
-      expect(result.commandEnvelopes[0].classifierVersion, command).toBe("command-coverage-v5");
+      expect(result.commandEnvelopes[0].classifierVersion, command).toBe("command-coverage-v6");
     }
-    expect(CURRENT_VERIFICATION_PROVENANCE.commandCoverageClassifierVersion).toBe("command-coverage-v5");
+    expect(CURRENT_VERIFICATION_PROVENANCE.commandCoverageClassifierVersion).toBe("command-coverage-v6");
+  });
+
+  it("keeps bare Cypress runs unscoped and credits only an explicit indexed spec", () => {
+    for (const command of ["cypress run", "npm exec cypress run", "npm run cypress:all"]) {
+      const result = classify({ command, cwd: repo, exitCode: 0 });
+      expect(result.ledger.every((entry) => entry.status === "missing"), command).toBe(true);
+      expect(result.coverage.some((entry) => entry.kind === "javascript-tests" || entry.kind === "targeted-test"), command).toBe(false);
+      expect(result.coverage.some((entry) => entry.kind === "unknown"), command).toBe(true);
+    }
+
+    for (const command of [
+      "cypress run --spec cypress/e2e/login.cy.ts",
+      "cypress run --spec=cypress/e2e/login.cy.ts",
+      "npm run cypress:target"
+    ]) {
+      const result = classify({ command, cwd: repo, exitCode: 0 });
+      expect(result.ledger.find((entry) => entry.target === "cypress/e2e/login.cy.ts"), command).toMatchObject({
+        status: "covered",
+        trustTier: "reported"
+      });
+      expect(result.ledger.find((entry) => entry.target === "tests/unit.test.ts"), command).toMatchObject({
+        status: "missing",
+        trustTier: "none"
+      });
+      expect(result.coverage.some((entry) => entry.kind === "javascript-tests" && entry.targetPath === "cypress/e2e/login.cy.ts"), command).toBe(true);
+      expect(result.coverage.some((entry) => entry.kind === "targeted-test" && entry.targetPath === "cypress/e2e/login.cy.ts"), command).toBe(true);
+    }
   });
 
   it("keeps unscoped, non-running, zero-test-tolerant, and unknown Playwright invocations uncredited", () => {
@@ -221,7 +253,7 @@ describe("Playwright verification credit", () => {
         packageManager: "vitest",
         scriptName: "vitest",
         args: ["run", "--project", "tests/unit.test.ts", "tests/e2e.spec.ts"],
-        classifierVersion: "command-coverage-v5"
+        classifierVersion: "command-coverage-v6"
       }
     ]);
 
@@ -231,7 +263,7 @@ describe("Playwright verification credit", () => {
     ] as const) {
       const launched = classify({ command, cwd: repo, exitCode: 0 });
       expect(launched.ledger.find((entry) => entry.target === "tests/unit.test.ts"), command).toMatchObject({ status: "covered", trustTier: "reported" });
-      expect(launched.commandEnvelopes, command).toMatchObject([{ packageManager: runner, scriptName: runner, classifierVersion: "command-coverage-v5" }]);
+      expect(launched.commandEnvelopes, command).toMatchObject([{ packageManager: runner, scriptName: runner, classifierVersion: "command-coverage-v6" }]);
     }
   });
 
@@ -255,7 +287,7 @@ describe("Playwright verification credit", () => {
         args: ["test", "tests/e2e.spec.ts"],
         source: "reported",
         scopeStatus: "repo",
-        classifierVersion: "command-coverage-v5"
+        classifierVersion: "command-coverage-v6"
       }
     ]);
     expect(result.ledger.find((entry) => entry.target === "tests/e2e.spec.ts")).toMatchObject({ status: "covered", trustTier: "reported" });

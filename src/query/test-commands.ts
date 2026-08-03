@@ -24,7 +24,7 @@ export function candidateTestCommand(repoRoot: string, testPath: string): Candid
   if (/\.py$/.test(testPath)) {
     return pythonTestCommand(repoRoot, testPath);
   }
-  if (/\.(test|spec)\.[cm]?[jt]sx?$/.test(testPath)) {
+  if (/\.(test|spec|cy)\.[cm]?[jt]sx?$/.test(testPath)) {
     const packageRoot = nearestPackageRoot(repoRoot, testPath);
     const relativeTestPath = packageRoot === "." ? testPath : path.posix.relative(packageRoot, testPath);
     return packageTestCommand(repoRoot, packageRoot, relativeTestPath);

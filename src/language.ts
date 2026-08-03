@@ -107,7 +107,7 @@ export function isTestPath(filePath: string): boolean {
   const normalized = filePath.toLowerCase();
   return (
     /(^|\/)(tests?|__tests__)\//.test(normalized) ||
-    /\.(test|spec)\.[cm]?[jt]sx?$/.test(normalized) ||
+    /\.(test|spec|cy)\.[cm]?[jt]sx?$/.test(normalized) ||
     /(^|\/)test_[^/]+\.py$/.test(normalized) ||
     /(^|\/)[^/]+_test\.py$/.test(normalized) ||
     /(^|\/)[^/]+_test\.go$/.test(normalized)

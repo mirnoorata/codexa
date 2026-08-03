@@ -53,6 +53,29 @@ describe("candidate test commands", () => {
     );
   });
 
+  it("recognizes conventional Cypress .cy test names", async () => {
+    const repo = await packageFixture({ test: "cypress run" });
+
+    const candidate = candidateTestCommand(repo, "cypress/e2e/login.cy.ts");
+
+    expect(candidate?.commandArgs).toEqual([
+      "run",
+      "test",
+      "--",
+      "--spec",
+      "cypress/e2e/login.cy.ts"
+    ]);
+    const index = await buildIndexLocked({ repoRoot: repo, writeArtifacts: false });
+    expect(index.files.find((file) => file.path === "cypress/e2e/login.cy.ts")?.test).toBe(true);
+    const coverage = verificationCoverageForCommands(index, [candidate?.command ?? ""], repo);
+    expect(coverage).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ kind: "javascript-tests", targetPath: "cypress/e2e/login.cy.ts" }),
+        expect.objectContaining({ kind: "targeted-test", targetPath: "cypress/e2e/login.cy.ts" })
+      ])
+    );
+  });
+
   it("does not forward a selector into a compound script's trailing command", async () => {
     const repo = await packageFixture({ test: "echo vitest run && printf FINAL:%s\\n" });
 
@@ -66,8 +89,10 @@ describe("candidate test commands", () => {
 async function packageFixture(scripts: Record<string, string>): Promise<string> {
   const repo = await mkdtemp(path.join(os.tmpdir(), "codexa-test-command-"));
   await mkdir(path.join(repo, "tests"), { recursive: true });
+  await mkdir(path.join(repo, "cypress/e2e"), { recursive: true });
   await writeFile(path.join(repo, "package.json"), `${JSON.stringify({ scripts }, null, 2)}\n`, "utf8");
   await writeFile(path.join(repo, "tests/example.test.ts"), "export {};\n", "utf8");
+  await writeFile(path.join(repo, "cypress/e2e/login.cy.ts"), "export {};\n", "utf8");
   await execFile("git", ["init", "-q"], { cwd: repo });
   await execFile("git", ["config", "user.email", "test@example.com"], { cwd: repo });
   await execFile("git", ["config", "user.name", "Codexa Test"], { cwd: repo });

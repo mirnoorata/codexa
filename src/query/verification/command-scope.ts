@@ -376,7 +376,7 @@ export function normalizeCandidateTarget(value: string, cwd: string, repoRoot: s
     return undefined;
   }
   const clean = value.replace(/:\d+(?::\d+)?$/u, "").replace(/::.+$/u, "");
-  if (!/(\.(?:test|spec)\.[cm]?[jt]sx?|\.py)$|^tests\//u.test(clean)) {
+  if (!/(\.(?:test|spec|cy)\.[cm]?[jt]sx?|\.py)$|^tests\//u.test(clean)) {
     return undefined;
   }
   const joined = path.isAbsolute(clean) ? relativeInsideRepo(clean, repoRoot) : path.posix.normalize(path.posix.join(normalizePackageRoot(cwd), clean));
