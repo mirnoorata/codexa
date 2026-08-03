@@ -1,12 +1,17 @@
+import path from "node:path";
+import type { CodexaIndex } from "../../types.js";
 import { uniqueSorted } from "../../util.js";
-import { normalizeCandidateTarget, type CoverageAddInput } from "./command-scope.js";
+import { normalizeCandidateTarget, normalizePathLike, type CoverageAddInput } from "./command-scope.js";
 
 type JavaScriptTestRunner = "vitest" | "jest" | "node-test" | "playwright";
 
 interface JavaScriptCoverageContext {
+  index: Pick<CodexaIndex, "files">;
   repoRoot: string;
   addCoverage: (coverage: CoverageAddInput) => void;
 }
+
+const MAX_EXPANDED_TEST_TARGETS = 256;
 
 export function addJavaScriptTestCoverage(
   args: string[],
@@ -46,7 +51,107 @@ export function addJavaScriptTestCoverage(
     ctx.addCoverage({ kind: "javascript-tests", command: commandText, source, scope: cwd, details: args });
     return;
   }
-  addTargetedJavaScriptTestCoverage(parsed.targets, args, cwd, commandText, source, ctx);
+  const expanded = runner === "node-test" ? expandNodeTestGlobs(parsed.targets, ctx.index) : { ok: true as const, targets: parsed.targets };
+  if (!expanded.ok) {
+    ctx.addCoverage({ kind: "unknown", command: commandText, source: expanded.reason, confidence: "derived", scope: cwd, details: args });
+    return;
+  }
+  addTargetedJavaScriptTestCoverage(expanded.targets, args, cwd, commandText, source, ctx);
+}
+
+function expandNodeTestGlobs(
+  targets: string[],
+  index: Pick<CodexaIndex, "files">
+): { ok: true; targets: string[] } | { ok: false; reason: string } {
+  const indexedTests = uniqueSorted(
+    index.files
+      .map((file) => normalizePathLike(file.path))
+      .filter((filePath) => /\.(?:test|spec)\.[cm]?[jt]sx?$/iu.test(filePath))
+  );
+  const expanded: string[] = [];
+  for (const target of targets) {
+    if (!/[*?\[\]{}!]/u.test(target)) {
+      expanded.push(target);
+      continue;
+    }
+    if (!safeNodeTestGlob(target)) {
+      return { ok: false, reason: `Node test glob ${target} is not a bounded in-repository test pattern` };
+    }
+    const matches = indexedTests.filter((filePath) => matchesBoundedTestGlob(filePath, target));
+    if (matches.length === 0) {
+      return { ok: false, reason: `Node test glob ${target} matched no indexed test paths` };
+    }
+    expanded.push(...matches);
+    if (expanded.length > MAX_EXPANDED_TEST_TARGETS) {
+      return { ok: false, reason: `Node test glob expansion exceeds ${MAX_EXPANDED_TEST_TARGETS} indexed test paths` };
+    }
+  }
+  return { ok: true, targets: uniqueSorted(expanded) };
+}
+
+function safeNodeTestGlob(target: string): boolean {
+  const segments = target.split("/");
+  if (
+    target.length > 512 ||
+    target.startsWith("__outside_repo__:") ||
+    path.posix.isAbsolute(target) ||
+    segments.includes("..") ||
+    segments.some((segment) => segment.length === 0 || (segment.includes("**") && segment !== "**")) ||
+    /[\0?\[\]{}!]/u.test(target) ||
+    /\*{3,}/u.test(target)
+  ) {
+    return false;
+  }
+  return [...target].filter((char) => char === "*").length <= 32;
+}
+
+function matchesBoundedTestGlob(filePath: string, pattern: string): boolean {
+  const fileSegments = filePath.split("/");
+  const patternSegments = pattern.split("/");
+  let reachable = new Array<boolean>(fileSegments.length + 1).fill(false);
+  reachable[0] = true;
+  for (const patternSegment of patternSegments) {
+    const next = new Array<boolean>(fileSegments.length + 1).fill(false);
+    if (patternSegment === "**") {
+      for (let index = 0; index <= fileSegments.length; index += 1) {
+        if (reachable[index]) next[index] = true;
+        if (index < fileSegments.length && next[index] && !fileSegments[index]!.startsWith(".")) next[index + 1] = true;
+      }
+      reachable = next;
+      continue;
+    }
+    for (let index = 0; index < fileSegments.length; index += 1) {
+      if (reachable[index] && matchesPathSegment(fileSegments[index]!, patternSegment)) next[index + 1] = true;
+    }
+    reachable = next;
+  }
+  return reachable[fileSegments.length] ?? false;
+}
+
+function matchesPathSegment(value: string, pattern: string): boolean {
+  if (value.startsWith(".") && !pattern.startsWith(".")) return false;
+  let valueIndex = 0;
+  let patternIndex = 0;
+  let starIndex = -1;
+  let retryValueIndex = -1;
+  while (valueIndex < value.length) {
+    if (patternIndex < pattern.length && pattern[patternIndex] === value[valueIndex]) {
+      patternIndex += 1;
+      valueIndex += 1;
+    } else if (patternIndex < pattern.length && pattern[patternIndex] === "*") {
+      starIndex = patternIndex;
+      retryValueIndex = valueIndex;
+      patternIndex += 1;
+    } else if (starIndex >= 0) {
+      patternIndex = starIndex + 1;
+      retryValueIndex += 1;
+      valueIndex = retryValueIndex;
+    } else {
+      return false;
+    }
+  }
+  while (patternIndex < pattern.length && pattern[patternIndex] === "*") patternIndex += 1;
+  return patternIndex === pattern.length;
 }
 
 export function looksLikeExplicitTestSelector(

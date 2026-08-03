@@ -85,7 +85,8 @@ describe("Codexa SessionStart CLI receipt", () => {
     });
     expect(strictStale.status).toBe(1);
     expect(JSON.parse(strictStale.stdout)).toMatchObject({
-      index: { state: "identity-blocked", reason: "head-commit-changed" }
+      index: { state: "identity-blocked", reason: "head-commit-changed" },
+      hints: [expect.stringContaining("codexa index")]
     });
 
     const strictRefreshed = spawnSync(

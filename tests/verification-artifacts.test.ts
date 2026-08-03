@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
@@ -9,8 +9,10 @@ import {
   loadVerificationArtifact,
   workspaceStateDigest
 } from "../src/verification-artifacts.js";
+import { discoverRepoFreshness } from "../src/repo-files.js";
 import { readSessionMemory } from "../src/session-memory.js";
 import type { FreshnessInfo, VerificationArtifactManifest } from "../src/types.js";
+import { exactWorkspaceContentDigest } from "../src/workspace-state.js";
 
 describe("verification artifacts", () => {
   it("computes a stable workspace digest independent of dirty-file map insertion order", () => {
@@ -18,6 +20,47 @@ describe("verification artifacts", () => {
     const right = freshness({ dirtyFileHashes: { "src/a.ts": "a", "src/b.ts": "b" } });
     expect(workspaceStateDigest(left)).toBe(workspaceStateDigest(right));
     expect(workspaceStateDigest(freshness({ dirtyFileHashes: { "src/a.ts": "changed", "src/b.ts": "b" } }))).not.toBe(workspaceStateDigest(left));
+  });
+
+  it("computes the same exact content identity across a nested-repo commit transition", async () => {
+    const gitRoot = await mkdtemp(path.join(os.tmpdir(), "codexa-workspace-content-"));
+    const repo = path.join(gitRoot, "packages/app");
+    const source = path.join(repo, "src/value.ts");
+    try {
+      await mkdir(path.dirname(source), { recursive: true });
+      await writeFile(source, "export const value = 1;\n", "utf8");
+      execFileSync("git", ["init"], { cwd: gitRoot, stdio: "ignore" });
+      execFileSync("git", ["add", "."], { cwd: gitRoot, stdio: "ignore" });
+      execFileSync(
+        "git",
+        ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixture"],
+        { cwd: gitRoot, stdio: "ignore" }
+      );
+      await writeFile(source, "export const value = 2;\n", "utf8");
+      const reviewed = await discoverRepoFreshness(repo);
+      const reviewedDigest = await exactWorkspaceContentDigest(repo, {
+        headCommit: reviewed.git.headCommit,
+        dirtyFiles: reviewed.git.dirtyFiles,
+        dirtyFileHashes: reviewed.dirtyFileHashes
+      });
+      expect(reviewedDigest).toMatch(/^[a-f0-9]{64}$/u);
+
+      execFileSync("git", ["add", "packages/app/src/value.ts"], { cwd: gitRoot, stdio: "ignore" });
+      execFileSync(
+        "git",
+        ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "commit reviewed change"],
+        { cwd: gitRoot, stdio: "ignore" }
+      );
+      const committed = await discoverRepoFreshness(repo);
+      expect(committed.git.dirtyFiles).toEqual([]);
+      await expect(exactWorkspaceContentDigest(repo, {
+        headCommit: committed.git.headCommit,
+        dirtyFiles: committed.git.dirtyFiles,
+        dirtyFileHashes: committed.dirtyFileHashes
+      })).resolves.toBe(reviewedDigest);
+    } finally {
+      await rm(gitRoot, { recursive: true, force: true });
+    }
   });
 
   it("ingests a strict generic manifest and credits only exact state-bound required checks", async () => {

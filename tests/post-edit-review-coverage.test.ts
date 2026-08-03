@@ -170,6 +170,133 @@ describe("post-edit review target coverage", () => {
     expect(await latestCompletedPostEditReviewMatches(completionIdentity)).toBe(false);
   });
 
+  it("keeps a resolved review current after committing the exact reviewed workspace", async () => {
+    const { repo, files } = await createManyFileRepo(1);
+    const taskId = "exact-reviewed-commit";
+    await buildIndex({ repoRoot: repo });
+    await saveManyFilePlan(repo, files, taskId);
+    await editFiles(repo, files);
+
+    const review = await postEditReviewQuery(
+      repo,
+      { taskId, ranCommands: ["npm run typecheck"] },
+      { autoRefresh: true }
+    );
+    expect(["complete", "advisory_inspect"]).toContain(
+      (review.data as { completionAuthority: string }).completionAuthority
+    );
+    execFileSync("git", ["add", "--", ...files], { cwd: repo, stdio: "ignore" });
+    execFileSync(
+      "git",
+      ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "commit reviewed change"],
+      { cwd: repo, stdio: "ignore" }
+    );
+
+    const proof = await proveQuery(repo, {
+      taskId,
+      ranCommands: ["npm run typecheck"],
+      autoRefresh: true
+    });
+    const proofData = proof.data as {
+      worktree: { knownClean: boolean };
+      lifecycle: { resolvedAttemptDrift?: { attemptId: string } };
+      gaps: string[];
+    };
+    expect(proofData.worktree.knownClean).toBe(true);
+    expect(proofData.lifecycle.resolvedAttemptDrift).toBeUndefined();
+    expect(proofData.gaps.some((gap) => gap.startsWith("worktree changed since resolved post-edit review:"))).toBe(false);
+  });
+
+  it("rejects a clean commit whose content changed after the review", async () => {
+    const { repo, files } = await createManyFileRepo(1);
+    const taskId = "modified-after-reviewed-commit";
+    await buildIndex({ repoRoot: repo });
+    await saveManyFilePlan(repo, files, taskId);
+    await editFiles(repo, files);
+
+    const review = await postEditReviewQuery(
+      repo,
+      { taskId, ranCommands: ["npm run typecheck"] },
+      { autoRefresh: true }
+    );
+    expect(["complete", "advisory_inspect"]).toContain(
+      (review.data as { completionAuthority: string }).completionAuthority
+    );
+    await writeFile(path.join(repo, files[0]!), "export const value0 = 999;\n", "utf8");
+    execFileSync("git", ["add", "--", ...files], { cwd: repo, stdio: "ignore" });
+    execFileSync(
+      "git",
+      ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "commit later change"],
+      { cwd: repo, stdio: "ignore" }
+    );
+
+    const proof = await proveQuery(repo, {
+      taskId,
+      ranCommands: ["npm run typecheck"],
+      autoRefresh: true
+    });
+    const proofData = proof.data as {
+      lifecycle: { resolvedAttemptDrift?: { attemptId: string } };
+      gaps: string[];
+    };
+    expect(proofData.lifecycle.resolvedAttemptDrift?.attemptId).toBeTruthy();
+    expect(proofData.gaps.some((gap) => gap.startsWith("worktree changed since resolved post-edit review:"))).toBe(true);
+  });
+
+  it("rejects a status-hidden worktree edit after committing the reviewed tree", async () => {
+    const { repo, files } = await createManyFileRepo(1);
+    const taskId = "assume-unchanged-after-reviewed-commit";
+    await buildIndex({ repoRoot: repo });
+    await saveManyFilePlan(repo, files, taskId);
+    await editFiles(repo, files);
+    const review = await postEditReviewQuery(repo, { taskId, ranCommands: ["npm run typecheck"] }, { autoRefresh: true });
+    expect(["complete", "advisory_inspect"]).toContain((review.data as { completionAuthority: string }).completionAuthority);
+    execFileSync("git", ["add", "--", ...files], { cwd: repo, stdio: "ignore" });
+    execFileSync(
+      "git",
+      ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "commit reviewed change"],
+      { cwd: repo, stdio: "ignore" }
+    );
+    execFileSync("git", ["update-index", "--assume-unchanged", "--", files[0]!], { cwd: repo, stdio: "ignore" });
+    await writeFile(path.join(repo, files[0]!), "export const value0 = 777;\n", "utf8");
+    expect(execFileSync("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: repo, encoding: "utf8" })).toBe("");
+
+    const proof = await proveQuery(repo, { taskId, ranCommands: ["npm run typecheck"], autoRefresh: true });
+    const proofData = proof.data as { lifecycle: { resolvedAttemptDrift?: { attemptId: string } }; gaps: string[] };
+    expect(proofData.lifecycle.resolvedAttemptDrift?.attemptId).toBeTruthy();
+    expect(proofData.gaps.some((gap) => gap.startsWith("worktree changed since resolved post-edit review:"))).toBe(true);
+  });
+
+  it("binds the raw reviewed bytes across Git EOL normalization", async () => {
+    const { repo, files } = await createManyFileRepo(1);
+    const taskId = "eol-normalized-reviewed-commit";
+    await writeFile(path.join(repo, ".gitattributes"), "*.ts text eol=lf\n", "utf8");
+    execFileSync("git", ["add", ".gitattributes"], { cwd: repo, stdio: "ignore" });
+    execFileSync(
+      "git",
+      ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "add text normalization"],
+      { cwd: repo, stdio: "ignore" }
+    );
+    await buildIndex({ repoRoot: repo });
+    await saveManyFilePlan(repo, files, taskId);
+    await writeFile(path.join(repo, files[0]!), "export const value0 = 42;\r\nexport const marker = true;\n", "utf8");
+    const review = await postEditReviewQuery(repo, { taskId, ranCommands: ["npm run typecheck"] }, { autoRefresh: true });
+    expect(["complete", "advisory_inspect"]).toContain((review.data as { completionAuthority: string }).completionAuthority);
+    execFileSync("git", ["add", "--", ...files], { cwd: repo, stdio: "ignore" });
+    execFileSync(
+      "git",
+      ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "commit normalized change"],
+      { cwd: repo, stdio: "ignore" }
+    );
+    const accepted = await proveQuery(repo, { taskId, ranCommands: ["npm run typecheck"], autoRefresh: true });
+    expect((accepted.data as { gaps: string[] }).gaps.some((gap) => gap.startsWith("worktree changed since resolved post-edit review:"))).toBe(false);
+
+    await writeFile(path.join(repo, files[0]!), "export const value0 = 42;\nexport const marker = true;\r\n", "utf8");
+    expect(execFileSync("git", ["status", "--porcelain", "--untracked-files=no"], { cwd: repo, encoding: "utf8" })).toBe("");
+    const rejected = await proveQuery(repo, { taskId, ranCommands: ["npm run typecheck"], autoRefresh: true });
+    expect((rejected.data as { gaps: string[] }).gaps.some((gap) => gap.startsWith("worktree changed since resolved post-edit review:"))).toBe(true);
+  });
+
   it("analyzes a broad maximum-limit review in bounded exhaustive passes", async () => {
     const { repo, files } = await createManyFileRepo(61);
     await buildIndex({ repoRoot: repo });

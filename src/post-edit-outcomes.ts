@@ -33,7 +33,7 @@ import type {
   PostEditReviewCoverage
 } from "./types.js";
 import { stableId } from "./util.js";
-import { exactWorkspaceStateDigest, workspaceStateDigest } from "./workspace-state.js";
+import { exactWorkspaceContentDigest, exactWorkspaceStateDigest, workspaceStateDigest } from "./workspace-state.js";
 
 type OutcomeCommandReport = VerificationCommandReport & { runner?: AutoVerifyReportRunner };
 
@@ -150,6 +150,8 @@ export interface PostEditOutcome {
   headCommit: string | null;
   indexSnapshotId: string;
   workspaceStateDigest: string;
+  /** Optional only for legacy or non-exact outcomes. */
+  workspaceContentDigest?: string;
   planRevision?: number;
   invariants?: TaskInvariant[];
   invariantReviews?: TaskInvariantReview[];
@@ -208,6 +210,7 @@ interface LatestPostEditOutcomePointer {
   headCommit: string | null;
   indexSnapshotId: string;
   workspaceStateDigest: string;
+  workspaceContentDigest?: string;
   reviewCoverageDigest: string;
 }
 
@@ -328,6 +331,7 @@ export async function savePostEditOutcome(input: PostEditOutcomeInput): Promise<
     // Persist the stricter completion identity when the checkout can be observed
     // exactly. The legacy content-only digest remains useful for ordinary outcome
     // records, but completion probes will never trust it as a skip authority.
+    outcome.workspaceContentDigest = (await exactWorkspaceContentDigest(repoRoot, input.freshness)) ?? undefined;
     outcome.workspaceStateDigest = (await exactWorkspaceStateDigest(repoRoot, input.freshness)) ?? outcome.workspaceStateDigest;
     const dir = await ensureSafeManagedStateDirectory(repoRoot, "cache", "codexa-outcomes");
     const outcomePath = path.join(dir, `${outcome.outcomeId}.json`);
@@ -351,6 +355,7 @@ export async function savePostEditOutcome(input: PostEditOutcomeInput): Promise<
       headCommit: outcome.headCommit,
       indexSnapshotId: outcome.indexSnapshotId,
       workspaceStateDigest: outcome.workspaceStateDigest,
+      ...(outcome.workspaceContentDigest ? { workspaceContentDigest: outcome.workspaceContentDigest } : {}),
       reviewCoverageDigest
     } satisfies LatestPostEditOutcomePointer);
     return { outcome, path: outcomePath, relativePath: path.posix.join(OUTCOME_DIR, `${outcome.outcomeId}.json`) };
@@ -400,14 +405,11 @@ export async function latestCompletedPostEditReviewMatches(input: {
   if (!currentDigest) {
     return false;
   }
-  return (
+  const authorityMatches =
     pointer.taskId === input.taskId &&
     pointer.planRevision === input.planRevision &&
     pointer.snapshotCreatedAt === input.snapshotCreatedAt &&
     pointer.snapshotPublicationSequence === input.snapshotPublicationSequence &&
-    pointer.headCommit === input.freshness.headCommit &&
-    pointer.indexSnapshotId === input.freshness.snapshotId &&
-    pointer.workspaceStateDigest === currentDigest &&
     outcome.schemaVersion === 1 &&
     outcome.outcomeId === pointer.outcomeId &&
     outcome.createdAt === pointer.createdAt &&
@@ -430,8 +432,24 @@ export async function latestCompletedPostEditReviewMatches(input: {
     postEditReviewCoverageDigest(outcome.reviewCoverage) === pointer.reviewCoverageDigest &&
     outcome.headCommit === pointer.headCommit &&
     outcome.indexSnapshotId === pointer.indexSnapshotId &&
-    outcome.workspaceStateDigest === pointer.workspaceStateDigest
-  );
+    outcome.workspaceStateDigest === pointer.workspaceStateDigest &&
+    outcome.workspaceContentDigest === pointer.workspaceContentDigest;
+  if (!authorityMatches) return false;
+
+  const exactReviewedState =
+    pointer.headCommit === input.freshness.headCommit &&
+    pointer.indexSnapshotId === input.freshness.snapshotId &&
+    pointer.workspaceStateDigest === currentDigest;
+  if (exactReviewedState) return true;
+
+  // A normal human workflow commits the exact workspace authorized by the
+  // review and then reopens Codexa from the clean successor commit. Preserve
+  // completion only for that content-equivalent transition. Dirty successors,
+  // legacy outcomes without the stronger digest, and any added/removed/mode-
+  // changed path continue to fail closed.
+  if (input.freshness.dirtyFiles.length > 0 || !pointer.workspaceContentDigest) return false;
+  const currentContentDigest = await exactWorkspaceContentDigest(repoRoot, input.freshness);
+  return currentContentDigest !== null && currentContentDigest === pointer.workspaceContentDigest;
 }
 
 export function postEditHookReviewSignature(input: { freshness: FreshnessInfo; taskId?: string; autoVerifyMode?: string }): string {
@@ -594,6 +612,7 @@ function isLatestPostEditOutcomePointer(value: unknown): value is LatestPostEdit
     (record.headCommit === null || typeof record.headCommit === "string") &&
     typeof record.indexSnapshotId === "string" &&
     /^[a-f0-9]{64}$/u.test(record.workspaceStateDigest ?? "") &&
+    (record.workspaceContentDigest === undefined || /^[a-f0-9]{64}$/u.test(record.workspaceContentDigest)) &&
     /^[a-f0-9]{16}$/u.test(record.reviewCoverageDigest ?? "")
   );
 }

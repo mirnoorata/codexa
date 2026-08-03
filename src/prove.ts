@@ -42,6 +42,7 @@ import type {
 import { CURRENT_VERIFICATION_PROVENANCE as VERIFICATION_PROVENANCE } from "./types.js";
 import { limitText, uniqueSorted } from "./util.js";
 import { proofNextCommands } from "./prove-next-commands.js";
+import { proofRequiredCheckContext } from "./prove-required-checks.js";
 
 export interface ProveOptions extends QueryOptions {
   task?: string;
@@ -239,7 +240,9 @@ export async function proveQuery(repoRoot: string, options: ProveOptions = {}): 
     ranCommands: options.ranCommands ?? [],
     ranCommandReports: options.ranCommandReports ?? [],
     waivedChecks: options.waivedChecks ?? [],
-    waivers: options.waivers ?? []
+    waivers: options.waivers ?? [],
+    resolvedReviewCurrent:
+      lifecycle.attempts.at(-1)?.attemptStatus === "resolved" && lifecycle.resolvedAttemptDrift === undefined
   }), artifacts);
   const gaps = proofGaps({
     freshness: session.freshness,
@@ -484,21 +487,19 @@ function reportedVerificationData(input: {
   ranCommandReports: VerificationCommandReport[];
   waivedChecks: string[];
   waivers: VerificationWaiver[];
+  resolvedReviewCurrent: boolean;
 }): ProveReportedVerification {
   const hasEvidence =
     input.ranTests.length > 0 || input.ranCommands.length > 0 || input.ranCommandReports.length > 0 || input.waivedChecks.length > 0 || input.waivers.length > 0;
   const checkCoverage = verificationEvidenceForCommandReports(input.index, input.ranCommands, input.ranCommandReports, input.repoRoot).coverage;
-  const checkContext = {
-    editPaths: input.snapshot?.plannedEditTargets ?? [],
-    reviewTargets: input.snapshot?.plannedFiles ?? input.snapshot?.plannedEditTargets ?? [],
-    selectedFiles: [],
-    workflows: [],
-    affectedEdges: [],
-    affectedTests: [],
+  const checkContext = proofRequiredCheckContext({
+    index: input.index,
+    snapshot: input.snapshot,
     tests: input.tests,
     ranTests: input.ranTests,
-    verificationCoverage: checkCoverage
-  };
+    verificationCoverage: checkCoverage,
+    reconstruct: hasEvidence || input.resolvedReviewCurrent
+  });
   const workflowChecks = evaluateRequiredChecks(input.snapshot?.requiredWorkflowChecks ?? [], checkContext);
   const dependencyChecks = evaluateRequiredChecks(input.snapshot?.requiredDependencyChecks ?? [], checkContext);
   const verification = verificationLedgerForPostEdit({
