@@ -5,14 +5,17 @@ PR summary for `codex/context-intelligence-next` against `main`.
 - Base: `c306c1d` (`v0.18.0`)
 - Validated feature source head: `0474276`; published as `869257e`
 - CI hardening head: `41118bb`; published as `9c29408`
+- Review hardening head: `a6ac9d0`; published as `05a1dc3`
 - Feature source tree: `989bb4b0fffdd821a005feeeadb2f48d91abcada` locally and on GitHub
 - CI hardening tree: `669241b02638c0a7c0c175ace6f51567a2a63d7e` locally and on GitHub
-- Branch delta before this evidence refresh: 54 files, 4,661 insertions, 229 deletions
-- Commits before this evidence refresh: 4 Conventional Commits
+- Branch delta before this evidence refresh: 58 files, 4,967 insertions, 248 deletions
+- Commits before this evidence refresh: 6 Conventional Commits
   - `6591e60` — `feat: add bounded causal change intelligence`
   - `0474276` — `test: accept SDK validation wording`
   - `d18637f` — `docs: add context intelligence PR summary`
   - `41118bb` — `fix(bootstrap): preserve first terminal condition`
+  - `3e2608a` — `docs: refresh context intelligence review evidence`
+  - `a6ac9d0` — `fix(workflow): preserve capped membership authority`
 
 ## Executive Outcome
 
@@ -142,6 +145,15 @@ focused test passed 3/3 with typecheck, lint, release-path verification, and
 `git diff --check`; independent review found no P0–P2 issue. No deadline or log
 bound was relaxed.
 
+Automated PR review then found that the 40-file public `relatedFiles` cap could
+hide a later production member from internal change-plan, post-edit, proof, and
+required-check matching. `a6ac9d0` keeps the public/MCP caps unchanged while
+matching against retained workflow steps and prioritizing every scoped member
+up to the public 64-file plan bound. Regressions cover production target #41 and
+a 21-member scope where only the former receipt omission is edited. Five focused
+files and 36 tests passed with typecheck, lint, and diff checks; independent
+re-review found no P0–P2 issue.
+
 ## Risk-Budgeted Review
 
 Finding weights are critical 8, high 5, medium 3, and low 1. Merge requires no
@@ -152,7 +164,9 @@ source head was published: lexical receiver shadowing in Commander/MCP
 extraction, test-heavy workflow truncation evicting production files, and eager
 object-heavy adjacency retention. Regression tests cover each fix. The final
 correctness, authority, scale, and dependency reviews report 0 critical, 0
-high, and 0 medium findings.
+high, and 0 medium findings. PR review's capped-membership P2 and the Windows
+failure-cause race were also closed with focused regressions and clean
+independent re-review.
 
 Residual score: **1/10 (within budget)**. The sole low-risk watch item is the
 one-time `O(E log E)` canonical typed-array sort used to build a deterministic
@@ -188,7 +202,7 @@ No manual tag or direct npm publish is part of this rollout.
 
 ## Rollback
 
-Before publication, revert the feature commits and allow revision-2 derived
-indexes to rebuild. After publication, preserve npm immutability: revert on
-`main`, ship a corrective patch through the same secret-backed release flow,
-and deprecate the affected version only if its behavior is materially unsafe.
+Before publication, revert the feature commits and rebuild revision-2 indexes.
+After publication, preserve npm immutability: revert on `main`, ship a
+corrective patch through the same secret-backed flow, and deprecate the affected
+version only for a material safety risk.
