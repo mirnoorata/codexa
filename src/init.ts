@@ -740,11 +740,10 @@ function removeCodexaMcpServerBlocks(config: string, options: { cliPath: string;
 function isCodexaMcpServerBlock(lines: string[], options: { cliPath: string; repoRoot: string }): boolean {
   const block = lines.join("\n");
   const header = lines[0]?.trim().toLowerCase() ?? "";
-  const blockWithoutRepoRoot = block.replaceAll(options.repoRoot, "");
   if (!/\bserve\b/u.test(block)) {
     return false;
   }
-  if (/^\[mcp_servers\.codexa[-_.a-z0-9]*\]$/u.test(header) || /\bcodexa\b/u.test(blockWithoutRepoRoot)) {
+  if (/^\[mcp_servers\.codexa[-_.a-z0-9]*\]$/u.test(header)) {
     return true;
   }
   return block.includes(tomlString(options.cliPath)) && block.includes(tomlString(options.repoRoot));

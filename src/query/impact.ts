@@ -411,17 +411,21 @@ export function verificationRecipes(index: CodexaIndex, paths: string[], changeT
     .map((filePath) => findFile(index, filePath) ?? ({ path: filePath, language: languageForPath(filePath), test: isTestPath(filePath), riskScore: 0 } as FileFact))
     .filter(Boolean);
   const hasPython = files.some((file) => file.language === "python");
-  const hasFrontend = files.some((file) => file.path.startsWith("web/src") || file.language === "typescript" || file.language === "javascript");
+  const hasJavaScript = files.some((file) => file.language === "typescript" || file.language === "javascript");
+  const hasTypeScript = files.some((file) => file.language === "typescript");
   const hasManifest = files.some((file) => file.path.endsWith(".json"));
   const hasAdapter = files.some((file) => /(^|\/)adapters\/.+\.py$/.test(file.path) || file.path.includes("adapter"));
   const hasRoute = files.some((file) => index.symbols.some((symbol) => symbol.path === file.path && symbol.kind === "route"));
   const hasOperator = files.some((file) => /\.(sh|service)$/.test(file.path) || file.path.startsWith("scripts/"));
 
   if (hasPython) {
-    recipes.add("Run targeted pytest for linked tests; if no test command is emitted, inspect pyproject/pytest metadata before guessing.");
+    recipes.add(pythonVerificationRecipe(index, paths));
   }
-  if (hasFrontend) {
-    recipes.add("Run the nearest Vitest/TypeScript check for touched frontend files and read importers before API-shaped edits.");
+  if (hasJavaScript) {
+    recipes.add(javaScriptVerificationRecipe(index, paths));
+  }
+  if (hasTypeScript) {
+    recipes.add("Run the repository's TypeScript check or build for touched TypeScript files in addition to its tests.");
   }
   if (hasManifest) {
     recipes.add("Validate package manifest loading and node type references across runtime registry and frontend definitions.");
@@ -442,6 +446,101 @@ export function verificationRecipes(index: CodexaIndex, paths: string[], changeT
     recipes.add("Keep verification narrow unless style/class changes alter component props, DOM structure, or generated output.");
   }
   return [...recipes].sort();
+}
+
+interface IndexedPackageTestScript {
+  command: string;
+  name: string;
+  packageRoot: string;
+  score: number;
+}
+
+function pythonVerificationRecipe(index: CodexaIndex, paths: string[]): string {
+  const packageScript = discoveredPackageTestScripts(index, paths).find((script) => /\b(?:pytest|unittest)\b/u.test(script.command));
+  if (packageScript) {
+    const runner = /\bunittest\b/u.test(packageScript.command) ? "unittest" : "pytest";
+    return `Run the discovered ${runner} package script: ${formatPackageScriptInvocation(index, packageScript)}; keep linked Python tests in scope.`;
+  }
+
+  const hasUnittest = index.imports.some((edge) => /^(?:unittest)(?:\.|$)/u.test(edge.specifier));
+  const hasPytest =
+    index.imports.some((edge) => /^(?:pytest)(?:\.|$)/u.test(edge.specifier)) ||
+    index.files.some((file) => /(?:^|\/)(?:conftest\.py|pytest\.ini)$/u.test(file.path)) ||
+    index.risks.some((risk) => risk.signal === "pytest-fixture");
+
+  if (hasUnittest && !hasPytest) {
+    return "Run the repository's unittest discovery suite (for example, `python -m unittest discover`) against the linked tests; use the documented project command when available.";
+  }
+  if (hasPytest && !hasUnittest) {
+    return "Run the repository's pytest suite against the linked tests; use the documented project command and configuration rather than guessing flags.";
+  }
+  return "Run the repository's documented Python test command against the linked tests; inspect pyproject and test configuration before selecting a runner.";
+}
+
+function javaScriptVerificationRecipe(index: CodexaIndex, paths: string[]): string {
+  const packageScript = discoveredPackageTestScripts(index, paths)[0];
+  if (packageScript) {
+    const runner = javaScriptRunnerLabel(packageScript.command);
+    return `Run the discovered${runner ? ` ${runner}` : ""} package test script: ${formatPackageScriptInvocation(index, packageScript)}; read importers before API-shaped edits.`;
+  }
+
+  const imports = new Set(index.imports.map((edge) => edge.specifier));
+  if (imports.has("node:test")) {
+    return "Run the repository's node:test suite (for example, `node --test`) against the linked tests; read importers before API-shaped edits.";
+  }
+  if (imports.has("vitest")) {
+    return "Run the repository's Vitest suite against the linked tests; use its documented project command and read importers before API-shaped edits.";
+  }
+  return "Run the repository's documented JavaScript test command against the linked tests; inspect package scripts and read importers before API-shaped edits.";
+}
+
+function discoveredPackageTestScripts(index: CodexaIndex, paths: string[]): IndexedPackageTestScript[] {
+  const scripts: IndexedPackageTestScript[] = [];
+  for (const usage of index.usageSites) {
+    if (usage.source !== "manifest" || !usage.path.endsWith("package.json")) continue;
+    const match = /^npm script (test(?::[A-Za-z0-9_-]+)?)$/u.exec(usage.name);
+    if (!match) continue;
+    const name = match[1];
+    const packageRoot = usage.path === "package.json" ? "." : usage.path.slice(0, -"/package.json".length);
+    const suffix = name.slice("test:".length);
+    const packageScoped = packageRoot !== "." && paths.some((filePath) => filePath === packageRoot || filePath.startsWith(`${packageRoot}/`));
+    const suffixScoped = name.startsWith("test:") && paths.some((filePath) => filePath.split("/").includes(suffix));
+    const knownRunner = javaScriptRunnerLabel(usage.text) !== undefined || /\b(?:pytest|unittest)\b/u.test(usage.text);
+    scripts.push({
+      command: usage.text,
+      name,
+      packageRoot,
+      score: (packageScoped ? 80 : 0) + (suffixScoped ? 50 : 0) + (knownRunner ? 20 : 0) + (name === "test" ? 30 : 0)
+    });
+  }
+  return scripts.sort((a, b) => b.score - a.score || a.packageRoot.localeCompare(b.packageRoot) || a.name.localeCompare(b.name));
+}
+
+function javaScriptRunnerLabel(command: string): string | undefined {
+  if (/\bnode\s+--test\b/u.test(command)) return "node:test";
+  if (/\bvitest\b/u.test(command)) return "Vitest";
+  if (/\bjest\b/u.test(command)) return "Jest";
+  if (/\bplaywright\s+test\b/u.test(command)) return "Playwright Test";
+  if (/\bcypress\s+run\b/u.test(command)) return "Cypress";
+  return undefined;
+}
+
+function formatPackageScriptInvocation(index: CodexaIndex, script: IndexedPackageTestScript): string {
+  if (script.packageRoot !== ".") {
+    return `the \`${script.name}\` script in \`${script.packageRoot}\``;
+  }
+  const manager = indexedPackageManager(index);
+  if (manager === "yarn") return `\`yarn run ${script.name}\``;
+  if (manager === "bun") return `the \`${script.name}\` script in the root \`package.json\` using the repository's documented package manager`;
+  return `\`${manager}${script.name === "test" ? " test" : ` run ${script.name}`}\``;
+}
+
+function indexedPackageManager(index: CodexaIndex): "npm" | "pnpm" | "yarn" | "bun" {
+  const paths = new Set(index.files.map((file) => file.path));
+  if (paths.has("pnpm-lock.yaml")) return "pnpm";
+  if (paths.has("yarn.lock")) return "yarn";
+  if (paths.has("bun.lock") || paths.has("bun.lockb")) return "bun";
+  return "npm";
 }
 
 export function addContextPackImpactExpansion(

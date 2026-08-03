@@ -13,6 +13,7 @@ import { statusQuery } from "./queries.js";
 import { validateLauncherCommand } from "./startup-launcher.js";
 import type { InitToolProfile } from "./types/init.js";
 import { CODEXA_VERSION } from "./version.js";
+import { shellQuote } from "./query/verification/shell.js";
 import {
   inspectWorktreeBootstrapReceipt,
   type WorktreeBootstrapInspection
@@ -356,7 +357,7 @@ async function sessionStartReceiptWithinBudget(
     repoRoot,
     routing,
     index,
-    hints: [],
+    hints: index.state === "fresh" ? [] : [`Run: codexa index ${shellQuote(repoRoot)}`],
     ...(context.length > 0 ? { context } : {})
   };
 }

@@ -39,7 +39,7 @@ import {
   addJavaScriptTestCoverage,
   addPlaywrightCommandCoverage
 } from "./verification/javascript-tests.js";
-import { addPythonTestCoverage } from "./verification/python-tests.js";
+import { addPythonTestCoverage, addPythonUnittestCoverage } from "./verification/python-tests.js";
 import {
   isNonCompilingTscCommand,
   isPackageManagerRunInformationalWord,
@@ -836,6 +836,10 @@ function analyzeSegment(
   }
   if ((first === "python" || first === "python3") && effectiveWords[1] === "-m" && effectiveWords[2] === "pytest") {
     addPythonTestCoverage(effectiveWords.slice(3), cwd, commandText, "direct python -m pytest command", ctx);
+    return;
+  }
+  if ((first === "python" || first === "python3") && effectiveWords[1] === "-m" && effectiveWords[2] === "unittest") {
+    addPythonUnittestCoverage(effectiveWords.slice(3), cwd, commandText, "direct python -m unittest discover command", ctx);
     return;
   }
   if (first === "npm" && effectiveWords[1] === "audit") {
