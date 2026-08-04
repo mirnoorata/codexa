@@ -8,6 +8,7 @@ export interface McpReceiverBinding {
 
 export interface McpReceiverBindings {
   byScope: Map<ts.Node, Map<string, McpReceiverBinding>>;
+  propertyAccesses: Set<ts.PropertyAccessExpression>;
 }
 
 interface McpReceiverTypeContext {
@@ -17,6 +18,7 @@ interface McpReceiverTypeContext {
 
 export function mcpReceiverBindings(sourceFile: ts.SourceFile): McpReceiverBindings {
   const byScope = new Map<ts.Node, Map<string, McpReceiverBinding>>();
+  const propertyAccesses = new Set<ts.PropertyAccessExpression>();
   const typeContext = mcpReceiverTypeContext(sourceFile);
   const register = (
     scope: ts.Node,
@@ -35,6 +37,9 @@ export function mcpReceiverBindings(sourceFile: ts.SourceFile): McpReceiverBindi
     }
   };
   const visit = (node: ts.Node, scope: ts.Node): void => {
+    if (ts.isPropertyAccessExpression(node) && hasMcpServerPropertyEvidence(node, sourceFile, typeContext)) {
+      propertyAccesses.add(node);
+    }
     if (ts.isImportDeclaration(node) && node.importClause) {
       const clause = node.importClause;
       if (clause.name) register(sourceFile, [clause.name], undefined, true);
@@ -49,7 +54,7 @@ export function mcpReceiverBindings(sourceFile: ts.SourceFile): McpReceiverBindi
     ts.forEachChild(node, (child) => visit(child, nestedScope));
   };
   visit(sourceFile, sourceFile);
-  return { byScope };
+  return { byScope, propertyAccesses };
 }
 
 export function mcpReceiverBindingAvailable(identifier: ts.Identifier, bindings: McpReceiverBindings): boolean {
@@ -60,6 +65,29 @@ export function mcpReceiverBindingAvailable(identifier: ts.Identifier, bindings:
   return false;
 }
 
+export function mcpReceiverPropertyAvailable(
+  propertyAccess: ts.PropertyAccessExpression,
+  bindings: McpReceiverBindings
+): boolean {
+  return bindings.propertyAccesses.has(propertyAccess);
+}
+
+function hasMcpServerPropertyEvidence(
+  propertyAccess: ts.PropertyAccessExpression,
+  sourceFile: ts.SourceFile,
+  context: McpReceiverTypeContext
+): boolean {
+  if (!mcpReceiverName(propertyAccess.name.text)) return false;
+  const container = unwrapExpression(propertyAccess.expression);
+  if (!container || !ts.isIdentifier(container)) return false;
+  const sourceBinding = ecmaLexicalBinding(container, context.bindingsByScope);
+  const sourceDeclaration = sourceBinding ? ecmaBindingDeclaration(sourceBinding) : undefined;
+  return Boolean(
+    sourceDeclaration &&
+    typeCarriesMcpServer(sourceDeclaration.type, propertyAccess.name.text, context.containerProperties, sourceFile, false)
+  );
+}
+
 function hasMcpServerEvidence(
   node: ts.ParameterDeclaration | ts.VariableDeclaration,
   identifier: ts.Identifier,
@@ -67,6 +95,7 @@ function hasMcpServerEvidence(
   context: McpReceiverTypeContext
 ): boolean {
   if (
+    ts.isIdentifier(node.name) &&
     [node.type, ts.isVariableDeclaration(node) ? node.initializer : undefined]
       .some((value) => Boolean(value && /\bMcpServer\b/u.test(value.getText(sourceFile))))
   ) {
@@ -142,30 +171,41 @@ function typeCarriesMcpServer(
   type: ts.TypeNode | undefined,
   receiverProperty: string,
   containerProperties: Map<string, Set<string>>,
-  sourceFile: ts.SourceFile
+  sourceFile: ts.SourceFile,
+  allowDirectMcpServer = true
 ): boolean {
   if (!type) return false;
-  if (ts.isParenthesizedTypeNode(type)) return typeCarriesMcpServer(type.type, receiverProperty, containerProperties, sourceFile);
+  if (ts.isParenthesizedTypeNode(type)) {
+    return typeCarriesMcpServer(type.type, receiverProperty, containerProperties, sourceFile, allowDirectMcpServer);
+  }
   if (ts.isUnionTypeNode(type) || ts.isIntersectionTypeNode(type)) {
-    return type.types.some((entry) => typeCarriesMcpServer(entry, receiverProperty, containerProperties, sourceFile));
+    return type.types.some((entry) =>
+      typeCarriesMcpServer(entry, receiverProperty, containerProperties, sourceFile, allowDirectMcpServer)
+    );
   }
   if (ts.isTypeLiteralNode(type)) return mcpServerProperties(type.members, sourceFile).has(receiverProperty);
   if (!ts.isTypeReferenceNode(type)) return false;
   const name = type.typeName.getText(sourceFile);
-  if (name === "McpServer" || containerProperties.get(name)?.has(receiverProperty)) return true;
+  if ((allowDirectMcpServer && name === "McpServer") || containerProperties.get(name)?.has(receiverProperty)) return true;
   if (name === "Pick") {
     const [sourceType, keys] = type.typeArguments ?? [];
     return Boolean(
       sourceType &&
       keys &&
-      typeCarriesMcpServer(sourceType, receiverProperty, containerProperties, sourceFile) &&
+      typeCarriesMcpServer(sourceType, receiverProperty, containerProperties, sourceFile, allowDirectMcpServer) &&
       typeSelectsReceiver(keys, receiverProperty)
     );
   }
   if (["Readonly", "Required", "Partial"].includes(name)) {
     return Boolean(
       type.typeArguments?.[0] &&
-      typeCarriesMcpServer(type.typeArguments[0], receiverProperty, containerProperties, sourceFile)
+      typeCarriesMcpServer(
+        type.typeArguments[0],
+        receiverProperty,
+        containerProperties,
+        sourceFile,
+        allowDirectMcpServer
+      )
     );
   }
   return false;

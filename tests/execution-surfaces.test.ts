@@ -36,6 +36,8 @@ it("indexes literal Commander and MCP handlers as bounded execution workflows", 
     const scopedOptionsTool = executionSurface(index, "src/mcp.ts", MCP_MARKER, "tool_scoped_options");
     const scopedObjectTool = executionSurface(index, "src/mcp.ts", MCP_MARKER, "tool_scoped_object");
     const scopedLoopTool = executionSurface(index, "src/mcp.ts", MCP_MARKER, "tool_scoped_loop_a");
+    const directOptionsTool = executionSurface(index, "src/mcp.ts", MCP_MARKER, "tool_options_direct");
+    const directMixedTool = executionSurface(index, "src/mcp.ts", MCP_MARKER, "tool_mixed_direct");
 
     expect(inlineCommand).toMatchObject({ kind: "module", source: "typescript-syntax", confidence: "derived" });
     expect(inlineCommand.range?.startLine).toBeGreaterThan(0);
@@ -58,6 +60,8 @@ it("indexes literal Commander and MCP handlers as bounded execution workflows", 
     expectCall(index, scopedOptionsTool, "runTool");
     expectCall(index, scopedObjectTool, "workflowHandler");
     expectCall(index, scopedLoopTool, "runTool");
+    expectCall(index, directOptionsTool, "runTool");
+    expectCall(index, directMixedTool, "runTool");
 
     const optionParser = index.symbols.find((symbol) => symbol.path === "src/handlers.ts" && symbol.name === "optionParser");
     const buildConfig = index.symbols.find((symbol) => symbol.path === "src/handlers.ts" && symbol.name === "buildConfig");
@@ -81,7 +85,9 @@ it("indexes literal Commander and MCP handlers as bounded execution workflows", 
       "shadowed-mcp-loop",
       "shadowed-mcp-options",
       "shadowed-mcp-container-as-server",
-      "shadowed-mcp-mixed-container"
+      "shadowed-mcp-mixed-container",
+      "shadowed-mcp-mixed-direct",
+      "shadowed-mcp-inline-mixed"
     ].includes(symbol.name))).toBe(false);
     expect(index.symbols.some((symbol) => symbol.decorators.includes(COMMANDER_MARKER) && ["shadowed-singleton", "wrong-cjs-package", "shadowed-require"].includes(symbol.name))).toBe(false);
     expect(index.symbols.some((symbol) =>
@@ -362,6 +368,10 @@ async function createExecutionSurfaceRepo(): Promise<string> {
       "  for (const tool of scopedTools) defineMcpTool(tool)",
       "}",
       "registerProductionTools({ server })",
+      "function registerProductionDirect(options: Pick<ProductionMcpOptions, 'server'>) {",
+      "  return options.server.registerTool('tool_options_direct', {}, () => runTool())",
+      "}",
+      "void registerProductionDirect",
       "interface NonMcpOptions { server: typeof audit }",
       "function registerShadowedOptions(options: NonMcpOptions) {",
       "  const { server } = options",
@@ -379,6 +389,15 @@ async function createExecutionSurfaceRepo(): Promise<string> {
       "  server.registerTool('shadowed-mcp-mixed-container', {}, () => dynamicHandler())",
       "}",
       "void rejectMixedContainer",
+      "function registerMixedDirect(options: MixedServerOptions) {",
+      "  options.server.registerTool('shadowed-mcp-mixed-direct', {}, () => dynamicHandler())",
+      "  options.mcpServer.registerTool('tool_mixed_direct', {}, () => runTool())",
+      "}",
+      "void registerMixedDirect",
+      "function rejectInlineMixed({ server }: { server: typeof audit; mcpServer: McpServer }) {",
+      "  server.registerTool('shadowed-mcp-inline-mixed', {}, () => dynamicHandler())",
+      "}",
+      "void rejectInlineMixed",
       "function shadowLoopTools(defineMcpTool: (...args: unknown[]) => unknown) {",
       "  const loopTools = [{ name: 'shadowed-mcp-loop', handler: () => dynamicHandler() }]",
       "  for (const tool of loopTools) defineMcpTool(tool)",

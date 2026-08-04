@@ -6,7 +6,12 @@ import { baseFact, importFact, rangeFromOffsets, rangeOf, riskFact, symbolFact, 
 import { callName, dynamicImportSpecifier, jsxElementName } from "./nodes.js";
 import { commanderBindings, nearestCommanderCommandCall } from "./ecma-commander.js";
 import { ecmaLexicalBinding, ecmaLexicalBindingsByScope } from "./ecma-bindings.js";
-import { mcpReceiverBindingAvailable, mcpReceiverBindings, type McpReceiverBindings } from "./ecma-mcp-receivers.js";
+import {
+  mcpReceiverBindingAvailable,
+  mcpReceiverBindings,
+  mcpReceiverPropertyAvailable,
+  type McpReceiverBindings
+} from "./ecma-mcp-receivers.js";
 
 const MAX_EXECUTION_SURFACES_PER_FILE = 64;
 const MAX_EXECUTION_HANDLER_CALLS = 15;
@@ -405,7 +410,7 @@ function isLikelyMcpRegistration(call: ts.CallExpression, bindings: McpReceiverB
   if (!ts.isPropertyAccessExpression(call.expression) || call.expression.name.text !== "registerTool") return false;
   const receiver = unwrapExpression(call.expression.expression);
   if (receiver && ts.isIdentifier(receiver)) return /(?:^|mcp)server$/iu.test(receiver.text) && mcpReceiverBindingAvailable(receiver, bindings);
-  return Boolean(receiver && ts.isPropertyAccessExpression(receiver) && /(?:^|mcp)server$/iu.test(receiver.name.text));
+  return Boolean(receiver && ts.isPropertyAccessExpression(receiver) && mcpReceiverPropertyAvailable(receiver, bindings));
 }
 
 function mcpRegistrationHelpers(sourceFile: ts.SourceFile, receiverBindings: McpReceiverBindings): McpRegistrationHelpers {
