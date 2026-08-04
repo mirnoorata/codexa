@@ -133,6 +133,21 @@ describe("Codexa schema contracts", () => {
     expect(status.freshness).toMatchObject({ missing: true, reason: "missing-index" });
   });
 
+  it("rejects a current-revision index that loses authoritative graph and workflow lanes", async () => {
+    const repo = await createSchemaFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+
+    const indexPath = path.join(repo, ".codex/codebase/index.json");
+    const index = JSON.parse(await readFile(indexPath, "utf8"));
+    delete index.graphEdges;
+    delete index.workflows;
+    await writeFile(indexPath, `${JSON.stringify(index)}\n`, "utf8");
+
+    expect(await loadIndex(repo, { recover: false })).toBeNull();
+    const status = await statusQuery(repo, { recover: false });
+    expect(status.freshness).toMatchObject({ missing: true, reason: "missing-index" });
+  });
+
   it("refuses to publish an integrity witness for incomplete current workflow membership", async () => {
     const repo = await createSchemaFixtureRepo();
     const index = await buildIndex({ repoRoot: repo });

@@ -486,6 +486,13 @@ function normalizeLoadedIndex(index: Partial<CodexaIndex>): CodexaIndex {
     throw new Error("Codexa index bundle is incomplete or unsupported");
   }
   const indexRevision = normalizeStoredIndexRevision(index.indexRevision, "index");
+  if (
+    indexRevision !== undefined &&
+    indexRevision >= 3 &&
+    (!Array.isArray(index.graphEdges) || !Array.isArray(index.workflows))
+  ) {
+    throw new Error("Codexa current graph and workflow lanes are incomplete or unsupported");
+  }
   const freshness = normalizeLoadedFreshness(index.freshness);
   const workflows = index.workflows ?? [];
   const workflowMembershipSpill = normalizeWorkflowMembershipSpill(index.workflowMembershipSpill, indexRevision, workflows);
