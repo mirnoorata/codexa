@@ -1,9 +1,10 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { writeArtifacts } from "../artifacts.js";
 import { MAX_INDEX_ARTIFACT_BYTES } from "../index-limits.js";
+import { CODEXA_INDEX_REVISION, CODEXA_INDEX_SCHEMA_VERSION } from "../index-revision.js";
 import {
   ensureManagedArtifactDirectory,
   requireManagedArtifactDirectory,
@@ -15,15 +16,74 @@ import type { CodexaFact, CodexaIndex } from "../types.js";
 
 const FACTS_NDJSON_WRITE_BUFFER_BYTES = 1024 * 1024;
 const CODEBASE_RELATIVE_DIR = path.join(".codex", "codebase");
+const INDEX_INTEGRITY_SCHEMA_VERSION = 1;
 
 export async function persistIndex(index: CodexaIndex, outputDir: string): Promise<void> {
+  const publishIntegrityManifest = index.schemaVersion === CODEXA_INDEX_SCHEMA_VERSION && index.indexRevision === CODEXA_INDEX_REVISION;
+  if (publishIntegrityManifest) assertIntegrityManifestInput(index);
   const output = await ensureManagedArtifactDirectory(index.snapshot.repoRoot, outputDir);
   await ensureManagedArtifactDirectory(index.snapshot.repoRoot, path.join(output.directory, "modules"));
   const serializedIndex = `${JSON.stringify(index)}\n`;
+  const serializedFreshness = `${JSON.stringify(index.freshness, null, 2)}\n`;
   assertIndexArtifactSize(serializedIndex);
   await writeManagedArtifactText(output, "index.json", serializedIndex);
-  await writeManagedArtifactText(output, "freshness.json", `${JSON.stringify(index.freshness, null, 2)}\n`);
+  await writeManagedArtifactText(output, "freshness.json", serializedFreshness);
+  if (publishIntegrityManifest) {
+    await writeManagedArtifactText(output, "index-integrity.json", `${JSON.stringify({
+      schemaVersion: INDEX_INTEGRITY_SCHEMA_VERSION,
+      indexRevision: index.indexRevision,
+      index: digestText(serializedIndex),
+      freshness: digestText(serializedFreshness),
+      snapshot: {
+        repoRoot: index.snapshot.repoRoot,
+        snapshotId: index.snapshot.snapshotId,
+        headCommit: index.snapshot.headCommit,
+        gitRoot: index.snapshot.gitRoot
+      }
+    }, null, 2)}\n`);
+  }
   await writeFactsNdjson(output, allFacts(index));
+}
+
+function assertIntegrityManifestInput(index: CodexaIndex): void {
+  if (
+    index.schemaVersion !== CODEXA_INDEX_SCHEMA_VERSION ||
+    index.indexRevision !== CODEXA_INDEX_REVISION ||
+    index.freshness?.schemaVersion !== CODEXA_INDEX_SCHEMA_VERSION ||
+    index.freshness.indexRevision !== CODEXA_INDEX_REVISION ||
+    !Array.isArray(index.files) ||
+    !Array.isArray(index.symbols) ||
+    !Array.isArray(index.usageSites) ||
+    !Array.isArray(index.imports) ||
+    !Array.isArray(index.testEdges) ||
+    !Array.isArray(index.graphEdges) ||
+    !Array.isArray(index.workflows) ||
+    !Array.isArray(index.modules) ||
+    !Array.isArray(index.risks) ||
+    !Array.isArray(index.parserErrors) ||
+    !index.workflowMembershipSpill ||
+    typeof index.workflowMembershipSpill !== "object" ||
+    Array.isArray(index.workflowMembershipSpill)
+  ) {
+    throw new Error("Codexa cannot attest an incomplete or unsupported current index bundle");
+  }
+  for (const [workflowId, paths] of Object.entries(index.workflowMembershipSpill)) {
+    if (!Array.isArray(paths) || !paths.every((filePath) => typeof filePath === "string")) {
+      throw new Error(`Codexa cannot attest invalid workflow membership spill for ${workflowId}`);
+    }
+  }
+  for (const workflow of index.workflows) {
+    if (!Object.prototype.hasOwnProperty.call(index.workflowMembershipSpill, workflow.id)) {
+      throw new Error(`Codexa cannot attest workflow membership spill missing ${workflow.id}`);
+    }
+  }
+}
+
+function digestText(value: string): { sizeBytes: number; sha256: string } {
+  return {
+    sizeBytes: Buffer.byteLength(value, "utf8"),
+    sha256: createHash("sha256").update(value, "utf8").digest("hex")
+  };
 }
 
 export function assertIndexArtifactSize(

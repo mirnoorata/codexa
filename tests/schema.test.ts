@@ -2,8 +2,8 @@ import { execFileSync } from "node:child_process";
 import { mkdir, mkdtemp, readFile, rename, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
-import { buildIndex, buildIndexLocked, loadIndex } from "../src/indexer.js";
+import { describe, expect, it, vi } from "vitest";
+import { buildIndex, buildIndexLocked, loadIndex, persistIndex } from "../src/indexer.js";
 import { CODEXA_INDEX_REVISION } from "../src/index-revision.js";
 import { statusQuery } from "../src/queries.js";
 import { CURRENT_VERIFICATION_PROVENANCE } from "../src/types.js";
@@ -24,6 +24,7 @@ describe("Codexa schema contracts", () => {
     const codebaseDir = path.join(repo, ".codex/codebase");
     const index = JSON.parse(await readFile(path.join(codebaseDir, "index.json"), "utf8"));
     const freshness = JSON.parse(await readFile(path.join(codebaseDir, "freshness.json"), "utf8"));
+    const integrity = JSON.parse(await readFile(path.join(codebaseDir, "index-integrity.json"), "utf8"));
     const relationalPackets = JSON.parse(await readFile(path.join(codebaseDir, "relational-packets.json"), "utf8"));
     const relationalGraph = JSON.parse(await readFile(path.join(codebaseDir, "relational-graph.json"), "utf8"));
     const summaryPrompts = (await readFile(path.join(codebaseDir, "packet-summary-prompts.ndjson"), "utf8")).trim().split(/\r?\n/u).map((line) => JSON.parse(line));
@@ -33,6 +34,18 @@ describe("Codexa schema contracts", () => {
     expect(index.indexRevision).toBe(CODEXA_INDEX_REVISION);
     expect(freshness.schemaVersion).toBe(1);
     expect(freshness.indexRevision).toBe(CODEXA_INDEX_REVISION);
+    expect(integrity).toMatchObject({
+      schemaVersion: 1,
+      indexRevision: CODEXA_INDEX_REVISION,
+      index: { sizeBytes: expect.any(Number), sha256: expect.stringMatching(/^[a-f0-9]{64}$/u) },
+      freshness: { sizeBytes: expect.any(Number), sha256: expect.stringMatching(/^[a-f0-9]{64}$/u) },
+      snapshot: {
+        repoRoot: repo,
+        snapshotId: index.snapshot.snapshotId,
+        headCommit: index.snapshot.headCommit,
+        gitRoot: index.snapshot.gitRoot
+      }
+    });
     expect(relationalPackets.schemaVersion).toBe(1);
     expect(relationalGraph.schemaVersion).toBe(1);
     expect(summaryPrompts.every((prompt) => prompt.schemaVersion === 1)).toBe(true);
@@ -116,6 +129,18 @@ describe("Codexa schema contracts", () => {
     await writeFile(indexPath, `${JSON.stringify(index)}\n`, "utf8");
 
     expect(await loadIndex(repo, { recover: false })).toBeNull();
+    const status = await statusQuery(repo, { recover: false });
+    expect(status.freshness).toMatchObject({ missing: true, reason: "missing-index" });
+  });
+
+  it("refuses to publish an integrity witness for incomplete current workflow membership", async () => {
+    const repo = await createSchemaFixtureRepo();
+    const index = await buildIndex({ repoRoot: repo });
+    delete index.workflowMembershipSpill;
+
+    await expect(
+      persistIndex(index, path.join(repo, ".codex/codebase"))
+    ).rejects.toThrow(/cannot attest.*current index bundle/iu);
   });
 
   it("reports a corrupt index bundle without recovering or trusting detached freshness metadata", async () => {
@@ -129,6 +154,36 @@ describe("Codexa schema contracts", () => {
     expect(status.freshness.reason).toBe("missing-index");
     expect(status.text).toContain("Parser errors: 0");
     expect(await readFile(path.join(repo, ".codex/codebase/index.json"), "utf8")).toBe("{ corrupt index\n");
+  });
+
+  it("falls back to full validation when the integrity sidecar is torn", async () => {
+    const repo = await createSchemaFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+
+    const integrityPath = path.join(repo, ".codex/codebase/index-integrity.json");
+    const integrity = JSON.parse(await readFile(integrityPath, "utf8"));
+    integrity.index.sha256 = "0".repeat(64);
+    await writeFile(integrityPath, `${JSON.stringify(integrity)}\n`, "utf8");
+
+    const status = await statusQuery(repo, { recover: false });
+    expect(status.freshness).toMatchObject({ stale: false, reason: "fresh" });
+  });
+
+  it("uses the integrity witness without decoding the full index for status", async () => {
+    const repo = await createSchemaFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+    const originalParse = JSON.parse;
+    const parseSpy = vi.spyOn(JSON, "parse").mockImplementation(((text: string, reviver?: (this: unknown, key: string, value: unknown) => unknown) =>
+      originalParse(text, reviver)) as typeof JSON.parse);
+    try {
+      const status = await statusQuery(repo, { recover: false });
+      expect(status.freshness).toMatchObject({ stale: false, reason: "fresh" });
+      expect(parseSpy.mock.calls.some(([value]) =>
+        typeof value === "string" && value.includes('"files":') && value.includes('"symbols":')
+      )).toBe(false);
+    } finally {
+      parseSpy.mockRestore();
+    }
   });
 
   it("rejects a future live schema and recovers the newest valid backup", async () => {

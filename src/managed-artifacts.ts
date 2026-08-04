@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { constants, promises as fs, type Stats } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
@@ -6,6 +6,11 @@ import path from "node:path";
 export interface ManagedArtifactDirectory {
   directory: string;
   repoReal: string;
+}
+
+export interface ManagedArtifactDigest {
+  sizeBytes: number;
+  sha256: string;
 }
 
 export async function ensureManagedArtifactDirectory(
@@ -111,6 +116,66 @@ export async function readManagedArtifactText(
       throw new Error(`Codexa managed artifact changed while it was being read: ${filePath}`);
     }
     return contents.subarray(0, offset).toString("utf8");
+  } finally {
+    await handle.close();
+  }
+}
+
+export async function digestManagedArtifact(
+  repoRoot: string,
+  segments: readonly string[],
+  maxBytes: number
+): Promise<ManagedArtifactDigest> {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+    throw new Error("Codexa managed artifact digest limit must be a positive integer");
+  }
+  if (segments.length === 0) {
+    throw new Error("Codexa managed artifact path must name a file");
+  }
+  for (const segment of segments) requireArtifactSegment(segment);
+  const repo = path.resolve(repoRoot);
+  const parentSegments = segments.slice(0, -1);
+  const parent = await requireManagedArtifactDirectory(repo, path.join(repo, ...parentSegments));
+  const filePath = path.join(parent.directory, segments.at(-1)!);
+  const beforeOpen = await fs.lstat(filePath);
+  assertRegularSingleLink(beforeOpen, filePath);
+  const handle = await fs.open(
+    filePath,
+    constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW
+  );
+  try {
+    const opened = await handle.stat();
+    assertRegularSingleLink(opened, filePath);
+    if (!sameFileIdentity(beforeOpen, opened)) {
+      throw new Error(`Codexa managed artifact changed while it was being opened: ${filePath}`);
+    }
+    if (opened.size > maxBytes) {
+      throw new Error(`Codexa managed artifact exceeds ${maxBytes} bytes: ${filePath}`);
+    }
+    const hash = createHash("sha256");
+    const chunk = Buffer.allocUnsafe(Math.min(1024 * 1024, Math.max(1, opened.size)));
+    let offset = 0;
+    while (offset < opened.size) {
+      const requested = Math.min(chunk.length, opened.size - offset);
+      const { bytesRead } = await handle.read(chunk, 0, requested, offset);
+      if (bytesRead < 1) {
+        throw new Error(`Codexa managed artifact ended before its declared size: ${filePath}`);
+      }
+      hash.update(chunk.subarray(0, bytesRead));
+      offset += bytesRead;
+    }
+    const afterRead = await handle.stat();
+    assertRegularSingleLink(afterRead, filePath);
+    if (!sameFileIdentity(opened, afterRead) || afterRead.size !== opened.size || offset !== opened.size) {
+      throw new Error(`Codexa managed artifact changed while it was being digested: ${filePath}`);
+    }
+    await validateManagedArtifactDirectory(parent);
+    const named = await fs.lstat(filePath);
+    assertRegularSingleLink(named, filePath);
+    if (!sameFileIdentity(afterRead, named) || named.size !== afterRead.size) {
+      throw new Error(`Codexa managed artifact path changed while it was being digested: ${filePath}`);
+    }
+    return { sizeBytes: opened.size, sha256: hash.digest("hex") };
   } finally {
     await handle.close();
   }

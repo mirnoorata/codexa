@@ -1,5 +1,5 @@
 import path from "node:path";
-import { buildIndexLocked, getFreshness, loadIndex, loadIndexReadOnly } from "../indexer.js";
+import { buildIndexLocked, getFreshness, loadIndex, loadIndexReadOnly, loadIndexStatusReadOnly } from "../indexer.js";
 import { assertIndexIdentity, findIndexIdentityIssue, IndexIdentityError } from "../index-identity.js";
 import { freshnessBlocksAuthority } from "../freshness-authority.js";
 import { workspaceStateDigest } from "../workspace-state.js";
@@ -46,9 +46,11 @@ export async function requireIndex(
 export async function statusQuery(repoRoot: string, options: { recover?: boolean } = {}): Promise<QueryResult> {
   void options;
   const repo = path.resolve(repoRoot);
-  const index = await loadIndexReadOnly(repo);
-  const observedFreshness = await getFreshness(repo, index, { recover: false });
-  const identityIssue = index ? findIndexIdentityIssue(repo, index, observedFreshness) : undefined;
+  const status = await loadIndexStatusReadOnly(repo);
+  const index = status ? undefined : await loadIndexReadOnly(repo);
+  const observedFreshness = status?.freshness ?? await getFreshness(repo, index, { recover: false });
+  const identitySource = status?.identity ?? index;
+  const identityIssue = identitySource ? findIndexIdentityIssue(repo, identitySource, observedFreshness) : undefined;
   const freshness = identityIssue
     ? { ...observedFreshness, stale: true, reason: identityIssue.reason }
     : observedFreshness;

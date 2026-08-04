@@ -73,6 +73,9 @@ describe("index checkout identity", () => {
     await mkdir(path.join(worktree, ".codex"), { recursive: true });
     await cp(path.join(repo, ".codex/codebase"), path.join(worktree, ".codex/codebase"), { recursive: true });
 
+    const status = await statusQuery(worktree, { recover: false });
+    expect(status.freshness).toMatchObject({ stale: true, reason: "snapshot-repo-root-mismatch" });
+    expect((status.data as { identityIssue?: { reason?: string } }).identityIssue?.reason).toBe("snapshot-repo-root-mismatch");
     await expect(findContextQuery(worktree, "identityValue", 5, { autoRefresh: false })).rejects.toThrow(
       /index identity mismatch \(snapshot-repo-root-mismatch\)/u
     );

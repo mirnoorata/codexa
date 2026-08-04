@@ -1,11 +1,11 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { acquireCacheLock } from "./cache-lock.js";
 import { CODEXA_INDEX_REVISION, CODEXA_INDEX_SCHEMA_VERSION } from "./index-revision.js";
 import { MAX_INDEX_ARTIFACT_BYTES } from "./index-limits.js";
 import { ensureSafeManagedStateDirectory } from "./init-portability.js";
-import { isManagedArtifactSegment, readManagedArtifactText, requireManagedArtifactDirectory } from "./managed-artifacts.js";
+import { digestManagedArtifact, isManagedArtifactSegment, readManagedArtifactText, requireManagedArtifactDirectory } from "./managed-artifacts.js";
 import { discoverRepoFreshness } from "./repo-files.js";
 import { relinkUsageIds, resolveIndexLinks } from "./resolver.js";
 import { externalRiskReportSnapshot, loadExternalRiskSignalReport } from "./risk-ingest.js";
@@ -49,6 +49,22 @@ interface BuildIndexPipelineContext {
   aliases?: Awaited<ReturnType<typeof loadImportAliases>>;
   externalSymbols?: Awaited<ReturnType<typeof loadExternalSymbolReportFacts>>;
   index?: CodexaIndex;
+}
+
+interface IndexIntegrityManifest {
+  schemaVersion: 1;
+  indexRevision: number;
+  index: { sizeBytes: number; sha256: string };
+  freshness: { sizeBytes: number; sha256: string };
+  snapshot: Pick<RepoSnapshotFact, "repoRoot" | "snapshotId" | "headCommit" | "gitRoot">;
+}
+
+export interface IndexStatusSnapshot {
+  identity: {
+    snapshot: IndexIntegrityManifest["snapshot"];
+    freshness: FreshnessInfo;
+  };
+  freshness: FreshnessInfo;
 }
 
 export async function buildIndex(options: IndexOptions): Promise<CodexaIndex> {
@@ -333,6 +349,55 @@ export async function loadFreshnessReadOnly(repoRoot: string): Promise<Freshness
   return readFreshnessBundle(repo, path.join(repo, CODEBASE_DIR));
 }
 
+/**
+ * Load the status projection without decoding the potentially large index.
+ * The integrity sidecar is published in the same atomic directory bundle. A
+ * missing, torn, or modified sidecar falls back to the full loader at the
+ * caller so legacy and damaged bundles retain their established semantics.
+ */
+export async function loadIndexStatusReadOnly(repoRoot: string): Promise<IndexStatusSnapshot | null> {
+  const repo = path.resolve(repoRoot);
+  const relativeDir = CODEBASE_DIR.split("/");
+  let manifest: IndexIntegrityManifest;
+  let stored: FreshnessInfo;
+  try {
+    const [manifestText, freshnessText] = await Promise.all([
+      readManagedArtifactText(repo, [...relativeDir, "index-integrity.json"]),
+      readManagedArtifactText(repo, [...relativeDir, "freshness.json"])
+    ]);
+    manifest = normalizeIndexIntegrityManifest(JSON.parse(manifestText) as unknown);
+    stored = normalizeLoadedFreshness(JSON.parse(freshnessText) as Partial<FreshnessInfo>);
+    const freshnessDigest = {
+      sizeBytes: Buffer.byteLength(freshnessText, "utf8"),
+      sha256: createHash("sha256").update(freshnessText, "utf8").digest("hex")
+    };
+    if (
+      manifest.index.sizeBytes > MAX_INDEX_ARTIFACT_BYTES ||
+      manifest.indexRevision !== CODEXA_INDEX_REVISION ||
+      stored.indexRevision !== manifest.indexRevision ||
+      !sameArtifactDigest(manifest.freshness, freshnessDigest)
+    ) {
+      return null;
+    }
+    const indexDigest = await digestManagedArtifact(
+      repo,
+      [...relativeDir, "index.json"],
+      manifest.index.sizeBytes
+    );
+    if (!sameArtifactDigest(manifest.index, indexDigest)) return null;
+  } catch {
+    return null;
+  }
+  // Live checkout discovery intentionally sits outside the compatibility
+  // fallback: command-budget and filesystem failures must retain the same
+  // observable behavior as the full status path rather than being retried.
+  const [current, riskReports, symbolReports] = await externalFreshnessInputs(repo, stored);
+  return {
+    identity: { snapshot: manifest.snapshot, freshness: stored },
+    freshness: freshnessFromStored(repo, current, riskReports, symbolReports, stored)
+  };
+}
+
 async function readIndexBundle(repoRoot: string, outputDir: string): Promise<CodexaIndex | null> {
   try {
     const relativeDir = path.relative(repoRoot, outputDir).split(path.sep);
@@ -496,6 +561,45 @@ function normalizeStoredIndexRevision(value: unknown, artifact: "index" | "fresh
     throw new Error(`Codexa ${artifact} index revision is invalid`);
   }
   return value as number;
+}
+
+function normalizeIndexIntegrityManifest(value: unknown): IndexIntegrityManifest {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Codexa index integrity manifest is incomplete");
+  }
+  const manifest = value as Partial<IndexIntegrityManifest>;
+  if (
+    manifest.schemaVersion !== 1 ||
+    !Number.isSafeInteger(manifest.indexRevision) ||
+    (manifest.indexRevision as number) < 1 ||
+    !validArtifactDigest(manifest.index) ||
+    !validArtifactDigest(manifest.freshness) ||
+    !manifest.snapshot ||
+    typeof manifest.snapshot.repoRoot !== "string" ||
+    manifest.snapshot.repoRoot.length === 0 ||
+    typeof manifest.snapshot.snapshotId !== "string" ||
+    manifest.snapshot.snapshotId.length === 0 ||
+    !nullableString(manifest.snapshot.headCommit) ||
+    !nullableString(manifest.snapshot.gitRoot)
+  ) {
+    throw new Error("Codexa index integrity manifest is incomplete or unsupported");
+  }
+  return manifest as IndexIntegrityManifest;
+}
+
+function validArtifactDigest(value: unknown): value is { sizeBytes: number; sha256: string } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const digest = value as { sizeBytes?: unknown; sha256?: unknown };
+  return Number.isSafeInteger(digest.sizeBytes) && (digest.sizeBytes as number) > 0 &&
+    typeof digest.sha256 === "string" && /^[a-f0-9]{64}$/u.test(digest.sha256);
+}
+
+function sameArtifactDigest(left: { sizeBytes: number; sha256: string }, right: { sizeBytes: number; sha256: string }): boolean {
+  return left.sizeBytes === right.sizeBytes && left.sha256 === right.sha256;
+}
+
+function nullableString(value: unknown): value is string | null {
+  return value === null || typeof value === "string";
 }
 
 export async function getFreshness(repoRoot: string, index?: CodexaIndex | null, options: { recover?: boolean } = {}): Promise<FreshnessInfo> {

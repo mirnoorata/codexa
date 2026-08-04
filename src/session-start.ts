@@ -9,7 +9,7 @@ import {
   resolveMcpRepoRootOnce,
   type McpRepoRootResolution
 } from "./mcp-repo-root.js";
-import { statusQuery } from "./queries.js";
+import { statusQuery } from "./query/runtime.js";
 import { validateLauncherCommand } from "./startup-launcher.js";
 import type { InitToolProfile } from "./types/init.js";
 import { CODEXA_VERSION } from "./version.js";
