@@ -152,6 +152,7 @@ export function advancedModeDecisionKernel(mode: string, data: Record<string, un
       const plan = record(data.plan);
       const verification = record(data.verification);
       const impact = record(data.impact);
+      const evidence = record(data.evidenceChains);
       const changedCount = number(change?.changedFileCount) ?? count(change?.changedFiles);
       return projection(
         verdict?.blocking === true ? "blocked" : bounded(verdict?.status, 40) ?? (changedCount > 0 ? "review" : "clean"),
@@ -162,13 +163,16 @@ export function advancedModeDecisionKernel(mode: string, data: Record<string, un
             recommendedTestCount: count(verification?.recommendedTests),
             coveredTestCount: count(verification?.coveredTests),
             missingTestCount: count(verification?.missingTests),
-            unplannedFileCount: count(plan?.unplannedFiles)
+            unplannedFileCount: count(plan?.unplannedFiles),
+            evidenceChainCount: count(evidence?.chains),
+            evidenceGapCount: count(evidence?.gaps)
           },
           detail: defined({ policyMode: bounded(data.policyMode, 40), planConformance: bounded(plan?.conformance, 40), blocking: verdict?.blocking }),
           top: {
             changedFiles: identities(change?.entries ?? change?.changedFiles, 3, fileIdentity),
             affectedFiles: identities(impact?.affectedFiles, 3, fileIdentity),
-            tests: identities(verification?.recommendedTests, 2, fileIdentity)
+            tests: identities(verification?.recommendedTests, 2, fileIdentity),
+            evidenceChains: identities(evidence?.chains, 2, evidenceChainIdentity)
           }
         }
       );
@@ -374,6 +378,18 @@ function edgeIdentity(value: unknown): unknown {
     to: bounded(value.toPath ?? value.toId, 180),
     confidence: bounded(value.confidence, 40),
     reason: bounded(value.reason, 120)
+  });
+}
+
+function evidenceChainIdentity(value: unknown): unknown {
+  if (!isRecord(value)) return undefined;
+  const anchor = record(value.anchor);
+  return defined({
+    id: bounded(value.chainId, 140),
+    name: bounded(value.summary, 180),
+    kind: bounded(value.purpose, 60),
+    path: bounded(anchor?.path, 220),
+    confidence: bounded(value.confidence, 40)
   });
 }
 

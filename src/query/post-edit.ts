@@ -63,11 +63,13 @@ import { limitText, stableId, uniqueSorted } from "../util.js";
 import { reviewTrustedRunnerReports, stripRunnerMetadata, type AutoVerifyRunnerReviewEntry } from "./post-edit/runner-review.js";
 import { reviewTaskInvariants } from "../task-lifecycle.js";
 import { buildPostEditLifecycleDecision, formatPostEditLifecycle, persistPostEditLifecycleOutcome, postEditLifecycleData, type PostEditLifecycleInput } from "./post-edit/lifecycle.js";
-import { buildAutoVerifyCandidates, buildPostEditReviewCoverage, compactContextData, formatPostEditReviewCoverage, hasRelevantVerificationEvidence, stableSessionMemoryHash } from "./post-edit/support.js";
+import { buildAutoVerifyCandidates, buildPostEditReviewCoverage, compactContextData, compactSnapshotForData, formatPostEditReviewCoverage, hasRelevantVerificationEvidence, limitArray, stableSessionMemoryHash } from "./post-edit/support.js";
 import { applyArtifactRequiredChecks, failedVerificationArtifactIds, formatPostEditArtifacts } from "./post-edit/artifacts.js";
 import { postEditExplicitSymbolTargets, postEditReviewContext, postEditReviewPasses, type PostEditReviewContextData } from "./post-edit/context-passes.js";
 import { evaluateVerificationArtifacts, loadVerificationArtifacts } from "../verification-artifacts.js";
 import { validateArtifactIds } from "../lifecycle-contract.js";
+import { buildChangeEvidenceChains, formatChangeEvidenceChains } from "./change-plan/evidence-chains.js";
+import { workflowMatchesAnyPath } from "../workflow-membership.js";
 interface PostEditReviewInternalInput { trustedRunnerReports?: AutoVerifyCommandReport[]; }
 
 export async function postEditReviewQuery(
@@ -234,6 +236,17 @@ async function postEditReviewQueryInternal(
     reviewScope,
     changeType
   );
+  const evidenceChains = buildChangeEvidenceChains({
+    index,
+    task,
+    anchors: reviewTargets.map((filePath) => ({
+      path: filePath,
+      authority: editPathSet.has(filePath) ? "observed-edit" as const : "explicit-target" as const
+    })),
+    editTargets: snapshot && snapshot.origin !== "hook-implicit" ? snapshot.plannedEditTargets : [],
+    tests,
+    freshness
+  });
   const ranTests = input.ranTests ?? [];
   const ranCommands = input.ranCommands ?? [];
   const manualRanCommandReports = (input.ranCommandReports ?? []).map(stripRunnerMetadata);
@@ -255,7 +268,7 @@ async function postEditReviewQueryInternal(
     .filter((file) => file.riskScore >= 4 || unplannedEditedFileSet.has(file.path))
     .sort((a, b) => b.riskScore - a.riskScore || b.rank - a.rank || a.path.localeCompare(b.path));
   const workflows = index.workflows
-    .filter((workflow) => workflow.relatedFiles.some((filePath) => reviewTargetSet.has(filePath)) || reviewTargetSet.has(workflow.entryPath))
+    .filter((workflow) => workflowMatchesAnyPath(workflow, reviewTargetSet, index))
     .sort((a, b) => b.rank - a.rank || a.title.localeCompare(b.title));
   const rawWorkflowChecks = evaluateRequiredChecks(snapshot?.requiredWorkflowChecks ?? [], {
     editPaths,
@@ -552,6 +565,7 @@ async function postEditReviewQueryInternal(
     "Next actions:",
     ...nextActions.map((action) => `- ${action}`),
     missedLikelyTests.length > 0 ? `Tests still unaccounted for: ${missedLikelyTests.slice(0, 8).map((test) => test.path).join(", ")}` : "Tests still unaccounted for: none",
+    `Causal change evidence: ${evidenceChains.chains.length} bounded chain(s); ${evidenceChains.representedTargetCount ?? 0}/${evidenceChains.analyzedTargetCount} analyzed target(s) represented; advisory only`,
     "",
     ...formatComplexityReview(complexityReview),
     "",
@@ -626,7 +640,10 @@ async function postEditReviewQueryInternal(
     ...formatVerificationLedger(dataVerificationLedger),
     "",
     "Known gaps:",
-    ...formatGaps(uniqueSorted([...(contextData.gaps ?? []), ...indexGaps(index, freshness, unindexedEditedFiles)]))
+    ...formatGaps(uniqueSorted([...(contextData.gaps ?? []), ...indexGaps(index, freshness, unindexedEditedFiles)])),
+    "",
+    "Causal change evidence:",
+    ...formatChangeEvidenceChains(evidenceChains)
   ]
     .filter((line): line is string => line !== undefined)
     .join("\n");
@@ -680,6 +697,7 @@ async function postEditReviewQueryInternal(
       riskDeltas: limitArray(riskDeltas, 20),
 	      affectedEdges: limitArray(affectedEdges, 30),
 	      affectedTests: limitArray(affectedTests, 30),
+	      evidenceChains,
 	      tests: limitArray(tests, 30),
 	      degradedSnapshotTests: limitArray(degradedSnapshotTests, 30),
 	      supersededDegradedSnapshotTests: limitArray(supersededDegradedSnapshotTests, 30),
@@ -971,25 +989,4 @@ function formatRiskDeltas(
     const removedText = delta.removedSignals.length > 0 ? `; removed ${delta.removedSignals.slice(0, 3).join(" | ")}` : "";
     return `- ${delta.path}: ${delta.before.riskScore.toFixed(1)} -> ${delta.after.riskScore.toFixed(1)} (${direction}${delta.delta.toFixed(1)})${newText}${removedText}`;
   });
-}
-
-function limitArray<T>(value: T[], limit: number): T[] {
-  return value.slice(0, limit);
-}
-
-function compactSnapshotForData(snapshot: TaskSnapshot | undefined): unknown {
-  if (!snapshot) {
-    return undefined;
-  }
-  return {
-    taskId: snapshot.taskId, planRevision: snapshot.planRevision, publicationSequence: snapshot.publicationSequence,
-    createdAt: snapshot.createdAt,
-    origin: snapshot.origin,
-    changeType: snapshot.changeType,
-    plannedEditTargets: limitArray(snapshot.plannedEditTargets, 30),
-    plannedFiles: limitArray(snapshot.plannedFiles, 40),
-    plannedTests: limitArray(snapshot.plannedTests, 20),
-    requiredWorkflowCheckCount: snapshot.requiredWorkflowChecks.length,
-    requiredDependencyCheckCount: snapshot.requiredDependencyChecks.length
-  };
 }

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
 import { getGitStateAsync } from "../src/git.js";
-import { buildIndex, buildIndexLocked, getFreshness, loadIndex } from "../src/indexer.js";
+import { buildIndex, buildIndexLocked, getFreshness, loadIndex, persistIndex } from "../src/indexer.js";
 import { MAX_INDEXED_SOURCE_BYTES } from "../src/repo-files.js";
 import { validateChangePlanTargetCandidate } from "../src/query/change-plan.js";
 import { postEditDecision } from "../src/query/post-edit/decision.js";
@@ -433,7 +433,7 @@ it("recovers from malformed cache, stale locks, backup bundles, relocated bundle
     const indexPath = path.join(repo, ".codex/codebase/index.json");
     const copied = JSON.parse(await readFile(indexPath, "utf8"));
     copied.freshness.repoRoot = "/tmp/not-this-repo";
-    await writeFile(indexPath, `${JSON.stringify(copied)}\n`, "utf8");
+    await persistIndex(copied, path.join(repo, ".codex/codebase"));
     const status = await statusQuery(repo);
     expect(status.freshness.stale).toBe(true);
     expect(status.freshness.reason).toBe("freshness-repo-root-mismatch");

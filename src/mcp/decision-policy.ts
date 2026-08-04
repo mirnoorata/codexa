@@ -64,7 +64,7 @@ function targetRoleBoundaries(value: Record<string, unknown>): TargetRoleBoundar
         if (Array.isArray(entry[key])) boundaries.push({ path: [...path, key], total: entry[key].length });
       }
       for (const [key, child] of Object.entries(entry)) {
-        if (key !== "decisionKernel" && key !== "mcp" && key !== "truncation") visit(child, [...path, key], depth + 1);
+        if (key !== "decisionKernel" && key !== "mcp" && key !== "truncation" && key !== "evidenceChains") visit(child, [...path, key], depth + 1);
       }
     }
     active.delete(entry);

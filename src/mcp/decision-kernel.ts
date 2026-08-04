@@ -5,8 +5,9 @@ import { capabilitiesDecisionKernel, compactCapabilitiesKernel, renderCapabiliti
 import { advancedModeDecisionKernel, compactAdvancedModeKernel, renderAdvancedModeKernel } from "./advanced-mode-kernel.js";
 import { renderKernelGuidance, skillGuidanceKernel, terminalGuidanceKernel } from "./decision-guidance.js";
 import { decisionEntryPath, mcpAuthorityBlockReason, mcpKernelRequiresExactDetail, mcpProofEscalationReason, mcpTargetRoleBoundariesTruncated, mcpTargetRoleBoundaryRequiresExactDetail, postEditReviewCoverageBlockReason, renderDecisionReadScope } from "./decision-policy.js";
+import { compactEvidenceDecisionSection, evidenceChainDecisionKernel, evidenceReducedDeliveryVariants, fitEvidenceWithinKernelBudget, renderKernelEvidence, targetRoleDecisionScope } from "./evidence-decision-kernel.js";
 import { postEditOutcomeKernel, reviewCoverageKernel } from "./review-coverage-kernel.js";
-
+import { boundedVerificationProvenance } from "./authority-compaction.js";
 export type McpResponseFormat = "auto" | "concise" | "detailed";
 
 export interface McpDeliveryMetadata {
@@ -23,10 +24,9 @@ export interface McpDeliveryMetadata {
   unchangedReceipt?: boolean;
   escalationReason?: string;
 }
-
 const CONCISE_TEXT_MAX_LINES = 30;
 const CONCISE_TEXT_MAX_CHARS = 2_400;
-const TERMINAL_MODE_IDENTITY_KEYS = ["editableTargets", "readDependencies", "excludedTargets", "plannedEditTargets", "reviewTargets", "targetFiles", "focusFiles", "files", "symbols", "targetCandidates", "nextReads", "changedSinceSnapshot", "workflows", "rawHits"] as const;
+const TERMINAL_MODE_IDENTITY_KEYS = ["editableTargets", "readDependencies", "excludedTargets", "plannedEditTargets", "reviewTargets", "targetFiles", "focusFiles", "files", "symbols", "targetCandidates", "nextReads", "changedSinceSnapshot", "workflows", "rawHits", "chains"] as const;
 
 export function conciseText(text: string): string {
   const lines = text.split(/\r?\n/);
@@ -91,8 +91,13 @@ export function mcpDecisionKernel(data: Record<string, unknown>, suppliedMode?: 
   };
   const kernel = definedRecord({ ...common, ...modeDecisionKernel(mode, data), detailsRequired: mcpTargetRoleBoundaryRequiresExactDetail({ ...data, authority }) || undefined });
   if (structuredByteLength(kernel) <= 3_200) return kernel;
+  // Advisory chains must not force authority-bearing lifecycle narrowing.
+  const evidenceFitted = fitEvidenceWithinKernelBudget(kernel, 3_200);
+  if (evidenceFitted) return evidenceFitted;
+  const advisoryEvidence = kernel.evidence;
+  const authorityKernel = advisoryEvidence === undefined ? kernel : definedRecord({ ...kernel, evidence: undefined });
   const narrowedGaps = kernelStrings(kernel.gaps, 3);
-  const narrowed = definedRecord({
+  const narrowedAuthority = definedRecord({
     schemaVersion: 1,
     mode,
     authority,
@@ -113,23 +118,29 @@ export function mcpDecisionKernel(data: Record<string, unknown>, suppliedMode?: 
     advanced: compactAdvancedModeKernel(kernel.advanced, "narrow"),
     search: narrowKernelSection(kernel.search),
     scope: narrowKernelSection(kernel.scope),
-    invariants: Array.isArray(kernel.invariants) ? kernel.invariants.slice(0, 16).map(compactDecisionInvariantStatus) : undefined,
-    loop: kernel.loop,
-    lifecycle: narrowKernelSection(kernel.lifecycle),
-    decisionLog: narrowKernelSection(kernel.decisionLog),
-    verification: narrowKernelSection(kernel.verification),
-    failureSignals: Array.isArray(kernel.failureSignals) ? kernel.failureSignals.slice(0, 12) : undefined,
-    outcome: narrowKernelSection(kernel.outcome),
-    planRevision: kernel.planRevision,
-    gapCount: kernel.gapCount,
+    invariants: Array.isArray(authorityKernel.invariants) ? authorityKernel.invariants.slice(0, 16).map(compactDecisionInvariantStatus) : undefined,
+    loop: authorityKernel.loop,
+    lifecycle: narrowKernelSection(authorityKernel.lifecycle),
+    decisionLog: narrowKernelSection(authorityKernel.decisionLog),
+    verification: narrowKernelSection(authorityKernel.verification),
+    failureSignals: Array.isArray(authorityKernel.failureSignals) ? authorityKernel.failureSignals.slice(0, 12) : undefined,
+    outcome: narrowKernelSection(authorityKernel.outcome),
+    planRevision: authorityKernel.planRevision,
+    gapCount: authorityKernel.gapCount,
     gaps: narrowedGaps,
     gapsOmitted: Math.max(0, gapCount - narrowedGaps.length),
     nextTools: common.nextTools,
     systemMessage: common.systemMessage,
-    detailsRequired: kernel.detailsRequired === true || mcpKernelRequiresExactDetail(mode, data) || undefined
+    detailsRequired: authorityKernel.detailsRequired === true || mcpKernelRequiresExactDetail(mode, data) || undefined
   });
+  const narrowed = advisoryEvidence === undefined
+    ? narrowedAuthority
+    : fitEvidenceWithinKernelBudget({ ...narrowedAuthority, evidence: advisoryEvidence }, 2_800) ?? narrowedAuthority;
   if (structuredByteLength(narrowed) <= 2_800) return narrowed;
-  const emergency = emergencyDecisionKernel(narrowed);
+  const emergencyAuthority = emergencyDecisionKernel(definedRecord({ ...narrowed, evidence: undefined }));
+  const emergency = advisoryEvidence === undefined
+    ? emergencyAuthority
+    : fitEvidenceWithinKernelBudget({ ...emergencyAuthority, evidence: advisoryEvidence }, 2_600) ?? emergencyAuthority;
   return structuredByteLength(emergency) <= 2_600 ? emergency : terminalDecisionKernel(emergency, emergency.detailsRequired === true || mcpKernelRequiresExactDetail(mode, data));
 }
 
@@ -154,6 +165,11 @@ export function withMcpDelivery(result: QueryResult, delivery: McpDeliveryMetada
   const targetBytes = mcpTargetBytes(delivered);
   if (targetBytes === undefined || structuredByteLength(delivered) <= targetBytes) {
     return { ...result, text: deliveredText, data: delivered };
+  }
+  // Shrink advisory chains before entering the fail-closed terminal tier.
+  for (const candidate of evidenceReducedDeliveryVariants(delivered, kernel)) {
+    const reconciled = reconcileMcpReturnedBytes(candidate);
+    if (structuredByteLength(reconciled) <= targetBytes) return { ...result, text: deliveredText, data: reconciled };
   }
   // Once adding the delivery reference itself crosses the host budget, use
   // the intrinsically bounded terminal kernel. Omitting detail is an
@@ -221,6 +237,7 @@ export function renderMcpConciseText(result: QueryResult): string {
   const invariants = Array.isArray(kernel.invariants) ? kernel.invariants : [];
   const loop = isRecord(kernel.loop) ? kernel.loop : undefined;
   const verification = isRecord(kernel.verification) ? kernel.verification : undefined;
+  const evidence = isRecord(kernel.evidence) ? kernel.evidence : undefined;
   const reviewCoverage = isRecord(kernel.reviewCoverage) ? kernel.reviewCoverage : undefined;
   const guidance = isRecord(kernel.guidance) ? kernel.guidance : undefined;
   const invariantLine = renderKernelInvariants(invariants);
@@ -236,6 +253,7 @@ export function renderMcpConciseText(result: QueryResult): string {
     ...advancedLines,
     renderKernelIdentity(identity),
     renderDecisionReadScope(kernel.scope),
+    evidence ? renderKernelEvidence(evidence) : undefined,
     guidance ? renderKernelGuidance(guidance) : undefined,
     verification ? renderKernelVerification(verification) : undefined,
     reviewCoverage
@@ -288,18 +306,9 @@ export function attachMcpDecisionKernel(record: Record<string, unknown>, kernel:
   });
 }
 
-export function compactDecisionInvariantStatus(value: unknown): unknown {
-  if (!isRecord(value)) return value;
-  return definedRecord({ id: boundedString(value.id, 120), status: boundedString(value.status, 80) ?? "unreviewed" });
-}
+function compactDecisionInvariantStatus(value: unknown): unknown { return isRecord(value) ? definedRecord({ id: boundedString(value.id, 120), status: boundedString(value.status, 80) ?? "unreviewed" }) : value; }
 
-export function decisionKernelStrings(value: unknown, limit: number): string[] {
-  return kernelStrings(value, limit);
-}
-
-export function compactDecisionKernelSection(value: unknown): Record<string, unknown> | undefined {
-  return narrowKernelSection(value);
-}
+function compactDecisionKernelSection(value: unknown): Record<string, unknown> | undefined { return narrowKernelSection(value); }
 
 export function compactTerminalDecisionKernel(kernel: Record<string, unknown>): Record<string, unknown> {
   const mode = stringValue(kernel.mode) ?? "unknown";
@@ -364,6 +373,7 @@ function emergencyDecisionKernel(kernel: Record<string, unknown>): Record<string
     advanced: compactAdvancedModeKernel(kernel.advanced, "emergency"),
     search: emergencyModeSection(kernel.search),
     scope: emergencyModeSection(kernel.scope),
+    evidence: compactEvidenceDecisionSection(kernel.evidence, "emergency"),
     failureSignalCount: kernel.failureSignalCount ?? arrayCount(kernel.failureSignals),
     failureSignals: Array.isArray(kernel.failureSignals) ? kernel.failureSignals.slice(0, 2).map(kernelEntry) : undefined,
     outcome: emergencyIdentityRecord(kernel.outcome),
@@ -419,6 +429,7 @@ function terminalDecisionKernel(kernel: Record<string, unknown>, failClosed = tr
     advanced: compactAdvancedModeKernel(kernel.advanced, "terminal"),
     search: terminalModeSection(kernel.search),
     scope: terminalModeSection(kernel.scope),
+    evidence: compactEvidenceDecisionSection(kernel.evidence, "terminal"),
     failureSignalCount: kernel.failureSignalCount,
     outcome: emergencyIdentityRecord(kernel.outcome),
     nextTools: failClosed ? [] : compactTerminalNextTools(kernel.nextTools),
@@ -698,6 +709,7 @@ function modeDecisionKernel(mode: string, data: Record<string, unknown>): Record
     return {
       scope: definedRecord({ fileCount: arrayCount(data.files), files: kernelStrings(data.files, 8), plannedEditTargetCount: arrayCount(data.plannedEditTargets), plannedEditTargets: kernelStrings(data.plannedEditTargets, 10), ...targetRoleDecisionScope(data.targetRoles), reviewOwner: boundedString(data.reviewOwner, 80), targetCandidateCount: arrayCount(data.targetCandidates), targetCandidates: kernelEntries(data.targetCandidates, 5) }),
       invariants: compactDeclaredInvariantKernel(snapshotValue(data, "invariants") ?? data.invariants, 16),
+      evidence: evidenceChainDecisionKernel(data.evidenceChains),
       verification: definedRecord({ testCount: arrayCount(data.tests), tests: kernelEntries(data.tests, 8), workflowCheckCount: arrayLength(data.requiredWorkflowChecks), dependencyCheckCount: arrayLength(data.requiredDependencyChecks), workflowChecks: kernelEntries(data.requiredWorkflowChecks, 5), dependencyChecks: kernelEntries(data.requiredDependencyChecks, 5) })
     };
   }
@@ -705,18 +717,14 @@ function modeDecisionKernel(mode: string, data: Record<string, unknown>): Record
     return { scope: definedRecord({ targetFileCount: arrayCount(data.targetFiles), targetFiles: kernelStrings(data.targetFiles, 10), unindexedTargetFileCount: arrayCount(data.unindexedTargetFiles), unindexedTargetFiles: kernelStrings(data.unindexedTargetFiles, 6), rejectedTargetFileCount: arrayCount(data.rejectedTargetFiles), rejectedTargetFiles: kernelStrings(data.rejectedTargetFiles, 6), changedFileCount: arrayCount(data.changedFiles), changedFiles: kernelStrings(data.changedFiles, 6) }), verification: definedRecord({ testCount: arrayCount(data.tests), tests: kernelEntries(data.tests, 8), commandCount: arrayCount(data.verificationCommands), commands: kernelEntries(data.verificationCommands, 8), testsNotRunCount: arrayCount(data.testsNotRun), testsNotRun: kernelEntries(data.testsNotRun, 6), ledgerCount: arrayCount(data.verificationLedgerPreview), ledger: kernelEntries(data.verificationLedgerPreview, 6) }) };
   }
   if (mode === "post_edit_review") {
-    return { scope: definedRecord({ fileCount: arrayCount(data.files), files: kernelStrings(data.files, 8), reviewTargetCount: arrayCount(data.reviewTargets), reviewTargets: kernelStrings(data.reviewTargets, 8), reviewCoverage: reviewCoverageKernel(data.reviewCoverage), unplannedEditedFileCount: arrayCount(data.unplannedEditedFiles), unplannedEditedFiles: kernelStrings(data.unplannedEditedFiles, 6), changedSinceSnapshotCount: arrayCount(data.changedSinceSnapshot), changedSinceSnapshot: kernelEntries(data.changedSinceSnapshot, 6) }), invariants: compactInvariantKernel(data.invariants, data.invariantReviews, 16), loop: loopDecisionKernel(data.loopReview), failureSignalCount: arrayCount(data.failureSignals), failureSignals: kernelEntries(data.failureSignals, 8), verification: definedRecord({ testsNotRunCount: arrayCount(data.testsNotRun), testsNotRun: kernelEntries(data.testsNotRun, 6), missedLikelyTestCount: arrayCount(data.missedLikelyTests), missedLikelyTests: kernelEntries(data.missedLikelyTests, 5), ledgerCount: arrayCount(data.verificationLedger), ledger: kernelEntries(data.verificationLedger, 6), riskEscalationsNeedInspection: data.riskEscalationsNeedInspection }), outcome: postEditOutcomeKernel(data.outcome), planRevision: data.planRevision };
+    return { scope: definedRecord({ fileCount: arrayCount(data.files), files: kernelStrings(data.files, 8), reviewTargetCount: arrayCount(data.reviewTargets), reviewTargets: kernelStrings(data.reviewTargets, 8), reviewCoverage: reviewCoverageKernel(data.reviewCoverage), unplannedEditedFileCount: arrayCount(data.unplannedEditedFiles), unplannedEditedFiles: kernelStrings(data.unplannedEditedFiles, 6), changedSinceSnapshotCount: arrayCount(data.changedSinceSnapshot), changedSinceSnapshot: kernelEntries(data.changedSinceSnapshot, 6) }), invariants: compactInvariantKernel(data.invariants, data.invariantReviews, 16), loop: loopDecisionKernel(data.loopReview), failureSignalCount: arrayCount(data.failureSignals), failureSignals: kernelEntries(data.failureSignals, 8), evidence: evidenceChainDecisionKernel(data.evidenceChains), verification: definedRecord({ testsNotRunCount: arrayCount(data.testsNotRun), testsNotRun: kernelEntries(data.testsNotRun, 6), missedLikelyTestCount: arrayCount(data.missedLikelyTests), missedLikelyTests: kernelEntries(data.missedLikelyTests, 5), ledgerCount: arrayCount(data.verificationLedger), ledger: kernelEntries(data.verificationLedger, 6), riskEscalationsNeedInspection: data.riskEscalationsNeedInspection }), outcome: postEditOutcomeKernel(data.outcome), planRevision: data.planRevision };
   }
   if (mode === "proof_card") {
     const verification = isRecord(data.verification) ? data.verification : undefined;
-    return { invariants: compactInvariantKernel(pathValue(data, ["lifecycle", "invariants"]), pathValue(data, ["lifecycle", "invariantReviews"]), 16), lifecycle: proofLifecycleKernel(data.lifecycle), decisionLog: kernelRecord(data.decisionLog, ["status", "sessionId", "baselineRevision", "currentRevision", "baselineIntact", "summaryHashValid", "warnings"]), verification: definedRecord({ recommendedCommandCount: arrayCount(verification?.recommendedCommands), recommendedCommands: kernelStrings(verification?.recommendedCommands, 6), nextCommandCount: arrayCount(data.nextCommands), nextCommands: kernelStrings(data.nextCommands, 6), testCount: arrayCount(verification?.tests), tests: kernelEntries(verification?.tests, 6), reported: kernelRecord(verification?.reported, ["hasEvidence", "testsNotRun", "ledger"]), artifacts: proofArtifactKernel(verification?.artifacts) }) };
+    return { invariants: compactInvariantKernel(pathValue(data, ["lifecycle", "invariants"]), pathValue(data, ["lifecycle", "invariantReviews"]), 16), lifecycle: proofLifecycleKernel(data.lifecycle), decisionLog: kernelRecord(data.decisionLog, ["status", "sessionId", "baselineRevision", "currentRevision", "baselineIntact", "summaryHashValid", "warnings"]), evidence: evidenceChainDecisionKernel(data.evidenceChains), verification: definedRecord({ recommendedCommandCount: arrayCount(verification?.recommendedCommands), recommendedCommands: kernelStrings(verification?.recommendedCommands, 6), nextCommandCount: arrayCount(data.nextCommands), nextCommands: kernelStrings(data.nextCommands, 6), testCount: arrayCount(verification?.tests), tests: kernelEntries(verification?.tests, 6), reported: kernelRecord(verification?.reported, ["hasEvidence", "testsNotRun", "ledger"]), artifacts: proofArtifactKernel(verification?.artifacts) }) };
   }
   const advanced = advancedModeDecisionKernel(mode, data);
   return advanced ? { advanced } : {};
-}
-
-function targetRoleDecisionScope(value: unknown): Record<string, unknown> {
-  return isRecord(value) ? { editableTargetCount: arrayCount(value.editableTargets), editableTargets: kernelStrings(value.editableTargets, 6), readDependencyCount: arrayCount(value.readDependencies), readDependencies: kernelStrings(value.readDependencies, 6), excludedTargetCount: arrayCount(value.excludedTargets), excludedTargets: kernelStrings(value.excludedTargets, 6), hasReferenceCue: value.hasReferenceCue, unresolvedReferenceCue: value.unresolvedReferenceCue } : {};
 }
 
 function compactInvariantKernel(invariantsValue: unknown, reviewsValue: unknown, limit: number): unknown[] | undefined {
@@ -985,14 +993,4 @@ function proofArtifactKernel(value: unknown): Record<string, unknown> | undefine
   });
 }
 
-function boundedVerificationProvenance(value: unknown): Record<string, unknown> | undefined {
-  if (!isRecord(value)) return undefined;
-  return structuredByteLength(value) <= 2_000 ? value : { truncated: true };
-}
-
-function inferKernelMode(data: Record<string, unknown>): string | undefined {
-  if (Array.isArray(data.verificationCommands) && Array.isArray(data.verificationCoverage) && Array.isArray(data.tests)) {
-    return Array.isArray(data.focusFiles) || Array.isArray(data.nextReads) ? "context_pack" : "test_plan";
-  }
-  return undefined;
-}
+function inferKernelMode(data: Record<string, unknown>): string | undefined { return Array.isArray(data.verificationCommands) && Array.isArray(data.verificationCoverage) && Array.isArray(data.tests) ? Array.isArray(data.focusFiles) || Array.isArray(data.nextReads) ? "context_pack" : "test_plan" : undefined; }

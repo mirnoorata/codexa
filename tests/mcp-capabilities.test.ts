@@ -157,7 +157,7 @@ describe("MCP capability dispatcher parity", () => {
       const dispatched = await captureFailure(() => client.callTool({ name: "capabilities", arguments: { action: "invoke", operation: "repo_map", arguments: { limit: 0 } } }));
       for (const failure of [direct, dispatched]) {
         expect(failure).toMatch(/limit/u);
-        expect(failure).toMatch(/too_small|greater than or equal to 1|positive/iu);
+        expect(failure).toMatch(/too(?:_|\s)small|greater than or equal to 1|positive/iu);
       }
     } finally {
       await close();

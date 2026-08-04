@@ -11,7 +11,7 @@ import { postEditReviewWithTrustedRunnerReports } from "../src/query/post-edit.j
 import { loadExternalRiskSignals, MAX_RISK_REPORT_BYTES } from "../src/risk-ingest.js";
 import { recordSessionMemory } from "../src/session-memory.js";
 import { updateStaticAnalysisReports } from "../src/static-analysis.js";
-import { CURRENT_VERIFICATION_PROVENANCE } from "../src/types.js";
+import { CURRENT_VERIFICATION_PROVENANCE, type ChangeEvidenceBundleV1 } from "../src/types.js";
 import type { AutoVerifyCommandReport } from "../src/autoverify.js";
 import {
   callersQuery,
@@ -85,6 +85,7 @@ it("answers broad focus, graph, workflow, dependency, and change-plan queries", 
       tests?: unknown[];
       snapshot?: unknown;
       snapshotBlock?: { taskId: string; path: string };
+      evidenceChains?: ChangeEvidenceBundleV1;
       targetCandidates?: Array<{
         candidateId: string;
         rank: number;
@@ -105,10 +106,13 @@ it("answers broad focus, graph, workflow, dependency, and change-plan queries", 
     expect(ambiguousPlan.text).toContain("Edit readiness: orientation-only");
     expect(ambiguousPlan.text).toContain("Task snapshot: not saved");
     expect(ambiguousPlan.text).toContain("Target candidates:");
+    expect(ambiguousPlan.text).toContain("Causal change evidence:");
     expect(ambiguousPlanData.editReadiness).toMatchObject({ editable: false, status: "orientation-only", snapshotBlocked: true });
     expect(ambiguousPlanData.plannedEditTargets).toEqual([]);
     expect(ambiguousPlanData.tests).toEqual([]);
     expect(ambiguousPlanData.snapshot).toBeUndefined();
+    expect(ambiguousPlanData.evidenceChains?.chains.every((chain) => chain.anchor.authority === "orientation-candidate")).toBe(true);
+    expect(ambiguousPlanData.evidenceChains?.chains.every((chain) => chain.roles.editTargets.length === 0)).toBe(true);
     expect(ambiguousPlanData.targetCandidates?.length).toBeGreaterThan(0);
     expect(ambiguousPlanData.targetCandidates?.[0]).toMatchObject({
       candidateId: expect.stringMatching(/^candidate-/),
@@ -171,12 +175,15 @@ it("answers broad focus, graph, workflow, dependency, and change-plan queries", 
       snapshot?: { taskId: string };
       plannedEditTargets?: string[];
       targetCandidates?: unknown[];
+      evidenceChains?: ChangeEvidenceBundleV1;
     };
     expect(followedPlan.text).toContain(`Follow candidate: accepted ${followedCandidate?.candidateId}`);
     expect(followedPlanData.editReadiness).toMatchObject({ editable: true, status: "edit-ready" });
     expect(followedPlanData.followCandidate).toMatchObject({ status: "accepted", candidateId: followedCandidate?.candidateId });
     expect(followedPlanData.snapshot?.taskId).toBe("ambiguous-change-plan");
     expect(followedPlanData.plannedEditTargets).toEqual(followedCandidate?.wouldPlanEditTargets);
+    expect(followedPlanData.evidenceChains?.chains.every((chain) => chain.anchor.authority === "explicit-target")).toBe(true);
+    expect(followedPlanData.evidenceChains?.chains.flatMap((chain) => chain.roles.editTargets).every((filePath) => followedPlanData.plannedEditTargets?.includes(filePath))).toBe(true);
     expect(followedPlanData.followCandidate?.plannedEditTargets).toEqual(followedCandidate?.wouldPlanEditTargets);
     expect(followedPlanData.targetCandidates).toEqual([]);
     await expect(readFile(path.join(repo, ".codex/cache/codexa-tasks/ambiguous-change-plan.blocked.json"), "utf8")).rejects.toThrow();
@@ -190,6 +197,8 @@ it("answers broad focus, graph, workflow, dependency, and change-plan queries", 
       path: "ambiguous-change-plan.json"
     });
     expect(followedLatest.blocked).toBeUndefined();
+    const followedSnapshot = JSON.parse(await readFile(path.join(repo, ".codex/cache/codexa-tasks/ambiguous-change-plan.json"), "utf8")) as { evidenceChains?: ChangeEvidenceBundleV1 };
+    expect(followedSnapshot.evidenceChains?.fingerprint).toBe(followedPlanData.evidenceChains?.fingerprint);
 
     const symbolCandidate = ambiguousPlanData.targetCandidates?.find((candidate) => candidate.kind === "symbol" && candidate.validationStatus === "edit-ready");
     expect(symbolCandidate).toBeDefined();
@@ -430,9 +439,12 @@ it("answers broad focus, graph, workflow, dependency, and change-plan queries", 
       editReadiness?: { editable: boolean; status: string };
       targetCandidates?: unknown[];
       complexityReview?: { status: string; blocking: boolean; invariants: string[] };
+      evidenceChains?: ChangeEvidenceBundleV1;
     };
     expect(planData.editReadiness).toMatchObject({ editable: true, status: "edit-ready" });
     expect(planData.targetCandidates).toEqual([]);
+    expect(planData.evidenceChains?.schemaVersion).toBe(1);
+    expect(planData.evidenceChains?.chains.every((chain) => chain.roles.editTargets.every((filePath) => filePath === "service/helpers.py"))).toBe(true);
     expect(planData.complexityReview).toMatchObject({ status: "lean", blocking: false });
     expect(planData.complexityReview?.invariants.some((invariant) => invariant.includes("security"))).toBe(true);
     expect(plan.text).toContain("Complexity review:");
@@ -741,6 +753,7 @@ it("saves task snapshots and reports post-edit drift against the actual dirty tr
       missedLikelyTests: Array<{ path: string }>;
       workflowChecks: Array<{ status: string }>;
       dependencyChecks: Array<{ status: string }>;
+      evidenceChains: ChangeEvidenceBundleV1;
       outcome: {
         path: string;
         verdict: string;
@@ -755,6 +768,9 @@ it("saves task snapshots and reports post-edit drift against the actual dirty tr
       };
     };
     expect(reviewData.verdict).not.toBe("continue");
+    expect(review.text).toContain("Causal change evidence:");
+    expect(reviewData.evidenceChains.chains.every((chain) => chain.anchor.authority === "observed-edit")).toBe(true);
+    expect(reviewData.evidenceChains.chains.flatMap((chain) => chain.roles.editTargets)).not.toContain("src/ops.ts");
     expect(reviewData.inspectMode).toBe("blocking");
     expect(reviewData.completionAuthority).toBe("blocking_inspect");
     expect(reviewData.outcome.verdict).toBe(reviewData.verdict);

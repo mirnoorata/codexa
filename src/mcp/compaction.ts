@@ -2,22 +2,10 @@ import { CURRENT_VERIFICATION_PROVENANCE } from "../types.js";
 import { asCodexaQueryData, asPostEditReviewData } from "../query-data.js";
 import { compactComplexityReview } from "../query/complexity.js";
 import {
-  clampLargeStringsPreservingMcpGuidance,
-  compactChangedEntry,
-  compactCheck,
-  compactCommandEnvelope,
-  compactCommandEnvelopeList,
-  compactCommandReportList,
-  compactFileFact,
-  compactFocusEntry,
-  compactGenericValue,
-  compactGroup,
-  compactModule,
-  compactNextTools,
-  compactRetrieval,
-  compactSession,
-  compactSummaryArray,
-  compactSnapshotLoad,
+  clampLargeStringsPreservingMcpGuidance, compactChangedEntry, compactCheck, compactCommandEnvelope,
+  compactCommandEnvelopeList, compactCommandReportList, compactFileFact, compactFocusEntry,
+  compactGenericValue, compactGroup, compactModule, compactNextTools,
+  compactRetrieval, compactSession, compactSummaryArray, compactSnapshotLoad,
   compactSymbolLike,
   compactTestRecommendation,
   compactVerificationCoverage,
@@ -40,6 +28,9 @@ export { compactNextTools } from "./compaction-helpers.js";
 import type { ChangePlanData, CodexaQueryData, ContextPacketData, FocusBriefData, FreshnessInfo, PostEditReviewData, ProofCardData, QueryResult, TestPlanData } from "../types.js";
 import { attachMcpDecisionKernel, compactTerminalDecisionKernel, mcpDecisionKernel } from "./decision-kernel.js";
 import { mcpTargetRoleBoundaryTruncation } from "./decision-policy.js";
+import { compactEvidenceBundle, compactEvidenceBundleSummary, compactEvidenceChain, withoutEvidenceTruncation } from "./evidence-compaction.js";
+import { boundedVerificationProvenance, exactTopLevelAuthority } from "./authority-compaction.js";
+import { withCompactedDecisionEvidence } from "./evidence-decision-kernel.js";
 const DEFAULT_MCP_STRUCTURED_DATA_TARGET_BYTES = 96_000;
 const MIN_MCP_STRUCTURED_DATA_TARGET_BYTES = 4_000;
 const MAX_MCP_STRUCTURED_DATA_TARGET_BYTES = 512_000;
@@ -87,7 +78,7 @@ export function compactMcpResult(result: QueryResult, options?: McpCompactionOpt
   const mode = typeof originalData.mode === "string" ? originalData.mode : inferMcpDataMode(originalData);
   const effectiveMode = mode ?? "unknown";
   const typedData = asCodexaQueryData(originalData, mode);
-  const compaction = (typedData ? compactMcpDataByMode(typedData) : undefined) ?? compactGenericMcpData(originalData, effectiveMode);
+  const compaction = (typedData ? compactMcpDataByMode(typedData, options?.format) : undefined) ?? compactGenericMcpData(originalData, effectiveMode);
   const decisionKernel = mcpDecisionKernel(originalData, effectiveMode, result.freshness);
   const clamped = clampLargeStringsPreservingMcpGuidance(compaction.data);
   const dataWithoutMetrics = attachMcpDecisionKernel(withTargetRoleBoundaryTruncation(originalData, withMergedTruncation(clamped.value as Record<string, unknown>, compaction.truncation)), decisionKernel);
@@ -178,7 +169,7 @@ export function inferMcpDataMode(data: Record<string, unknown>): string | undefi
   return undefined;
 }
 
-function compactMcpDataByMode(data: CodexaQueryData): McpCompactionResult | undefined {
+function compactMcpDataByMode(data: CodexaQueryData, format?: "concise" | "detailed"): McpCompactionResult | undefined {
   if (data.mode === "post_edit_review") {
     const compacted = compactPostEditMcpResult({ freshness: {} as FreshnessInfo, text: "", data });
     return { data: compacted.data as Record<string, unknown>, truncation: ((compacted.data as Record<string, unknown>).truncation as Record<string, { total: number; returned: number }>) ?? {}, compacted: true };
@@ -190,7 +181,7 @@ function compactMcpDataByMode(data: CodexaQueryData): McpCompactionResult | unde
     return compactFocusBriefData(data);
   }
   if (data.mode === "change_plan") {
-    return compactChangePlanData(data);
+    return compactChangePlanData(data, format);
   }
   if (data.mode === "test_plan") {
     return compactTestPlanData(data);
@@ -240,11 +231,11 @@ function enforceMcpStructuredBudget(sourceData: Record<string, unknown>,
     return hardResult;
   }
 
-  const summaryTruncation = mergeTruncation(hardTruncation, {
+  const summaryTruncation = mergeTruncation(withoutEvidenceTruncation(hardTruncation), {
     "__mcp.summaryBudget": { total: structuredByteLength(hardResult), returned: targetBytes }
   });
   const summaryClamped = clampLargeStringsPreservingMcpGuidance(buildMcpBudgetSummaryData(dataWithoutMetrics, mode, summaryTruncation), 160);
-  const summaryRecord = isRecord(summaryClamped.value) ? summaryClamped.value : { value: summaryClamped.value };
+  const summaryRecord = { ...(isRecord(summaryClamped.value) ? summaryClamped.value : { value: summaryClamped.value }), ...exactTopLevelAuthority(dataWithoutMetrics) };
   const summaryResult = attachMcpMetrics(attachMcpDecisionKernel(withTargetRoleBoundaryTruncation(sourceData, withMergedTruncation(summaryRecord, summaryTruncation)), decisionKernel), {
     ...structuredData,
     compacted: true,
@@ -280,8 +271,8 @@ function enforceMcpStructuredBudget(sourceData: Record<string, unknown>,
     },
     160
   );
-  const fallbackRecord = isRecord(fallbackClamped.value) ? fallbackClamped.value : { value: fallbackClamped.value };
-  const fallbackResult = attachMcpMetrics(attachMcpDecisionKernel(withTargetRoleBoundaryTruncation(sourceData, fallbackRecord), decisionKernel), {
+  const fallbackRecord = { ...(isRecord(fallbackClamped.value) ? fallbackClamped.value : { value: fallbackClamped.value }), ...exactTopLevelAuthority(dataWithoutMetrics) };
+  const fallbackResult = attachMcpMetrics(attachMcpDecisionKernel(withTargetRoleBoundaryTruncation(sourceData, fallbackRecord), withCompactedDecisionEvidence(decisionKernel, "terminal")), {
     ...structuredData,
     compacted: true,
     hardBudgetEnforced: true,
@@ -313,7 +304,7 @@ function enforceMcpStructuredBudget(sourceData: Record<string, unknown>,
     },
     160
   );
-  const minimalRecord = isRecord(minimalClamped.value) ? minimalClamped.value : { value: minimalClamped.value };
+  const minimalRecord = { ...(isRecord(minimalClamped.value) ? minimalClamped.value : { value: minimalClamped.value }), ...exactTopLevelAuthority(dataWithoutMetrics) };
   const minimalMetrics = {
     ...structuredData,
     compacted: true,
@@ -323,7 +314,7 @@ function enforceMcpStructuredBudget(sourceData: Record<string, unknown>,
     stringTruncations:
       metricNumber(structuredData, "stringTruncations") + hardClamped.stringTruncations + summaryClamped.stringTruncations + fallbackClamped.stringTruncations + minimalClamped.stringTruncations
   };
-  const minimalResult = attachMcpMetrics(attachMcpDecisionKernel(withTargetRoleBoundaryTruncation(sourceData, minimalRecord), decisionKernel), minimalMetrics);
+  const minimalResult = attachMcpMetrics(attachMcpDecisionKernel(withTargetRoleBoundaryTruncation(sourceData, minimalRecord), withCompactedDecisionEvidence(decisionKernel)), minimalMetrics);
   if (structuredByteLength(minimalResult) <= targetBytes) {
     return minimalResult;
   }
@@ -370,6 +361,7 @@ function buildMcpBudgetSummaryData(data: Record<string, unknown>, mode: string, 
     followCandidate: compactFollowCandidate(data.followCandidate),
     snapshotBlock: compactSnapshotBlock(data.snapshotBlock),
     targetCandidates: compactSummaryArray("targetCandidates", data.targetCandidates, 8, truncation, compactTargetCandidate),
+    evidenceChains: compactEvidenceBundleSummary(data.evidenceChains),
     packetVerdict: data.packetVerdict,
     complexityReview: compactComplexityReview(data.complexityReview, 4),
     nextCall: data.nextCall,
@@ -400,10 +392,10 @@ function reattachGuidanceFields(record: Record<string, unknown>, source: Record<
     ...record,
     ...(isRecord(source.nextCall) ? { nextCall: source.nextCall } : {}),
     ...(nextTools === undefined ? {} : { nextTools }),
-    ...(typeof source.systemMessage === "string" ? { systemMessage: source.systemMessage } : {})
+    ...(typeof source.systemMessage === "string" ? { systemMessage: source.systemMessage } : {}),
+    ...exactTopLevelAuthority(source)
   };
 }
-
 function compactBudgetSnapshot(value: unknown, truncation: McpTruncation): unknown {
   if (!isRecord(value)) {
     return value;
@@ -415,6 +407,7 @@ function compactBudgetSnapshot(value: unknown, truncation: McpTruncation): unkno
     plannedEditTargets: compactSummaryArray("snapshot.plannedEditTargets", value.plannedEditTargets, 10, truncation),
     plannedFiles: compactSummaryArray("snapshot.plannedFiles", value.plannedFiles, 10, truncation),
     plannedTests: compactSummaryArray("snapshot.plannedTests", value.plannedTests, 10, truncation, compactTestRecommendation),
+    evidenceChains: compactEvidenceBundleSummary(value.evidenceChains),
     requiredWorkflowCheckCount: typeof value.requiredWorkflowCheckCount === "number" ? value.requiredWorkflowCheckCount : Array.isArray(value.requiredWorkflowChecks) ? value.requiredWorkflowChecks.length : undefined,
     requiredDependencyCheckCount: typeof value.requiredDependencyCheckCount === "number" ? value.requiredDependencyCheckCount : Array.isArray(value.requiredDependencyChecks) ? value.requiredDependencyChecks.length : undefined
   };
@@ -422,13 +415,6 @@ function compactBudgetSnapshot(value: unknown, truncation: McpTruncation): unkno
 
 // The provenance marker is a small fixed shape in practice; an oversized one is
 // untrusted input and must not ride into every compaction tier via the metrics.
-function boundedVerificationProvenance(value: unknown): Record<string, unknown> | undefined {
-  if (!isRecord(value)) {
-    return undefined;
-  }
-  return structuredByteLength(value) <= 2_000 ? value : { truncated: true };
-}
-
 function attachMcpMetrics(dataWithoutMetrics: Record<string, unknown>, structuredData: Record<string, unknown>): Record<string, unknown> {
   let returnedBytes = 0;
   for (let attempt = 0; attempt < 20; attempt += 1) {
@@ -563,6 +549,7 @@ export function compactPostEditMcpResult(result: QueryResult): QueryResult {
       waivedVerification: limitArray(data.waivedVerification, 30),
       unindexedEditedFiles: data.unindexedEditedFiles,
       riskEscalations: limitArray(data.riskEscalations, 20),
+      evidenceChains: compactEvidenceBundle(data.evidenceChains),
       workflows: limitArray(data.workflows, 12),
       workflowChecks: limitArray(data.workflowChecks, 20),
       dependencyChecks: limitArray(data.dependencyChecks, 30),
@@ -585,6 +572,7 @@ export function compactPostEditMcpResult(result: QueryResult): QueryResult {
             plannedEditTargets: limitArray(snapshot.plannedEditTargets, 30),
             plannedFiles: limitArray(snapshot.plannedFiles, 40),
             plannedTests: limitArray(snapshot.plannedTests, 20),
+            evidenceChains: compactEvidenceBundleSummary(snapshot.evidenceChains),
             requiredWorkflowCheckCount: typeof snapshot.requiredWorkflowCheckCount === "number" ? snapshot.requiredWorkflowCheckCount : Array.isArray(snapshot.requiredWorkflowChecks) ? snapshot.requiredWorkflowChecks.length : 0,
             requiredDependencyCheckCount: typeof snapshot.requiredDependencyCheckCount === "number" ? snapshot.requiredDependencyCheckCount : Array.isArray(snapshot.requiredDependencyChecks) ? snapshot.requiredDependencyChecks.length : 0
           }
@@ -748,7 +736,7 @@ function compactFocusBriefData(data: FocusBriefData): McpCompactionResult {
   return { data: compacted, truncation: limit.truncation, compacted: true };
 }
 
-function compactChangePlanData(data: ChangePlanData): McpCompactionResult {
+function compactChangePlanData(data: ChangePlanData, format?: "concise" | "detailed"): McpCompactionResult {
   const limit = createArrayLimiter();
   const compactFocus = data.focus && typeof data.focus === "object" && !Array.isArray(data.focus) ? compactFocusBriefData(data.focus as FocusBriefData) : undefined;
   const compactContext = data.context && typeof data.context === "object" && !Array.isArray(data.context) ? compactContextPacketData(data.context as ContextPacketData, "context_pack") : undefined;
@@ -761,6 +749,7 @@ function compactChangePlanData(data: ChangePlanData): McpCompactionResult {
     followCandidate: compactFollowCandidate(data.followCandidate),
     snapshotBlock: compactSnapshotBlock(data.snapshotBlock),
     targetCandidates: limit("targetCandidates", data.targetCandidates, 12, compactTargetCandidate),
+    evidenceChains: format === "concise" ? compactEvidenceBundleSummary(data.evidenceChains) : compactEvidenceBundle(data.evidenceChains),
     steps: limit("steps", data.steps, 12),
     focus: compactFocus?.data,
     context: compactContext?.data,
@@ -788,6 +777,10 @@ function compactChangePlanData(data: ChangePlanData): McpCompactionResult {
           plannedFiles: snapshotLimit("plannedFiles", snapshot.plannedFiles, 40),
           focusFiles: snapshotLimit("focusFiles", snapshot.focusFiles, 20, compactFileFact),
           plannedTests: snapshotLimit("plannedTests", snapshot.plannedTests, 20, compactTestRecommendation),
+          // The top-level bundle carries the same fingerprint and counts in a
+          // concise receipt; avoid duplicating advisory evidence inside the
+          // snapshot and displacing executable target-role boundaries.
+          evidenceChains: format === "concise" ? undefined : compactEvidenceBundleSummary(snapshot.evidenceChains),
           sessionMemory: snapshot.sessionMemory,
           requiredWorkflowCheckCount: typeof snapshot.requiredWorkflowCheckCount === "number" ? snapshot.requiredWorkflowCheckCount : Array.isArray(snapshot.requiredWorkflowChecks) ? snapshot.requiredWorkflowChecks.length : 0,
           requiredDependencyCheckCount: typeof snapshot.requiredDependencyCheckCount === "number" ? snapshot.requiredDependencyCheckCount : Array.isArray(snapshot.requiredDependencyChecks) ? snapshot.requiredDependencyChecks.length : 0,
@@ -897,7 +890,10 @@ function compactTargetCandidate(value: unknown): unknown {
         }
       : undefined,
     nextChangePlanArgs: value.nextChangePlanArgs,
-    rawSearchQueries: limitArray(value.rawSearchQueries, 4)
+    rawSearchQueries: limitArray(value.rawSearchQueries, 4),
+    evidenceChains: Array.isArray(value.evidenceChains)
+      ? value.evidenceChains.slice(0, 1).map(compactEvidenceChain)
+      : undefined
   };
 }
 
@@ -913,6 +909,7 @@ function compactProofCardData(data: ProofCardData): McpCompactionResult {
     freshness: data.freshness,
     worktree: data.worktree,
     readFirst: limit("readFirst", data.readFirst, 12),
+    evidenceChains: compactEvidenceBundle(data.evidenceChains),
     snapshot: compactGenericValue(data.snapshot, { arrayLimit: 24, objectKeyLimit: 32, maxDepth: 5 }, limit.truncation, "snapshot"),
     verification: verification
       ? {

@@ -7,6 +7,7 @@ import type { ChangePlanInput, ChangeType, TaskSnapshot } from "./types.js";
 import { loadTaskLifecycleState, normalizeTaskInvariants, recordTaskPlanRevision, taskInvariantId, withTaskLifecycleLock } from "./task-lifecycle.js";
 import { MAX_TASK_INVARIANTS, taskInvariantStatementSchema } from "./lifecycle-contract.js";
 import { stableId } from "./util.js";
+import { isPlanSnapshotChangeEvidenceBundleV1 } from "./types/change-evidence.js";
 
 const SNAPSHOT_DIR = ".codex/cache/codexa-tasks";
 const LEGACY_SNAPSHOT_DIR = ".codex/cache/codexa-task-snapshots";
@@ -918,6 +919,7 @@ export function isTaskSnapshot(value: unknown): value is TaskSnapshot {
     Array.isArray(record.plannedFiles) &&
     Array.isArray(record.focusFiles) &&
     Array.isArray(record.plannedTests) &&
+    isPlanSnapshotChangeEvidenceBundleV1(record.evidenceChains, record.snapshotFreshness?.snapshotId, record.plannedEditTargets) &&
     (record.sessionMemory === undefined || isSessionMemoryPointer(record.sessionMemory)) &&
     Array.isArray(record.requiredWorkflowChecks) &&
     Array.isArray(record.requiredDependencyChecks) &&

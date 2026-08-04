@@ -256,6 +256,11 @@ export function compactWorkflow(value: unknown): unknown {
   const relatedFiles = compactArrayField("relatedFiles", record.relatedFiles, 20, truncation);
   const tests = compactArrayField("tests", record.tests, 20, truncation);
   const steps = compactArrayField("steps", record.steps, 16, truncation, compactWorkflowStep);
+  mergeWorkflowTruncation(truncation, record.truncation, {
+    relatedFiles: { source: record.relatedFiles, returned: relatedFiles.value },
+    tests: { source: record.tests, returned: tests.value },
+    steps: { source: record.steps, returned: steps.value }
+  });
   return {
     id: record.id,
     title: record.title,
@@ -269,6 +274,32 @@ export function compactWorkflow(value: unknown): unknown {
     steps: steps.value,
     truncation: Object.keys(truncation).length > 0 ? truncation : undefined
   };
+}
+
+function mergeWorkflowTruncation(
+  truncation: McpTruncation,
+  priorValue: unknown,
+  arrays: Record<"relatedFiles" | "tests" | "steps", { source: unknown; returned: unknown }>
+): void {
+  const prior = isRecord(priorValue) ? priorValue : {};
+  for (const field of ["relatedFiles", "tests", "steps"] as const) {
+    const receipt = workflowTruncationReceipt(prior[field]);
+    const sourceTotal = Array.isArray(arrays[field].source) ? arrays[field].source.length : 0;
+    const returned = Array.isArray(arrays[field].returned) ? arrays[field].returned.length : receipt?.returned;
+    const total = Math.max(sourceTotal, receipt?.total ?? 0);
+    if (returned !== undefined && total > returned) truncation[field] = { total, returned };
+  }
+  const executionSurfaces = workflowTruncationReceipt(prior.executionSurfaces);
+  if (executionSurfaces && executionSurfaces.total > executionSurfaces.returned) {
+    truncation.executionSurfaces = executionSurfaces;
+  }
+}
+
+function workflowTruncationReceipt(value: unknown): { total: number; returned: number } | undefined {
+  if (!isRecord(value) || !Number.isSafeInteger(value.total) || !Number.isSafeInteger(value.returned)) return undefined;
+  const total = value.total as number;
+  const returned = value.returned as number;
+  return total >= 0 && returned >= 0 && total >= returned ? { total, returned } : undefined;
 }
 
 export function compactWorkflowStep(value: unknown): unknown {

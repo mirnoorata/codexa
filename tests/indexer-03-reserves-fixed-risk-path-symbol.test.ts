@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rename, rm, symlink, utimes, writeFile } from
 import os from "node:os";
 import path from "node:path";
 import { describe, expect, it } from "vitest";
-import { buildIndex, buildIndexLocked, getFreshness, loadIndex } from "../src/indexer.js";
+import { buildIndex, buildIndexLocked, getFreshness, loadIndex, persistIndex } from "../src/indexer.js";
 import { MAX_INDEXED_SOURCE_BYTES } from "../src/repo-files.js";
 import { loadOutcomeRankSignals } from "../src/outcome-ranking.js";
 import { validateChangePlanTargetCandidate } from "../src/query/change-plan.js";
@@ -504,12 +504,21 @@ it("writes and reuses a parse cache for unchanged files", async () => {
     const repo = await createFixtureRepo();
     await buildIndex({ repoRoot: repo });
     const cachePath = path.join(repo, ".codex/cache/codexa-parse-cache.json");
-    const firstCache = JSON.parse(await readFile(cachePath, "utf8")) as { entries: Record<string, unknown> };
+    const firstCache = JSON.parse(await readFile(cachePath, "utf8")) as {
+      version: string;
+      entries: Record<string, { result?: { symbols?: Array<{ name?: string; path?: string }> } }>;
+    };
     expect(Object.keys(firstCache.entries)).toContain("src/api.ts");
 
-    const poisoned = firstCache as {
-      entries: Record<string, { result?: { symbols?: Array<{ path?: string }> } }>;
-    };
+    const staleVersion = structuredClone(firstCache);
+    staleVersion.version = `${firstCache.version}-stale`;
+    const staleApiSymbol = staleVersion.entries["src/api.ts"]?.result?.symbols?.[0];
+    if (staleApiSymbol) staleApiSymbol.name = "stale-cache-poison";
+    await writeFile(cachePath, `${JSON.stringify(staleVersion)}\n`, "utf8");
+    const rebuiltFromStaleVersion = await buildIndex({ repoRoot: repo });
+    expect(rebuiltFromStaleVersion.symbols.some((symbol) => symbol.name === "stale-cache-poison")).toBe(false);
+
+    const poisoned = structuredClone(firstCache);
     const firstApiSymbol = poisoned.entries["src/api.ts"]?.result?.symbols?.[0];
     if (firstApiSymbol) {
       firstApiSymbol.path = "src/poisoned.ts";
@@ -779,7 +788,6 @@ it("keeps non-heuristic mixed-language test evidence even when kind compatibilit
       stdio: "ignore"
     });
     const index = await buildIndex({ repoRoot: repo });
-    const indexPath = path.join(repo, ".codex/codebase/index.json");
     index.testEdges.push({
       id: "test-edge:mixed-language-integration",
       type: "TestEdge",
@@ -791,7 +799,7 @@ it("keeps non-heuristic mixed-language test evidence even when kind compatibilit
       snapshotId: index.snapshot.snapshotId,
       indexedAt: index.snapshot.indexedAt
     });
-    await writeFile(indexPath, `${JSON.stringify(index, null, 2)}\n`, "utf8");
+    await persistIndex(index, path.join(repo, ".codex/codebase"));
     await writeFile(path.join(repo, "service/helpers.py"), "def normalize(value):\n    return value.strip().lower()\n", "utf8");
 
     const plan = await testPlanQuery(repo, true, { autoRefresh: false });

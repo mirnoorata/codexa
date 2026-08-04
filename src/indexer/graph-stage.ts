@@ -1,9 +1,10 @@
-import { buildGraphEdges, extractWorkflowTraces } from "../graph.js";
+import { buildGraphEdges, extractWorkflowTraceData } from "../graph.js";
 import type { CodexaIndex, GraphEdgeFact } from "../types.js";
 
 export function applyGraphStages(index: CodexaIndex, externalGraphEdges: GraphEdgeFact[]): CodexaIndex {
   const withGraph = { ...index, graphEdges: dedupeGraphEdges([...buildGraphEdges(index), ...externalGraphEdges]) };
-  return { ...withGraph, workflows: extractWorkflowTraces(withGraph) };
+  const extracted = extractWorkflowTraceData(withGraph);
+  return { ...withGraph, workflows: extracted.workflows, workflowMembershipSpill: extracted.workflowMembershipSpill };
 }
 
 function dedupeGraphEdges(edges: GraphEdgeFact[]): GraphEdgeFact[] {

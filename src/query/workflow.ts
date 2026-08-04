@@ -12,6 +12,7 @@ import { findFile, resolveGraphTarget, type ResolvedGraphTarget } from "./target
 import { retrieveForTask } from "../retrieval.js";
 import { semanticOptionsFromQueryOptions } from "../semantic-retrieval.js";
 import { workflowTierCounts } from "./graph-traversal.js";
+import { workflowIncludesPath, workflowMatchesAnyPath } from "../workflow-membership.js";
 
 export async function workflowPathQuery(
   input: QuerySessionInput,
@@ -29,9 +30,9 @@ export async function workflowPathQuery(
     if ("result" in target) {
       return { ...target.result, freshness, refresh };
     }
-    workflows = workflows.filter((workflow) => workflowMatchesTarget(workflow, target));
+    workflows = workflows.filter((workflow) => workflowMatchesTarget(workflow, target, index));
     if (workflows.length === 0) {
-      workflows = index.workflows.filter((workflow) => workflowMatchesTarget(workflow, target));
+      workflows = index.workflows.filter((workflow) => workflowMatchesTarget(workflow, target, index));
     }
   }
   if (workflows.length === 0) {
@@ -215,25 +216,50 @@ function narrowWorkflowsForSpecificTerms(workflows: WorkflowTraceFact[], queryTe
   return narrowed.length > 0 ? narrowed : workflows;
 }
 
-export function workflowMatchesTarget(workflow: WorkflowTraceFact, target: ResolvedGraphTarget): boolean {
+export function workflowMatchesTarget(
+  workflow: WorkflowTraceFact,
+  target: ResolvedGraphTarget,
+  index: Pick<CodexaIndex, "testEdges" | "workflowMembershipSpill">
+): boolean {
   if (target.symbol?.id) {
     return (
       workflow.entrySymbolId === target.symbol.id ||
       workflow.steps.some((step) => step.symbolId === target.symbol?.id || step.targetSymbolId === target.symbol?.id) ||
-      (isAdapterPath(target.symbol.path) && workflow.steps.some((step) => step.targetPath === target.symbol?.path || step.path === target.symbol?.path))
+      (isAdapterPath(target.symbol.path) && workflow.steps.some((step) => step.targetPath === target.symbol?.path || step.path === target.symbol?.path)) ||
+      (isTestPath(target.symbol.path) && workflowIncludesPath(workflow, target.symbol.path, index))
     );
   }
-  return workflow.relatedFiles.some((file) => target.paths.has(file));
+  return workflowMatchesAnyPath(workflow, target.paths, index);
 }
 
 export function formatWorkflow(workflow: WorkflowTraceFact): string[] {
+  const displayedStepCount = Math.min(workflow.steps.length, 12);
+  const stepTotal = workflowTotal(workflow, "steps");
+  const displayedTests = workflow.tests.slice(0, 6);
+  const testTotal = workflowTotal(workflow, "tests");
+  const bounds = formatWorkflowBounds(workflow);
   return [
     `- ${workflow.title}: ${workflow.workflowKind}, rank ${workflow.rank.toFixed(2)}, ${workflow.confidence}`,
     `  summary: ${workflow.summary}`,
     ...workflow.steps.slice(0, 12).map((step, index) => `  ${index + 1}. ${step.kind} ${step.label} at ${step.path}${step.line ? `:${step.line}` : ""}; ${step.confidence}; ${step.reason}`),
-    workflow.steps.length > 12 ? `  ... ${workflow.steps.length - 12} more steps` : undefined,
-    workflow.tests.length > 0 ? `  tests: ${workflow.tests.slice(0, 6).join(", ")}` : "  tests: none proven"
+    stepTotal > displayedStepCount ? `  ... ${stepTotal - displayedStepCount} more steps` : undefined,
+    displayedTests.length > 0 ? `  tests: ${displayedTests.join(", ")}${testTotal > displayedTests.length ? ` (+${testTotal - displayedTests.length} more)` : ""}` : "  tests: none proven",
+    bounds.length > 0 ? `  evidence bounds: ${bounds.join("; ")}` : undefined
   ].filter((line): line is string => line !== undefined);
+}
+
+function workflowTotal(workflow: WorkflowTraceFact, field: "steps" | "relatedFiles" | "tests"): number {
+  const recorded = workflow.truncation?.[field]?.total;
+  return Math.max(workflow[field].length, Number.isSafeInteger(recorded) && (recorded ?? -1) >= 0 ? recorded! : 0);
+}
+
+function formatWorkflowBounds(workflow: WorkflowTraceFact): string[] {
+  return (["steps", "relatedFiles", "tests", "executionSurfaces"] as const).flatMap((field) => {
+    const receipt = workflow.truncation?.[field];
+    if (!receipt || !Number.isSafeInteger(receipt.total) || !Number.isSafeInteger(receipt.returned) || receipt.total <= receipt.returned || receipt.returned < 0) return [];
+    const label = field === "relatedFiles" ? "related files" : field === "executionSurfaces" ? "execution surfaces" : field;
+    return [`${label} ${receipt.returned}/${receipt.total} retained`];
+  });
 }
 
 function workflowUiCoreScore(pathValue: string, targetPath: string | undefined, queryText: string): number {

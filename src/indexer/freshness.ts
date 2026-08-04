@@ -1,4 +1,5 @@
 import { canonicalPath } from "../index-identity.js";
+import { CODEXA_INDEX_REVISION, CODEXA_INDEX_SCHEMA_VERSION } from "../index-revision.js";
 import type { RepoFreshnessFiles } from "../repo-files.js";
 import type { ExternalRiskReportDiagnostic } from "../risk-ingest.js";
 import type { ExternalSymbolReportDiagnostic } from "../symbol-report-ingest.js";
@@ -17,7 +18,7 @@ export interface SymbolReportFreshnessSnapshot {
 export function freshnessFromStored(repo: string, current: RepoFreshnessFiles, riskReports: RiskReportFreshnessSnapshot, symbolReports: SymbolReportFreshnessSnapshot, loaded: FreshnessInfo | null): FreshnessInfo {
   if (!loaded) {
     return {
-      schemaVersion: 1,
+      schemaVersion: CODEXA_INDEX_SCHEMA_VERSION,
       snapshotId: "missing",
       repoRoot: repo,
       gitRoot: current.git.gitRoot,
@@ -48,6 +49,7 @@ export function freshnessFromStored(repo: string, current: RepoFreshnessFiles, r
   const indexedExternalSymbolReportHashes = loaded.indexedExternalSymbolReportHashes ?? loaded.externalSymbolReportHashes ?? {};
   const externalSymbolReportsChanged = stableJson(symbolReports.reportHashes) !== stableJson(indexedExternalSymbolReportHashes);
   const commitChanged = current.git.headCommit !== loaded.headCommit;
+  const indexRevisionChanged = loaded.indexRevision !== CODEXA_INDEX_REVISION;
   const repoRootChanged =
     canonicalPath(loaded.repoRoot) !== canonicalPath(repo) ||
     !sameNullableCanonicalPath(loaded.gitRoot, current.git.gitRoot);
@@ -56,7 +58,7 @@ export function freshnessFromStored(repo: string, current: RepoFreshnessFiles, r
   // freshness. Fail closed.
   const degradedGitState = [...new Set([...(loaded.degradedGitState ?? []), ...current.git.degradedReasons])];
   const gitStateDegraded = degradedGitState.length > 0;
-  const stale = gitStateDegraded || dirtyChanged || externalRiskReportsChanged || externalSymbolReportsChanged || commitChanged || repoRootChanged;
+  const stale = gitStateDegraded || indexRevisionChanged || dirtyChanged || externalRiskReportsChanged || externalSymbolReportsChanged || commitChanged || repoRootChanged;
   return {
     ...loaded,
     repoRoot: repo,
@@ -75,15 +77,17 @@ export function freshnessFromStored(repo: string, current: RepoFreshnessFiles, r
     reason: stale
       ? gitStateDegraded
         ? "git-state-degraded"
-        : commitChanged
-          ? "head-commit-changed"
-          : repoRootChanged
-            ? "repo-root-changed"
-            : externalRiskReportsChanged
-              ? "external-risk-reports-changed"
-              : externalSymbolReportsChanged
-                ? "external-symbol-reports-changed"
-                : "dirty-files-changed"
+        : indexRevisionChanged
+          ? "index-revision-changed"
+          : commitChanged
+            ? "head-commit-changed"
+            : repoRootChanged
+              ? "repo-root-changed"
+              : externalRiskReportsChanged
+                ? "external-risk-reports-changed"
+                : externalSymbolReportsChanged
+                  ? "external-symbol-reports-changed"
+                  : "dirty-files-changed"
       : loaded.reason
   };
 }

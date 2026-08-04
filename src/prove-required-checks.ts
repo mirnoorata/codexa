@@ -1,6 +1,7 @@
 import { affectedWorkflowGraphEdges, testsFromGraphEdges } from "./query/graph.js";
 import type { CodexaIndex, TaskSnapshot, TestRecommendation, VerificationCoverage } from "./types.js";
 import { uniqueSorted } from "./util.js";
+import { workflowMatchesAnyPath } from "./workflow-membership.js";
 
 export function proofRequiredCheckContext(input: {
   index: CodexaIndex;
@@ -34,7 +35,7 @@ export function proofRequiredCheckContext(input: {
       .map((edge) => edge.path)
   ]);
   const workflows = input.index.workflows
-    .filter((workflow) => workflow.relatedFiles.some((filePath) => reviewTargetSet.has(filePath)) || reviewTargetSet.has(workflow.entryPath))
+    .filter((workflow) => workflowMatchesAnyPath(workflow, reviewTargetSet, input.index))
     .sort((a, b) => b.rank - a.rank || a.title.localeCompare(b.title));
   return {
     editPaths,

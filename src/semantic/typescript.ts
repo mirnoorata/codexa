@@ -896,7 +896,9 @@ function dedupeUsages(usages: UsageSiteFact[]): UsageSiteFact[] {
   const byKey = new Map<string, UsageSiteFact>();
   for (const usage of usages) {
     const locationKey = usage.range ? String(usage.range.startByte) : `${usage.id}:${usage.text}`;
-    const key = `${usage.path}\0${usage.name}\0${usage.kind}\0${locationKey}`;
+    // One source call may participate in both its lexical function and a
+    // derived Commander/MCP execution surface. Preserve both proven callers.
+    const key = `${usage.path}\0${usage.name}\0${usage.kind}\0${locationKey}\0${usage.usedBySymbolId ?? ""}`;
     const existing = byKey.get(key);
     if (!existing || factSourcePriority(usage.source) > factSourcePriority(existing.source) || (!existing.targetSymbolId && usage.targetSymbolId)) {
       byKey.set(key, usage);

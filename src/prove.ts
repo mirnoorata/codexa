@@ -22,6 +22,7 @@ import { evaluateVerificationArtifacts, loadVerificationArtifacts, type Verifica
 import { loadTaskLifecycleState, pendingTaskLifecycleReplan, type TaskLifecycleState, type TaskLifecycleStop } from "./task-lifecycle.js";
 import type {
   ChangeType,
+  ChangeEvidenceBundleV1,
   CodexaIndex,
   FreshnessInfo,
   QueryOptions,
@@ -43,6 +44,7 @@ import { CURRENT_VERIFICATION_PROVENANCE as VERIFICATION_PROVENANCE } from "./ty
 import { limitText, uniqueSorted } from "./util.js";
 import { proofNextCommands } from "./prove-next-commands.js";
 import { proofRequiredCheckContext } from "./prove-required-checks.js";
+import { buildChangeEvidenceChains, formatChangeEvidenceChains } from "./query/change-plan/evidence-chains.js";
 
 export interface ProveOptions extends QueryOptions {
   task?: string;
@@ -98,6 +100,7 @@ export interface ProveData {
     degradedReasons: string[];
   };
   readFirst: Array<{ path: string; riskScore?: number; rank?: number }>;
+  evidenceChains: ChangeEvidenceBundleV1;
   snapshot: {
     status: "loaded" | "missing" | "blocked";
     taskId?: string;
@@ -211,6 +214,15 @@ export async function proveQuery(repoRoot: string, options: ProveOptions = {}): 
   const commandPlan = verificationCommandPlanFromData(testData.verificationCommandPlan);
   const ledgerPreview = verificationLedgerFromData(testData.verificationLedgerPreview);
   const tests = testRecommendationsFromData(testData.tests);
+  const evidenceTargets = [stringArray(testData.targetFiles), planChangedFiles, snapshotLoad.snapshot?.plannedEditTargets ?? []]
+    .find((entries) => entries.length > 0) ?? [];
+  const evidenceChains = buildChangeEvidenceChains({
+    index: session.index,
+    task,
+    anchors: evidenceTargets.map((filePath) => ({ path: filePath, authority: "proof-target" as const })),
+    editTargets: snapshotLoad.snapshot?.plannedEditTargets ?? [],
+    tests, freshness: session.freshness
+  });
   const decisionLog = await decisionLogForSnapshot(repo, snapshotLoad.snapshot, session.freshness);
   const lifecycle = await lifecycleForProof(
     repo,
@@ -269,6 +281,7 @@ export async function proveQuery(repoRoot: string, options: ProveOptions = {}): 
     freshness: freshnessData(session.freshness),
     worktree,
     readFirst,
+    evidenceChains,
     snapshot,
     verification: {
       recommendedCommands,
@@ -351,7 +364,8 @@ function renderProofCard(data: ProveData, freshness: FreshnessInfo, refresh: Ref
       ? ["", "Next commands:", ...data.nextCommands.map((command) => `- ${command}`)]
       : data.actionability === "needs_target"
         ? ["", "Next action:", "- Choose explicit file or symbol targets, or create a dirty diff, before requesting proof."]
-        : [])
+        : []),
+    ...proofSection("Causal change evidence:", formatChangeEvidenceChains(data.evidenceChains))
   ];
   return limitText(lines.join("\n"), 8000);
 }

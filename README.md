@@ -33,7 +33,7 @@ MCP. It is a context compiler, query server, and verification guide.
 
 ## Why Codexa
 
-Seven capabilities are deliberately hard to find elsewhere:
+Eight capabilities are deliberately hard to find elsewhere:
 
 - **One committed-change receipt.** `codexa review` resolves an explicit Git
   base and head without a shell, requires the head to match a clean indexed
@@ -54,6 +54,16 @@ Seven capabilities are deliberately hard to find elsewhere:
   the agent saves a newer accepted plan. Blocking is opt-in: only reviews
   against an explicit plan can surface a blocking verdict to the host —
   implicit baselines keep the loop informational.
+- **Causal change evidence.** Planning, post-edit review, committed-range
+  review, and proof cards synthesize a few bounded chains from the same typed
+  facts Codexa already trusts: edit target to caller or workflow to risk or
+  test. Every segment retains its edge id, available source range, confidence,
+  and stale or degraded status. Literal Commander commands and MCP tool
+  registrations also become bounded derived workflows, so runtime entry points
+  appear in the same local map without a new database or service. Related files
+  remain read or verification context; graph evidence never expands the
+  declared edit scope. The chain builder is local, deterministic,
+  depth-bounded, and database-free.
 - **Exact checkout identity.** Every query validates that the index belongs to
   the selected canonical worktree and current HEAD. A mismatched checkout,
   copied index, changing Git probe, or dirty overlay that changes while an
@@ -445,8 +455,11 @@ materially risky edit in a host with no completion/Stop gate:
 3. Save a plan only for a non-trivial or materially risky edit.
    `change_plan` with `saveSnapshot=true`, or CLI
    `change-plan --save-snapshot`, records intended scope, targeted tests,
-   verification commands, and task invariants. For an ambiguous materially
-   risky edit, `search -> change_plan` normally uses the usual two calls.
+   verification commands, task invariants, and bounded causal evidence chains.
+   The chains connect the authorized target to proven consumers, workflows,
+   risks, and tests without granting edit authority to those related files. For
+   an ambiguous materially risky edit, `search -> change_plan` normally uses
+   the usual two calls.
 
 4. Edit and run the planned verification.
    Use the targeted tests and commands already returned by `change_plan`.
@@ -548,13 +561,20 @@ repo's `.codex/codebase/` directory:
 .codex/codebase/workflows.md
 .codex/codebase/freshness.json
 .codex/codebase/index.json
+.codex/codebase/index-integrity.json
 .codex/codebase/facts.ndjson
 .codex/codebase/modules/
 .codex/codebase/playbooks/
 ```
 
 For lay readers, these are the maps and checklists Codex reads. For engineers,
-the durable machine-readable index is `index.json` plus `facts.ndjson`; the
+the durable machine-readable index is `index.json` plus `facts.ndjson`;
+`index-integrity.json` is the compact, atomically published status witness used
+to avoid materializing the full index during startup. Its revision-6 manifest
+binds SHA-256 content identity to stable file metadata. On filesystems that
+prove same-size rewrite observability, unchanged status checks inspect metadata
+without rereading the index; uncertain filesystems and changed metadata fall
+back to a full digest. Current-manifest mismatches fail closed. The
 Markdown files are compact human/agent-facing projections of the same facts.
 `relational-packets.md` is the read-first graph packet view for process traces
 and module clusters; the JSON companions are bounded machine-readable exports

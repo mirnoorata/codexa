@@ -5,3 +5,4 @@ export * from "./types/change.js";
 export * from "./types/inputs.js";
 export * from "./types/verification.js";
 export * from "./types/snapshots.js";
+export * from "./types/change-evidence.js";

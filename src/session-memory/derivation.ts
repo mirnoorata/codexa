@@ -388,7 +388,9 @@ export function refsFromQueryResult(data: unknown, index: CodexaIndex): SessionM
       refs.set(refKey(ref), ref);
     }
     for (const [key, item] of Object.entries(record)) {
-      if (["raw", "snippets", "mcp", "runtime", "sessionMemory", "priorSessionMemory"].includes(key)) {
+      // Evidence-chain related files are advisory context, not remembered task
+      // scope. Persisting them here could crowd out the explicit edit target.
+      if (["raw", "snippets", "mcp", "runtime", "sessionMemory", "priorSessionMemory", "evidenceChains"].includes(key)) {
         continue;
       }
       visit(item, depth + 1);

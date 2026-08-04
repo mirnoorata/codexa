@@ -280,6 +280,7 @@ export interface WorkflowTraceFact extends BaseFact {
     relatedFiles?: { total: number; returned: number };
     tests?: { total: number; returned: number };
     steps?: { total: number; returned: number };
+    executionSurfaces?: { total: number; returned: number };
   };
 }
 

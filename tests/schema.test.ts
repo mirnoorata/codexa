@@ -1,9 +1,11 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, readFile, rename, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rename, rm, stat, utimes, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { describe, expect, it } from "vitest";
-import { buildIndex, buildIndexLocked, loadIndex } from "../src/indexer.js";
+import { describe, expect, it, vi } from "vitest";
+import { buildIndex, buildIndexLocked, loadIndex, persistIndex } from "../src/indexer.js";
+import { CODEXA_INDEX_REVISION } from "../src/index-revision.js";
+import * as managedArtifacts from "../src/managed-artifacts.js";
 import { statusQuery } from "../src/queries.js";
 import { CURRENT_VERIFICATION_PROVENANCE } from "../src/types.js";
 
@@ -23,24 +25,127 @@ describe("Codexa schema contracts", () => {
     const codebaseDir = path.join(repo, ".codex/codebase");
     const index = JSON.parse(await readFile(path.join(codebaseDir, "index.json"), "utf8"));
     const freshness = JSON.parse(await readFile(path.join(codebaseDir, "freshness.json"), "utf8"));
+    const integrity = JSON.parse(await readFile(path.join(codebaseDir, "index-integrity.json"), "utf8"));
     const relationalPackets = JSON.parse(await readFile(path.join(codebaseDir, "relational-packets.json"), "utf8"));
     const relationalGraph = JSON.parse(await readFile(path.join(codebaseDir, "relational-graph.json"), "utf8"));
     const summaryPrompts = (await readFile(path.join(codebaseDir, "packet-summary-prompts.ndjson"), "utf8")).trim().split(/\r?\n/u).map((line) => JSON.parse(line));
     const facts = (await readFile(path.join(codebaseDir, "facts.ndjson"), "utf8")).trim().split(/\r?\n/u).map((line) => JSON.parse(line));
 
     expect(index.schemaVersion).toBe(1);
+    expect(index.indexRevision).toBe(CODEXA_INDEX_REVISION);
     expect(freshness.schemaVersion).toBe(1);
+    expect(freshness.indexRevision).toBe(CODEXA_INDEX_REVISION);
+    expect(integrity).toMatchObject({
+      schemaVersion: 2,
+      indexRevision: CODEXA_INDEX_REVISION,
+      index: {
+        sizeBytes: expect.any(Number),
+        sha256: expect.stringMatching(/^[a-f0-9]{64}$/u),
+        metadataFastPath: expect.any(Boolean),
+        identity: {
+          device: expect.stringMatching(/^\d+$/u),
+          inode: expect.stringMatching(/^\d+$/u),
+          modifiedTimeNs: expect.stringMatching(/^\d+$/u),
+          changedTimeNs: expect.stringMatching(/^\d+$/u)
+        }
+      },
+      freshness: { sizeBytes: expect.any(Number), sha256: expect.stringMatching(/^[a-f0-9]{64}$/u) },
+      snapshot: {
+        repoRoot: repo,
+        snapshotId: index.snapshot.snapshotId,
+        headCommit: index.snapshot.headCommit,
+        gitRoot: index.snapshot.gitRoot
+      }
+    });
     expect(relationalPackets.schemaVersion).toBe(1);
     expect(relationalGraph.schemaVersion).toBe(1);
     expect(summaryPrompts.every((prompt) => prompt.schemaVersion === 1)).toBe(true);
     expect(index.freshness.schemaVersion).toBe(1);
+    expect(index.freshness.indexRevision).toBe(CODEXA_INDEX_REVISION);
     expect(index.graphEdges).toBeInstanceOf(Array);
     expect(index.workflows).toBeInstanceOf(Array);
+    expect(index.workflowMembershipSpill).toBeTypeOf("object");
+    expect(Object.keys(index.workflowMembershipSpill ?? {}).sort()).toEqual(index.workflows.map((workflow) => workflow.id).sort());
+    expect(JSON.stringify(relationalPackets)).not.toContain("workflowMembershipSpill");
+    expect(facts.some((fact) => Object.prototype.hasOwnProperty.call(fact, "workflowMembershipSpill"))).toBe(false);
     expect(facts.length).toBeGreaterThan(0);
     expect(facts.every((fact) => typeof fact.id === "string" && typeof fact.type === "string" && fact.snapshotId === index.freshness.snapshotId)).toBe(true);
   });
 
-  it("loads older v1 bundles that predate graph and workflow arrays", async () => {
+  it("loads older v1 bundles as readable but stale compatibility inputs", async () => {
+    const repo = await createSchemaFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+
+    const indexPath = path.join(repo, ".codex/codebase/index.json");
+    const index = JSON.parse(await readFile(indexPath, "utf8"));
+    delete index.indexRevision;
+    delete index.freshness.indexRevision;
+    delete index.graphEdges;
+    delete index.workflows;
+    delete index.workflowMembershipSpill;
+    await writeFile(indexPath, `${JSON.stringify(index, null, 2)}\n`, "utf8");
+    await rm(path.join(repo, ".codex/codebase/index-integrity.json"));
+
+    const loaded = await loadIndex(repo);
+    expect(loaded?.schemaVersion).toBe(1);
+    expect(loaded?.indexRevision).toBeUndefined();
+    expect(loaded?.freshness.indexRevision).toBeUndefined();
+    expect(loaded?.graphEdges).toEqual([]);
+    expect(loaded?.workflows).toEqual([]);
+    const status = await statusQuery(repo, { recover: false });
+    expect(status.freshness).toMatchObject({ stale: true, reason: "index-revision-changed" });
+  });
+
+  it("loads revision-2 workflow indexes without spill as stale rebuild inputs", async () => {
+    const repo = await createSchemaFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+
+    const indexPath = path.join(repo, ".codex/codebase/index.json");
+    const index = JSON.parse(await readFile(indexPath, "utf8"));
+    index.indexRevision = 2;
+    index.freshness.indexRevision = 2;
+    index.workflows = [{
+      id: "workflow:revision-2",
+      type: "WorkflowTrace",
+      source: "heuristic",
+      confidence: "derived",
+      snapshotId: index.snapshot.snapshotId,
+      indexedAt: index.snapshot.indexedAt,
+      path: "src/main.ts",
+      workflowKind: "module",
+      title: "revision-2 workflow",
+      entryPath: "src/main.ts",
+      relatedFiles: ["src/main.ts"],
+      tests: [],
+      steps: [{ kind: "entry", label: "main", path: "src/main.ts", confidence: "derived", reason: "legacy fixture" }],
+      summary: "Readable legacy workflow",
+      rank: 1
+    }];
+    delete index.workflowMembershipSpill;
+    await writeFile(indexPath, `${JSON.stringify(index)}\n`, "utf8");
+
+    const loaded = await loadIndex(repo, { recover: false });
+    expect(loaded?.indexRevision).toBe(2);
+    expect(loaded?.freshness.indexRevision).toBe(2);
+    expect(loaded?.workflows.length).toBeGreaterThan(0);
+    expect(loaded?.workflowMembershipSpill).toEqual({});
+  });
+
+  it("rejects a current-revision index that loses internal workflow membership spill", async () => {
+    const repo = await createSchemaFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+
+    const indexPath = path.join(repo, ".codex/codebase/index.json");
+    const index = JSON.parse(await readFile(indexPath, "utf8"));
+    delete index.workflowMembershipSpill;
+    await writeFile(indexPath, `${JSON.stringify(index)}\n`, "utf8");
+
+    expect(await loadIndex(repo, { recover: false })).toBeNull();
+    const status = await statusQuery(repo, { recover: false });
+    expect(status.freshness).toMatchObject({ missing: true, reason: "missing-index" });
+  });
+
+  it("rejects a current-revision index that loses authoritative graph and workflow lanes", async () => {
     const repo = await createSchemaFixtureRepo();
     await buildIndex({ repoRoot: repo });
 
@@ -48,12 +153,37 @@ describe("Codexa schema contracts", () => {
     const index = JSON.parse(await readFile(indexPath, "utf8"));
     delete index.graphEdges;
     delete index.workflows;
-    await writeFile(indexPath, `${JSON.stringify(index, null, 2)}\n`, "utf8");
+    await writeFile(indexPath, `${JSON.stringify(index)}\n`, "utf8");
 
-    const loaded = await loadIndex(repo);
-    expect(loaded?.schemaVersion).toBe(1);
-    expect(loaded?.graphEdges).toEqual([]);
-    expect(loaded?.workflows).toEqual([]);
+    expect(await loadIndex(repo, { recover: false })).toBeNull();
+    const status = await statusQuery(repo, { recover: false });
+    expect(status.freshness).toMatchObject({ missing: true, reason: "missing-index" });
+  });
+
+  it("refuses to publish an integrity witness for incomplete current workflow membership", async () => {
+    const repo = await createSchemaFixtureRepo();
+    const index = await buildIndex({ repoRoot: repo });
+    delete index.workflowMembershipSpill;
+
+    await expect(
+      persistIndex(index, path.join(repo, ".codex/codebase"))
+    ).rejects.toThrow(/cannot attest.*current index bundle/iu);
+  });
+
+  it("publishes the exact attested payload when a caller mutates its input after invocation", async () => {
+    const repo = await createSchemaFixtureRepo();
+    const index = await buildIndex({ repoRoot: repo });
+
+    const publication = persistIndex(index, path.join(repo, ".codex/codebase"));
+    delete index.workflowMembershipSpill;
+    index.files = [];
+    await publication;
+
+    const loaded = await loadIndex(repo, { recover: false });
+    expect(loaded?.workflowMembershipSpill).toBeTypeOf("object");
+    expect(loaded?.files.map((file) => file.path)).toContain("src/main.ts");
+    const status = await statusQuery(repo, { recover: false });
+    expect(status.freshness).toMatchObject({ missing: false, stale: false, reason: "fresh" });
   });
 
   it("reports a corrupt index bundle without recovering or trusting detached freshness metadata", async () => {
@@ -67,6 +197,93 @@ describe("Codexa schema contracts", () => {
     expect(status.freshness.reason).toBe("missing-index");
     expect(status.text).toContain("Parser errors: 0");
     expect(await readFile(path.join(repo, ".codex/codebase/index.json"), "utf8")).toBe("{ corrupt index\n");
+  });
+
+  it("fails closed when a current integrity sidecar is torn", async () => {
+    const repo = await createSchemaFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+
+    const integrityPath = path.join(repo, ".codex/codebase/index-integrity.json");
+    const integrity = JSON.parse(await readFile(integrityPath, "utf8"));
+    integrity.index.sha256 = "0".repeat(64);
+    integrity.index.identity.changedTimeNs = "0";
+    await writeFile(integrityPath, `${JSON.stringify(integrity)}\n`, "utf8");
+
+    const status = await statusQuery(repo, { recover: false });
+    expect(status.freshness).toMatchObject({ missing: true, stale: true, reason: "missing-index" });
+    expect(await loadIndex(repo, { recover: false })).toBeNull();
+  });
+
+  it("uses the integrity witness without decoding the full index for status", async () => {
+    const repo = await createSchemaFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+    const originalParse = JSON.parse;
+    const parseSpy = vi.spyOn(JSON, "parse").mockImplementation(((text: string, reviver?: (this: unknown, key: string, value: unknown) => unknown) =>
+      originalParse(text, reviver)) as typeof JSON.parse);
+    try {
+      const status = await statusQuery(repo, { recover: false });
+      expect(status.freshness).toMatchObject({ stale: false, reason: "fresh" });
+      expect(parseSpy.mock.calls.some(([value]) =>
+        typeof value === "string" && value.includes('"files":') && value.includes('"symbols":')
+      )).toBe(false);
+    } finally {
+      parseSpy.mockRestore();
+    }
+  });
+
+  it("uses stable artifact identity without digesting the full index for status", async () => {
+    const repo = await createSchemaFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+    const integrity = JSON.parse(await readFile(path.join(repo, ".codex/codebase/index-integrity.json"), "utf8"));
+    const digestSpy = vi.spyOn(managedArtifacts, "digestManagedArtifact");
+    try {
+      const status = await statusQuery(repo, { recover: false });
+      expect(status.freshness).toMatchObject({ stale: false, reason: "fresh" });
+      expect(digestSpy).toHaveBeenCalledTimes(integrity.index.metadataFastPath ? 0 : 1);
+    } finally {
+      digestSpy.mockRestore();
+    }
+  });
+
+  it("hashes the full index when its filesystem did not prove metadata observability", async () => {
+    const repo = await createSchemaFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+    const integrityPath = path.join(repo, ".codex/codebase/index-integrity.json");
+    const integrity = JSON.parse(await readFile(integrityPath, "utf8"));
+    integrity.index.metadataFastPath = false;
+    await writeFile(integrityPath, `${JSON.stringify(integrity)}\n`, "utf8");
+
+    const digestSpy = vi.spyOn(managedArtifacts, "digestManagedArtifact");
+    try {
+      const status = await statusQuery(repo, { recover: false });
+      expect(status.freshness).toMatchObject({ stale: false, reason: "fresh" });
+      expect(digestSpy).toHaveBeenCalledTimes(1);
+    } finally {
+      digestSpy.mockRestore();
+    }
+  });
+
+  it("digests and rejects a same-size index change even when its mtime is restored", async () => {
+    const repo = await createSchemaFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+    const indexPath = path.join(repo, ".codex/codebase/index.json");
+    const before = await stat(indexPath);
+    const original = await readFile(indexPath, "utf8");
+    const changed = original.replace('"name":"main"', '"name":"evil"');
+    expect(changed).not.toBe(original);
+    expect(Buffer.byteLength(changed)).toBe(Buffer.byteLength(original));
+    await writeFile(indexPath, changed, "utf8");
+    await utimes(indexPath, before.atime, before.mtime);
+
+    const digestSpy = vi.spyOn(managedArtifacts, "digestManagedArtifact");
+    try {
+      const status = await statusQuery(repo, { recover: false });
+      expect(status.freshness).toMatchObject({ missing: true, reason: "missing-index" });
+      expect(digestSpy).toHaveBeenCalledTimes(1);
+      expect(await loadIndex(repo, { recover: false })).toBeNull();
+    } finally {
+      digestSpy.mockRestore();
+    }
   });
 
   it("rejects a future live schema and recovers the newest valid backup", async () => {

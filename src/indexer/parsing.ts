@@ -8,7 +8,7 @@ import { MAX_INDEXED_SOURCE_BYTES, type RepoSkippedFile, type RepoSourceFile } f
 import type { ParseResult } from "../types.js";
 import { mapLimit, stableId } from "../util.js";
 
-const PARSE_CACHE_VERSION = "parse-cache-v1-shallow-rust-go-java-20260606";
+const PARSE_CACHE_VERSION = "parse-cache-v4-mcp-property-provenance-20260804";
 const PARSE_CACHE_PATH = ".codex/cache/codexa-parse-cache.json";
 // Match the index reader's bounded headroom so large monorepos retain their
 // incremental parse benefit without accepting unbounded local cache input.

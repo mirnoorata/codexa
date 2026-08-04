@@ -3,6 +3,7 @@ import type { ChangeType } from "./change.js";
 import type { ChangePlanInput } from "./inputs.js";
 import type { FreshnessInfo } from "./runtime.js";
 import type { ChangedFileEntry, TestRecommendation } from "./verification.js";
+import type { ChangeEvidenceBundleV1 } from "./change-evidence.js";
 
 export interface TaskSnapshotFocusFile {
   path: string;
@@ -118,6 +119,8 @@ export interface TaskSnapshot {
   plannedFiles: string[];
   focusFiles: TaskSnapshotFocusFile[];
   plannedTests: TestRecommendation[];
+  /** Bounded, read-only causal evidence captured against the plan-time index. */
+  evidenceChains?: ChangeEvidenceBundleV1;
   sessionMemory?: SessionMemoryPointer;
   requiredWorkflowChecks: TaskSnapshotRequiredCheck[];
   requiredDependencyChecks: TaskSnapshotRequiredCheck[];

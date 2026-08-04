@@ -2,6 +2,11 @@ import { realpathSync } from "node:fs";
 import path from "node:path";
 import type { CodexaIndex, FreshnessInfo } from "./types.js";
 
+export interface IndexIdentityView {
+  snapshot: Pick<CodexaIndex["snapshot"], "repoRoot" | "snapshotId" | "headCommit" | "gitRoot">;
+  freshness: Pick<FreshnessInfo, "repoRoot" | "snapshotId" | "headCommit" | "gitRoot">;
+}
+
 export type IndexIdentityReason =
   | "snapshot-repo-root-mismatch"
   | "freshness-repo-root-mismatch"
@@ -37,7 +42,7 @@ export class IndexIdentityError extends Error {
   }
 }
 
-export function findIndexIdentityIssue(repoRoot: string, index: CodexaIndex, freshness?: FreshnessInfo): IndexIdentityIssue | undefined {
+export function findIndexIdentityIssue(repoRoot: string, index: IndexIdentityView, freshness?: FreshnessInfo): IndexIdentityIssue | undefined {
   const expectedRepoRoot = path.resolve(repoRoot);
   const expectedCheckout = canonicalPath(expectedRepoRoot);
   const snapshotRepoRoot = resolvedPath(index.snapshot.repoRoot);

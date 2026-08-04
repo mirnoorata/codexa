@@ -48,6 +48,8 @@ import { changePlanEditReadiness, normalizeTargetCandidateSelector, resolveChang
 import { candidateSymbols, canonicalCandidateReplayFiles, dedupeTargetCandidates, followedReplaySnapshotTargets, formatTargetCandidates, meaningfulTaskTokens, rawSearchQueries, uniqueInOrder, withTargetCandidateId } from "./change-plan/candidate-helpers.js";
 import { validateChangePlanTargetCandidate } from "./change-plan/candidate-validation.js";
 import { buildChangePlanExecutionPolicy } from "./change-plan/execution-policy.js";
+import { buildChangePlanEvidence, formatChangeEvidenceSection } from "./change-plan/evidence-chains.js";
+import { workflowIncludesPath, workflowMatchesAnyPath } from "../workflow-membership.js";
 export { validateChangePlanTargetCandidate } from "./change-plan/candidate-validation.js";
 export async function changePlanQuery(
   sessionInput: QuerySessionInput,
@@ -228,10 +230,8 @@ export async function changePlanQuery(
   const focusPathSet = new Set(files);
   const explicitWorkflowPaths = new Set(normalizeInputPaths(effectiveInput.files ?? [], repoRoot));
   const workflowMatchPaths = explicitWorkflowPaths.size > 0 ? explicitWorkflowPaths : focusPathSet;
-  const relatedWorkflow = session.index.workflows.find(
-    (workflow) => workflow.relatedFiles.some((filePath) => workflowMatchPaths.has(filePath)) || workflowMatchPaths.has(workflow.entryPath)
-  );
-  const requiredWorkflowChecks = requiredWorkflowChecksForPlan(session.index.workflows, workflowMatchPaths, effectiveInput.changeType ?? "unknown").slice(0, 8);
+  const relatedWorkflow = session.index.workflows.find((workflow) => workflowMatchesAnyPath(workflow, workflowMatchPaths, session.index));
+  const requiredWorkflowChecks = requiredWorkflowChecksForPlan(session.index, workflowMatchPaths, effectiveInput.changeType ?? "unknown").slice(0, 8);
   const requiredDependencyChecks = requiredDependencyChecksForPlan(session.index, plannedEditTargets, effectiveInput.changeType ?? "unknown").slice(0, 12);
   const dirtyScopeTests =
     editReadiness.source === "dirty-worktree"
@@ -281,19 +281,24 @@ export async function changePlanQuery(
       snapshotLoad: followBase?.snapshotLoad
     });
   }
+  const evidenceChains = buildChangePlanEvidence({
+    index: session.index, task: effectiveInput.task ?? effectiveInput.query,
+    editable: editReadiness.editable, editTargets: plannedEditTargets,
+    candidates: targetCandidates, plannedTests, fallbackTests: tests, freshness: pack.freshness
+  });
   const { completionReview, autoVerify, autoVerifySummary } = await buildChangePlanExecutionPolicy(repoRoot, editReadiness.editable);
   const planSteps = editReadiness.editable
     ? [
         editReadiness.source === "dirty-worktree"
           ? `1. Treat the current dirty worktree as the planned edit scope (${plannedEditTargets.length} files); read representatives ${files.slice(0, 6).join(", ") || "returned by Codexa"} before editing.`
           : `1. Read ${files.slice(0, 6).join(", ") || "the focus files returned by Codexa"} before editing.`,
-        relatedWorkflow
-          ? `2. Inspect workflow_path directly or through capabilities for ${relatedWorkflow.title} if the change touches runtime flow.`
-          : effectiveInput.files?.length || effectiveInput.symbols?.length
-            ? "2. Use callers, callees, or dependency_path if this focused edit changes an exported API or runtime contract."
-            : editReadiness.source === "dirty-worktree"
-              ? "2. Use change groups, callers, or dependency_path to split the dirty scope only if the representative reads reveal unrelated work."
-              : `2. Use ${editReadiness.recommendedNextTool ?? "task_brief"} next if the edit target is still ambiguous.`,
+        evidenceChains.chains.length > 0
+          ? "2. Review the embedded causal evidence chains; related paths are read or verification context only and do not expand the edit scope."
+          : relatedWorkflow
+            ? `2. Read the returned ${relatedWorkflow.title} workflow context; no bounded causal chain was proven, so keep the explicit edit scope unchanged.`
+            : editReadiness.explicitTargetProvided
+              ? "2. No bounded causal chain was proven; inspect the explicit target and keep any expansion deliberate and read-only until replanned."
+              : "2. No bounded causal chain was proven; inspect the returned focus files and keep any expansion deliberate and read-only until replanned.",
         plannedTests.length > 0
           ? `3. Keep these tests in scope: ${plannedTests.slice(0, 5).map((test) => test.path).join(", ")}.`
           : "3. No targeted tests were proven; inspect repo test metadata before inventing a command.",
@@ -308,7 +313,9 @@ export async function changePlanQuery(
       ]
     : [
         `1. Do not edit yet: ${editReadiness.reason}.`,
-        `2. Read ${files.slice(0, 6).join(", ") || "the orientation files returned by Codexa"} only to choose a concrete target.`,
+        evidenceChains.chains.length > 0
+          ? `2. Read ${files.slice(0, 6).join(", ") || "the orientation files returned by Codexa"} and the bounded candidate chains only to choose a concrete target.`
+          : `2. No bounded causal chain was proven; use ${editReadiness.recommendedNextTool ?? "search"} next to resolve a concrete file or symbol target.`,
         targetCandidates.length > 0
           ? "3. Pick one target candidate below, then re-run change_plan with followCandidate set to its candidateId."
           : "3. Use one search call or raw source search to identify the exact file or symbol.",
@@ -374,6 +381,7 @@ export async function changePlanQuery(
             riskScore: entry.file.riskScore
           })),
           plannedTests: compactSnapshotTests(plannedTests, repoRoot),
+          evidenceChains,
           sessionMemory: sessionMemoryPointer,
           requiredWorkflowChecks,
           requiredDependencyChecks,
@@ -422,9 +430,7 @@ export async function changePlanQuery(
     ...planSteps,
     "",
     ...formatComplexityReview(complexityReview),
-    // Snapshot persistence serializes same-task plans and may merge an
-    // invariant committed by a concurrent caller. Render the committed set so
-    // detailed text cannot contradict the structured snapshot it accompanies.
+    // Render the committed set because snapshot persistence may merge a concurrently committed invariant.
     ...formatTaskInvariants(savedSnapshot?.snapshot.invariants ?? invariants, "Task invariants:"),
     "",
     "Read first:",
@@ -442,8 +448,8 @@ export async function changePlanQuery(
     "Required dependency checks:",
     ...formatRequiredChecks(editReadiness.editable ? requiredDependencyChecks : []),
     "",
-    "Known gaps:",
-    ...formatGaps(packData.gaps ?? [])
+    "Known gaps:", ...formatGaps(packData.gaps ?? []), "",
+    ...formatChangeEvidenceSection(evidenceChains)
   ]
     .filter((line): line is string => line !== undefined)
     .join("\n");
@@ -460,6 +466,7 @@ export async function changePlanQuery(
       plannedEditTargets,
       targetRoles,
       tests: plannedTests,
+      evidenceChains,
       recipes: plannedRecipes,
       targetCandidates,
       quality,
@@ -782,7 +789,7 @@ function changePlanTargetCandidates(input: {
     if (file.test && input.focusFiles.some((candidate) => !candidate.file.test)) {
       continue;
     }
-    const workflowHits = input.workflows.filter((workflow) => workflow.entryPath === file.path || workflow.relatedFiles.includes(file.path));
+    const workflowHits = input.workflows.filter((workflow) => workflowIncludesPath(workflow, file.path, input.index));
     const graphHits = input.index.graphEdges.filter((edge) => edge.fromPath === file.path || edge.toPath === file.path).slice(0, 6);
     const fileEvidence = candidateEvidence({
       file,
@@ -923,18 +930,14 @@ function resolvedChangePlanInputScope(input: ChangePlanInput, index: CodexaIndex
 }
 
 function compareTargetCandidates(left: ChangePlanTargetCandidate, right: ChangePlanTargetCandidate): number {
-  return (
-    targetCandidateStatusRank(left.validationStatus) - targetCandidateStatusRank(right.validationStatus) ||
+  return targetCandidateStatusRank(left.validationStatus) - targetCandidateStatusRank(right.validationStatus) ||
     right.score - left.score ||
     left.path.localeCompare(right.path) ||
     left.kind.localeCompare(right.kind) ||
-    left.candidateId.localeCompare(right.candidateId)
-  );
+    left.candidateId.localeCompare(right.candidateId);
 }
 
-function targetCandidateStatusRank(status: TargetCandidateValidationStatus): number {
-  return status === "edit-ready" ? 0 : status === "weak" ? 1 : 2;
-}
+function targetCandidateStatusRank(status: TargetCandidateValidationStatus): number { return status === "edit-ready" ? 0 : status === "weak" ? 1 : 2; }
 
 function candidateEvidence(input: {
   file: FileFact;

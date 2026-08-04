@@ -15,7 +15,7 @@ import { postEditReviewWithTrustedRunnerReports } from "../src/query/post-edit.j
 import { loadExternalRiskSignals, MAX_RISK_REPORT_BYTES } from "../src/risk-ingest.js";
 import { recordSessionMemory } from "../src/session-memory.js";
 import { updateStaticAnalysisReports } from "../src/static-analysis.js";
-import { CURRENT_VERIFICATION_PROVENANCE } from "../src/types.js";
+import { CURRENT_VERIFICATION_PROVENANCE, type ChangeEvidenceBundleV1 } from "../src/types.js";
 import type { AutoVerifyCommandReport } from "../src/autoverify.js";
 import {
   callersQuery,
@@ -396,10 +396,48 @@ it("does not continue edited files when no verification was recommended or repor
       snapshot.requiredWorkflowChecks = [];
       snapshot.requiredDependencyChecks = [];
       await writeFile(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`, "utf8");
+
+      const baseline = await postEditReviewQuery(repo, { taskId: "no-test-proof", persistOutcome: false }, { autoRefresh: false });
+      const baselineData = baseline.data as {
+        verdict: string;
+        inspectMode: string;
+        completionAuthority: string;
+        inspectReasons: string[];
+        driftReasons: string[];
+        evidenceChains: ChangeEvidenceBundleV1;
+        outcome: { verdict: string; inspectReasons: string[]; driftReasons: string[] };
+      };
+      expect(baselineData.evidenceChains.chains).toContainEqual(expect.objectContaining({ purpose: "risk", confidence: "heuristic" }));
+      expect(baselineData.evidenceChains.gaps).toContain("chain includes heuristic evidence and is advisory");
+      expect(baselineData).toMatchObject({
+        verdict: "inspect",
+        inspectMode: "advisory",
+        completionAuthority: "advisory_inspect",
+        inspectReasons: ["context quality is medium"],
+        driftReasons: []
+      });
+      expect(baselineData.outcome).toMatchObject({ verdict: "inspect", inspectReasons: ["context quality is medium"], driftReasons: [] });
+      for (const evidenceGap of baselineData.evidenceChains.gaps) {
+        expect(baselineData.inspectReasons).not.toContain(evidenceGap);
+        expect(baselineData.driftReasons).not.toContain(evidenceGap);
+        expect(baselineData.outcome.inspectReasons).not.toContain(evidenceGap);
+        expect(baselineData.outcome.driftReasons).not.toContain(evidenceGap);
+      }
+
       await writeFile(path.join(repo, "src/main.ts"), "export function main() { return 2 }\n", "utf8");
 
     const review = await postEditReviewQuery(repo, { taskId: "no-test-proof", persistOutcome: false }, { autoRefresh: true });
-    const data = review.data as { verdict: string; inspectMode: string; completionAuthority: string; inspectReasons: string[]; tests: unknown[]; driftReasons: string[]; nextActions: string[] };
+    const data = review.data as {
+      verdict: string;
+      inspectMode: string;
+      completionAuthority: string;
+      inspectReasons: string[];
+      tests: unknown[];
+      driftReasons: string[];
+      nextActions: string[];
+      evidenceChains: ChangeEvidenceBundleV1;
+      outcome: { verdict: string; inspectReasons: string[]; driftReasons: string[]; calibrationLabels: string[] };
+    };
     expect(data.tests).toEqual([]);
     expect(data.verdict).toBe("inspect");
     expect(data.inspectMode).toBe("blocking");
@@ -407,6 +445,16 @@ it("does not continue edited files when no verification was recommended or repor
     expect(data.inspectReasons).toContain("edited files have no credible verification evidence");
     expect(data.driftReasons).toContain("edited files have no credible verification evidence");
     expect(data.nextActions).toContain("Report a relevant test, build, or typecheck command before treating edited files as verified.");
+    expect(data.evidenceChains.gaps).toContain("chain includes heuristic evidence and is advisory");
+    for (const evidenceGap of data.evidenceChains.gaps) {
+      expect(data.inspectReasons).not.toContain(evidenceGap);
+      expect(data.driftReasons).not.toContain(evidenceGap);
+      expect(data.nextActions).not.toContain(evidenceGap);
+      expect(data.outcome.inspectReasons).not.toContain(evidenceGap);
+      expect(data.outcome.driftReasons).not.toContain(evidenceGap);
+    }
+    expect(data.outcome.verdict).toBe(data.verdict);
+    expect(data.outcome.calibrationLabels.some((label) => label.includes("causal-evidence"))).toBe(false);
 
     const auditOnly = await postEditReviewQuery(repo, { taskId: "no-test-proof", ranCommands: ["npm audit"], persistOutcome: false }, { autoRefresh: false });
     const auditOnlyData = auditOnly.data as { verdict: string; inspectMode: string; completionAuthority: string; inspectReasons: string[]; tests: unknown[]; driftReasons: string[]; nextActions: string[] };
