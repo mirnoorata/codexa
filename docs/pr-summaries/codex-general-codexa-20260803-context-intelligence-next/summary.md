@@ -5,17 +5,19 @@ PR summary for `codex/context-intelligence-next` against `main`.
 - Base: `c306c1d` (`v0.18.0`)
 - Validated feature source head: `0474276`; published as `869257e`
 - CI hardening head: `41118bb`; published as `9c29408`
-- Review hardening head: `a6ac9d0`; published as `05a1dc3`
-- Feature source tree: `989bb4b0fffdd821a005feeeadb2f48d91abcada` locally and on GitHub
-- CI hardening tree: `669241b02638c0a7c0c175ace6f51567a2a63d7e` locally and on GitHub
-- Branch delta before this evidence refresh: 58 files, 4,967 insertions, 248 deletions
-- Commits before this evidence refresh: 6 Conventional Commits
-  - `6591e60` — `feat: add bounded causal change intelligence`
-  - `0474276` — `test: accept SDK validation wording`
-  - `d18637f` — `docs: add context intelligence PR summary`
-  - `41118bb` — `fix(bootstrap): preserve first terminal condition`
-  - `3e2608a` — `docs: refresh context intelligence review evidence`
-  - `a6ac9d0` — `fix(workflow): preserve capped membership authority`
+- First review hardening head: `a6ac9d0`; published as `05a1dc3`
+- Final code head: `ba1f090`
+- Final code tree: `fdf2f4f569f11f93f12a59f15af461b46d5e6904`
+- Branch delta before this evidence refresh: 62 files, 5,510 insertions, 267 deletions
+- Commits before this evidence refresh: 8 Conventional Commits
+  - `6591e60` - `feat: add bounded causal change intelligence`
+  - `0474276` - `test: accept SDK validation wording`
+  - `d18637f` - `docs: add context intelligence PR summary`
+  - `41118bb` - `fix(bootstrap): preserve first terminal condition`
+  - `3e2608a` - `docs: refresh context intelligence review evidence`
+  - `a6ac9d0` - `fix(workflow): preserve capped membership authority`
+  - `3fa989c` - `docs: record workflow membership review fix`
+  - `ba1f090` - `fix(workflow): retain exact capped membership`
 
 ## Executive Outcome
 
@@ -74,8 +76,15 @@ snapshot boundaries.
 
 ### 4. Safe index and transport evolution
 
-- Advances the derived index revision to 2 so legacy indexes rebuild instead
-  of silently omitting execution-surface facts.
+- Advances the derived index revision to 3. Revision-2 indexes remain readable
+  but stale and rebuild; revision-3 indexes fail closed if exact workflow
+  membership is missing or malformed.
+- Persists only the paths omitted by public workflow caps in an internal
+  `workflowMembershipSpill` map. Every public workflow, MCP, facts, and
+  relational projection remains unchanged and bounded.
+- Uses the same 512 MiB UTF-8 limit in the writer and loader. Oversized indexes
+  fail before atomic replacement, so the writer cannot publish an artifact the
+  loader would reject.
 - Preserves workflow truncation receipts and evidence identity through compact
   MCP profiles.
 - Keeps existing public commands and MCP tools intact; the change enriches
@@ -96,7 +105,7 @@ After reverting and replanning with both source and test explicitly declared,
 the implementation and 3 Node tests passed, post-edit review returned
 `continue`, the proof card was `ready` with zero gaps, and strict committed
 review of `HEAD~1..HEAD` returned `PASS`. The repository was re-indexed and the
-workflow/review sequence repeated after the final hardening fixes.
+workflow/review sequence repeated after the initial feature hardening.
 
 The current tool environment does not expose a live external Graphify MCP
 server, so no external Graphify call is claimed. Codexa's real stdio and
@@ -106,23 +115,29 @@ with 1 intentional skip.
 
 ## Verification on the Exact Source Head
 
-`npm run security:check` passed on `0474276`:
+Frozen validation on final source head `ba1f090`:
 
-- Build, typecheck, lint, source hygiene, privacy, and `git diff --check` passed.
-- Vitest: 108 files; 1,235 passed and 1 intentional skip (1,236 total).
+- Build, typecheck, lint, release-path, publish, privacy, and `git diff --check`
+  passed.
+- Final monolithic Vitest rerun: 110/110 files, 1,241 passed, and 1 intentional
+  skip (1,242 total). The earlier frozen sharded run had 1,240 pass, 1 skip, and
+  one `command-process-tree.test.ts` temporary-file `ENOENT`; its immediate
+  isolated rerun passed 3/3. The passing monolithic run used a writable
+  task-specific npm cache required by this sandbox. Exact-head GitHub CI remains
+  the merge authority.
 - Claude integration: 28 command smokes and 89 hook smokes (117 total).
 - Startup context gate: project kernel 2,823/3,072 bytes; 3/23 direct tools;
   measured reductions of 87.2% and 69.9% on the guarded surfaces.
 - `npm audit`: 0 vulnerabilities.
 - Clean public snapshot, package/plugin hygiene, and one-commit source checks
   passed.
-- Fresh packed-package smoke: 31 checks; approximately 1.16 MiB tarball,
-  6.03 MiB unpacked, 675 files.
+- The focused final membership, schema, extraction, and artifact-size suites
+  passed: 9 files and 49 tests before the size guard, 4 files and 14 tests after
+  it, plus the final revision-2 compatibility schema run at 9/9.
 
 Additional release evidence:
 
-- Eval gate: 21 scenarios, score 1, `rawRgBetter=0`, seed
-  `ci-local-0474276026188dcc3261b73671ff49b4df8b4aa4`.
+- Eval gate: 21 scenarios, score 1, and `rawRgBetter=0`.
 - CI-scaled hot-path benchmark: all 12 gates passed. One unscaled watch item,
   `cli.session_start` p95, measured 1,012 ms against a 1,000 ms base target and
   remained below the 1,500 ms CI gate.
@@ -131,6 +146,15 @@ Additional release evidence:
   reduction 75.0%, and repeated-result reduction 86.6%.
 - Focused scale regression: 22/22 passed; execution-surface, MCP transport, and
   coexistence regressions passed.
+
+A real final-head index of Codexa contained 481 files, 5,477 symbols, 98,369
+usage sites, and 41 workflows in 67,292,652 bytes. Only 2 workflows needed
+spill membership, for 9 spill entries (5 unique paths) and a maximum of 5 on
+one workflow.
+`workflow-path` recovered `command index` and `command semantic-index` from
+`tests/task-lifecycle.test.ts` even though that test was outside the displayed
+20-test cap. `change-plan` then emitted both workflows as required checks while
+keeping only the caller-declared test editable.
 
 The SDK update initially exposed one brittle assertion that accepted only the
 old validator wording. `0474276` widened that test to accept both stable wording
@@ -142,7 +166,7 @@ fire during slow `taskkill` teardown and relabel the earlier output-cap failure
 as a timeout. `41118bb` preserves the first terminal condition and makes the
 regression deterministic by forcing teardown across the timer boundary. The
 focused test passed 3/3 with typecheck, lint, release-path verification, and
-`git diff --check`; independent review found no P0–P2 issue. No deadline or log
+`git diff --check`; independent review found no P0-P2 issue. No deadline or log
 bound was relaxed.
 
 Automated PR review then found that the 40-file public `relatedFiles` cap could
@@ -152,7 +176,18 @@ matching against retained workflow steps and prioritizing every scoped member
 up to the public 64-file plan bound. Regressions cover production target #41 and
 a 21-member scope where only the former receipt omission is edited. Five focused
 files and 36 tests passed with typecheck, lint, and diff checks; independent
-re-review found no P0–P2 issue.
+re-review found no P0-P2 issue.
+
+A fresh exact-head review then demonstrated a stricter case: tests beyond the
+20-test cap could still disappear from internal matching because typed workflow
+steps and production-first related files were also bounded. `ba1f090` replaces
+that inference with exact pre-cap membership spill data, threads it through
+plan, workflow query, evidence, post-edit, proof, and required-check consumers,
+and adds regressions for test #21, test-symbol-only scope, and dependent tests
+seeded by typed `TEST_COVERS_WORKFLOW` steps. Legacy revision-2 artifacts
+rebuild, and revision-3
+artifacts cannot load with incomplete spill data. Independent semantic review
+reported no P0-P3 finding.
 
 ## Risk-Budgeted Review
 
@@ -164,13 +199,16 @@ source head was published: lexical receiver shadowing in Commander/MCP
 extraction, test-heavy workflow truncation evicting production files, and eager
 object-heavy adjacency retention. Regression tests cover each fix. The final
 correctness, authority, scale, and dependency reviews report 0 critical, 0
-high, and 0 medium findings. PR review's capped-membership P2 and the Windows
-failure-cause race were also closed with focused regressions and clean
-independent re-review.
+high, and 0 medium findings. The first capped-membership P2 and the Windows
+failure-cause race were closed. The second capped-membership P2 is code-addressed
+with focused regressions and clean independent re-review; its GitHub thread
+remains pending final-head publication and exact-head CI/review.
 
-Residual score: **1/10 (within budget)**. The sole low-risk watch item is the
-one-time `O(E log E)` canonical typed-array sort used to build a deterministic
-adjacency index. Traversal and retained storage remain explicitly bounded.
+Residual score: **2/10 (within budget)**. Low-risk watch items are the one-time
+`O(E log E)` canonical typed-array sort used to build a deterministic adjacency
+index and pathological repetition of large hidden workflow memberships. The
+latter is byte-bounded and rejected before publication; traversal and retained
+adjacency storage remain explicitly bounded.
 
 ## Scope Honesty
 
@@ -202,7 +240,8 @@ No manual tag or direct npm publish is part of this rollout.
 
 ## Rollback
 
-Before publication, revert the feature commits and rebuild revision-2 indexes.
+Before publication, revert the feature commits and rebuild derived indexes
+under the restored code version.
 After publication, preserve npm immutability: revert on `main`, ship a
 corrective patch through the same secret-backed flow, and deprecate the affected
 version only for a material safety risk.
