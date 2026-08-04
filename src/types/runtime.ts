@@ -41,6 +41,8 @@ export interface CodexaIndex {
   testEdges: TestEdgeFact[];
   graphEdges: GraphEdgeFact[];
   workflows: WorkflowTraceFact[];
+  /** Internal cap spill used for authority checks; never projected in query or MCP workflow payloads. */
+  workflowMembershipSpill?: Record<string, string[]>;
   modules: ModuleClusterFact[];
   risks: RiskSignalFact[];
   parserErrors: ParserErrorFact[];

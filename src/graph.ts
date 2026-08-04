@@ -516,10 +516,20 @@ function matchingAdaptersForKey(adapters: FileFact[], adapterKey: string, manife
   return best > 0 ? scored.slice(0, 1).map((entry) => entry.adapter) : [];
 }
 
+export interface WorkflowTraceExtraction {
+  workflows: WorkflowTraceFact[];
+  workflowMembershipSpill: Record<string, string[]>;
+}
+
 export function extractWorkflowTraces(index: CodexaIndex): WorkflowTraceFact[] {
+  return extractWorkflowTraceData(index).workflows;
+}
+
+export function extractWorkflowTraceData(index: CodexaIndex): WorkflowTraceExtraction {
   const evidence = buildWorkflowEvidenceIndex(index);
   const fileRank = new Map(index.files.map((file) => [file.path, file.rank]));
   const workflows: WorkflowTraceFact[] = [];
+  const workflowMembershipSpill: Record<string, string[]> = {};
 
   const entrySymbols = index.symbols.filter((symbol) => symbol.kind === "route" || isJobSymbol(symbol) || executionSurfaceTitle(symbol));
   for (const symbol of entrySymbols) {
@@ -554,7 +564,7 @@ export function extractWorkflowTraces(index: CodexaIndex): WorkflowTraceFact[] {
       summary: summarizeWorkflow(workflowKind, executionTitle ?? symbol.qualifiedName, relatedFiles, tests),
       stepTotal: executionStepTotal(steps, tests.length, executionTruncation?.handlerCalls),
       executionSurfaces: executionTruncation?.executionSurfaces
-    });
+    }, workflowMembershipSpill);
     workflows.push(executionTitle ? { ...workflow, confidence: "derived" } : workflow);
   }
 
@@ -606,12 +616,13 @@ export function extractWorkflowTraces(index: CodexaIndex): WorkflowTraceFact[] {
       tests,
       rank: workflowRank(relatedFiles, tests, fileRank, "manifest"),
       summary: summarizeWorkflow("manifest", symbol.name, relatedFiles, tests)
-    }));
+    }, workflowMembershipSpill));
   }
 
-  return workflows
+  const sortedWorkflows = workflows
     .filter((workflow) => workflow.steps.length > 0)
     .sort((a, b) => b.rank - a.rank || a.title.localeCompare(b.title));
+  return { workflows: sortedWorkflows, workflowMembershipSpill };
 }
 
 function nodeUsages(symbol: SymbolFact, evidence: WorkflowEvidenceIndex): UsageSiteFact[] {
@@ -755,7 +766,8 @@ function workflowFact(
     summary: string;
     stepTotal?: number;
     executionSurfaces?: { total: number; returned: number };
-  }
+  },
+  workflowMembershipSpill: Record<string, string[]>
 ): WorkflowTraceFact {
   const relatedModules = uniqueSorted(input.relatedFiles.filter((filePath) => !isTestLikePath(filePath)).map((filePath) => moduleNameForPath(filePath)));
   const terminalFiles = terminalWorkflowFiles(input.steps, input.entryPath);
@@ -763,8 +775,21 @@ function workflowFact(
   const evidenceCounts = countStepEvidence(input.steps);
   const entryScore = workflowEntryScore(input.workflowKind, input.entryPath, input.entrySymbol, input.steps);
   const processKind = relatedModules.length > 1 ? "cross-module-process" : input.steps.length > 1 ? "intra-module-process" : "entry-process";
+  const id = stableId("workflow", input.workflowKind, input.entryPath, input.entrySymbolId, input.title);
+  const relatedFiles = boundedWorkflowRelatedFiles(input.relatedFiles, input.entryPath);
+  const tests = input.tests.slice(0, WORKFLOW_TEST_LIMIT);
+  const retainedMembership = new Set([
+    input.entryPath,
+    ...relatedFiles,
+    ...tests,
+    ...input.steps.flatMap((step) => [step.path, step.targetPath].filter((filePath): filePath is string => Boolean(filePath)))
+  ]);
+  // Both construction paths supply canonical full membership (structural
+  // paths plus every related test) before the public fields are projected.
+  // Persist only the projection spill rather than duplicating the full set.
+  workflowMembershipSpill[id] = input.relatedFiles.filter((filePath) => !retainedMembership.has(filePath));
   return {
-    id: stableId("workflow", input.workflowKind, input.entryPath, input.entrySymbolId, input.title),
+    id,
     type: "WorkflowTrace",
     source: "heuristic",
     confidence: workflowConfidence(input.steps),
@@ -775,8 +800,8 @@ function workflowFact(
     title: input.title,
     entryPath: input.entryPath,
     entrySymbolId: input.entrySymbolId,
-    relatedFiles: boundedWorkflowRelatedFiles(input.relatedFiles, input.entryPath),
-    tests: input.tests.slice(0, WORKFLOW_TEST_LIMIT),
+    relatedFiles,
+    tests,
     steps: input.steps,
     summary: enrichWorkflowSummary(input.summary, {
       processKind,

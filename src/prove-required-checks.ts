@@ -35,7 +35,7 @@ export function proofRequiredCheckContext(input: {
       .map((edge) => edge.path)
   ]);
   const workflows = input.index.workflows
-    .filter((workflow) => workflowMatchesAnyPath(workflow, reviewTargetSet))
+    .filter((workflow) => workflowMatchesAnyPath(workflow, reviewTargetSet, input.index))
     .sort((a, b) => b.rank - a.rank || a.title.localeCompare(b.title));
   return {
     editPaths,

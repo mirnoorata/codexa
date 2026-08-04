@@ -578,7 +578,7 @@ function testSupportsPaths(test: TestRecommendation, paths: string[], anchorPath
 function matchingSubsystem(index: CodexaIndex, anchorPath: string, paths: string[]): ChangeEvidenceChainV1["subsystem"] {
   const pathSet = new Set([anchorPath, ...paths]);
   const workflow = index.workflows
-    .filter((candidate) => workflowMatchesAnyPath(candidate, pathSet))
+    .filter((candidate) => workflowMatchesAnyPath(candidate, pathSet, index))
     .sort((left, right) => right.rank - left.rank || left.id.localeCompare(right.id))[0];
   if (workflow) {
     return {

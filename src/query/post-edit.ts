@@ -268,7 +268,7 @@ async function postEditReviewQueryInternal(
     .filter((file) => file.riskScore >= 4 || unplannedEditedFileSet.has(file.path))
     .sort((a, b) => b.riskScore - a.riskScore || b.rank - a.rank || a.path.localeCompare(b.path));
   const workflows = index.workflows
-    .filter((workflow) => workflowMatchesAnyPath(workflow, reviewTargetSet))
+    .filter((workflow) => workflowMatchesAnyPath(workflow, reviewTargetSet, index))
     .sort((a, b) => b.rank - a.rank || a.title.localeCompare(b.title));
   const rawWorkflowChecks = evaluateRequiredChecks(snapshot?.requiredWorkflowChecks ?? [], {
     editPaths,

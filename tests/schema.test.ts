@@ -40,6 +40,10 @@ describe("Codexa schema contracts", () => {
     expect(index.freshness.indexRevision).toBe(CODEXA_INDEX_REVISION);
     expect(index.graphEdges).toBeInstanceOf(Array);
     expect(index.workflows).toBeInstanceOf(Array);
+    expect(index.workflowMembershipSpill).toBeTypeOf("object");
+    expect(Object.keys(index.workflowMembershipSpill ?? {}).sort()).toEqual(index.workflows.map((workflow) => workflow.id).sort());
+    expect(JSON.stringify(relationalPackets)).not.toContain("workflowMembershipSpill");
+    expect(facts.some((fact) => Object.prototype.hasOwnProperty.call(fact, "workflowMembershipSpill"))).toBe(false);
     expect(facts.length).toBeGreaterThan(0);
     expect(facts.every((fact) => typeof fact.id === "string" && typeof fact.type === "string" && fact.snapshotId === index.freshness.snapshotId)).toBe(true);
   });
@@ -54,6 +58,7 @@ describe("Codexa schema contracts", () => {
     delete index.freshness.indexRevision;
     delete index.graphEdges;
     delete index.workflows;
+    delete index.workflowMembershipSpill;
     await writeFile(indexPath, `${JSON.stringify(index, null, 2)}\n`, "utf8");
 
     const loaded = await loadIndex(repo);
@@ -64,6 +69,53 @@ describe("Codexa schema contracts", () => {
     expect(loaded?.workflows).toEqual([]);
     const status = await statusQuery(repo, { recover: false });
     expect(status.freshness).toMatchObject({ stale: true, reason: "index-revision-changed" });
+  });
+
+  it("loads revision-2 workflow indexes without spill as stale rebuild inputs", async () => {
+    const repo = await createSchemaFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+
+    const indexPath = path.join(repo, ".codex/codebase/index.json");
+    const index = JSON.parse(await readFile(indexPath, "utf8"));
+    index.indexRevision = 2;
+    index.freshness.indexRevision = 2;
+    index.workflows = [{
+      id: "workflow:revision-2",
+      type: "WorkflowTrace",
+      source: "heuristic",
+      confidence: "derived",
+      snapshotId: index.snapshot.snapshotId,
+      indexedAt: index.snapshot.indexedAt,
+      path: "src/main.ts",
+      workflowKind: "module",
+      title: "revision-2 workflow",
+      entryPath: "src/main.ts",
+      relatedFiles: ["src/main.ts"],
+      tests: [],
+      steps: [{ kind: "entry", label: "main", path: "src/main.ts", confidence: "derived", reason: "legacy fixture" }],
+      summary: "Readable legacy workflow",
+      rank: 1
+    }];
+    delete index.workflowMembershipSpill;
+    await writeFile(indexPath, `${JSON.stringify(index)}\n`, "utf8");
+
+    const loaded = await loadIndex(repo, { recover: false });
+    expect(loaded?.indexRevision).toBe(2);
+    expect(loaded?.freshness.indexRevision).toBe(2);
+    expect(loaded?.workflows.length).toBeGreaterThan(0);
+    expect(loaded?.workflowMembershipSpill).toEqual({});
+  });
+
+  it("rejects a current-revision index that loses internal workflow membership spill", async () => {
+    const repo = await createSchemaFixtureRepo();
+    await buildIndex({ repoRoot: repo });
+
+    const indexPath = path.join(repo, ".codex/codebase/index.json");
+    const index = JSON.parse(await readFile(indexPath, "utf8"));
+    delete index.workflowMembershipSpill;
+    await writeFile(indexPath, `${JSON.stringify(index)}\n`, "utf8");
+
+    expect(await loadIndex(repo, { recover: false })).toBeNull();
   });
 
   it("reports a corrupt index bundle without recovering or trusting detached freshness metadata", async () => {

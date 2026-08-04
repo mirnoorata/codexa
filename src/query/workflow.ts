@@ -12,7 +12,7 @@ import { findFile, resolveGraphTarget, type ResolvedGraphTarget } from "./target
 import { retrieveForTask } from "../retrieval.js";
 import { semanticOptionsFromQueryOptions } from "../semantic-retrieval.js";
 import { workflowTierCounts } from "./graph-traversal.js";
-import { workflowMatchesAnyPath } from "../workflow-membership.js";
+import { workflowIncludesPath, workflowMatchesAnyPath } from "../workflow-membership.js";
 
 export async function workflowPathQuery(
   input: QuerySessionInput,
@@ -30,9 +30,9 @@ export async function workflowPathQuery(
     if ("result" in target) {
       return { ...target.result, freshness, refresh };
     }
-    workflows = workflows.filter((workflow) => workflowMatchesTarget(workflow, target));
+    workflows = workflows.filter((workflow) => workflowMatchesTarget(workflow, target, index));
     if (workflows.length === 0) {
-      workflows = index.workflows.filter((workflow) => workflowMatchesTarget(workflow, target));
+      workflows = index.workflows.filter((workflow) => workflowMatchesTarget(workflow, target, index));
     }
   }
   if (workflows.length === 0) {
@@ -216,15 +216,20 @@ function narrowWorkflowsForSpecificTerms(workflows: WorkflowTraceFact[], queryTe
   return narrowed.length > 0 ? narrowed : workflows;
 }
 
-export function workflowMatchesTarget(workflow: WorkflowTraceFact, target: ResolvedGraphTarget): boolean {
+export function workflowMatchesTarget(
+  workflow: WorkflowTraceFact,
+  target: ResolvedGraphTarget,
+  index: Pick<CodexaIndex, "testEdges" | "workflowMembershipSpill">
+): boolean {
   if (target.symbol?.id) {
     return (
       workflow.entrySymbolId === target.symbol.id ||
       workflow.steps.some((step) => step.symbolId === target.symbol?.id || step.targetSymbolId === target.symbol?.id) ||
-      (isAdapterPath(target.symbol.path) && workflow.steps.some((step) => step.targetPath === target.symbol?.path || step.path === target.symbol?.path))
+      (isAdapterPath(target.symbol.path) && workflow.steps.some((step) => step.targetPath === target.symbol?.path || step.path === target.symbol?.path)) ||
+      (isTestPath(target.symbol.path) && workflowIncludesPath(workflow, target.symbol.path, index))
     );
   }
-  return workflowMatchesAnyPath(workflow, target.paths);
+  return workflowMatchesAnyPath(workflow, target.paths, index);
 }
 
 export function formatWorkflow(workflow: WorkflowTraceFact): string[] {

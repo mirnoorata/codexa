@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { extractWorkflowTraces } from "../src/graph.js";
+import { extractWorkflowTraceData, extractWorkflowTraces } from "../src/graph.js";
 import type { CodexaIndex, FileFact, GraphEdgeFact, RiskSignalFact, SymbolFact, TestEdgeFact, UsageSiteFact } from "../src/types.js";
+import { workflowMatchesAnyPath } from "../src/workflow-membership.js";
 
 const SNAPSHOT_ID = "snapshot:workflow-scale";
 const INDEXED_AT = "2026-08-03T00:00:00.000Z";
@@ -58,7 +59,8 @@ describe("workflow extraction scale bounds", () => {
       testEdges
     });
 
-    const first = extractWorkflowTraces(index).find((workflow) => workflow.entrySymbolId === surface.id)!;
+    const extraction = extractWorkflowTraceData(index);
+    const first = extraction.workflows.find((workflow) => workflow.entrySymbolId === surface.id)!;
     const shuffled = extractWorkflowTraces({
       ...index,
       usageSites: [...usageSites].reverse(),
@@ -77,7 +79,49 @@ describe("workflow extraction scale bounds", () => {
     });
     expect(first.rank).toBe(5);
     expect(first.summary).toContain("touches 31 file(s)");
+    const fullMembership = new Set([first.entryPath, ...first.relatedFiles, ...first.tests, ...first.steps.flatMap((step) => [step.path, step.targetPath])]);
+    const omittedTests = testEdges.map((edge) => edge.path).filter((filePath) => !fullMembership.has(filePath));
+    expect(omittedTests.length).toBeGreaterThan(0);
+    expect(extraction.workflowMembershipSpill[first.id]).toEqual([...omittedTests].sort((left, right) => left.localeCompare(right)));
     expect(shuffled).toEqual(first);
+  });
+
+  it("persists exact omitted membership when typed test steps seed additional tests", () => {
+    const surface = executionSurface(0);
+    const endpointId = "endpoint:typed-membership";
+    const endpointPath = "src/typed-endpoint.ts";
+    const typedTestPath = "tests/typed-entry.test.ts";
+    const dependentTests = Array.from({ length: 25 }, (_, index) => `tests/typed-dependent-${String(index + 1).padStart(2, "0")}.test.ts`);
+    const storePaths = Array.from({ length: 41 }, (_, index) => `src/store-${String(index + 1).padStart(2, "0")}.ts`);
+    const graphEdges = [
+      workflowTypedEdge("edge:route", "ROUTE_HANDLES", surface, endpointId, endpointPath),
+      workflowTypedEdge("edge:typed-test", "TEST_COVERS_WORKFLOW", surface, endpointId, endpointPath, typedTestPath),
+      ...storePaths.map((storePath, index) => workflowTypedEdge(`edge:store:${index}`, "ROUTE_CALLS_STORE", surface, `file:${storePath}`, storePath))
+    ];
+    const testEdges = dependentTests.map((testPath, index) => testEdge(`test:typed:${index}`, testPath, typedTestPath));
+    const index = workflowIndex({
+      files: [file(surface.path), file(endpointPath), ...storePaths.map(file)],
+      symbols: [surface],
+      graphEdges,
+      testEdges
+    });
+
+    const extraction = extractWorkflowTraceData(index);
+    const workflow = extraction.workflows.find((candidate) => candidate.entrySymbolId === surface.id)!;
+    const omittedTest = dependentTests[20]!;
+
+    expect(workflow.relatedFiles).toHaveLength(40);
+    expect(workflow.tests).toHaveLength(20);
+    expect(workflow.relatedFiles).not.toContain(omittedTest);
+    expect(workflow.tests).not.toContain(omittedTest);
+    expect(workflow.steps.some((step) => step.path === typedTestPath && step.kind === "test")).toBe(true);
+    expect(workflow.steps.some((step) => step.path === omittedTest)).toBe(false);
+    expect(extraction.workflowMembershipSpill[workflow.id]).toContain(omittedTest);
+    expect(workflowMatchesAnyPath(workflow, new Set([omittedTest]), {
+      ...index,
+      workflows: extraction.workflows,
+      workflowMembershipSpill: extraction.workflowMembershipSpill
+    })).toBe(true);
   });
 });
 
@@ -224,6 +268,30 @@ function graphEdge(index: number): GraphEdgeFact {
     fromPath: `src/noise-${index}.ts`,
     toPath: `src/noise-target-${index}.ts`,
     reason: "noise edge",
+    weight: 1
+  };
+}
+
+function workflowTypedEdge(
+  id: string,
+  edgeKind: GraphEdgeFact["edgeKind"],
+  surface: SymbolFact,
+  toId: string,
+  toPath: string,
+  fromPath = surface.path
+): GraphEdgeFact {
+  return {
+    ...baseFact(id),
+    type: "GraphEdge",
+    edgeKind,
+    fromId: edgeKind === "TEST_COVERS_WORKFLOW" ? `test:${fromPath}` : surface.id,
+    toId,
+    fromKind: edgeKind === "TEST_COVERS_WORKFLOW" ? "test" : "symbol",
+    toKind: edgeKind === "ROUTE_HANDLES" || edgeKind === "TEST_COVERS_WORKFLOW" ? "endpoint" : "file",
+    fromPath,
+    toPath,
+    fromSymbolId: edgeKind === "TEST_COVERS_WORKFLOW" ? undefined : surface.id,
+    reason: `${edgeKind} fixture`,
     weight: 1
   };
 }

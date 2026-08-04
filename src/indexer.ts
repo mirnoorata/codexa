@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import { acquireCacheLock } from "./cache-lock.js";
 import { CODEXA_INDEX_REVISION, CODEXA_INDEX_SCHEMA_VERSION } from "./index-revision.js";
+import { MAX_INDEX_ARTIFACT_BYTES } from "./index-limits.js";
 import { ensureSafeManagedStateDirectory } from "./init-portability.js";
 import { isManagedArtifactSegment, readManagedArtifactText, requireManagedArtifactDirectory } from "./managed-artifacts.js";
 import { discoverRepoFreshness } from "./repo-files.js";
@@ -34,9 +35,6 @@ export { CODEXA_INDEX_REVISION, CODEXA_INDEX_SCHEMA_VERSION } from "./index-revi
 export { persistIndex, writeIndexBundle } from "./indexer/artifact-writing.js";
 const INDEX_LOCK_DIR = ".codex/cache/codexa-index.lock";
 const INDEX_LOCK_STALE_MS = 120_000;
-// Keep automatic reads bounded while leaving substantial headroom for the
-// graph-heavy indexes produced by large polyglot repositories.
-const MAX_INDEX_ARTIFACT_BYTES = 512 * 1024 * 1024;
 
 interface BuildIndexPipelineContext {
   options: IndexOptions;
@@ -159,6 +157,7 @@ function parseStage(): IndexPipelineStage<BuildIndexPipelineContext> {
         testEdges: parsed.flatMap((result) => result.testEdges),
         graphEdges: [],
         workflows: [],
+        workflowMembershipSpill: {},
         modules: [],
         risks: parsed.flatMap((result) => result.risks),
         parserErrors: parsed.flatMap((result) => result.parserErrors)
@@ -423,6 +422,8 @@ function normalizeLoadedIndex(index: Partial<CodexaIndex>): CodexaIndex {
   }
   const indexRevision = normalizeStoredIndexRevision(index.indexRevision, "index");
   const freshness = normalizeLoadedFreshness(index.freshness);
+  const workflows = index.workflows ?? [];
+  const workflowMembershipSpill = normalizeWorkflowMembershipSpill(index.workflowMembershipSpill, indexRevision, workflows);
   // A schema-v1 bundle remains readable when the revision is absent, but the
   // nested freshness revision is authoritative only when both persisted
   // copies agree. Any legacy or torn publication therefore becomes stale.
@@ -432,8 +433,34 @@ function normalizeLoadedIndex(index: Partial<CodexaIndex>): CodexaIndex {
     indexRevision,
     freshness: { ...freshness, indexRevision: consistentFreshnessRevision },
     graphEdges: index.graphEdges ?? [],
-    workflows: index.workflows ?? []
+    workflows,
+    workflowMembershipSpill
   };
+}
+
+function normalizeWorkflowMembershipSpill(
+  value: unknown,
+  indexRevision: number | undefined,
+  workflows: CodexaIndex["workflows"]
+): Record<string, string[]> {
+  if (value === undefined && (indexRevision === undefined || indexRevision < 3)) return {};
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    throw new Error("Codexa workflow membership spill is incomplete or unsupported");
+  }
+  const spill = value as Record<string, unknown>;
+  for (const [workflowId, paths] of Object.entries(spill)) {
+    if (!Array.isArray(paths) || !paths.every((filePath) => typeof filePath === "string")) {
+      throw new Error(`Codexa workflow membership spill is invalid for ${workflowId}`);
+    }
+  }
+  if (indexRevision !== undefined && indexRevision >= 3) {
+    for (const workflow of workflows) {
+      if (!Object.prototype.hasOwnProperty.call(spill, workflow.id)) {
+        throw new Error(`Codexa workflow membership spill is missing ${workflow.id}`);
+      }
+    }
+  }
+  return spill as Record<string, string[]>;
 }
 
 function normalizeLoadedFreshness(freshness: Partial<FreshnessInfo>): FreshnessInfo {

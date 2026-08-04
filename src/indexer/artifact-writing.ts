@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 import { writeArtifacts } from "../artifacts.js";
+import { MAX_INDEX_ARTIFACT_BYTES } from "../index-limits.js";
 import {
   ensureManagedArtifactDirectory,
   requireManagedArtifactDirectory,
@@ -18,9 +19,21 @@ const CODEBASE_RELATIVE_DIR = path.join(".codex", "codebase");
 export async function persistIndex(index: CodexaIndex, outputDir: string): Promise<void> {
   const output = await ensureManagedArtifactDirectory(index.snapshot.repoRoot, outputDir);
   await ensureManagedArtifactDirectory(index.snapshot.repoRoot, path.join(output.directory, "modules"));
-  await writeManagedArtifactText(output, "index.json", `${JSON.stringify(index)}\n`);
+  const serializedIndex = `${JSON.stringify(index)}\n`;
+  assertIndexArtifactSize(serializedIndex);
+  await writeManagedArtifactText(output, "index.json", serializedIndex);
   await writeManagedArtifactText(output, "freshness.json", `${JSON.stringify(index.freshness, null, 2)}\n`);
   await writeFactsNdjson(output, allFacts(index));
+}
+
+export function assertIndexArtifactSize(
+  serializedIndex: string,
+  maxBytes = MAX_INDEX_ARTIFACT_BYTES
+): void {
+  const sizeBytes = Buffer.byteLength(serializedIndex, "utf8");
+  if (sizeBytes > maxBytes) {
+    throw new Error(`Codexa index artifact is ${sizeBytes} bytes; maximum supported size is ${maxBytes} ${maxBytes === 1 ? "byte" : "bytes"}`);
+  }
 }
 
 export async function writeIndexBundle(index: CodexaIndex, outputDir: string): Promise<void> {

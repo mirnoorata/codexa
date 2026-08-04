@@ -1,20 +1,20 @@
-import type { ChangeType, CodexaIndex, EvidenceTier, TaskSnapshotRequiredCheck, WorkflowTraceFact } from "../../types.js";
+import type { ChangeType, CodexaIndex, EvidenceTier, TaskSnapshotRequiredCheck } from "../../types.js";
 import { uniqueSorted } from "../../util.js";
-import { retainedWorkflowPaths, workflowMatchesAnyPath } from "../../workflow-membership.js";
+import { retainedWorkflowPaths, scopedWorkflowPaths, workflowMatchesAnyPath } from "../../workflow-membership.js";
 
 const MAX_REQUIRED_WORKFLOW_SCOPE_PATHS = 64;
 
 export function requiredWorkflowChecksForPlan(
-  workflows: WorkflowTraceFact[],
+  index: Pick<CodexaIndex, "testEdges" | "workflowMembershipSpill" | "workflows">,
   pathScope: Set<string>,
   changeType: ChangeType
 ): TaskSnapshotRequiredCheck[] {
-  return workflows
-    .filter((workflow) => workflowMatchesAnyPath(workflow, pathScope))
+  return index.workflows
+    .filter((workflow) => workflowMatchesAnyPath(workflow, pathScope, index))
     .sort((a, b) => b.rank - a.rank || a.title.localeCompare(b.title))
     .map((workflow) => {
       const retainedPaths = retainedWorkflowPaths(workflow);
-      const scopedPaths = retainedPaths.filter((filePath) => pathScope.has(filePath));
+      const scopedPaths = scopedWorkflowPaths(workflow, pathScope, index);
       const adjacentPaths = retainedPaths.filter((filePath) => !pathScope.has(filePath));
       const retainedScope = scopedPaths.slice(0, MAX_REQUIRED_WORKFLOW_SCOPE_PATHS);
       const adjacentLimit = Math.max(0, 20 - retainedScope.length);

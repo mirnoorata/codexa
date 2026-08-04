@@ -230,8 +230,8 @@ export async function changePlanQuery(
   const focusPathSet = new Set(files);
   const explicitWorkflowPaths = new Set(normalizeInputPaths(effectiveInput.files ?? [], repoRoot));
   const workflowMatchPaths = explicitWorkflowPaths.size > 0 ? explicitWorkflowPaths : focusPathSet;
-  const relatedWorkflow = session.index.workflows.find((workflow) => workflowMatchesAnyPath(workflow, workflowMatchPaths));
-  const requiredWorkflowChecks = requiredWorkflowChecksForPlan(session.index.workflows, workflowMatchPaths, effectiveInput.changeType ?? "unknown").slice(0, 8);
+  const relatedWorkflow = session.index.workflows.find((workflow) => workflowMatchesAnyPath(workflow, workflowMatchPaths, session.index));
+  const requiredWorkflowChecks = requiredWorkflowChecksForPlan(session.index, workflowMatchPaths, effectiveInput.changeType ?? "unknown").slice(0, 8);
   const requiredDependencyChecks = requiredDependencyChecksForPlan(session.index, plannedEditTargets, effectiveInput.changeType ?? "unknown").slice(0, 12);
   const dirtyScopeTests =
     editReadiness.source === "dirty-worktree"
@@ -789,7 +789,7 @@ function changePlanTargetCandidates(input: {
     if (file.test && input.focusFiles.some((candidate) => !candidate.file.test)) {
       continue;
     }
-    const workflowHits = input.workflows.filter((workflow) => workflowIncludesPath(workflow, file.path));
+    const workflowHits = input.workflows.filter((workflow) => workflowIncludesPath(workflow, file.path, input.index));
     const graphHits = input.index.graphEdges.filter((edge) => edge.fromPath === file.path || edge.toPath === file.path).slice(0, 6);
     const fileEvidence = candidateEvidence({
       file,
