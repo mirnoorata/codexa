@@ -6,10 +6,10 @@ PR summary for `codex/context-intelligence-next` against `main`.
 - Validated feature source head: `0474276`; published as `869257e`
 - CI hardening head: `41118bb`; published as `9c29408`
 - First review hardening head: `a6ac9d0`; published as `05a1dc3`
-- Final code head: `ba1f090`
-- Final code tree: `fdf2f4f569f11f93f12a59f15af461b46d5e6904`
-- Branch delta before this evidence refresh: 62 files, 5,510 insertions, 267 deletions
-- Commits before this evidence refresh: 8 Conventional Commits
+- Final code head: `2e0c140`
+- Final code tree: `78bfea34aca04cf7236ddfc0d43655fab1d50ba3`
+- Branch delta before this evidence refresh: 70 files, 6,159 insertions, 288 deletions
+- Commits before this evidence refresh: 12 Conventional Commits
   - `6591e60` - `feat: add bounded causal change intelligence`
   - `0474276` - `test: accept SDK validation wording`
   - `d18637f` - `docs: add context intelligence PR summary`
@@ -18,6 +18,10 @@ PR summary for `codex/context-intelligence-next` against `main`.
   - `a6ac9d0` - `fix(workflow): preserve capped membership authority`
   - `3fa989c` - `docs: record workflow membership review fix`
   - `ba1f090` - `fix(workflow): retain exact capped membership`
+  - `c815415` - `docs: finalize context intelligence release evidence`
+  - `4862bb4` - `perf(startup): attest compact index status`
+  - `1eecdd8` - `fix(index): bind witness to serialized snapshot`
+  - `2e0c140` - `fix(index): recognize typed MCP server receivers`
 
 ## Executive Outcome
 
@@ -56,9 +60,14 @@ snapshot boundaries.
 - Indexes Commander CLI roots, aliases, subcommands, singleton and namespace
   forms, plus CommonJS destructuring and namespace usage.
 - Indexes MCP tool registrations, including bounded helper-wrapper discovery.
+- Follows exact MCP receiver provenance through current-file typed options,
+  `Pick` projections, destructuring, renamed bindings, and property access.
 - Resolves lexical declaration identity so shadowed `program`, `Command`,
   `server`, and helper names cannot create false workflows.
 - Rejects control-character names and unrelated look-alike receivers.
+- Keeps a cold production-source contract between every derived MCP workflow
+  and the authoritative 23-tool registry, preventing stale cache data from
+  masking parser drift.
 - Uses one-pass workflow evidence indexes and production-first bounding so test
   fan-out cannot evict the runtime implementation from a workflow packet.
 
@@ -76,9 +85,10 @@ snapshot boundaries.
 
 ### 4. Safe index and transport evolution
 
-- Advances the derived index revision to 3. Revision-2 indexes remain readable
-  but stale and rebuild; revision-3 indexes fail closed if exact workflow
-  membership is missing or malformed.
+- Advances the derived index revision to 4. Earlier indexes remain readable but
+  stale and rebuild; revision-4 indexes fail closed if exact workflow membership
+  is missing or malformed. The parse-cache revision also advances so prior
+  parser results cannot survive changed execution-surface semantics.
 - Persists only the paths omitted by public workflow caps in an internal
   `workflowMembershipSpill` map. Every public workflow, MCP, facts, and
   relational projection remains unchanged and bounded.
@@ -89,66 +99,101 @@ snapshot boundaries.
   MCP profiles.
 - Keeps existing public commands and MCP tools intact; the change enriches
   their evidence rather than introducing another overlapping surface.
+- Publishes a compact `index-integrity.json` witness in the same atomic index
+  bundle. It binds exact index/freshness byte lengths and SHA-256 digests to
+  the current revision and checkout snapshot identity.
+- Validates current-revision array shape and exact workflow membership before
+  issuing the witness. Status and SessionStart stream-hash the bounded index
+  with no-follow, single-link, stable-descriptor, and final-path checks instead
+  of materializing the full JSON object. Missing, legacy, torn, or mismatched
+  witnesses fall back to the established full parser and remain fail-closed.
 - Updates `@modelcontextprotocol/sdk` from 1.29.0 to 1.30.0. Codexa's response
   budget remains at most 512 KiB, well below the SDK's 10 MiB stdio input cap.
   The resolved dependency audit is clean.
 
 ## Human Workflow Simulation
 
-A disposable JavaScript checkout service was indexed and changed as a developer
-would use it. Codexa identified a Commander `checkout` workflow and an MCP
-`calculate_checkout` workflow across 6 files, 9 symbols, and 51 usage sites.
+An exact-head disposable JavaScript checkout service was exercised through the
+same sequence a developer uses: initialize, index, inspect, plan, edit, observe
+staleness, auto-refresh, test, post-edit review, proof, commit, and strict
+committed review. Codexa indexed 10 files, 12 symbols, 68 usage sites, zero
+parser errors, and both the Commander `checkout` and MCP `checkout_quote`
+workflows.
 
-The simulated change moved a loyalty discount before tax. The first attempt
-edited an undeclared test and correctly received a blocking scope-drift review.
-After reverting and replanning with both source and test explicitly declared,
-the implementation and 3 Node tests passed, post-edit review returned
-`continue`, the proof card was `ready` with zero gaps, and strict committed
-review of `HEAD~1..HEAD` returned `PASS`. The repository was re-indexed and the
-workflow/review sequence repeated after the initial feature hardening.
+The saved plan explicitly authorized one implementation and one test file. A
+quantity-limit edit made status report `stale (dirty-files-changed)`; repo-map
+then auto-refreshed to `fresh-with-dirty-overlay`. Four real Node tests and a
+direct boundary smoke passed. Post-edit review returned `continue` with complete
+2/2 coverage, no scope drift, and completion authority `complete`; proof was
+`ready` with zero gaps. After the Conventional Commit
+`feat(pricing): cap checkout line quantity`, strict committed review returned
+`PASS` with the saved plan matched and no concerns.
 
-The current tool environment does not expose a live external Graphify MCP
-server, so no external Graphify call is claimed. Codexa's real stdio and
-coexistence suites exercised primary-server behavior, initialization isolation,
-transport, and preservation of unrelated MCP configuration: 30 checks passed
-with 1 intentional skip.
+A real stdio MCP connection initialized in 499 ms, listed the exact three core
+tools, and completed a 129 ms `search` call whose code context contained both
+the edited implementation and new limit message. Codexa initialization also
+preserved pre-existing Graphify-like TOML and JSON configuration exactly while
+adding only its own server entry. The current tool environment does not expose
+a live external Graphify MCP server, so no external Graphify call is claimed.
 
 ## Verification on the Exact Source Head
 
-Frozen validation on final source head `ba1f090`:
+Frozen validation on final code head `2e0c140`:
 
 - Build, typecheck, lint, release-path, publish, privacy, and `git diff --check`
   passed.
-- Final monolithic Vitest rerun: 110/110 files, 1,241 passed, and 1 intentional
-  skip (1,242 total). The earlier frozen sharded run had 1,240 pass, 1 skip, and
-  one `command-process-tree.test.ts` temporary-file `ENOENT`; its immediate
-  isolated rerun passed 3/3. The passing monolithic run used a writable
-  task-specific npm cache required by this sandbox. Exact-head GitHub CI remains
-  the merge authority.
+- The canonical clean-archive `npm run security:check` passed in 504 seconds:
+  110/110 Vitest files, 1,247 passes, 1 intentional skip, and no failures. The
+  full security log SHA-256 is
+  `d5862cbf1e4eec1f5c892d2593bb8e8c58574569d65ea62ee5a7286a2434bef2`.
 - Claude integration: 28 command smokes and 89 hook smokes (117 total).
 - Startup context gate: project kernel 2,823/3,072 bytes; 3/23 direct tools;
   measured reductions of 87.2% and 69.9% on the guarded surfaces.
 - `npm audit`: 0 vulnerabilities.
 - Clean public snapshot, package/plugin hygiene, and one-commit source checks
-  passed.
-- The focused final membership, schema, extraction, and artifact-size suites
+  passed; the installed-package smoke passed all 31 checks. The preserved
+  687-file package SHA-256 is
+  `d40d174cce2a7cb505d09497a3707168ce12c08ecd3f8d925e2966efc8bafd5a`.
+- The focused final membership, schema, extraction, artifact-size, integrity,
+  identity, and SessionStart suites
   passed: 9 files and 49 tests before the size guard, 4 files and 14 tests after
   it, plus the final revision-2 compatibility schema run at 9/9.
 
 Additional release evidence:
 
-- Eval gate: 21 scenarios, score 1, and `rawRgBetter=0`.
-- CI-scaled hot-path benchmark: all 12 gates passed. One unscaled watch item,
-  `cli.session_start` p95, measured 1,012 ms against a 1,000 ms base target and
-  remained below the 1,500 ms CI gate.
+- Eval gate: 21 scenarios, score 1, `rawRgBetter=0`, and zero failures.
+  The exact-head report SHA-256 is
+  `92bcdba87a88acef3f669c1f1d65b66279feb3ac90c73503515df6ca60ff1e3e`.
+- CI-scaled hot-path benchmark after the integrity witness: all 12 gates passed
+  on exact final code head `2e0c140`. SessionStart measured 1,151 ms p95 against
+  the 1,000 ms base target and 1,500 ms gate; MCP freshness measured 80 ms p95
+  against the 500 ms base target and 750 ms gate. Ten of twelve metrics also met
+  their unscaled base targets; adoption missed its soft target by 342 ms. The
+  report SHA-256 is
+  `7a5f20a0b60d2bfc7e1c387d2673200c3bcbaff6ef4f28e30fe959822228c06c`.
+  The 67,763,283-byte index SHA-256 is
+  `b9757051fc43d5cac20dbea26ec3ea68c4d60c07c833410ece5a4d8cc5058ed4`;
+  its 539-byte integrity-manifest SHA-256 is
+  `fa6be57a66cfcf42f0b51dc0717339b5cb0ce6da98df4d1f4ec4b86b120cbbee`.
+- A disclosed second benchmark had one isolated 10,966 ms CLI `repo-map`
+  sample and failed that gate. Twenty immediate exact-command probes did not
+  reproduce it: p95 1,120 ms, max 1,194 ms, 20/20 successful, identical output,
+  no locks, and unchanged artifacts. This is retained as host-tail evidence,
+  not silently discarded.
 - Pinned v0.12 transport comparison: all gates passed; tool-list reduction
-  85.3%, startup advertisement/discovery reduction 55.9%, first-result
-  reduction 75.0%, and repeated-result reduction 86.6%.
+  85.3%, advertisement plus discovery reduction 59.2%, startup payload reduction
+  56.2%, first-result reduction 75.1%, and repeated-result reduction 86.6%.
+  The exact-head report SHA-256 is
+  `85bbd0132ece083f6a27ac644cf955f46a87ad8ff4f818f41e48aa2f713e8b9a`.
 - Focused scale regression: 22/22 passed; execution-surface, MCP transport, and
   coexistence regressions passed.
 
-A real final-head index of Codexa contained 481 files, 5,477 symbols, 98,369
-usage sites, and 41 workflows in 67,292,652 bytes. Only 2 workflows needed
+A faithful cold and warm final-head index of Codexa contained 483 files, 5,504
+symbols, 99,086 usage sites, and 43 workflows in 67,763,283 bytes. The 20
+Commander and 23 MCP workflows exactly matched production registrations, with
+zero parser errors; normalized cold/warm index SHA-256 was
+`d08960e96c0dac38c2daac0902ca2bafa5e85061c6de7ae8eaa5ea31b4101d9d`.
+Only 2 workflows needed
 spill membership, for 9 spill entries (5 unique paths) and a maximum of 5 on
 one workflow.
 `workflow-path` recovered `command index` and `command semantic-index` from
@@ -189,26 +234,55 @@ rebuild, and revision-3
 artifacts cannot load with incomplete spill data. Independent semantic review
 reported no P0-P3 finding.
 
+The exact-head performance preflight then exposed a high-variance startup path:
+status parsed and materialized the full 67 MiB index only to report compact
+freshness. `4862bb4` adds the atomic integrity witness and securely hashes the
+index stream while parsing only bounded status metadata. On clean Node 22,
+SessionStart moved from the observed failing 1,783 ms p95 baseline to 710 ms;
+MCP freshness moved from an 834 ms outlier/failure to 85 ms p95. The witness
+does not authorize evidence queries, and malformed/torn/legacy artifacts retain
+the full-parser fallback. Independent integrity, identity, concurrency, and
+human init-edit-refresh review found no release-blocking regression.
+Final review found and closed one publication race before upload: an exported
+writer could validate a mutable object, yield for directory I/O, and serialize
+a later mutation. `1eecdd8` now captures the exact serialized index, freshness,
+witness, and fact membership synchronously before the first await; a regression
+with a deferred mutation proves the published index remains the value attested.
+
+The final clean-cache preflight then exposed a parser/cache divergence that
+fixture-only testing had hidden: identical cached source at the same cache
+version contained 21 MCP markers, while a cold parse of the real registration
+module contained none. The registry authority is 23 tools. `2e0c140` follows
+typed options and `Pick` projections to the exact destructured MCP receiver
+property, rejects mixed HTTP/MCP containers and shadowed look-alikes, advances
+the parse-cache and index derivation revisions, and asserts the cold production
+marker set exactly equals the registry. Cold and warm self-index signatures now
+match at all fact lanes and produce all 43 execution workflows. Independent
+adversarial re-review found no P0-P2 issue.
+
 ## Risk-Budgeted Review
 
 Finding weights are critical 8, high 5, medium 3, and low 1. Merge requires no
 critical or high finding and no more than 4 residual points.
 
-Independent review found and closed three release-significant risks before the
+Independent review found and closed five release-significant risks before the
 source head was published: lexical receiver shadowing in Commander/MCP
 extraction, test-heavy workflow truncation evicting production files, and eager
-object-heavy adjacency retention. Regression tests cover each fix. The final
+object-heavy adjacency retention, plus mutable writer input crossing the
+integrity-witness publication await, and stale parser cache masking production
+MCP receiver provenance. Regression tests cover each fix. The final
 correctness, authority, scale, and dependency reviews report 0 critical, 0
 high, and 0 medium findings. The first capped-membership P2 and the Windows
 failure-cause race were closed. The second capped-membership P2 is code-addressed
 with focused regressions and clean independent re-review; its GitHub thread
 remains pending final-head publication and exact-head CI/review.
 
-Residual score: **2/10 (within budget)**. Low-risk watch items are the one-time
+Residual score: **3/10 (within budget)**. Low-risk watch items are the one-time
 `O(E log E)` canonical typed-array sort used to build a deterministic adjacency
-index and pathological repetition of large hidden workflow memberships. The
-latter is byte-bounded and rejected before publication; traversal and retained
-adjacency storage remain explicitly bounded.
+index, pathological repetition of large hidden workflow memberships, and
+intentionally shallow current-file type provenance for unusual merged or
+shadowed MCP option types. Hidden membership is byte-bounded and rejected before
+publication; traversal and retained adjacency storage remain explicitly bounded.
 
 ## Scope Honesty
 

@@ -561,13 +561,16 @@ repo's `.codex/codebase/` directory:
 .codex/codebase/workflows.md
 .codex/codebase/freshness.json
 .codex/codebase/index.json
+.codex/codebase/index-integrity.json
 .codex/codebase/facts.ndjson
 .codex/codebase/modules/
 .codex/codebase/playbooks/
 ```
 
 For lay readers, these are the maps and checklists Codex reads. For engineers,
-the durable machine-readable index is `index.json` plus `facts.ndjson`; the
+the durable machine-readable index is `index.json` plus `facts.ndjson`;
+`index-integrity.json` is the compact, atomically published status witness used
+to avoid materializing the full index during startup. The
 Markdown files are compact human/agent-facing projections of the same facts.
 `relational-packets.md` is the read-first graph packet view for process traces
 and module clusters; the JSON companions are bounded machine-readable exports

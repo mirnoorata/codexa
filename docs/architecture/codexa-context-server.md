@@ -477,6 +477,7 @@ The index is stored as:
 .codex/codebase/index.json
 .codex/codebase/facts.ndjson
 .codex/codebase/freshness.json
+.codex/codebase/index-integrity.json
 ```
 
 Minimum fact types:
@@ -497,6 +498,11 @@ Minimum fact types:
 Every fact includes a stable id, path, line/byte range when available, source, confidence, and snapshot metadata.
 
 Freshness stores both dirty-file paths and dirty-file content hashes. Editing an already-dirty file after indexing must mark the index stale even when the dirty path set is unchanged.
+
+`index-integrity.json` stores bounded index/freshness byte lengths and SHA-256
+digests plus the snapshot identity. It is published inside the same atomic
+bundle. Status-only paths stream-verify that witness; missing, legacy, torn, or
+mismatched witnesses use the full index loader.
 
 ### Artifacts
 
