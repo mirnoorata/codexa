@@ -143,6 +143,22 @@ describe("Codexa schema contracts", () => {
     ).rejects.toThrow(/cannot attest.*current index bundle/iu);
   });
 
+  it("publishes the exact attested payload when a caller mutates its input after invocation", async () => {
+    const repo = await createSchemaFixtureRepo();
+    const index = await buildIndex({ repoRoot: repo });
+
+    const publication = persistIndex(index, path.join(repo, ".codex/codebase"));
+    delete index.workflowMembershipSpill;
+    index.files = [];
+    await publication;
+
+    const loaded = await loadIndex(repo, { recover: false });
+    expect(loaded?.workflowMembershipSpill).toBeTypeOf("object");
+    expect(loaded?.files.map((file) => file.path)).toContain("src/main.ts");
+    const status = await statusQuery(repo, { recover: false });
+    expect(status.freshness).toMatchObject({ missing: false, stale: false, reason: "fresh" });
+  });
+
   it("reports a corrupt index bundle without recovering or trusting detached freshness metadata", async () => {
     const repo = await createSchemaFixtureRepo();
     await buildIndex({ repoRoot: repo });

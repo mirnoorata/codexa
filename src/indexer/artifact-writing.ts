@@ -21,28 +21,36 @@ const INDEX_INTEGRITY_SCHEMA_VERSION = 1;
 export async function persistIndex(index: CodexaIndex, outputDir: string): Promise<void> {
   const publishIntegrityManifest = index.schemaVersion === CODEXA_INDEX_SCHEMA_VERSION && index.indexRevision === CODEXA_INDEX_REVISION;
   if (publishIntegrityManifest) assertIntegrityManifestInput(index);
-  const output = await ensureManagedArtifactDirectory(index.snapshot.repoRoot, outputDir);
-  await ensureManagedArtifactDirectory(index.snapshot.repoRoot, path.join(output.directory, "modules"));
+  // Capture the exact attested payload before the first await. persistIndex is
+  // exported, so a caller can retain and mutate its input while directory I/O
+  // is pending; validation and publication must refer to one immutable value.
+  const repoRoot = index.snapshot.repoRoot;
   const serializedIndex = `${JSON.stringify(index)}\n`;
   const serializedFreshness = `${JSON.stringify(index.freshness, null, 2)}\n`;
   assertIndexArtifactSize(serializedIndex);
+  const serializedIntegrityManifest = publishIntegrityManifest
+    ? `${JSON.stringify({
+        schemaVersion: INDEX_INTEGRITY_SCHEMA_VERSION,
+        indexRevision: index.indexRevision,
+        index: digestText(serializedIndex),
+        freshness: digestText(serializedFreshness),
+        snapshot: {
+          repoRoot: index.snapshot.repoRoot,
+          snapshotId: index.snapshot.snapshotId,
+          headCommit: index.snapshot.headCommit,
+          gitRoot: index.snapshot.gitRoot
+        }
+      }, null, 2)}\n`
+    : undefined;
+  const facts = allFacts(index);
+  const output = await ensureManagedArtifactDirectory(repoRoot, outputDir);
+  await ensureManagedArtifactDirectory(repoRoot, path.join(output.directory, "modules"));
   await writeManagedArtifactText(output, "index.json", serializedIndex);
   await writeManagedArtifactText(output, "freshness.json", serializedFreshness);
-  if (publishIntegrityManifest) {
-    await writeManagedArtifactText(output, "index-integrity.json", `${JSON.stringify({
-      schemaVersion: INDEX_INTEGRITY_SCHEMA_VERSION,
-      indexRevision: index.indexRevision,
-      index: digestText(serializedIndex),
-      freshness: digestText(serializedFreshness),
-      snapshot: {
-        repoRoot: index.snapshot.repoRoot,
-        snapshotId: index.snapshot.snapshotId,
-        headCommit: index.snapshot.headCommit,
-        gitRoot: index.snapshot.gitRoot
-      }
-    }, null, 2)}\n`);
+  if (serializedIntegrityManifest) {
+    await writeManagedArtifactText(output, "index-integrity.json", serializedIntegrityManifest);
   }
-  await writeFactsNdjson(output, allFacts(index));
+  await writeFactsNdjson(output, facts);
 }
 
 function assertIntegrityManifestInput(index: CodexaIndex): void {
