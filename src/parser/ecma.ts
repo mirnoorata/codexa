@@ -5,6 +5,8 @@ import type { ExtractContext, SyntaxNode } from "./context.js";
 import { baseFact, importFact, rangeFromOffsets, rangeOf, riskFact, symbolFact, usageFact } from "./facts.js";
 import { callName, dynamicImportSpecifier, jsxElementName } from "./nodes.js";
 import { commanderBindings, nearestCommanderCommandCall } from "./ecma-commander.js";
+import { ecmaLexicalBinding, ecmaLexicalBindingsByScope } from "./ecma-bindings.js";
+import { mcpReceiverBindingAvailable, mcpReceiverBindings, type McpReceiverBindings } from "./ecma-mcp-receivers.js";
 
 const MAX_EXECUTION_SURFACES_PER_FILE = 64;
 const MAX_EXECUTION_HANDLER_CALLS = 15;
@@ -19,15 +21,6 @@ interface ExecutionSurfaceCandidate {
   qualifiedName: string;
   anchor: ts.Node;
   handler: ts.Node;
-}
-
-interface McpReceiverBinding {
-  explicitMcpServer: boolean;
-  topLevel: boolean;
-}
-
-interface McpReceiverBindings {
-  byScope: Map<ts.Node, Map<string, McpReceiverBinding>>;
 }
 
 interface McpRegistrationHelpers {
@@ -485,94 +478,6 @@ function mcpHelperDeclarationForCall(
   bindingsByScope: Map<ts.Node, Map<string, ts.Identifier>>
 ): ts.Identifier | undefined {
   return ts.isIdentifier(call.expression) ? ecmaLexicalBinding(call.expression, bindingsByScope) : undefined;
-}
-
-function mcpReceiverBindings(sourceFile: ts.SourceFile): McpReceiverBindings {
-  const byScope = new Map<ts.Node, Map<string, McpReceiverBinding>>();
-  const register = (scope: ts.Node, identifiers: ts.Identifier[], explicitMcpServer = false): void => {
-    for (const identifier of identifiers) {
-      if (!/(?:^|mcp)server$/iu.test(identifier.text)) continue;
-      const names = byScope.get(scope) ?? new Map<string, McpReceiverBinding>();
-      names.set(identifier.text, { explicitMcpServer, topLevel: scope === sourceFile });
-      byScope.set(scope, names);
-    }
-  };
-  const visit = (node: ts.Node, scope: ts.Node): void => {
-    if (ts.isImportDeclaration(node) && node.importClause) {
-      const clause = node.importClause;
-      if (clause.name) register(sourceFile, [clause.name], true);
-      if (clause.namedBindings && ts.isNamespaceImport(clause.namedBindings)) register(sourceFile, [clause.namedBindings.name], true);
-      if (clause.namedBindings && ts.isNamedImports(clause.namedBindings)) register(sourceFile, clause.namedBindings.elements.map((element) => element.name), true);
-    }
-    if ((ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) && node.name) register(scope, [node.name]);
-    const nestedScope = ts.isFunctionLike(node) || ts.isBlock(node) || ts.isCatchClause(node) ? node : scope;
-    if (ts.isParameter(node)) register(nestedScope, ecmaBindingIdentifiers(node.name), hasMcpServerEvidence(node, sourceFile));
-    if (ts.isVariableDeclaration(node)) register(nestedScope, ecmaBindingIdentifiers(node.name), hasMcpServerEvidence(node, sourceFile));
-    if (ts.isCatchClause(node) && node.variableDeclaration) register(nestedScope, ecmaBindingIdentifiers(node.variableDeclaration.name));
-    ts.forEachChild(node, (child) => visit(child, nestedScope));
-  };
-  visit(sourceFile, sourceFile);
-  return { byScope };
-}
-
-function mcpReceiverBindingAvailable(identifier: ts.Identifier, bindings: McpReceiverBindings): boolean {
-  for (let current: ts.Node | undefined = identifier; current; current = current.parent) {
-    const binding = bindings.byScope.get(current)?.get(identifier.text);
-    if (binding) return binding.topLevel || binding.explicitMcpServer;
-  }
-  return false;
-}
-
-function hasMcpServerEvidence(node: ts.ParameterDeclaration | ts.VariableDeclaration, sourceFile: ts.SourceFile): boolean {
-  return [node.type, ts.isVariableDeclaration(node) ? node.initializer : undefined]
-    .some((value) => Boolean(value && /\bMcpServer\b/u.test(value.getText(sourceFile))));
-}
-
-function ecmaBindingIdentifiers(name: ts.BindingName): ts.Identifier[] {
-  if (ts.isIdentifier(name)) return [name];
-  return name.elements.flatMap((element) => ts.isOmittedExpression(element) ? [] : ecmaBindingIdentifiers(element.name));
-}
-
-function ecmaLexicalBindingsByScope(
-  sourceFile: ts.SourceFile,
-  trackedNames: Set<string>
-): Map<ts.Node, Map<string, ts.Identifier>> {
-  const scopes = new Map<ts.Node, Map<string, ts.Identifier>>();
-  const register = (scope: ts.Node, identifiers: ts.Identifier[]): void => {
-    for (const identifier of identifiers) {
-      if (!trackedNames.has(identifier.text)) continue;
-      const names = scopes.get(scope) ?? new Map<string, ts.Identifier>();
-      names.set(identifier.text, identifier);
-      scopes.set(scope, names);
-    }
-  };
-  const visit = (node: ts.Node, scope: ts.Node): void => {
-    if (ts.isImportDeclaration(node) && node.importClause) {
-      const clause = node.importClause;
-      if (clause.name) register(sourceFile, [clause.name]);
-      if (clause.namedBindings && ts.isNamespaceImport(clause.namedBindings)) register(sourceFile, [clause.namedBindings.name]);
-      if (clause.namedBindings && ts.isNamedImports(clause.namedBindings)) register(sourceFile, clause.namedBindings.elements.map((element) => element.name));
-    }
-    if ((ts.isFunctionDeclaration(node) || ts.isClassDeclaration(node)) && node.name) register(scope, [node.name]);
-    const nestedScope = ts.isFunctionLike(node) || ts.isBlock(node) || ts.isCatchClause(node) ? node : scope;
-    if (ts.isParameter(node)) register(nestedScope, ecmaBindingIdentifiers(node.name));
-    if (ts.isVariableDeclaration(node)) register(nestedScope, ecmaBindingIdentifiers(node.name));
-    if (ts.isCatchClause(node) && node.variableDeclaration) register(nestedScope, ecmaBindingIdentifiers(node.variableDeclaration.name));
-    ts.forEachChild(node, (child) => visit(child, nestedScope));
-  };
-  visit(sourceFile, sourceFile);
-  return scopes;
-}
-
-function ecmaLexicalBinding(
-  identifier: ts.Identifier,
-  bindingsByScope: Map<ts.Node, Map<string, ts.Identifier>>
-): ts.Identifier | undefined {
-  for (let current: ts.Node | undefined = identifier; current; current = current.parent) {
-    const binding = bindingsByScope.get(current)?.get(identifier.text);
-    if (binding) return binding;
-  }
-  return undefined;
 }
 
 function nodeContainsCall(node: ts.Node, predicate: (call: ts.CallExpression) => boolean): boolean {

@@ -1,10 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
+import { fileURLToPath } from "node:url";
 import os from "node:os";
 import path from "node:path";
 import { expect, it } from "vitest";
 import { extractWorkflowTraces } from "../src/graph.js";
 import { buildIndex } from "../src/indexer.js";
+import { MCP_TOOL_NAMES } from "../src/mcp/tool-registry.js";
+import { parseFile } from "../src/parser.js";
 import type { CodexaIndex, FileFact, SymbolFact, TestEdgeFact } from "../src/types.js";
 
 const COMMANDER_MARKER = "codexa:commander-command";
@@ -30,6 +33,9 @@ it("indexes literal Commander and MCP handlers as bounded execution workflows", 
     const directTool = executionSurface(index, "src/mcp.ts", MCP_MARKER, "tool_direct");
     const injectedTool = executionSurface(index, "src/mcp.ts", MCP_MARKER, "tool_injected");
     const loopTool = executionSurface(index, "src/mcp.ts", MCP_MARKER, "tool_loop_a");
+    const scopedOptionsTool = executionSurface(index, "src/mcp.ts", MCP_MARKER, "tool_scoped_options");
+    const scopedObjectTool = executionSurface(index, "src/mcp.ts", MCP_MARKER, "tool_scoped_object");
+    const scopedLoopTool = executionSurface(index, "src/mcp.ts", MCP_MARKER, "tool_scoped_loop_a");
 
     expect(inlineCommand).toMatchObject({ kind: "module", source: "typescript-syntax", confidence: "derived" });
     expect(inlineCommand.range?.startLine).toBeGreaterThan(0);
@@ -49,6 +55,9 @@ it("indexes literal Commander and MCP handlers as bounded execution workflows", 
     expectCall(index, directTool, "directHandler");
     expectCall(index, injectedTool, "directHandler");
     expectCall(index, loopTool, "runTool");
+    expectCall(index, scopedOptionsTool, "runTool");
+    expectCall(index, scopedObjectTool, "workflowHandler");
+    expectCall(index, scopedLoopTool, "runTool");
 
     const optionParser = index.symbols.find((symbol) => symbol.path === "src/handlers.ts" && symbol.name === "optionParser");
     const buildConfig = index.symbols.find((symbol) => symbol.path === "src/handlers.ts" && symbol.name === "buildConfig");
@@ -69,7 +78,10 @@ it("indexes literal Commander and MCP handlers as bounded execution workflows", 
       "shadowed-mcp-alternate",
       "shadowed-mcp-helper",
       "shadowed-mcp-object-helper",
-      "shadowed-mcp-loop"
+      "shadowed-mcp-loop",
+      "shadowed-mcp-options",
+      "shadowed-mcp-container-as-server",
+      "shadowed-mcp-mixed-container"
     ].includes(symbol.name))).toBe(false);
     expect(index.symbols.some((symbol) => symbol.decorators.includes(COMMANDER_MARKER) && ["shadowed-singleton", "wrong-cjs-package", "shadowed-require"].includes(symbol.name))).toBe(false);
     expect(index.symbols.some((symbol) =>
@@ -94,6 +106,27 @@ it("indexes literal Commander and MCP handlers as bounded execution workflows", 
   } finally {
     await rm(repo, { recursive: true, force: true });
   }
+});
+
+it("recognizes every production MCP registration from a cold source parse", async () => {
+  const absolutePath = fileURLToPath(new URL("../src/mcp/tools.ts", import.meta.url));
+  const metadata = await stat(absolutePath);
+  const parsed = await parseFile({
+    repoRoot: path.dirname(path.dirname(absolutePath)),
+    relativePath: "src/mcp/tools.ts",
+    absolutePath,
+    dirty: false,
+    sizeBytes: metadata.size,
+    snapshotId: "production-mcp-registration-contract",
+    indexedAt: "2026-08-04T00:00:00.000Z"
+  });
+  const discovered = parsed.symbols
+    .filter((symbol) => symbol.decorators.includes(MCP_MARKER))
+    .map((symbol) => symbol.name)
+    .sort();
+
+  expect(parsed.parserErrors).toEqual([]);
+  expect(discovered).toEqual([...MCP_TOOL_NAMES].sort());
 });
 
 it("keeps derived execution surfaces below coexisting route, job, and manifest workflows despite many indirect tests", async () => {
@@ -312,6 +345,40 @@ async function createExecutionSurfaceRepo(): Promise<string> {
       "  { name: 'tool_loop_b', handler: () => workflowHandler() }",
       "] satisfies Array<{ name: string; handler: () => unknown }>",
       "for (const tool of loopTools) defineMcpTool(tool)",
+      "interface ProductionMcpOptions { server: McpServer }",
+      "function registerProductionMcpTool({ server }: Pick<ProductionMcpOptions, 'server'>, tool: { name: string; handler: () => unknown }) {",
+      "  return server.registerTool(tool.name, {}, tool.handler)",
+      "}",
+      "function registerProductionTools(options: ProductionMcpOptions) {",
+      "  const { server } = options",
+      "  const defineTool = <T extends unknown>(name: string, config: unknown, handler: () => T) => server.registerTool(name, config, handler)",
+      "  const defineMcpTool = <T extends { name: string; handler: () => unknown }>(tool: T) => registerProductionMcpTool({ server }, tool)",
+      "  defineTool('tool_scoped_options', {}, () => runTool())",
+      "  defineMcpTool({ name: 'tool_scoped_object', handler: () => workflowHandler() })",
+      "  const scopedTools = [",
+      "    { name: 'tool_scoped_loop_a', handler: () => runTool() },",
+      "    { name: 'tool_scoped_loop_b', handler: () => workflowHandler() }",
+      "  ] satisfies Array<{ name: string; handler: () => unknown }>",
+      "  for (const tool of scopedTools) defineMcpTool(tool)",
+      "}",
+      "registerProductionTools({ server })",
+      "interface NonMcpOptions { server: typeof audit }",
+      "function registerShadowedOptions(options: NonMcpOptions) {",
+      "  const { server } = options",
+      "  const defineTool = (name: string, config: unknown, handler: () => unknown) => server.registerTool(name, config, handler)",
+      "  defineTool('shadowed-mcp-options', {}, () => dynamicHandler())",
+      "}",
+      "void registerShadowedOptions",
+      "function rejectContainerAsReceiver(server: ProductionMcpOptions) {",
+      "  server.registerTool('shadowed-mcp-container-as-server', {}, () => dynamicHandler())",
+      "}",
+      "void rejectContainerAsReceiver",
+      "interface MixedServerOptions { server: typeof audit; mcpServer: McpServer }",
+      "function rejectMixedContainer(options: MixedServerOptions) {",
+      "  const { server } = options",
+      "  server.registerTool('shadowed-mcp-mixed-container', {}, () => dynamicHandler())",
+      "}",
+      "void rejectMixedContainer",
       "function shadowLoopTools(defineMcpTool: (...args: unknown[]) => unknown) {",
       "  const loopTools = [{ name: 'shadowed-mcp-loop', handler: () => dynamicHandler() }]",
       "  for (const tool of loopTools) defineMcpTool(tool)",
