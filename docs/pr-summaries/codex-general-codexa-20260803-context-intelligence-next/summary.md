@@ -6,10 +6,11 @@ PR summary for `codex/context-intelligence-next` against `main`.
 - Validated feature source head: `0474276`; published as `869257e`
 - CI hardening head: `41118bb`; published as `9c29408`
 - First review hardening head: `a6ac9d0`; published as `05a1dc3`
-- Final code head: `2e0c140`
-- Final code tree: `78bfea34aca04cf7236ddfc0d43655fab1d50ba3`
-- Branch delta before this evidence refresh: 70 files, 6,159 insertions, 288 deletions
-- Commits before this evidence refresh: 12 Conventional Commits
+- Final code head: `0133b5f`
+- Published code head: `c780dee`
+- Final code tree: `be815a056a19ce231b8200d6fc8e0e4a87617e8f`
+- Branch delta before this evidence refresh: 73 files, 6,737 insertions, 336 deletions
+- Commits before this evidence refresh: 16 Conventional Commits
   - `6591e60` - `feat: add bounded causal change intelligence`
   - `0474276` - `test: accept SDK validation wording`
   - `d18637f` - `docs: add context intelligence PR summary`
@@ -22,6 +23,10 @@ PR summary for `codex/context-intelligence-next` against `main`.
   - `4862bb4` - `perf(startup): attest compact index status`
   - `1eecdd8` - `fix(index): bind witness to serialized snapshot`
   - `2e0c140` - `fix(index): recognize typed MCP server receivers`
+  - `0a962f5` - `docs: refresh final context intelligence evidence`
+  - `ad86a48` - `fix(parser): validate MCP receiver property provenance`
+  - `470fcc9` - `fix(index): require current graph workflow lanes`
+  - `0133b5f` - `fix(index): cache status integrity safely`
 
 ## Executive Outcome
 
@@ -85,10 +90,11 @@ snapshot boundaries.
 
 ### 4. Safe index and transport evolution
 
-- Advances the derived index revision to 4. Earlier indexes remain readable but
-  stale and rebuild; revision-4 indexes fail closed if exact workflow membership
-  is missing or malformed. The parse-cache revision also advances so prior
-  parser results cannot survive changed execution-surface semantics.
+- Advances the derived index revision to 6. Earlier indexes remain readable but
+  stale and rebuild; revision-6 indexes fail closed if graph/workflow lanes or
+  exact workflow membership are missing or malformed. The parse-cache revision
+  also advances so prior parser results cannot survive changed execution-surface
+  semantics.
 - Persists only the paths omitted by public workflow caps in an internal
   `workflowMembershipSpill` map. Every public workflow, MCP, facts, and
   relational projection remains unchanged and bounded.
@@ -99,14 +105,15 @@ snapshot boundaries.
   MCP profiles.
 - Keeps existing public commands and MCP tools intact; the change enriches
   their evidence rather than introducing another overlapping surface.
-- Publishes a compact `index-integrity.json` witness in the same atomic index
-  bundle. It binds exact index/freshness byte lengths and SHA-256 digests to
-  the current revision and checkout snapshot identity.
+- Publishes a manifest-v2 `index-integrity.json` witness in the same atomic index
+  bundle. It binds exact index/freshness byte lengths, SHA-256 digests, stable
+  file identity, the current revision, and checkout snapshot identity.
 - Validates current-revision array shape and exact workflow membership before
-  issuing the witness. Status and SessionStart stream-hash the bounded index
-  with no-follow, single-link, stable-descriptor, and final-path checks instead
-  of materializing the full JSON object. Missing, legacy, torn, or mismatched
-  witnesses fall back to the established full parser and remain fail-closed.
+  issuing the witness. The writer probes same-size rewrite observability on the
+  actual filesystem. A proven filesystem uses metadata-only validation for an
+  unchanged index; uncertain filesystems and changed metadata use a secure
+  full digest. Recognized current-manifest mismatches fail closed in status and
+  normal index loads; legacy revisions remain readable but stale.
 - Updates `@modelcontextprotocol/sdk` from 1.29.0 to 1.30.0. Codexa's response
   budget remains at most 512 KiB, well below the SDK's 10 MiB stdio input cap.
   The resolved dependency audit is clean.
@@ -116,36 +123,45 @@ snapshot boundaries.
 An exact-head disposable JavaScript checkout service was exercised through the
 same sequence a developer uses: initialize, index, inspect, plan, edit, observe
 staleness, auto-refresh, test, post-edit review, proof, commit, and strict
-committed review. Codexa indexed 10 files, 12 symbols, 68 usage sites, zero
-parser errors, and both the Commander `checkout` and MCP `checkout_quote`
+committed review. Codexa indexed 8 files, 13 symbols, 54 usage sites, 53 graph
+edges, zero parser errors, and both the Commander `checkout` and MCP `checkout_quote`
 workflows.
 
 The saved plan explicitly authorized one implementation and one test file. A
 quantity-limit edit made status report `stale (dirty-files-changed)`; repo-map
-then auto-refreshed to `fresh-with-dirty-overlay`. Four real Node tests and a
-direct boundary smoke passed. Post-edit review returned `continue` with complete
+then auto-refreshed to `fresh-with-dirty-overlay`. The targeted and full-suite
+Node test runs each passed 2/2. Post-edit review returned `continue` with complete
 2/2 coverage, no scope drift, and completion authority `complete`; proof was
 `ready` with zero gaps. After the Conventional Commit
 `feat(pricing): cap checkout line quantity`, strict committed review returned
 `PASS` with the saved plan matched and no concerns.
 
-A real stdio MCP connection initialized in 499 ms, listed the exact three core
-tools, and completed a 129 ms `search` call whose code context contained both
+A real stdio MCP connection initialized in 506 ms, listed the exact three core
+tools, and completed a 127 ms `search` call whose code context contained both
 the edited implementation and new limit message. Codexa initialization also
 preserved pre-existing Graphify-like TOML and JSON configuration exactly while
 adding only its own server entry. The current tool environment does not expose
 a live external Graphify MCP server, so no external Graphify call is claimed.
 
+Two adversarial index simulations also passed. Removing current graph/workflow
+lanes produced `missing-index`; a same-size, structurally valid index mutation
+with restored mtime also produced `missing-index`, and direct loading returned
+null. Auto-refresh restored a valid matching index/manifest pair and the current
+graph/workflow lanes in both cases.
+
+Natural manifest-v2 validation with `metadataFastPath=true` performed zero
+index reads; a forced false capability performed one 73,711-byte digest read.
+
 ## Verification on the Exact Source Head
 
-Frozen validation on final code head `2e0c140`:
+Frozen validation on final code head `0133b5f` (tree `be815a0`):
 
 - Build, typecheck, lint, release-path, publish, privacy, and `git diff --check`
   passed.
-- The canonical clean-archive `npm run security:check` passed in 504 seconds:
-  110/110 Vitest files, 1,247 passes, 1 intentional skip, and no failures. The
+- The canonical clean-archive `npm run security:check` passed in 487 seconds:
+  110/110 Vitest files, 1,251 passes, 1 intentional skip, and no failures. The
   full security log SHA-256 is
-  `d5862cbf1e4eec1f5c892d2593bb8e8c58574569d65ea62ee5a7286a2434bef2`.
+  `d4d3f8dbc9cb0216da59734bdf7bdfad0350b9ac13954b759e38e78a33904deb`.
 - Claude integration: 28 command smokes and 89 hook smokes (117 total).
 - Startup context gate: project kernel 2,823/3,072 bytes; 3/23 direct tools;
   measured reductions of 87.2% and 69.9% on the guarded surfaces.
@@ -153,46 +169,60 @@ Frozen validation on final code head `2e0c140`:
 - Clean public snapshot, package/plugin hygiene, and one-commit source checks
   passed; the installed-package smoke passed all 31 checks. The preserved
   687-file package SHA-256 is
-  `d40d174cce2a7cb505d09497a3707168ce12c08ecd3f8d925e2966efc8bafd5a`.
-- The focused final membership, schema, extraction, artifact-size, integrity,
-  identity, and SessionStart suites
-  passed: 9 files and 49 tests before the size guard, 4 files and 14 tests after
-  it, plus the final revision-2 compatibility schema run at 9/9.
+  `ab7268ddc40d81dfc4b6821d8793c26d92e04b8a93803822e3b80f055ca2e17b`.
+- The broad final schema, managed-artifact, identity, SessionStart, init,
+  recovery, and indexer sweep passed 155/155. Independent exact-diff review
+  separately passed 42/42 focused security/identity tests and 47/47 changed
+  fixture/SessionStart tests before reporting no remaining P0-P2 finding.
 
 Additional release evidence:
 
 - Eval gate: 21 scenarios, score 1, `rawRgBetter=0`, and zero failures.
   The exact-head report SHA-256 is
-  `92bcdba87a88acef3f669c1f1d65b66279feb3ac90c73503515df6ca60ff1e3e`.
-- CI-scaled hot-path benchmark after the integrity witness: all 12 gates passed
-  on exact final code head `2e0c140`. SessionStart measured 1,151 ms p95 against
-  the 1,000 ms base target and 1,500 ms gate; MCP freshness measured 80 ms p95
-  against the 500 ms base target and 750 ms gate. Ten of twelve metrics also met
-  their unscaled base targets; adoption missed its soft target by 342 ms. The
-  report SHA-256 is
-  `7a5f20a0b60d2bfc7e1c387d2673200c3bcbaff6ef4f28e30fe959822228c06c`.
-  The 67,763,283-byte index SHA-256 is
-  `b9757051fc43d5cac20dbea26ec3ea68c4d60c07c833410ece5a4d8cc5058ed4`;
-  its 539-byte integrity-manifest SHA-256 is
-  `fa6be57a66cfcf42f0b51dc0717339b5cb0ce6da98df4d1f4ec4b86b120cbbee`.
-- A disclosed second benchmark had one isolated 10,966 ms CLI `repo-map`
-  sample and failed that gate. Twenty immediate exact-command probes did not
-  reproduce it: p95 1,120 ms, max 1,194 ms, 20/20 successful, identical output,
-  no locks, and unchanged artifacts. This is retained as host-tail evidence,
-  not silently discarded.
-- Pinned v0.12 transport comparison: all gates passed; tool-list reduction
+  `65f4b051da24215d60086d15706791524eed948d5b29fa4ea122ac03456da251`.
+- CI-scaled hot-path benchmark: all 12 release gates passed on exact final code
+  head `0133b5f`. Key p95 measurements were index 14,982 ms, SessionStart 1,079
+  ms, status 645 ms, repo-map 1,263 ms, explicit brief 1,604 ms, task-only brief
+  3,506 ms, cached hook 677 ms, MCP startup 620 ms, MCP freshness 44 ms, MCP
+  repo-map 106 ms, and MCP task-brief 341 ms. Adoption at 5,976 ms and
+  SessionStart missed their unscaled soft targets but passed the 1.5x CI gates.
+  Report SHA-256:
+  `204f77387f7ad6cbb0720fdbb4515302f0e1471b775c627d3440e2004353fd17`.
+  Its published 68 MiB index and manifest SHA-256 values are
+  `cc761634ec899106c1c70df142312338e78f67f84d123abd3e4770da96d801d7`
+  and `002efcc9afbbed370089e25403b69103394a973eadd56147ac38627e5f0c025d`.
+- The first canonical attempt correctly stopped before measurement because its
+  clean-archive preflight rejected a dependency symlink. The rerun used copied
+  dependencies. One exploratory repo-map sample reached 3,857 ms while the full
+  security suite was active; after that load cleared, uncontended p95 was 1,250
+  ms, with status at 606 ms and explicit brief at 1,612 ms. Both facts are
+  retained rather than silently discarded. The uncontended report SHA-256 is
+  `2b19494e32d57d03701a66b57752ca59ac77a2a9cdac59f4852623070378d908`.
+- Pinned v0.12 transport comparison: all 15 gates passed; tool-list reduction
   85.3%, advertisement plus discovery reduction 59.2%, startup payload reduction
-  56.2%, first-result reduction 75.1%, and repeated-result reduction 86.6%.
+  56.2%, first-result reduction 75.1%, and repeated-result reduction 86.7%.
   The exact-head report SHA-256 is
-  `85bbd0132ece083f6a27ac644cf955f46a87ad8ff4f818f41e48aa2f713e8b9a`.
+  `cadc5e353041d6b7a3cf3bdf1ef591d49a1035b5bffe59055a0dde5ee15abaff`.
 - Focused scale regression: 22/22 passed; execution-surface, MCP transport, and
   coexistence regressions passed.
+- Fifty in-process status calls against the 68 MiB capable-filesystem index were
+  all fresh at 19.269 ms p50, 43.876 ms p95, and 222.316 ms max. Exact focused
+  tests prove zero digest calls on the capable path and one digest on forced
+  fallback. Their evidence hashes are
+  `25d264034e722128c1c130349f0d447a3ad4c6065058d01cac68d1a3568e811e`
+  and `a6200d147a0f64b0ed61961ca12270527519a3298f70e6e2022f6a2b9da9dc2c`.
 
-A faithful cold and warm final-head index of Codexa contained 483 files, 5,504
-symbols, 99,086 usage sites, and 43 workflows in 67,763,283 bytes. The 20
+A faithful cold and warm final-head index of Codexa contained 483 files, 5,522
+symbols, 99,472 usage sites, 41,972 graph edges, and 43 workflows in 68,010,520
+bytes. The 20
 Commander and 23 MCP workflows exactly matched production registrations, with
-zero parser errors; normalized cold/warm index SHA-256 was
-`d08960e96c0dac38c2daac0902ca2bafa5e85061c6de7ae8eaa5ea31b4101d9d`.
+zero parser errors; normalized cold/warm index and facts were exactly equal at
+SHA-256
+`cfe8324eea273ba961c28b2376722c6e2ab6c6aeedb0d9e659680aee9470c4d0`
+and `f6ba5304ae61da3b07e18483979a848e642e1c7d15fcbeedcbe04bf8aa699472`.
+The live full-profile MCP contract matched all 23 registry entries, marker
+symbols, and workflow titles; report SHA-256 was
+`41fcb5b1eedd4dfd4344592633455cf24935a8a55e408dfa4f7fe45337c7631a`.
 Only 2 workflows needed
 spill membership, for 9 spill entries (5 unique paths) and a maximum of 5 on
 one workflow.
@@ -230,8 +260,8 @@ that inference with exact pre-cap membership spill data, threads it through
 plan, workflow query, evidence, post-edit, proof, and required-check consumers,
 and adds regressions for test #21, test-symbol-only scope, and dependent tests
 seeded by typed `TEST_COVERS_WORKFLOW` steps. Legacy revision-2 artifacts
-rebuild, and revision-3
-artifacts cannot load with incomplete spill data. Independent semantic review
+rebuild, and the then-current revision-3 artifacts cannot load with incomplete
+spill data. Independent semantic review
 reported no P0-P3 finding.
 
 The exact-head performance preflight then exposed a high-variance startup path:
@@ -260,29 +290,44 @@ marker set exactly equals the registry. Cold and warm self-index signatures now
 match at all fact lanes and produce all 43 execution workflows. Independent
 adversarial re-review found no P0-P2 issue.
 
+The next PR review found that an unrelated nested property named `server` could
+still be accepted in a file that also imported the MCP SDK. `ad86a48` records
+exact typed property-access nodes and accepts only the MCP-typed property;
+mixed HTTP/MCP containers and inline look-alikes now stay out of the graph.
+Independent human simulation confirms `checkout_quote` is indexed while a
+Graphify-like `graphify_query` look-alike is not.
+
+Two final integrity reviews then closed derivation and hot-path gaps. `470fcc9`
+requires current graph and workflow lanes before a bundle can load. `0133b5f`
+advances to revision 6 and manifest v2, capability-gates metadata validation,
+uses SHA-256 whenever capability or identity is uncertain, and distinguishes a
+current integrity mismatch from legacy absence so a valid-looking tamper cannot
+fall through to the generic loader. Normal current-index loads independently
+verify the manifest digest and snapshot. All four GitHub review threads were
+replied to with exact published commits and resolved.
+
 ## Risk-Budgeted Review
 
 Finding weights are critical 8, high 5, medium 3, and low 1. Merge requires no
 critical or high finding and no more than 4 residual points.
 
-Independent review found and closed five release-significant risks before the
-source head was published: lexical receiver shadowing in Commander/MCP
-extraction, test-heavy workflow truncation evicting production files, and eager
-object-heavy adjacency retention, plus mutable writer input crossing the
-integrity-witness publication await, and stale parser cache masking production
-MCP receiver provenance. Regression tests cover each fix. The final
-correctness, authority, scale, and dependency reviews report 0 critical, 0
-high, and 0 medium findings. The first capped-membership P2 and the Windows
-failure-cause race were closed. The second capped-membership P2 is code-addressed
-with focused regressions and clean independent re-review; its GitHub thread
-remains pending final-head publication and exact-head CI/review.
+Independent review found and closed every release-significant finding before
+this evidence commit: lexical receiver shadowing, workflow membership lost to
+public caps, eager object-heavy adjacency retention, mutable writer input,
+stale parser cache, unvalidated nested MCP receiver properties, incomplete
+current graph/workflow lanes, and full-index status hashing plus its associated
+digest-mismatch fallback. Regression tests cover each fix. The final exact-diff
+review reports no remaining P0, P1, or P2 finding; all four actionable GitHub
+threads are resolved. Correctness, authority, scale, dependency, security, and
+human reviews therefore report 0 critical, 0 high, and 0 medium findings.
 
 Residual score: **3/10 (within budget)**. Low-risk watch items are the one-time
 `O(E log E)` canonical typed-array sort used to build a deterministic adjacency
 index, pathological repetition of large hidden workflow memberships, and
-intentionally shallow current-file type provenance for unusual merged or
-shadowed MCP option types. Hidden membership is byte-bounded and rejected before
-publication; traversal and retained adjacency storage remain explicitly bounded.
+unusual remote-filesystem metadata coherency. Hidden membership is byte-bounded
+and rejected before publication; traversal and retained adjacency storage remain
+explicitly bounded. Metadata caching is capability-gated and automatically
+falls back to content hashing rather than accepting an unproven shortcut.
 
 ## Scope Honesty
 

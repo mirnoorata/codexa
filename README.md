@@ -570,7 +570,11 @@ repo's `.codex/codebase/` directory:
 For lay readers, these are the maps and checklists Codex reads. For engineers,
 the durable machine-readable index is `index.json` plus `facts.ndjson`;
 `index-integrity.json` is the compact, atomically published status witness used
-to avoid materializing the full index during startup. The
+to avoid materializing the full index during startup. Its revision-6 manifest
+binds SHA-256 content identity to stable file metadata. On filesystems that
+prove same-size rewrite observability, unchanged status checks inspect metadata
+without rereading the index; uncertain filesystems and changed metadata fall
+back to a full digest. Current-manifest mismatches fail closed. The
 Markdown files are compact human/agent-facing projections of the same facts.
 `relational-packets.md` is the read-first graph packet view for process traces
 and module clusters; the JSON companions are bounded machine-readable exports
