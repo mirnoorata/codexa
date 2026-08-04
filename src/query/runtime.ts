@@ -46,8 +46,10 @@ export async function requireIndex(
 export async function statusQuery(repoRoot: string, options: { recover?: boolean } = {}): Promise<QueryResult> {
   void options;
   const repo = path.resolve(repoRoot);
-  const status = await loadIndexStatusReadOnly(repo);
-  const index = status ? undefined : await loadIndexReadOnly(repo);
+  const statusResult = await loadIndexStatusReadOnly(repo);
+  const integrityFailure = Boolean(statusResult && "integrityFailure" in statusResult);
+  const status = statusResult && !("integrityFailure" in statusResult) ? statusResult : undefined;
+  const index = status ? undefined : integrityFailure ? null : await loadIndexReadOnly(repo);
   const observedFreshness = status?.freshness ?? await getFreshness(repo, index, { recover: false });
   const identitySource = status?.identity ?? index;
   const identityIssue = identitySource ? findIndexIdentityIssue(repo, identitySource, observedFreshness) : undefined;

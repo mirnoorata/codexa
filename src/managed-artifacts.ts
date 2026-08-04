@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { constants, promises as fs, type Stats } from "node:fs";
+import { constants, promises as fs, type BigIntStats, type Stats } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
 
@@ -8,8 +8,19 @@ export interface ManagedArtifactDirectory {
   repoReal: string;
 }
 
-export interface ManagedArtifactDigest {
+export interface ManagedArtifactIdentity {
+  device: string;
+  inode: string;
+  modifiedTimeNs: string;
+  changedTimeNs: string;
+}
+
+export interface ManagedArtifactState {
   sizeBytes: number;
+  identity: ManagedArtifactIdentity;
+}
+
+export interface ManagedArtifactDigest extends ManagedArtifactState {
   sha256: string;
 }
 
@@ -137,26 +148,27 @@ export async function digestManagedArtifact(
   const parentSegments = segments.slice(0, -1);
   const parent = await requireManagedArtifactDirectory(repo, path.join(repo, ...parentSegments));
   const filePath = path.join(parent.directory, segments.at(-1)!);
-  const beforeOpen = await fs.lstat(filePath);
+  const beforeOpen = await fs.lstat(filePath, { bigint: true });
   assertRegularSingleLink(beforeOpen, filePath);
   const handle = await fs.open(
     filePath,
     constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW
   );
   try {
-    const opened = await handle.stat();
+    const opened = await handle.stat({ bigint: true });
     assertRegularSingleLink(opened, filePath);
     if (!sameFileIdentity(beforeOpen, opened)) {
       throw new Error(`Codexa managed artifact changed while it was being opened: ${filePath}`);
     }
-    if (opened.size > maxBytes) {
+    if (opened.size > BigInt(maxBytes)) {
       throw new Error(`Codexa managed artifact exceeds ${maxBytes} bytes: ${filePath}`);
     }
+    const openedSize = Number(opened.size);
     const hash = createHash("sha256");
-    const chunk = Buffer.allocUnsafe(Math.min(1024 * 1024, Math.max(1, opened.size)));
+    const chunk = Buffer.allocUnsafe(Math.min(1024 * 1024, Math.max(1, openedSize)));
     let offset = 0;
-    while (offset < opened.size) {
-      const requested = Math.min(chunk.length, opened.size - offset);
+    while (offset < openedSize) {
+      const requested = Math.min(chunk.length, openedSize - offset);
       const { bytesRead } = await handle.read(chunk, 0, requested, offset);
       if (bytesRead < 1) {
         throw new Error(`Codexa managed artifact ended before its declared size: ${filePath}`);
@@ -164,18 +176,141 @@ export async function digestManagedArtifact(
       hash.update(chunk.subarray(0, bytesRead));
       offset += bytesRead;
     }
-    const afterRead = await handle.stat();
+    const afterRead = await handle.stat({ bigint: true });
     assertRegularSingleLink(afterRead, filePath);
-    if (!sameFileIdentity(opened, afterRead) || afterRead.size !== opened.size || offset !== opened.size) {
+    if (!sameBigIntFileState(opened, afterRead) || offset !== openedSize) {
       throw new Error(`Codexa managed artifact changed while it was being digested: ${filePath}`);
     }
     await validateManagedArtifactDirectory(parent);
-    const named = await fs.lstat(filePath);
+    const named = await fs.lstat(filePath, { bigint: true });
     assertRegularSingleLink(named, filePath);
-    if (!sameFileIdentity(afterRead, named) || named.size !== afterRead.size) {
+    if (!sameBigIntFileState(afterRead, named)) {
       throw new Error(`Codexa managed artifact path changed while it was being digested: ${filePath}`);
     }
-    return { sizeBytes: opened.size, sha256: hash.digest("hex") };
+    return {
+      sizeBytes: openedSize,
+      sha256: hash.digest("hex"),
+      identity: managedArtifactIdentity(named)
+    };
+  } finally {
+    await handle.close();
+  }
+}
+
+export async function inspectManagedArtifact(
+  repoRoot: string,
+  segments: readonly string[],
+  maxBytes: number
+): Promise<ManagedArtifactState> {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+    throw new Error("Codexa managed artifact inspection limit must be a positive integer");
+  }
+  if (segments.length === 0) {
+    throw new Error("Codexa managed artifact path must name a file");
+  }
+  for (const segment of segments) requireArtifactSegment(segment);
+  const repo = path.resolve(repoRoot);
+  const parentSegments = segments.slice(0, -1);
+  const parent = await requireManagedArtifactDirectory(repo, path.join(repo, ...parentSegments));
+  const filePath = path.join(parent.directory, segments.at(-1)!);
+  const beforeOpen = await fs.lstat(filePath, { bigint: true });
+  assertRegularSingleLink(beforeOpen, filePath);
+  const handle = await fs.open(
+    filePath,
+    constants.O_RDONLY | constants.O_NONBLOCK | constants.O_NOFOLLOW
+  );
+  try {
+    const opened = await handle.stat({ bigint: true });
+    assertRegularSingleLink(opened, filePath);
+    if (!sameBigIntFileState(beforeOpen, opened)) {
+      throw new Error(`Codexa managed artifact changed while it was being inspected: ${filePath}`);
+    }
+    if (opened.size > BigInt(maxBytes)) {
+      throw new Error(`Codexa managed artifact exceeds ${maxBytes} bytes: ${filePath}`);
+    }
+    await validateManagedArtifactDirectory(parent);
+    const named = await fs.lstat(filePath, { bigint: true });
+    assertRegularSingleLink(named, filePath);
+    if (!sameBigIntFileState(opened, named)) {
+      throw new Error(`Codexa managed artifact path changed while it was being inspected: ${filePath}`);
+    }
+    return { sizeBytes: Number(named.size), identity: managedArtifactIdentity(named) };
+  } finally {
+    await handle.close();
+  }
+}
+
+/**
+ * Prove that this artifact's filesystem advances ctime for the same-inode,
+ * same-size rewrite an integrity cache must detect. The byte is written back
+ * unchanged and the original mtime is restored before each observation. A
+ * false result disables the metadata fast path; callers still verify SHA-256.
+ */
+export async function probeManagedArtifactMetadataFastPath(
+  repoRoot: string,
+  segments: readonly string[],
+  maxBytes: number
+): Promise<boolean> {
+  if (!Number.isSafeInteger(maxBytes) || maxBytes < 1) {
+    throw new Error("Codexa managed artifact probe limit must be a positive integer");
+  }
+  if (segments.length === 0) {
+    throw new Error("Codexa managed artifact path must name a file");
+  }
+  for (const segment of segments) requireArtifactSegment(segment);
+  const repo = path.resolve(repoRoot);
+  const parentSegments = segments.slice(0, -1);
+  const parent = await requireManagedArtifactDirectory(repo, path.join(repo, ...parentSegments));
+  const filePath = path.join(parent.directory, segments.at(-1)!);
+  const beforeOpen = await fs.lstat(filePath, { bigint: true });
+  assertRegularSingleLink(beforeOpen, filePath);
+  const handle = await fs.open(
+    filePath,
+    constants.O_RDWR | constants.O_NONBLOCK | constants.O_NOFOLLOW
+  );
+  try {
+    const opened = await handle.stat({ bigint: true });
+    assertRegularSingleLink(opened, filePath);
+    if (!sameBigIntFileState(beforeOpen, opened)) {
+      throw new Error(`Codexa managed artifact changed while it was being probed: ${filePath}`);
+    }
+    if (opened.size < 1n || opened.size > BigInt(maxBytes)) {
+      return false;
+    }
+
+    const byte = Buffer.allocUnsafe(1);
+    const read = await handle.read(byte, 0, 1, 0);
+    if (read.bytesRead !== 1) {
+      throw new Error(`Codexa managed artifact could not be sampled for metadata probing: ${filePath}`);
+    }
+    const originalAtimeSeconds = Number(opened.atimeNs) / 1_000_000_000;
+    const originalMtimeSeconds = Number(opened.mtimeNs) / 1_000_000_000;
+    let observed = opened;
+    let capable = true;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      const written = await handle.write(byte, 0, 1, 0);
+      if (written.bytesWritten !== 1) {
+        throw new Error(`Codexa managed artifact could not be rewritten for metadata probing: ${filePath}`);
+      }
+      await handle.sync();
+      await handle.utimes(originalAtimeSeconds, originalMtimeSeconds);
+      await handle.sync();
+      const afterWrite = await handle.stat({ bigint: true });
+      assertRegularSingleLink(afterWrite, filePath);
+      if (!sameFileIdentity(observed, afterWrite) || observed.size !== afterWrite.size) {
+        throw new Error(`Codexa managed artifact changed identity while it was being probed: ${filePath}`);
+      }
+      if (afterWrite.ctimeNs <= observed.ctimeNs) capable = false;
+      observed = afterWrite;
+    }
+
+    await validateManagedArtifactDirectory(parent);
+    const named = await fs.lstat(filePath, { bigint: true });
+    assertRegularSingleLink(named, filePath);
+    if (!sameBigIntFileState(observed, named)) {
+      throw new Error(`Codexa managed artifact path changed while it was being probed: ${filePath}`);
+    }
+    return capable;
   } finally {
     await handle.close();
   }
@@ -292,14 +427,33 @@ function requireArtifactSegment(segment: string): void {
   }
 }
 
-function assertRegularSingleLink(entry: Stats, filePath: string): void {
-  if (!entry.isFile() || entry.isSymbolicLink() || entry.nlink !== 1) {
+function assertRegularSingleLink(entry: Stats | BigIntStats, filePath: string): void {
+  const singleLink = typeof entry.nlink === "bigint" ? entry.nlink === 1n : entry.nlink === 1;
+  if (!entry.isFile() || entry.isSymbolicLink() || !singleLink) {
     throw new Error(`Codexa refuses redirected or non-regular managed artifact: ${filePath}`);
   }
 }
 
-function sameFileIdentity(left: Stats, right: Stats): boolean {
-  return left.dev === right.dev && left.ino === right.ino;
+function sameFileIdentity(left: Stats | BigIntStats, right: Stats | BigIntStats): boolean {
+  return String(left.dev) === String(right.dev) && String(left.ino) === String(right.ino);
+}
+
+function sameBigIntFileState(left: BigIntStats, right: BigIntStats): boolean {
+  return (
+    sameFileIdentity(left, right) &&
+    left.size === right.size &&
+    left.mtimeNs === right.mtimeNs &&
+    left.ctimeNs === right.ctimeNs
+  );
+}
+
+function managedArtifactIdentity(entry: BigIntStats): ManagedArtifactIdentity {
+  return {
+    device: String(entry.dev),
+    inode: String(entry.ino),
+    modifiedTimeNs: String(entry.mtimeNs),
+    changedTimeNs: String(entry.ctimeNs)
+  };
 }
 
 function errorCode(error: unknown): string {

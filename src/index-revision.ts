@@ -6,4 +6,4 @@
  * current evidence.
  */
 export const CODEXA_INDEX_SCHEMA_VERSION = 1 as const;
-export const CODEXA_INDEX_REVISION = 5 as const;
+export const CODEXA_INDEX_REVISION = 6 as const;

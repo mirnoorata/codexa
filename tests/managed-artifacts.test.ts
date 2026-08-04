@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildIndex } from "../src/indexer.js";
-import { digestManagedArtifact, readManagedArtifactText } from "../src/managed-artifacts.js";
+import { digestManagedArtifact, inspectManagedArtifact, readManagedArtifactText } from "../src/managed-artifacts.js";
 
 const temporaryRoots: string[] = [];
 const itPosix = process.platform === "win32" ? it.skip : it;
@@ -164,6 +164,9 @@ describe("managed index artifact boundaries", () => {
       digestManagedArtifact(repo, [".codex", "codebase", "modules", "hardlinked.md"], 1024)
     ).rejects.toThrow(/redirected|non-regular/u);
     await expect(
+      inspectManagedArtifact(repo, [".codex", "codebase", "modules", "hardlinked.md"], 1024)
+    ).rejects.toThrow(/redirected|non-regular/u);
+    await expect(
       readManagedArtifactText(repo, [".codex", "codebase", "modules", "broken.md"])
     ).rejects.toThrow();
     expect(await readFile(sentinel, "utf8")).toBe("external sentinel\n");
@@ -181,6 +184,15 @@ describe("managed index artifact boundaries", () => {
 
     expect(digest.sizeBytes).toBeGreaterThan(0);
     expect(digest.sha256).toMatch(/^[a-f0-9]{64}$/u);
+    expect(digest.identity).toMatchObject({
+      device: expect.stringMatching(/^\d+$/u),
+      inode: expect.stringMatching(/^\d+$/u),
+      modifiedTimeNs: expect.stringMatching(/^\d+$/u),
+      changedTimeNs: expect.stringMatching(/^\d+$/u)
+    });
+    expect(
+      await inspectManagedArtifact(repo, [".codex", "codebase", "freshness.json"], 1024 * 1024)
+    ).toEqual({ sizeBytes: digest.sizeBytes, identity: digest.identity });
     await expect(
       digestManagedArtifact(repo, [".codex", "codebase", "freshness.json"], 1)
     ).rejects.toThrow(/exceeds 1 bytes/u);

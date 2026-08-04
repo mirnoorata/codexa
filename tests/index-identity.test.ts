@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { cp, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -30,6 +31,7 @@ describe("index checkout identity", () => {
     delete legacyFreshness.indexRevision;
     await writeFile(indexPath, `${JSON.stringify(legacyIndex)}\n`, "utf8");
     await writeFile(freshnessPath, `${JSON.stringify(legacyFreshness, null, 2)}\n`, "utf8");
+    await rm(path.join(repo, ".codex/codebase/index-integrity.json"));
 
     const standaloneFreshness = await getFreshness(repo, undefined, { recover: false });
     expect(standaloneFreshness).toMatchObject({ stale: true, reason: "index-revision-changed", headCommit: head });
@@ -92,7 +94,14 @@ describe("index checkout identity", () => {
     const indexPath = path.join(repo, ".codex/codebase/index.json");
     const index = JSON.parse(await readFile(indexPath, "utf8")) as { snapshot: { repoRoot: string } };
     index.snapshot.repoRoot = path.join(path.dirname(repo), "different-checkout");
-    await writeFile(indexPath, `${JSON.stringify(index)}\n`, "utf8");
+    const serializedIndex = `${JSON.stringify(index)}\n`;
+    await writeFile(indexPath, serializedIndex, "utf8");
+    const integrityPath = path.join(repo, ".codex/codebase/index-integrity.json");
+    const integrity = JSON.parse(await readFile(integrityPath, "utf8"));
+    integrity.index.sizeBytes = Buffer.byteLength(serializedIndex, "utf8");
+    integrity.index.sha256 = createHash("sha256").update(serializedIndex, "utf8").digest("hex");
+    integrity.snapshot.repoRoot = index.snapshot.repoRoot;
+    await writeFile(integrityPath, `${JSON.stringify(integrity)}\n`, "utf8");
 
     const status = await statusQuery(repo, { recover: false });
     expect(status.freshness).toMatchObject({ stale: true, reason: "snapshot-repo-root-mismatch" });

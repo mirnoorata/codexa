@@ -1,4 +1,5 @@
 import { execFileSync, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { chmod, mkdir, mkdtemp, readFile, readdir, rename, symlink, truncate, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -686,24 +687,27 @@ describe("Codexa SessionStart CLI receipt", () => {
         env: testEnv()
       }).status
     ).toBe(0);
-    const indexPath = path.join(repo, ".codex/codebase/index.json");
-    const original = JSON.parse(await readFile(indexPath, "utf8")) as Record<string, unknown>;
-    const originalFreshness = original.freshness as Record<string, unknown>;
+    const freshnessPath = path.join(repo, ".codex/codebase/freshness.json");
+    const integrityPath = path.join(repo, ".codex/codebase/index-integrity.json");
+    const originalFreshness = JSON.parse(await readFile(freshnessPath, "utf8")) as Record<string, unknown>;
     const hostileValue = `INDEX-INJECTION\n${"x".repeat(120_000)}`;
+    const writeAttestedFreshness = async (freshness: Record<string, unknown>): Promise<void> => {
+      const serialized = `${JSON.stringify(freshness, null, 2)}\n`;
+      await writeFile(freshnessPath, serialized, "utf8");
+      const integrity = JSON.parse(await readFile(integrityPath, "utf8"));
+      integrity.freshness = {
+        sizeBytes: Buffer.byteLength(serialized, "utf8"),
+        sha256: createHash("sha256").update(serialized, "utf8").digest("hex")
+      };
+      await writeFile(integrityPath, `${JSON.stringify(integrity)}\n`, "utf8");
+    };
 
-    await writeFile(
-      indexPath,
-      `${JSON.stringify({
-        ...original,
-        freshness: {
-          ...originalFreshness,
-          reason: hostileValue,
-          indexedAt: hostileValue,
-          snapshotId: hostileValue
-        }
-      })}\n`,
-      "utf8"
-    );
+    await writeAttestedFreshness({
+      ...originalFreshness,
+      reason: hostileValue,
+      indexedAt: hostileValue,
+      snapshotId: hostileValue
+    });
     const hostileJson = spawnSync(process.execPath, [cli, "session-start", repo, "--json", "--strict"], {
       cwd: process.cwd(),
       encoding: "utf8",
@@ -725,14 +729,7 @@ describe("Codexa SessionStart CLI receipt", () => {
     expect(hostileText.stdout).not.toContain("\nINDEX-INJECTION\n");
     expect(Buffer.byteLength(hostileText.stdout, "utf8")).toBeLessThanOrEqual(2048);
 
-    await writeFile(
-      indexPath,
-      `${JSON.stringify({
-        ...original,
-        freshness: { ...originalFreshness, repoRoot: hostileValue, headCommit: hostileValue }
-      })}\n`,
-      "utf8"
-    );
+    await writeAttestedFreshness({ ...originalFreshness, repoRoot: hostileValue, headCommit: hostileValue });
     const wrongRepo = spawnSync(process.execPath, [cli, "session-start", repo, "--json", "--strict"], {
       cwd: process.cwd(),
       encoding: "utf8",
@@ -744,14 +741,7 @@ describe("Codexa SessionStart CLI receipt", () => {
     });
     expect(Buffer.byteLength(wrongRepo.stdout, "utf8")).toBeLessThanOrEqual(4096);
 
-    await writeFile(
-      indexPath,
-      `${JSON.stringify({
-        ...original,
-        freshness: { ...originalFreshness, parserErrorCount: 1 }
-      })}\n`,
-      "utf8"
-    );
+    await writeAttestedFreshness({ ...originalFreshness, parserErrorCount: 1 });
     const parserDegraded = spawnSync(process.execPath, [cli, "session-start", repo, "--json", "--strict"], {
       cwd: process.cwd(),
       encoding: "utf8",

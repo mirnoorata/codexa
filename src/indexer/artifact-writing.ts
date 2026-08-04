@@ -6,7 +6,9 @@ import { writeArtifacts } from "../artifacts.js";
 import { MAX_INDEX_ARTIFACT_BYTES } from "../index-limits.js";
 import { CODEXA_INDEX_REVISION, CODEXA_INDEX_SCHEMA_VERSION } from "../index-revision.js";
 import {
+  digestManagedArtifact,
   ensureManagedArtifactDirectory,
+  probeManagedArtifactMetadataFastPath,
   requireManagedArtifactDirectory,
   writeManagedArtifact,
   writeManagedArtifactText,
@@ -16,7 +18,7 @@ import type { CodexaFact, CodexaIndex } from "../types.js";
 
 const FACTS_NDJSON_WRITE_BUFFER_BYTES = 1024 * 1024;
 const CODEBASE_RELATIVE_DIR = path.join(".codex", "codebase");
-const INDEX_INTEGRITY_SCHEMA_VERSION = 1;
+const INDEX_INTEGRITY_SCHEMA_VERSION = 2;
 
 export async function persistIndex(index: CodexaIndex, outputDir: string): Promise<void> {
   const publishIntegrityManifest = index.schemaVersion === CODEXA_INDEX_SCHEMA_VERSION && index.indexRevision === CODEXA_INDEX_REVISION;
@@ -28,26 +30,44 @@ export async function persistIndex(index: CodexaIndex, outputDir: string): Promi
   const serializedIndex = `${JSON.stringify(index)}\n`;
   const serializedFreshness = `${JSON.stringify(index.freshness, null, 2)}\n`;
   assertIndexArtifactSize(serializedIndex);
-  const serializedIntegrityManifest = publishIntegrityManifest
-    ? `${JSON.stringify({
-        schemaVersion: INDEX_INTEGRITY_SCHEMA_VERSION,
-        indexRevision: index.indexRevision,
-        index: digestText(serializedIndex),
-        freshness: digestText(serializedFreshness),
-        snapshot: {
-          repoRoot: index.snapshot.repoRoot,
-          snapshotId: index.snapshot.snapshotId,
-          headCommit: index.snapshot.headCommit,
-          gitRoot: index.snapshot.gitRoot
-        }
-      }, null, 2)}\n`
-    : undefined;
+  const expectedIndexDigest = digestText(serializedIndex);
+  const freshnessDigest = digestText(serializedFreshness);
   const facts = allFacts(index);
   const output = await ensureManagedArtifactDirectory(repoRoot, outputDir);
   await ensureManagedArtifactDirectory(repoRoot, path.join(output.directory, "modules"));
   await writeManagedArtifactText(output, "index.json", serializedIndex);
   await writeManagedArtifactText(output, "freshness.json", serializedFreshness);
-  if (serializedIntegrityManifest) {
+  if (publishIntegrityManifest) {
+    const outputSegments = path.relative(output.repoReal, output.directory).split(path.sep);
+    const indexSegments = [...outputSegments, "index.json"];
+    const metadataFastPath = await probeManagedArtifactMetadataFastPath(
+      output.repoReal,
+      indexSegments,
+      MAX_INDEX_ARTIFACT_BYTES
+    ).catch(() => false);
+    const publishedIndexDigest = await digestManagedArtifact(
+      output.repoReal,
+      indexSegments,
+      MAX_INDEX_ARTIFACT_BYTES
+    );
+    if (
+      publishedIndexDigest.sizeBytes !== expectedIndexDigest.sizeBytes ||
+      publishedIndexDigest.sha256 !== expectedIndexDigest.sha256
+    ) {
+      throw new Error("Codexa published index changed before its integrity identity was captured");
+    }
+    const serializedIntegrityManifest = `${JSON.stringify({
+      schemaVersion: INDEX_INTEGRITY_SCHEMA_VERSION,
+      indexRevision: index.indexRevision,
+      index: { ...publishedIndexDigest, metadataFastPath },
+      freshness: freshnessDigest,
+      snapshot: {
+        repoRoot: index.snapshot.repoRoot,
+        snapshotId: index.snapshot.snapshotId,
+        headCommit: index.snapshot.headCommit,
+        gitRoot: index.snapshot.gitRoot
+      }
+    }, null, 2)}\n`;
     await writeManagedArtifactText(output, "index-integrity.json", serializedIntegrityManifest);
   }
   await writeFactsNdjson(output, facts);

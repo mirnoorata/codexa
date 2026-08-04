@@ -5,7 +5,15 @@ import { acquireCacheLock } from "./cache-lock.js";
 import { CODEXA_INDEX_REVISION, CODEXA_INDEX_SCHEMA_VERSION } from "./index-revision.js";
 import { MAX_INDEX_ARTIFACT_BYTES } from "./index-limits.js";
 import { ensureSafeManagedStateDirectory } from "./init-portability.js";
-import { digestManagedArtifact, isManagedArtifactSegment, readManagedArtifactText, requireManagedArtifactDirectory } from "./managed-artifacts.js";
+import {
+  digestManagedArtifact,
+  inspectManagedArtifact,
+  isManagedArtifactSegment,
+  readManagedArtifactText,
+  requireManagedArtifactDirectory,
+  type ManagedArtifactDigest,
+  type ManagedArtifactState
+} from "./managed-artifacts.js";
 import { discoverRepoFreshness } from "./repo-files.js";
 import { relinkUsageIds, resolveIndexLinks } from "./resolver.js";
 import { externalRiskReportSnapshot, loadExternalRiskSignalReport } from "./risk-ingest.js";
@@ -52,9 +60,9 @@ interface BuildIndexPipelineContext {
 }
 
 interface IndexIntegrityManifest {
-  schemaVersion: 1;
+  schemaVersion: 2;
   indexRevision: number;
-  index: { sizeBytes: number; sha256: string };
+  index: ManagedArtifactDigest & { metadataFastPath: boolean };
   freshness: { sizeBytes: number; sha256: string };
   snapshot: Pick<RepoSnapshotFact, "repoRoot" | "snapshotId" | "headCommit" | "gitRoot">;
 }
@@ -66,6 +74,12 @@ export interface IndexStatusSnapshot {
   };
   freshness: FreshnessInfo;
 }
+
+export interface IndexStatusIntegrityFailure {
+  integrityFailure: true;
+}
+
+export type IndexStatusReadOnlyResult = IndexStatusSnapshot | IndexStatusIntegrityFailure | null;
 
 export async function buildIndex(options: IndexOptions): Promise<CodexaIndex> {
   const repoRoot = path.resolve(options.repoRoot);
@@ -352,20 +366,24 @@ export async function loadFreshnessReadOnly(repoRoot: string): Promise<Freshness
 /**
  * Load the status projection without decoding the potentially large index.
  * The integrity sidecar is published in the same atomic directory bundle. A
- * missing, torn, or modified sidecar falls back to the full loader at the
- * caller so legacy and damaged bundles retain their established semantics.
+ * missing or legacy sidecar falls back to the full loader at the caller.
+ * Once a current integrity manifest is recognized, any mismatch fails closed
+ * and must never be reinterpreted as an unattested but readable index.
  */
-export async function loadIndexStatusReadOnly(repoRoot: string): Promise<IndexStatusSnapshot | null> {
+export async function loadIndexStatusReadOnly(repoRoot: string): Promise<IndexStatusReadOnlyResult> {
   const repo = path.resolve(repoRoot);
   const relativeDir = CODEBASE_DIR.split("/");
   let manifest: IndexIntegrityManifest;
   let stored: FreshnessInfo;
+  let manifestValue: unknown;
   try {
     const [manifestText, freshnessText] = await Promise.all([
       readManagedArtifactText(repo, [...relativeDir, "index-integrity.json"]),
       readManagedArtifactText(repo, [...relativeDir, "freshness.json"])
     ]);
-    manifest = normalizeIndexIntegrityManifest(JSON.parse(manifestText) as unknown);
+    manifestValue = JSON.parse(manifestText) as unknown;
+    manifest = normalizeIndexIntegrityManifest(manifestValue);
+    if (manifest.indexRevision !== CODEXA_INDEX_REVISION) return null;
     stored = normalizeLoadedFreshness(JSON.parse(freshnessText) as Partial<FreshnessInfo>);
     const freshnessDigest = {
       sizeBytes: Buffer.byteLength(freshnessText, "utf8"),
@@ -373,19 +391,26 @@ export async function loadIndexStatusReadOnly(repoRoot: string): Promise<IndexSt
     };
     if (
       manifest.index.sizeBytes > MAX_INDEX_ARTIFACT_BYTES ||
-      manifest.indexRevision !== CODEXA_INDEX_REVISION ||
       stored.indexRevision !== manifest.indexRevision ||
       !sameArtifactDigest(manifest.freshness, freshnessDigest)
     ) {
-      return null;
+      return integrityFailure();
     }
-    const indexDigest = await digestManagedArtifact(
+    const indexState = await inspectManagedArtifact(
       repo,
       [...relativeDir, "index.json"],
       manifest.index.sizeBytes
     );
-    if (!sameArtifactDigest(manifest.index, indexDigest)) return null;
+    if (!manifest.index.metadataFastPath || !sameArtifactState(manifest.index, indexState)) {
+      const indexDigest = await digestManagedArtifact(
+        repo,
+        [...relativeDir, "index.json"],
+        manifest.index.sizeBytes
+      );
+      if (!sameArtifactDigest(manifest.index, indexDigest)) return integrityFailure();
+    }
   } catch {
+    if (isCurrentIntegrityManifestCandidate(manifestValue)) return integrityFailure();
     return null;
   }
   // Live checkout discovery intentionally sits outside the compatibility
@@ -401,9 +426,12 @@ export async function loadIndexStatusReadOnly(repoRoot: string): Promise<IndexSt
 async function readIndexBundle(repoRoot: string, outputDir: string): Promise<CodexaIndex | null> {
   try {
     const relativeDir = path.relative(repoRoot, outputDir).split(path.sep);
-    return normalizeLoadedIndex(
-      JSON.parse(await readManagedArtifactText(repoRoot, [...relativeDir, "index.json"], MAX_INDEX_ARTIFACT_BYTES)) as Partial<CodexaIndex>
-    );
+    const indexText = await readManagedArtifactText(repoRoot, [...relativeDir, "index.json"], MAX_INDEX_ARTIFACT_BYTES);
+    const index = normalizeLoadedIndex(JSON.parse(indexText) as Partial<CodexaIndex>);
+    if (index.indexRevision === CODEXA_INDEX_REVISION) {
+      await assertCurrentIndexIntegrity(repoRoot, relativeDir, indexText, index);
+    }
+    return index;
   } catch {
     return null;
   }
@@ -576,10 +604,12 @@ function normalizeIndexIntegrityManifest(value: unknown): IndexIntegrityManifest
   }
   const manifest = value as Partial<IndexIntegrityManifest>;
   if (
-    manifest.schemaVersion !== 1 ||
+    manifest.schemaVersion !== 2 ||
     !Number.isSafeInteger(manifest.indexRevision) ||
     (manifest.indexRevision as number) < 1 ||
     !validArtifactDigest(manifest.index) ||
+    !validArtifactState(manifest.index) ||
+    typeof manifest.index.metadataFastPath !== "boolean" ||
     !validArtifactDigest(manifest.freshness) ||
     !manifest.snapshot ||
     typeof manifest.snapshot.repoRoot !== "string" ||
@@ -594,6 +624,51 @@ function normalizeIndexIntegrityManifest(value: unknown): IndexIntegrityManifest
   return manifest as IndexIntegrityManifest;
 }
 
+async function assertCurrentIndexIntegrity(
+  repoRoot: string,
+  relativeDir: string[],
+  indexText: string,
+  index: CodexaIndex
+): Promise<void> {
+  const manifest = normalizeIndexIntegrityManifest(
+    JSON.parse(await readManagedArtifactText(repoRoot, [...relativeDir, "index-integrity.json"])) as unknown
+  );
+  const actualDigest = {
+    sizeBytes: Buffer.byteLength(indexText, "utf8"),
+    sha256: createHash("sha256").update(indexText, "utf8").digest("hex")
+  };
+  if (
+    manifest.indexRevision !== CODEXA_INDEX_REVISION ||
+    index.freshness.indexRevision !== CODEXA_INDEX_REVISION ||
+    !sameArtifactDigest(manifest.index, actualDigest) ||
+    !sameSnapshotIdentity(manifest.snapshot, index.snapshot)
+  ) {
+    throw new Error("Codexa current index bundle failed integrity validation");
+  }
+}
+
+function sameSnapshotIdentity(
+  left: IndexIntegrityManifest["snapshot"],
+  right: RepoSnapshotFact
+): boolean {
+  return (
+    left.repoRoot === right.repoRoot &&
+    left.snapshotId === right.snapshotId &&
+    left.headCommit === right.headCommit &&
+    left.gitRoot === right.gitRoot
+  );
+}
+
+function isCurrentIntegrityManifestCandidate(value: unknown): boolean {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const candidate = value as { schemaVersion?: unknown; indexRevision?: unknown };
+  return candidate.schemaVersion === 2 && candidate.indexRevision === CODEXA_INDEX_REVISION;
+}
+
+function integrityFailure(): IndexStatusIntegrityFailure {
+  return { integrityFailure: true };
+}
+
 function validArtifactDigest(value: unknown): value is { sizeBytes: number; sha256: string } {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
   const digest = value as { sizeBytes?: unknown; sha256?: unknown };
@@ -601,8 +676,39 @@ function validArtifactDigest(value: unknown): value is { sizeBytes: number; sha2
     typeof digest.sha256 === "string" && /^[a-f0-9]{64}$/u.test(digest.sha256);
 }
 
+function validArtifactState(value: unknown): value is ManagedArtifactState {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const state = value as Partial<ManagedArtifactState>;
+  const identity = state.identity;
+  return Boolean(
+    Number.isSafeInteger(state.sizeBytes) &&
+    (state.sizeBytes as number) >= 0 &&
+    identity &&
+    typeof identity === "object" &&
+    !Array.isArray(identity) &&
+    validIntegerString(identity.device) &&
+    validIntegerString(identity.inode) &&
+    validIntegerString(identity.modifiedTimeNs) &&
+    validIntegerString(identity.changedTimeNs)
+  );
+}
+
 function sameArtifactDigest(left: { sizeBytes: number; sha256: string }, right: { sizeBytes: number; sha256: string }): boolean {
   return left.sizeBytes === right.sizeBytes && left.sha256 === right.sha256;
+}
+
+function sameArtifactState(left: ManagedArtifactState, right: ManagedArtifactState): boolean {
+  return (
+    left.sizeBytes === right.sizeBytes &&
+    left.identity.device === right.identity.device &&
+    left.identity.inode === right.identity.inode &&
+    left.identity.modifiedTimeNs === right.identity.modifiedTimeNs &&
+    left.identity.changedTimeNs === right.identity.changedTimeNs
+  );
+}
+
+function validIntegerString(value: unknown): value is string {
+  return typeof value === "string" && /^\d+$/u.test(value);
 }
 
 function nullableString(value: unknown): value is string | null {
