@@ -25,10 +25,10 @@
     "automaticPolicySnapshot": {
       "hostKernelBytes": 2678,
       "workspaceKernelBytes": 5955,
-      "projectKernelBytes": 2823,
-      "totalBytes": 11456,
-      "fourBytesPerTokenEstimate": 2864,
-      "reductionPercent": 62.8,
+      "projectKernelBytes": 2860,
+      "totalBytes": 11493,
+      "fourBytesPerTokenEstimate": 2874,
+      "reductionPercent": 62.7,
       "externalSnapshotsReproducibleInRepository": false,
       "projectKernelMaximumBytes": 3072
     },
