@@ -184,6 +184,9 @@ export async function retrieveForTask(index: CodexaIndex, query: string, limit =
   ])
     .filter((match) => allowDecoys || !isDecoyLikePath(match.file.path))
     .slice(0, limit);
+  // Start hosted scoring as soon as the candidate set is ready. Independent
+  // local summaries can be assembled while candidate reads/the request run.
+  const reranking = rerankWithTypeSafe(index, query, matches, typesafeOptions);
   const modules = rankModules(index, matches, terms).slice(0, Math.max(3, Math.min(8, limit)));
   const anchors = buildRetrievalAnchors(index, matches, query, matcher, Math.max(4, Math.min(12, limit)));
   const processGroups = buildProcessGroups(workflows, matches).slice(0, Math.max(3, Math.min(8, limit)));
@@ -191,7 +194,7 @@ export async function retrieveForTask(index: CodexaIndex, query: string, limit =
   const broad = rawTerms.length <= 2 || intents.includes("architecture") || intents.includes("workflow");
   const intentConfidence = analyzeIntentConfidence(query, intents, terms, matches, workflows, broad);
   const diagnostics = uniqueSorted([...retrievalDiagnostics(index, matches, workflows, broad, intentConfidence), ...semanticResult.summary.diagnostics.map((diagnostic) => `semantic: ${diagnostic}`)]);
-  const reranked = await rerankWithTypeSafe(index, query, matches, typesafeOptions);
+  const reranked = await reranking;
   return { query, intents, terms, matches: reranked.matches, workflows, modules, anchors, processGroups, clusterGroups, broad, intentConfidence, diagnostics, semantic: semanticResult.summary, typesafe: reranked.summary };
 }
 
