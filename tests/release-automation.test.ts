@@ -55,10 +55,10 @@ describe("Release Please workflow dispatch boundary", () => {
     expect(result.status).not.toBe(0);
     expect(result.calls).toEqual([]);
   });
-  it("dispatches CI at the release PR branch after verifying repository and base", () => {
-    const result = runDispatch(prScript);
+  it.each(["release-please--branches--main", "release-please--branches--main--components--codexa"])("dispatches CI at the verified release PR branch: %s", ref => {
+    const result = runDispatch(prScript, { pr: { ...validPr, head: { ...validPr.head, ref } } });
     expect(result.status).toBe(0);
-    expect(result.calls).toEqual([["api", "repos/OWNER/REPO/pulls/123"], ["workflow", "run", "check.yml", "--repo", fixtureRepo, "--ref", "release-please--branches--main"]]);
+    expect(result.calls).toEqual([["api", "repos/OWNER/REPO/pulls/123"], ["workflow", "run", "check.yml", "--repo", fixtureRepo, "--ref", ref]]);
   });
   it.each(["{}", '{"number":"123; echo unexpected"}', '{"number":-1}', "invalid"])("rejects invalid PR outputs before invoking GitHub: %j", output => {
     const result = runDispatch(prScript, { output });

@@ -58,7 +58,7 @@ jobs:
           const repo = process.env.GITHUB_REPOSITORY;
           const pr = JSON.parse(execFileSync('gh', ['api', `repos/${repo}/pulls/${number}`], { encoding: 'utf8' }));
           if (pr.state !== 'open' || pr.base.repo.full_name !== repo || pr.head.repo.full_name !== repo ||
-              pr.base.ref !== 'main' || pr.head.ref !== 'release-please--branches--main') {
+              pr.base.ref !== 'main' || !['release-please--branches--main', 'release-please--branches--main--components--codexa'].includes(pr.head.ref)) {
             throw new Error('Expected an open, same-repository Release Please PR targeting main');
           }
           execFileSync('gh', ['workflow', 'run', 'check.yml', '--repo', repo, '--ref', pr.head.ref], { stdio: 'inherit' });
