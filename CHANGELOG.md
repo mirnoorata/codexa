@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.19.0](https://github.com/mirnoorata/codexa/compare/v0.18.0...v0.19.0) (2026-09-17)
+
+### Features
+
+* Add optional TypeSafe reranking for search and find-context. It is disabled by default, requires each user's own key, preserves local results on service failures, and honors explicit request limits. ([#130](https://github.com/mirnoorata/codexa/pull/130))
+* Show concise TypeSafe on/off status after indexing and add `reindex` as an alias for `index`.
+
+### Bug Fixes
+
+* Require executed script operands for verification credit while recognizing valid Node runtime flags.
+* Fix malformed TOML parser hangs and update dependencies with reported audit findings.
+* Contain semantic-cache reads and writes against redirected paths and unsafe files.
+* Discover and resolve `.mts` and `.cts` modules, preserve valid double-dot-prefixed filenames, and parse raw-search filenames containing delimiters correctly.
+
+### Performance Improvements
+
+* Reuse unchanged embeddings across source-index rebuilds and add `semantic-index --force` for explicit refreshes.
+* Deduplicate imported test edges with a set while preserving output order.
+* Document reproducible TypeSafe and local resolver comparisons, including their measurement limits.
+
 ## [0.18.0](https://github.com/mirnoorata/codexa/compare/v0.17.1...v0.18.0) (2026-08-03)
 
 
