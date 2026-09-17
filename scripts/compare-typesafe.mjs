@@ -58,6 +58,9 @@ const output = path.resolve(outputIndex < 0 ? ".codex/cache/typesafe-comparison.
 if (live && !process.env.TYPESAFE_API_KEY?.trim()) throw new Error("Set TYPESAFE_API_KEY in the process environment before --live.");
 const root = await mkdtemp(path.join(os.tmpdir(), "codexa-typesafe-comparison-"));
 const results = [];
+let requests = 0;
+const originalFetch = globalThis.fetch;
+globalThis.fetch = (...args) => { requests++; return originalFetch(...args); };
 try {
   execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });
   for (const group of groups) {
@@ -88,14 +91,23 @@ try {
       assert.deepEqual(candidate.intent, baseline.intent, "TypeSafe must not change edit authority");
       assert.deepEqual([...candidate.paths].sort(), [...baseline.paths].sort(), "TypeSafe must preserve candidates");
     }
-    results.push({ ...item, baseline, candidate });
+    let repeat;
+    if (candidate && ["ok", "skipped"].includes(candidate.typesafe.status)) {
+      const beforeRepeat = requests;
+      repeat = await run(true);
+      assert.equal(requests, beforeRepeat, "An unchanged accepted/exact query must not call TypeSafe again");
+      assert.deepEqual(repeat.paths, candidate.paths, "Reuse must preserve the accepted order");
+      assert.deepEqual(repeat.intent, candidate.intent, "Reuse must preserve edit authority");
+      if (candidate.typesafe.status === "ok") assert.equal(repeat.typesafe.cacheHit, true);
+    }
+    results.push({ ...item, baseline, candidate, repeat });
     console.log(`${position + 1}/${cases.length} ${item.kind}: baseline rank ${baseline.rank || "absent"}${candidate ? `; TypeSafe rank ${candidate.rank || "absent"} (${candidate.typesafe.status})` : ""}`);
   }
   const summary = {};
   for (const kind of ["all", "behavior", "exact"]) {
     const selected = results.filter((item) => kind === "all" || item.kind === kind);
-    summary[kind] = Object.fromEntries(["baseline", ...(live ? ["candidate"] : [])].map((mode) => {
-      const rows = selected.map((item) => item[mode]);
+    summary[kind] = Object.fromEntries(["baseline", ...(live ? ["candidate", "repeat"] : [])].map((mode) => {
+      const rows = selected.map((item) => item[mode]).filter(Boolean);
       const times = rows.map((row) => row.latencyMs).sort((a, b) => a - b);
       return [mode, {
         cases: rows.length, top1: rows.filter((row) => row.rank === 1).length / rows.length,
@@ -108,12 +120,13 @@ try {
       }];
     }));
   }
-  const report = { schemaVersion: 1, fixtureHash, generatedAt: new Date().toISOString(), live, node: process.version,
+  const report = { schemaVersion: 2, fixtureHash, generatedAt: new Date().toISOString(), live, requests, node: process.version,
     settings: { model: "jev-latest", deadlineMs: 2500, maxCandidates: 8, requestCap: cases.length }, summary, results };
   await mkdir(path.dirname(output), { recursive: true });
   await writeFile(output, JSON.stringify(report, null, 2) + "\n");
   console.log(JSON.stringify(summary, null, 2));
   console.log(`Report saved to ${output}`);
 } finally {
+  globalThis.fetch = originalFetch;
   await rm(root, { recursive: true, force: true });
 }

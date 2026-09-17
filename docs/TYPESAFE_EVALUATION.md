@@ -47,6 +47,36 @@ unseen repositories, entire-codebase bug detection, or verification accuracy.
 
 ## Independent regression coverage
 
+### First use and repeat reuse
+
+A second live run on the unchanged fixture verified the process-local decision
+cache. Each accepted query was immediately repeated through `find-context`.
+The script counts actual fetch calls and asserts no additional request, identical
+file order, and unchanged edit authority on repeats. All 12 behavior queries
+returned accepted scores; all six exact controls skipped the service on both
+calls. There were 12 API requests total, using 9,708 input and 498 output tokens.
+
+| Behavior-query measure | Local | TypeSafe first call | TypeSafe repeat |
+| --- | ---: | ---: | ---: |
+| Correct first file | 10/12 | 12/12 | 12/12 |
+| Median query latency | 0.34 ms | 175.42 ms | 0.81 ms |
+| Observed p95 latency | 0.64 ms | 343.35 ms | 2.60 ms |
+| Additional hosted calls | 0 | 12 | 0 |
+
+This verifies reuse, not general production accuracy. It uses the same small,
+correlated fixture as the initial run and the same provider settings. The cache
+is limited to 128 accepted decisions and five minutes in a running process;
+new CLI processes start empty. Candidate source is reread and hashed before
+reuse, including content beyond the excerpt sent to TypeSafe. Snapshot, query,
+candidate order, model, credential, and bound changes invalidate reuse. Failures,
+uncertain responses, and unavailable source are not cached.
+
+Codexa still assembles candidates before TypeSafe can assess them. Scoring now
+starts before independent local summary assembly. An enabled semantic provider
+can still add latency before scoring; these measurements disable that lane.
+
+### Offline checks
+
 Offline tests exercise the actual SDK response boundary and query consumers:
 disabled mode, explicit environment override, absent credentials, HTTP errors
 without retries, invalid scores, uncertainty, abort deadlines, exact queries,

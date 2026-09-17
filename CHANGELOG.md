@@ -2,6 +2,10 @@
 
 ## [0.19.0](https://github.com/mirnoorata/codexa/compare/v0.18.0...v0.19.0) (2026-09-17)
 
+- Reuse accepted TypeSafe decisions for unchanged queries within a running
+  process, with bounded expiry and input invalidation; overlap scoring with
+  independent local result summaries.
+
 ### Features
 
 * Add optional TypeSafe reranking for search and find-context. It is disabled by default, requires each user's own key, preserves local results on service failures, and honors explicit request limits. ([#130](https://github.com/mirnoorata/codexa/pull/130))

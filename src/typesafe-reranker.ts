@@ -1,4 +1,5 @@
 import path from "node:path";
+import { createHash } from "node:crypto";
 import { score, TypeSafeClient } from "@typesafe-ai/sdk";
 import type { CodexaIndex, FreshnessInfo, QueryOptions } from "./types.js";
 import type { RetrievalMatch } from "./retrieval.js";
@@ -23,6 +24,7 @@ export interface TypeSafeSummary {
   inputTokens?: number;
   outputTokens?: number;
   candidates?: number;
+  cacheHit?: boolean;
 }
 
 const RELEVANCE_LEVELS = [
@@ -33,6 +35,10 @@ const RELEVANCE_LEVELS = [
 ] as const;
 
 let cachedClient: { key: string; client: TypeSafeClient } | undefined;
+const DECISION_CACHE_LIMIT = 128;
+const DECISION_CACHE_TTL_MS = 5 * 60_000;
+// Process-local only: retain scores and digests, never source, queries or keys.
+const decisionCache = new Map<string, { until: number; relevance: number[]; model?: string }>();
 
 export function typeSafeEnabled(options: QueryOptions = {}): boolean {
   return options.typesafe ?? process.env.CODEXA_TYPESAFE === "1";
@@ -74,15 +80,20 @@ export async function rerankWithTypeSafe(
   const candidates = matches.slice(0, options.maxCandidates);
   let metadata: Partial<TypeSafeSummary> = {};
   try {
+    let cacheable = true;
+    const sourceHashes: string[] = [];
     const stateCandidates = await Promise.all(candidates.map(async (match, position) => {
       let source = "";
       try {
-        source = (await readBoundedStableRegularFile(
+        const contents = await readBoundedStableRegularFile(
           path.resolve(options.repoRoot, match.file.path), 1024 * 1024,
           "typesafe-candidate", deadline, options.repoRoot
-        )).toString("utf8").slice(0, 3000);
+        );
+        sourceHashes[position] = createHash("sha256").update(contents).digest("hex");
+        source = contents.toString("utf8").slice(0, 3000);
       } catch {
         // Metadata remains usable when a source file is oversized or unavailable.
+        cacheable = false;
       }
       return {
         id: `candidate_${position}`,
@@ -93,6 +104,19 @@ export async function rerankWithTypeSafe(
       };
     }));
     if (controller.signal.aborted) throw new Error("deadline");
+    const cacheKey = createHash("sha256").update(JSON.stringify([
+      key, path.resolve(options.repoRoot), index.snapshot.snapshotId,
+      options.model, options.timeoutMs, options.maxCandidates, query, stateCandidates, sourceHashes
+    ])).digest("hex");
+    const cached = cacheable ? decisionCache.get(cacheKey) : undefined;
+    if (cached && cached.until > performance.now()) {
+      decisionCache.delete(cacheKey);
+      decisionCache.set(cacheKey, cached);
+      metadata = { model: cached.model, cacheHit: true, inputTokens: 0, outputTokens: 0 };
+      return { matches: applyRelevance(cached.relevance), summary: summary("ok") };
+    }
+    decisionCache.delete(cacheKey);
+    metadata.cacheHit = false;
     if (!cachedClient || cachedClient.key !== key) {
       cachedClient = { key, client: new TypeSafeClient({
         apiKey: key, baseURL: "https://api.typesafe.ai", logLevel: "off",
@@ -109,7 +133,7 @@ export async function rerankWithTypeSafe(
       questions
     }, { signal: controller.signal, timeout: Math.max(1, deadline - Date.now()) }).withResponse();
     metadata = {
-      model: data.model, requestId,
+      model: data.model, requestId, cacheHit: false,
       inputTokens: data.usage?.input_tokens, outputTokens: data.usage?.output_tokens
     };
     const assessed = candidates.map((match, position) => {
@@ -125,14 +149,14 @@ export async function rerankWithTypeSafe(
     if (assessed.some((entry) => entry.confidence < 0.6) || !assessed.some((entry) => entry.relevance >= 1.5)) {
       return { matches, summary: summary("fallback", "uncertain-or-no-match") };
     }
-    assessed.sort((a, b) => b.relevance - a.relevance || a.position - b.position);
-    return {
-      matches: [...assessed.map((entry) => ({
-        ...entry.match,
-        reasons: [...entry.match.reasons, `TypeSafe advisory relevance ${entry.relevance.toFixed(2)}/3`]
-      })), ...matches.slice(candidates.length)],
-      summary: summary("ok")
-    };
+    const relevance = assessed.map((entry) => entry.relevance);
+    if (cacheable) {
+      const now = performance.now();
+      for (const [digest, entry] of decisionCache) if (entry.until <= now) decisionCache.delete(digest);
+      decisionCache.set(cacheKey, { until: now + DECISION_CACHE_TTL_MS, relevance, model: data.model });
+      while (decisionCache.size > DECISION_CACHE_LIMIT) decisionCache.delete(decisionCache.keys().next().value!);
+    }
+    return { matches: applyRelevance(relevance), summary: summary("ok") };
   } catch {
     return { matches, summary: summary("fallback", controller.signal.aborted ? "deadline" : "request-or-response-error") };
   } finally {
@@ -141,6 +165,13 @@ export async function rerankWithTypeSafe(
 
   function summary(status: TypeSafeSummary["status"], reason?: string): TypeSafeSummary {
     return { enabled: true, status, reason, candidates: candidates.length, latencyMs: performance.now() - started, ...metadata };
+  }
+
+  function applyRelevance(relevance: number[]): RetrievalMatch[] {
+    return [...candidates.map((match, position) => ({ match, position, relevance: relevance[position] }))
+      .sort((a, b) => b.relevance - a.relevance || a.position - b.position)
+      .map(({ match, relevance }) => ({ ...match, reasons: [...match.reasons, `TypeSafe advisory relevance ${relevance.toFixed(2)}/3`] })),
+    ...matches.slice(candidates.length)];
   }
 }
 

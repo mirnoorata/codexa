@@ -843,6 +843,21 @@ changed content are retained to avoid deleting data used by concurrent readers.
 
 ### TypeSafe Reranking
 
+For a new ambiguous query, Codexa first assembles candidate files, then uses
+TypeSafe to rank them before returning results. Scoring starts as soon as that
+candidate set is ready, overlapping independent local summary work. Exact
+symbol/path matches and sufficient literal search hits skip the hosted call.
+An optional semantic provider still participates in candidate retrieval before
+TypeSafe; this is not a separate TypeSafe verification pass.
+
+Accepted decisions are reused within the running process (including MCP) for
+up to five minutes, with at most 128 entries. Reuse binds to the exact query,
+repository snapshot, candidate order and source contents, model, credential,
+and request limits. Changed inputs trigger a fresh decision. Failed or uncertain
+responses are not cached. The cache stores only digests and scores in memory;
+separate CLI processes make their own first request. Reused results report
+`cacheHit: true` and zero new token usage in structured query output.
+
 TypeSafe is an optional hosted relevance scorer. It reorders existing candidate
 files for behavior queries; deterministic scores, anchors, and verification
 authority remain unchanged. It needs no embedding cache. A key alone does not
