@@ -44,8 +44,8 @@ export function typeSafeOptionsFromQueryOptions(repoRoot: string, options: Query
     repoRoot,
     freshness,
     model: options.typesafeModel ?? process.env.CODEXA_TYPESAFE_MODEL ?? "jev-latest",
-    timeoutMs: boundedInteger(options.typesafeTimeoutMs ?? Number(process.env.CODEXA_TYPESAFE_TIMEOUT_MS), 2500, 100, 30_000),
-    maxCandidates: boundedInteger(options.typesafeMaxCandidates ?? Number(process.env.CODEXA_TYPESAFE_MAX_CANDIDATES), 12, 2, 20)
+    timeoutMs: boundedInteger(options.typesafeTimeoutMs ?? process.env.CODEXA_TYPESAFE_TIMEOUT_MS, 2500, 30_000, "TypeSafe timeout"),
+    maxCandidates: boundedInteger(options.typesafeMaxCandidates ?? process.env.CODEXA_TYPESAFE_MAX_CANDIDATES, 12, 20, "TypeSafe max candidates")
   };
 }
 
@@ -60,7 +60,7 @@ export async function rerankWithTypeSafe(
   const skip = (reason: string) => ({ matches, summary: { enabled: true, status: "skipped" as const, reason } });
   if ((options.freshness ?? index.freshness).stale || (options.freshness ?? index.freshness).missing) return skip("stale-index");
   if (!query.trim() || query.length > 4096) return skip("query-size");
-  if (matches.length < 2) return skip("insufficient-candidates");
+  if (matches.length < 2 || options.maxCandidates < 2) return skip("insufficient-candidates");
   const literal = query.trim().toLowerCase();
   if (matches.some(({ file }) => [file.path, path.basename(file.path)].some((value) => value.toLowerCase() === literal)) ||
       index.symbols.some((symbol) => [symbol.name, symbol.qualifiedName].some((value) => value.toLowerCase() === literal))) return skip("exact-evidence");
@@ -144,6 +144,9 @@ export async function rerankWithTypeSafe(
   }
 }
 
-function boundedInteger(value: number, fallback: number, min: number, max: number): number {
-  return Number.isSafeInteger(value) && value >= min ? Math.min(value, max) : fallback;
+function boundedInteger(value: number | string | undefined, fallback: number, max: number, label: string): number {
+  if (value === undefined) return fallback;
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) throw new Error(`${label} must be a positive integer`);
+  return Math.min(parsed, max);
 }

@@ -880,6 +880,10 @@ sufficient literal search hits, and stale indexes skip hosted scoring. Missing
 keys, service failures, timeouts, malformed responses, and low-confidence
 results preserve the local ranking.
 
+Explicit candidate and timeout limits must be positive integers. Smaller limits
+are honored; a one-candidate limit skips reranking without sending source.
+Invalid explicit limits are rejected instead of replaced with larger defaults.
+
 Run the fixed synthetic comparison after `npm run build`:
 
 ```bash

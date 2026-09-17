@@ -115,14 +115,40 @@ describe("optional TypeSafe reranking", () => {
     expect(fetch).not.toHaveBeenCalled();
   });
 
-  it("aborts one slow request within the total deadline and falls back", async () => {
+  it("honors a one-candidate limit without sending source and rejects invalid explicit bounds", async () => {
+    vi.stubEnv("TYPESAFE_API_KEY", "fixture-only-key");
+    const fetch = mockScores(); vi.stubGlobal("fetch", fetch);
+    for (const fromEnvironment of [false, true]) {
+      vi.stubEnv("CODEXA_TYPESAFE_MAX_CANDIDATES", "1");
+      vi.stubEnv("CODEXA_TYPESAFE_TIMEOUT_MS", "50");
+      const bounded = typeSafeOptionsFromQueryOptions(repo, fromEnvironment
+        ? { typesafe: true }
+        : queryOptionsFromCli({ typesafe: true, typesafeMaxCandidates: 1, typesafeTimeoutMs: 50 }));
+      expect(bounded).toMatchObject({ maxCandidates: 1, timeoutMs: 50 });
+      const baseline = await retrieveForTask(index, query, 8);
+      const result = await retrieveForTask(index, query, 8, undefined, bounded);
+      expect(result.matches).toEqual(baseline.matches);
+      expect(result.typesafe?.status).toBe("skipped");
+    }
+    for (const invalid of [0, -1, 1.5, NaN, Infinity]) {
+      expect(() => typeSafeOptionsFromQueryOptions(repo, { typesafeMaxCandidates: invalid })).toThrow("positive integer");
+      expect(() => typeSafeOptionsFromQueryOptions(repo, { typesafeTimeoutMs: invalid })).toThrow("positive integer");
+    }
+    for (const invalid of ["", "bad", "0", "-1", "1.5"]) {
+      vi.stubEnv("CODEXA_TYPESAFE_MAX_CANDIDATES", invalid);
+      expect(() => typeSafeOptionsFromQueryOptions(repo)).toThrow("positive integer");
+    }
+    expect(fetch).not.toHaveBeenCalled();
+  });
+
+  it("honors a 50ms request deadline and falls back", async () => {
     vi.stubEnv("TYPESAFE_API_KEY", "fixture-only-key");
     const fetch = vi.fn((_input: unknown, init?: RequestInit) => new Promise<Response>((_resolve, reject) => {
       init?.signal?.addEventListener("abort", () => reject(new DOMException("Aborted", "AbortError")), { once: true });
     }));
     vi.stubGlobal("fetch", fetch);
     const start = performance.now();
-    const result = await retrieveForTask(index, query, 8, undefined, { ...options(), timeoutMs: 100 });
+    const result = await retrieveForTask(index, query, 8, undefined, typeSafeOptionsFromQueryOptions(repo, { typesafe: true, typesafeTimeoutMs: 50 }));
     expect(result.typesafe?.status).toBe("fallback");
     expect(performance.now() - start).toBeLessThan(1500);
     expect(fetch).toHaveBeenCalledTimes(1);
