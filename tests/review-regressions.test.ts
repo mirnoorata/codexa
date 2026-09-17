@@ -79,7 +79,11 @@ describe("review regressions", () => {
     const scripts = {
       inert: 'node -e "process.exit(0)" scripts/verify-source-hygiene.mjs scripts/verify-public-hygiene.mjs',
       operand: "node scripts/noop.mjs scripts/verify-source-hygiene.mjs",
-      valid: "node --no-warnings scripts/verify-public-hygiene.mjs"
+      valid: "node --no-warnings scripts/verify-public-hygiene.mjs",
+      validNoAddons: "node --no-addons scripts/verify-public-hygiene.mjs",
+      validBooleanFlags: "node --preserve-symlinks --trace-warnings --no-deprecation scripts/verify-public-hygiene.mjs",
+      optionValue: "node --title scripts/verify-public-hygiene.mjs scripts/noop.mjs",
+      inertAfterBoolean: 'node --no-addons -e "process.exit(0)" scripts/verify-public-hygiene.mjs'
     };
     const repo = await fixture({
       "package.json": JSON.stringify({ name: "fixture", scripts }),
@@ -92,8 +96,8 @@ describe("review regressions", () => {
       expect(result.status).toBe(0);
       const coverage = verificationCoverageForCommands(index, [`npm run ${name}`], repo);
       const kinds = coverage.filter((entry) => entry.kind === "lint" || entry.kind === "privacy").map((entry) => entry.kind);
-      expect(kinds).toEqual(name === "valid" ? ["privacy"] : []);
-      if (name === "valid") expect(result.stdout).toContain("checked");
+      expect(kinds).toEqual(name.startsWith("valid") ? ["privacy"] : []);
+      if (name.startsWith("valid")) expect(result.stdout).toContain("checked");
     }
   });
 

@@ -406,7 +406,7 @@ function executedScriptOperand(command: string, args: string[]): string | undefi
         index += 1;
       } else if (/^--(?:require|import|loader|experimental-loader|conditions|env-file|env-file-if-exists)=.+/u.test(arg) || /^-r.+/u.test(arg)) {
         continue;
-      } else if (!["--enable-source-maps", "--no-warnings", "--trace-warnings", "--trace-deprecation", "--no-deprecation"].includes(arg)) {
+      } else if (!isNodeBooleanFlag(arg)) {
         return undefined;
       }
     } else {
@@ -416,6 +416,15 @@ function executedScriptOperand(command: string, args: string[]): string | undefi
     }
   }
   return undefined;
+}
+
+function isNodeBooleanFlag(arg: string): boolean {
+  // Node exposes negated spellings for boolean runtime flags. Requiring that
+  // spelling distinguishes flags such as --no-addons from value-taking options
+  // such as --require, whose following operand must never earn script credit.
+  return arg.startsWith("--") && !arg.includes("=") &&
+    process.allowedNodeEnvironmentFlags.has(arg) &&
+    process.allowedNodeEnvironmentFlags.has(arg.startsWith("--no-") ? arg : `--no-${arg.slice(2)}`);
 }
 
 // True for invocations that only print info (`--help`, `--version`) and so
