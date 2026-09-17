@@ -848,6 +848,15 @@ files for behavior queries; deterministic scores, anchors, and verification
 authority remain unchanged. It needs no embedding cache. A key alone does not
 enable it.
 
+`codexa index` (also available as `codexa reindex`) prints `TypeSafe on`,
+`TypeSafe off — not enabled`, or `TypeSafe off — API key missing` for the current
+process. The same status appears after indexing
+during `init`, `watch`, `semantic-index`, and `static-analysis`. Indexing does
+not call TypeSafe or validate the key. `TypeSafe on` means enabled with a key
+present for search reranking; it does not confirm API
+access, and a separately launched search or MCP process needs its own environment
+and options. Each user supplies their own key; Codexa includes no shared key.
+
 Provide `TYPESAFE_API_KEY` through your secret manager or a private local file:
 
 ```bash

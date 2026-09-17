@@ -37,6 +37,7 @@ import {
   parseWaiverOptions,
   queryOptionsFromCli,
   resolveQueryRepoRoot,
+  typeSafeIndexStatus,
   type CliQueryOptions
 } from "./cli/options.js";
 import { CODEXA_VERSION } from "./version.js";
@@ -157,6 +158,7 @@ program
       console.log(`MCP server: ${result.serverName}`);
       if (result.indexed) {
         console.log(`Indexed ${result.indexed.files} files, ${result.indexed.symbols} symbols, ${result.indexed.usageSites} usage sites.`);
+        console.log(typeSafeIndexStatus());
       } else {
         console.log("Index: skipped");
       }
@@ -266,12 +268,14 @@ program
 
 program
   .command("index")
+  .alias("reindex")
   .argument("<repo>", "repository root to index")
   .description("Index a repository and write .codex/codebase artifacts.")
   .action(async (repo: string) => {
     const index = await buildIndexLocked({ repoRoot: path.resolve(repo), writeArtifacts: true });
     console.log(`Indexed ${index.files.length} files, ${index.symbols.length} symbols, ${index.usageSites.length} usage sites.`);
     console.log(`Artifacts: ${path.join(path.resolve(repo), ".codex/codebase")}`);
+    console.log(typeSafeIndexStatus());
   });
 
 program
@@ -319,6 +323,7 @@ program
       console.log(`Provider: ${result.provider}; model: ${result.model}; dimensions: ${result.dimensions}`);
       console.log(`Chunks: ${result.chunkCount}; embedded: ${result.embeddedChunks}; reused: ${result.reusedChunks}`);
       console.log(`Cache: ${result.cacheDir}`);
+      console.log(typeSafeIndexStatus());
     }
   );
 
@@ -404,6 +409,7 @@ program
         index: opts.index
       });
       console.log(result.text);
+      if (opts.index) console.log(typeSafeIndexStatus());
     }
   );
 
