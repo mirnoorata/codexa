@@ -20,7 +20,7 @@ requireText("AGENTS.md", [
   "## GitHub Change and Release Path",
   "push that branch to GitHub",
   "Release Please",
-  "RELEASE_PLEASE_TOKEN",
+  "GITHUB_TOKEN",
   "npm run release:github",
   "gh release view"
 ]);
@@ -30,7 +30,7 @@ requireText("README.md", [
   "npm run release:github",
   "## Release Automation",
   "Release Please",
-  "RELEASE_PLEASE_TOKEN",
+  "GITHUB_TOKEN",
   "does not publish npm on every main merge",
   "## npm Package Publishing",
   "release: published",
@@ -45,7 +45,7 @@ requireText("docs/PUBLIC_RELEASE_CHECKLIST.md", [
   ".github/workflows/release-please.yml",
   "release-please-config.json",
   ".release-please-manifest.json",
-  "RELEASE_PLEASE_TOKEN",
+  "GITHUB_TOKEN",
   "NPM_TOKEN",
   "npm publish --registry https://registry.npmjs.org --access public --tag latest --provenance --ignore-scripts",
   "GitHub Release timeline entry",
@@ -94,12 +94,22 @@ requireText(".github/workflows/release-please.yml", [
   "issues: write",
   "pull-requests: write",
   "github.repository == 'mirnoorata/codexa'",
-  "secrets.RELEASE_PLEASE_TOKEN",
+  "token: ${{ github.token }}",
+  "actions: write",
+  "workflow_dispatch:",
+  "github.ref == 'refs/heads/main'",
+  "steps.release.outputs.release_created == 'true'",
+  "gh workflow run npm-publish.yml",
+  "--raw-field publish=true",
+  "'workflow', 'run', 'check.yml'",
   "release: published",
   "googleapis/release-please-action@45996ed1f6d02564a971a2fa1b5860e934307cf7 # v5.0.0",
   "config-file: release-please-config.json",
   "manifest-file: .release-please-manifest.json"
 ]);
+forbidText(".github/workflows/release-please.yml", ["secrets.RELEASE_PLEASE_TOKEN", "pull_request_target:"]);
+requireText(".github/workflows/check.yml", ["workflow_dispatch:"]);
+requireText(".github/workflows/npm-publish.yml", ["Wait for the npm package to become visible", "Timed out waiting for npm publication"]);
 requireText("action.yml", ["actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0"]);
 requireTextCount(".github/workflows/check.yml", "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1", 4);
 requireTextCount(".github/workflows/check.yml", "actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0", 4);

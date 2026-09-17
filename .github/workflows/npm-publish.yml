@@ -286,6 +286,34 @@ jobs:
             exit 1
           fi
 
+      - name: Wait for the npm package to become visible
+        env:
+          ACTIONS_ID_TOKEN_REQUEST_URL: ""
+          ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
+        run: |
+          node --input-type=module <<'NODE'
+          import { readFileSync } from 'node:fs';
+          const { name, version } = JSON.parse(readFileSync('package.json', 'utf8'));
+          const url = `https://registry.npmjs.org/${encodeURIComponent(name)}/${encodeURIComponent(version)}`;
+          for (let attempt = 1; attempt <= 30; attempt++) {
+            const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(5000) });
+            if (response.ok) {
+              const published = await response.json();
+              if (published.name !== name || published.version !== version || !published.dist?.tarball) {
+                throw new Error('npm returned unexpected package metadata');
+              }
+              console.log(`${name}@${version} is visible on npm.`);
+              break;
+            }
+            if (response.status !== 404 && response.status !== 429 && response.status < 500) {
+              throw new Error(`npm visibility check failed: HTTP ${response.status}`);
+            }
+            if (attempt === 30) throw new Error('Timed out waiting for npm publication; retry the MCP registry job once npm is visible.');
+            console.log(`npm publication is still processing (HTTP ${response.status}); retrying.`);
+            await new Promise(resolve => setTimeout(resolve, 10000));
+          }
+          NODE
+
       - name: Install mcp-publisher
         env:
           MCP_PUBLISHER_VERSION: v1.8.0

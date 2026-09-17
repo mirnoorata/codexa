@@ -148,12 +148,13 @@ mean "I cannot merge my own PRs." It just makes the CI green light mandatory.
 
 ### npm package publishing
 
-- Add a repository secret named `RELEASE_PLEASE_TOKEN` at
-  `Settings → Secrets and variables → Actions → Repository secrets`. It should
-  be a personal access token that can create pull requests, tags, and releases
-  for `mirnoorata/codexa`. Release Please must not use the default
-  `GITHUB_TOKEN` when npm publishing depends on a later `release: published`
-  workflow event.
+- Release Please uses the repository `GITHUB_TOKEN`; `RELEASE_PLEASE_TOKEN` is
+  no longer required. Under `Settings → Actions → General`, enable **Allow
+  GitHub Actions to create and approve pull requests**. The workflow only
+  creates/updates release PRs; maintainer review and protected-branch merge
+  remain required. It explicitly dispatches `check.yml` for its PR branch and
+  `npm-publish.yml` from `main` for the release it just published, since normal
+  push and `release: published` events from `GITHUB_TOKEN` do not start workflows.
 - Configure npm trusted publishing for the existing `@mirnoorata/codexa`
   package: GitHub Actions, owner `mirnoorata`, repository `codexa`, workflow
   filename `npm-publish.yml`, environment blank, and direct `npm publish`
@@ -161,7 +162,8 @@ mean "I cannot merge my own PRs." It just makes the CI green light mandatory.
 - Keep the repository public before publishing. npm provenance for GitHub-backed
   publishes requires a public repository and a public package.
 - The npm publish workflow is `.github/workflows/npm-publish.yml`. It runs on
-  `release: published`, checks that the tag is exactly
+  `release: published` or an explicit Release Please dispatch, checks that the
+  tag is exactly
   `v${package.json.version}`, requires the tag commit to be contained in the
   repository default branch, rejects GitHub prereleases and semver prerelease
   versions until an explicit npm dist-tag policy exists, requires the package
@@ -189,7 +191,9 @@ mean "I cannot merge my own PRs." It just makes the CI green light mandatory.
   for an authentication-only diagnostic, then use `publish=true` for recovery.
   Publishing recovery must target the latest stable GitHub Release. The recovery
   verifies the published release and tagged package, runs the full
-  gate, skips existing versions, and also publishes the MCP registry entry.
+  gate, skips existing versions, and also publishes the MCP registry entry. The
+  MCP job waits for npm visibility before publishing; if the bounded wait expires,
+  retry the failed MCP job after npm exposes the version.
   Old failed run retries use the old workflow; use manual dispatch to apply a
   workflow fix without changing the release tag.
 
