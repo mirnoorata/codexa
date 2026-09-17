@@ -3,16 +3,64 @@ name: Publish Codexa to npm
 on:
   release:
     types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing published stable GitHub release tag
+        required: true
+        type: string
+      publish:
+        description: Publish after validation (otherwise only diagnose npm authentication)
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
 concurrency:
-  group: codexa-npm-publish-${{ github.event.release.tag_name }}
+  group: codexa-npm-publish-${{ inputs.tag || github.event.release.tag_name }}
   cancel-in-progress: false
 
 jobs:
+  release:
+    if: github.repository == 'mirnoorata/codexa'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      tag: ${{ steps.release.outputs.tag }}
+      default_branch: ${{ steps.release.outputs.default_branch }}
+    steps:
+      - name: Resolve published stable release
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.tag || github.event.release.tag_name }}
+          RECOVERY_PUBLISH: ${{ inputs.publish }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${RELEASE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::An existing stable vMAJOR.MINOR.PATCH release tag is required."
+            exit 1
+          fi
+          default_branch="$(gh api "repos/${GITHUB_REPOSITORY}" --jq .default_branch)"
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && "${GITHUB_REF}" != "refs/heads/${default_branch}" ]]; then
+            echo "::error::Manual recovery must run from the default branch."
+            exit 1
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/releases/tags/${RELEASE_TAG}" > "${RUNNER_TEMP}/release.json"
+          jq -e --arg tag "${RELEASE_TAG}" '.tag_name == $tag and .draft == false and .prerelease == false and .published_at != null' "${RUNNER_TEMP}/release.json" > /dev/null
+          if [[ "${GITHUB_EVENT_NAME}" == "workflow_dispatch" && "${RECOVERY_PUBLISH}" == "true" ]]; then
+            latest_tag="$(gh api "repos/${GITHUB_REPOSITORY}/releases/latest" --jq .tag_name)"
+            if [[ "${RELEASE_TAG}" != "${latest_tag}" ]]; then
+              echo "::error::Manual publishing must target the latest stable GitHub release."
+              exit 1
+            fi
+          fi
+          echo "tag=${RELEASE_TAG}" >> "${GITHUB_OUTPUT}"
+          echo "default_branch=${default_branch}" >> "${GITHUB_OUTPUT}"
+
   publish:
+    needs: release
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -24,7 +72,7 @@ jobs:
       - name: Check out release tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: refs/tags/${{ needs.release.outputs.tag }}
           fetch-depth: 0
           persist-credentials: false
 
@@ -32,7 +80,6 @@ jobs:
         uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6.5.0
         with:
           node-version: "24.x"
-          registry-url: "https://registry.npmjs.org"
           package-manager-cache: false
 
       - name: Use provenance-capable npm
@@ -48,9 +95,9 @@ jobs:
       - name: Validate release package
         id: package
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
-          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
-          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+          RELEASE_TAG: ${{ needs.release.outputs.tag }}
+          RELEASE_PRERELEASE: "false"
+          DEFAULT_BRANCH: ${{ needs.release.outputs.default_branch }}
           REPOSITORY_PRIVATE: ${{ github.event.repository.private }}
           ACTIONS_ID_TOKEN_REQUEST_URL: ""
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
@@ -134,33 +181,66 @@ jobs:
           cat "${RUNNER_TEMP}/npm-view.err" >&2
           exit "${status}"
 
+      - name: Diagnose npm trusted publishing
+        if: steps.package.outputs.already_published != 'true' || (github.event_name == 'workflow_dispatch' && !inputs.publish)
+        run: |
+          node --input-type=module <<'NODE'
+          const registry = 'https://registry.npmjs.org';
+          const packageName = '@mirnoorata/codexa';
+          const requestToken = process.env.ACTIONS_ID_TOKEN_REQUEST_TOKEN;
+          const requestUrl = process.env.ACTIONS_ID_TOKEN_REQUEST_URL;
+          if (!requestToken || !requestUrl) throw new Error('GitHub OIDC is unavailable; id-token: write is required.');
+          const url = new URL(requestUrl);
+          url.searchParams.set('audience', 'npm:registry.npmjs.org');
+          const identity = await fetch(url, {
+            headers: { Authorization: `Bearer ${requestToken}` },
+            redirect: 'error', signal: AbortSignal.timeout(15000)
+          });
+          if (!identity.ok) throw new Error(`GitHub OIDC request failed: HTTP ${identity.status}`);
+          const { value: idToken } = await identity.json();
+          if (typeof idToken !== 'string' || !idToken) throw new Error('GitHub returned no OIDC token.');
+          const claims = JSON.parse(Buffer.from(idToken.split('.')[1], 'base64url').toString());
+          console.log('Trusted publisher identity:', JSON.stringify({
+            repository: claims.repository, workflow_ref: claims.workflow_ref,
+            ref: claims.ref, event_name: claims.event_name
+          }));
+          const exchange = await fetch(`${registry}/-/npm/v1/oidc/token/exchange/package/${encodeURIComponent(packageName)}`, {
+            method: 'POST', headers: { Authorization: `Bearer ${idToken}` },
+            redirect: 'error', signal: AbortSignal.timeout(15000)
+          });
+          if (!exchange.ok) {
+            const body = await exchange.json().catch(() => ({}));
+            let message = String(body.message || body.error || 'No registry error detail');
+            for (const secret of [requestToken, idToken]) message = message.split(secret).join('[redacted]');
+            console.error(`npm trusted publishing rejected: HTTP ${exchange.status}; ${JSON.stringify(message.slice(0, 1000))}`);
+            process.exit(1);
+          }
+          const credential = await exchange.json();
+          if (typeof credential.token !== 'string' || !credential.token) throw new Error('npm returned no publish credential.');
+          console.log('npm trusted publishing accepted. The temporary credential is discarded; nothing was published.');
+          NODE
+
       - name: Install dependencies
-        if: steps.package.outputs.already_published != 'true'
+        if: steps.package.outputs.already_published != 'true' && (github.event_name == 'release' || inputs.publish)
         env:
           ACTIONS_ID_TOKEN_REQUEST_URL: ""
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
         run: npm ci
 
       - name: Run security gate
-        if: steps.package.outputs.already_published != 'true'
+        if: steps.package.outputs.already_published != 'true' && (github.event_name == 'release' || inputs.publish)
         env:
           ACTIONS_ID_TOKEN_REQUEST_URL: ""
           ACTIONS_ID_TOKEN_REQUEST_TOKEN: ""
         run: npm run security:check
 
       - name: Publish to npm with provenance
-        if: steps.package.outputs.already_published != 'true'
+        if: steps.package.outputs.already_published != 'true' && (github.event_name == 'release' || inputs.publish)
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
           PACKAGE_NAME: ${{ steps.package.outputs.name }}
           PACKAGE_VERSION: ${{ steps.package.outputs.version }}
         run: |
           set -euo pipefail
-
-          if [[ -z "${NODE_AUTH_TOKEN:-}" ]]; then
-            echo "::error::NPM_TOKEN repository secret is not configured."
-            exit 1
-          fi
 
           set +e
           npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version --json --registry "${NPM_REGISTRY}" >"${RUNNER_TEMP}/npm-view-final.json" 2>"${RUNNER_TEMP}/npm-view-final.err"
@@ -180,7 +260,8 @@ jobs:
           npm publish --registry "${NPM_REGISTRY}" --access public --tag latest --provenance --ignore-scripts
 
   mcp-registry:
-    needs: publish
+    needs: [release, publish]
+    if: github.event_name == 'release' || inputs.publish
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -190,12 +271,12 @@ jobs:
       - name: Check out release tag
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: refs/tags/${{ needs.release.outputs.tag }}
           persist-credentials: false
 
       - name: Verify server.json matches the release
         env:
-          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          RELEASE_TAG: ${{ needs.release.outputs.tag }}
         run: |
           set -euo pipefail
           server_version="$(node -p "require('./server.json').version")"

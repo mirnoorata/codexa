@@ -154,12 +154,10 @@ mean "I cannot merge my own PRs." It just makes the CI green light mandatory.
   for `mirnoorata/codexa`. Release Please must not use the default
   `GITHUB_TOKEN` when npm publishing depends on a later `release: published`
   workflow event.
-- Before the first npm release, add a repository secret named `NPM_TOKEN` at
-  `Settings → Secrets and variables → Actions → Repository secrets`.
-- The secret must be a granular npm access token with write access to the
-  `@mirnoorata` scope or package namespace and Bypass 2FA enabled. Do not paste
-  the token into the workflow, PR, README, issue, release notes, or terminal
-  transcript.
+- Configure npm trusted publishing for the existing `@mirnoorata/codexa`
+  package: GitHub Actions, owner `mirnoorata`, repository `codexa`, workflow
+  filename `npm-publish.yml`, environment blank, and direct `npm publish`
+  allowed. `NPM_TOKEN` is no longer used by this workflow.
 - Keep the repository public before publishing. npm provenance for GitHub-backed
   publishes requires a public repository and a public package.
 - The npm publish workflow is `.github/workflows/npm-publish.yml`. It runs on
@@ -173,22 +171,27 @@ mean "I cannot merge my own PRs." It just makes the CI green light mandatory.
   publishes with
   `npm publish --registry https://registry.npmjs.org --access public --tag latest --provenance --ignore-scripts`.
   The explicit `--ignore-scripts` prevents npm from re-running `prepublishOnly`
-  inside the token-bearing publish step after the full security gate has already
+  inside the authenticated publish step after the full security gate has already
   passed, the explicit registry flag prevents publish redirection by future npm
   config drift, and the explicit `--tag latest` prevents stable releases from
   inheriting a stale npm dist-tag. Pre-publish run steps blank
   `ACTIONS_ID_TOKEN_REQUEST_URL` and `ACTIONS_ID_TOKEN_REQUEST_TOKEN`, so build,
-  install, validation, and test commands cannot mint GitHub OIDC tokens; only the
-  final publish step keeps OIDC available for provenance.
+  install, validation, and test commands cannot mint GitHub OIDC tokens. The
+  explicit authentication diagnostic and final publish step retain OIDC access.
+  The diagnostic reports rejected exchanges before the expensive security gate
+  and discards successful credentials without logging them.
 - The automated release chain is: normal PRs merge to `main`, Release Please
   opens or updates its release PR, the maintainer merges that release PR, GitHub
   publishes the Release, and `.github/workflows/npm-publish.yml` publishes npm.
   Release Please does not mean every merge to `main` immediately publishes npm.
-- After `@mirnoorata/codexa` exists on npm, replace token publishing with npm
-  trusted publishing for the same repository and workflow filename. The trusted
-  publisher should be GitHub Actions, `mirnoorata/codexa`, workflow filename
-  `npm-publish.yml`, no environment name unless the workflow adds one, and
-  allowed action `npm publish`.
+- For an existing stable GitHub Release that failed to reach npm, manually run
+  `npm-publish.yml` from the default branch with its tag. Leave `publish=false`
+  for an authentication-only diagnostic, then use `publish=true` for recovery.
+  Publishing recovery must target the latest stable GitHub Release. The recovery
+  verifies the published release and tagged package, runs the full
+  gate, skips existing versions, and also publishes the MCP registry entry.
+  Old failed run retries use the old workflow; use manual dispatch to apply a
+  workflow fix without changing the release tag.
 
 ### Notifications
 
