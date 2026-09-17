@@ -39,6 +39,7 @@ import {
 import type { QueryOptions, QueryResult, SessionMemoryInput } from "../types.js";
 import type { QuerySession } from "../query/session.js";
 import { RAW_SEARCH_EXPLICIT_PATTERN_LIMIT } from "../query/raw-search.js";
+import { typeSafeEnabled } from "../typesafe-reranker.js";
 import { DISPATCHABLE_MCP_TOOL_NAMES, MCP_TOOL_NAMES, MCP_TOOL_REGISTRY, mcpToolRegistryEntry, type McpToolName, type McpToolRegistryEntry } from "./tool-registry.js";
 
 export type McpOptionalQueryInput = Record<string, unknown> & {
@@ -225,6 +226,10 @@ export function registerMcpTools(options: RegisterMcpToolsOptions): void {
           metadata.name,
           {
             ...config,
+            // Capabilities can dispatch find_context even in the core profile.
+            annotations: typeSafeEnabled(queryOptions) && ["search", "find_context", "capabilities"].includes(name)
+              ? { ...config.annotations, openWorldHint: true, idempotentHint: false }
+              : config.annotations,
             inputSchema: effectiveInputSchema as InputArgs,
             title: metadata.title,
             description: metadata.description

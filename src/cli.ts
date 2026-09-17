@@ -285,6 +285,7 @@ program
   .option("--timeout-ms <n>", "embedding provider timeout in milliseconds", parseIntOption, 60_000)
   .option("--batch-size <n>", "number of chunks to send per provider request", parseIntOption, 64)
   .option("--max-files <n>", "maximum indexed files to embed", parseIntOption, 750)
+  .option("--force", "re-embed every chunk, ignoring reusable cached embeddings", false)
   .description("Build the semantic retrieval cache used by first-class hybrid Codexa search and task context.")
   .action(
     async (
@@ -298,6 +299,7 @@ program
         timeoutMs: number;
         batchSize: number;
         maxFiles: number;
+        force: boolean;
       }
     ) => {
       const repoRoot = path.resolve(repo);
@@ -310,11 +312,12 @@ program
         args: opts.arg,
         timeoutMs: opts.timeoutMs,
         batchSize: opts.batchSize,
-        maxFiles: opts.maxFiles
+        maxFiles: opts.maxFiles,
+        force: opts.force
       });
       console.log(`Codexa semantic index built for ${result.repoRoot}`);
       console.log(`Provider: ${result.provider}; model: ${result.model}; dimensions: ${result.dimensions}`);
-      console.log(`Chunks: ${result.chunkCount}`);
+      console.log(`Chunks: ${result.chunkCount}; embedded: ${result.embeddedChunks}; reused: ${result.reusedChunks}`);
       console.log(`Cache: ${result.cacheDir}`);
     }
   );
@@ -660,6 +663,11 @@ program
 program
   .command("serve")
   .argument("[repo]", "repository root; defaults to the current git root")
+  .option("--typesafe", "opt in to TypeSafe advisory reranking; sends candidate excerpts to TypeSafe")
+  .option("--no-typesafe", "disable TypeSafe reranking, including environment opt-in")
+  .option("--typesafe-model <model>", "TypeSafe model (default: jev-latest)")
+  .option("--typesafe-timeout-ms <n>", "total TypeSafe deadline in milliseconds (default: 2500)", parseIntOption)
+  .option("--typesafe-max-candidates <n>", "maximum candidates sent to TypeSafe (default: 12, cap: 20)", parseIntOption)
   .option("--semantic", "force semantic retrieval for MCP task queries when auto-detection would skip it")
   .option("--no-semantic", "disable automatic semantic retrieval for MCP task queries")
   .option("--semantic-provider <provider>", "semantic query provider: openai or local-command", parseSemanticProvider)

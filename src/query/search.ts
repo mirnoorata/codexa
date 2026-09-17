@@ -1,3 +1,4 @@
+import { typeSafeOptionsFromQueryOptions } from "../typesafe-reranker.js";
 import path from "node:path";
 import { indexGaps, formatGaps } from "./diff.js";
 import { confidenceTier, tierScore, clampInt, fitLinesToTokenBudget } from "./formatting.js";
@@ -70,7 +71,7 @@ export async function findContextQuery(input: QuerySessionInput, query: string, 
   const session = await ensureQuerySession(input, options);
   const { index, freshness, refresh, repoRoot } = session;
   const needle = query.toLowerCase();
-  const retrieval = await retrieveForTask(index, query, limit, semanticOptionsFromQueryOptions(repoRoot, options));
+  const retrieval = await retrieveForTask(index, query, limit, semanticOptionsFromQueryOptions(repoRoot, options), typeSafeOptionsFromQueryOptions(repoRoot, options, freshness));
   const symbolHits = index.symbols
     .filter((symbol) => [symbol.name, symbol.qualifiedName, symbol.path].some((value) => value.toLowerCase().includes(needle)))
     .slice(0, limit);
@@ -124,7 +125,7 @@ export async function searchQuery(
   const rawPatterns = rawSearchPatternsForQuery(queryInput.query, queryInput.patterns);
   const raw = await rawSearch(repoRoot, rawPatterns, Math.max(limit * 4, 20));
   const interpreted = rankedSearch(index, queryInput.query, limit);
-  const retrieval = await retrieveForTask(index, queryInput.query, Math.max(limit * 2, 12), semanticOptionsFromQueryOptions(repoRoot, options));
+  const retrieval = await retrieveForTask(index, queryInput.query, Math.max(limit * 2, 12), semanticOptionsFromQueryOptions(repoRoot, options), typeSafeOptionsFromQueryOptions(repoRoot, raw.sufficient ? { ...options, typesafe: false } : options, freshness));
   const rawIndexedFiles = raw.files.map((filePath) => findFile(index, filePath)).filter((file): file is FileFact => Boolean(file));
   for (const file of rawIndexedFiles) {
     const existing = interpreted.reasons.get(file.path) ?? [];
@@ -141,7 +142,9 @@ export async function searchQuery(
   const rankedSearchFiles = uniqueFiles(
     raw.sufficient
       ? [...rawIndexedFiles, ...interpreted.exactTargets]
-      : [...interpreted.files, ...rawIndexedFiles, ...retrieval.matches.map((match) => match.file)]
+      : retrieval.typesafe?.status === "ok"
+        ? [...interpreted.exactTargets, ...rawIndexedFiles, ...retrieval.matches.map((match) => match.file), ...interpreted.files]
+        : [...interpreted.files, ...rawIndexedFiles, ...retrieval.matches.map((match) => match.file)]
   );
   const searchFiles = uniqueFiles([...candidateFiles, ...explicitTargetFiles, ...rankedSearchFiles]).slice(0, limit);
   const tests = recommendTests(index, searchFiles.map((file) => file.path), repoRoot).slice(0, 10);
@@ -272,6 +275,7 @@ export async function searchQuery(
     `Hybrid semantic search: ${queryInput.query}`,
     raw.patterns.length > 1 ? `Search patterns: ${formatSearchPatterns(raw.patterns)}` : undefined,
     formatSemanticLaneSummary(retrieval.semantic),
+    ...(retrieval.typesafe?.enabled ? [`TypeSafe reranking: ${retrieval.typesafe.status}${retrieval.typesafe.reason ? ` (${retrieval.typesafe.reason})` : ""}`] : []),
     `Packet verdict: ${effectiveIntent.verdict}; edit-ready ${effectiveIntent.editReady ? "yes" : "no"}; confidence ${Math.round(effectiveIntent.confidence * 100)}%`,
     `Actionability: ${actionability}`,
     effectiveDiagnostics.length > 0 ? `Retrieval diagnostics: ${effectiveDiagnostics.join("; ")}` : undefined,
@@ -314,6 +318,7 @@ export async function searchQuery(
       rawExactFileCount: rawFileCount,
       raw,
       semantic: retrieval.semantic,
+      typesafe: retrieval.typesafe,
       files: searchFiles,
       symbols: interpreted.symbols,
       usageSites: interpreted.usageSites,

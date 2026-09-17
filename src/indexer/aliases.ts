@@ -175,6 +175,8 @@ function targetExistsForAlias(target: string, files: Set<string>): boolean {
   const ext = path.posix.extname(target);
   const stem = ext ? target.slice(0, -ext.length) : target;
   const variants = [
+    ...(ext === ".mjs" ? [`${stem}.mts`] : []),
+    ...(ext === ".cjs" ? [`${stem}.cts`] : []),
     `${stem}.ts`,
     `${stem}.tsx`,
     `${stem}.js`,

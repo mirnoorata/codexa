@@ -38,6 +38,10 @@ export function invokedCliName(): string {
 export type CliQueryOptions = {
   autoRefresh?: boolean;
   semantic?: boolean;
+  typesafe?: boolean;
+  typesafeModel?: string;
+  typesafeTimeoutMs?: number;
+  typesafeMaxCandidates?: number;
   semanticProvider?: SemanticProviderKind;
   semanticModel?: string;
   semanticDimensions?: number;
@@ -57,6 +61,10 @@ export function queryOptionsFromCli(opts: CliQueryOptions): QueryOptions {
   return {
     autoRefresh: opts.autoRefresh,
     semantic: opts.semantic,
+    typesafe: opts.typesafe,
+    typesafeModel: opts.typesafeModel,
+    typesafeTimeoutMs: opts.typesafeTimeoutMs,
+    typesafeMaxCandidates: opts.typesafeMaxCandidates,
     semanticProvider: opts.semanticProvider,
     semanticModel: opts.semanticModel,
     semanticDimensions: opts.semanticDimensions,

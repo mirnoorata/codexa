@@ -76,8 +76,11 @@ export function resolveIndexLinks(index: CodexaIndex, aliases: ImportAliasRule[]
     const targetPath = inferTestTarget(edge.path, files);
     return targetPath ? { ...edge, targetPath } : edge;
   });
+  const testEdgeKeys = new Set(testEdges.map((edge) => JSON.stringify([edge.path, edge.targetPath, edge.reason])));
   for (const edge of importTestEdges(resolvedImports, index.snapshot.snapshotId, index.snapshot.indexedAt)) {
-    if (!testEdges.some((candidate) => candidate.path === edge.path && candidate.targetPath === edge.targetPath && candidate.reason === edge.reason)) {
+    const key = JSON.stringify([edge.path, edge.targetPath, edge.reason]);
+    if (!testEdgeKeys.has(key)) {
+      testEdgeKeys.add(key);
       testEdges.push(edge);
     }
   }
@@ -235,6 +238,8 @@ function resolveCandidate(candidate: string, files: Set<string>): string | undef
   const stem = ext ? candidate.slice(0, -ext.length) : candidate;
   const variants = [
     candidate,
+    ...(ext === ".mjs" ? [`${stem}.mts`] : []),
+    ...(ext === ".cjs" ? [`${stem}.cts`] : []),
     ...(ext === ".js" || ext === ".mjs" || ext === ".cjs" ? [`${stem}.ts`, `${stem}.tsx`, `${stem}.js`, `${stem}.jsx`] : []),
     ...(ext === ".jsx" ? [`${stem}.tsx`, `${stem}.jsx`] : []),
     `${candidate}.ts`,
