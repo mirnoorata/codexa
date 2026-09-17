@@ -5,6 +5,7 @@ import type { McpTransportKind } from "../mcp.js";
 import { resolveMcpRepoRootOnce, type McpRepoRootResolutionOptions } from "../mcp-repo-root.js";
 import { semanticProviderFromValue, type SemanticProviderKind } from "../semantic-retrieval.js";
 import type { ChangeType, QueryOptions, SessionMemoryInput, VerificationCommandReport, VerificationWaiver } from "../types.js";
+import { typeSafeEnabled } from "../typesafe-reranker.js";
 
 export function printQuery(result: { text: string }) {
   console.log(result.text);
@@ -279,6 +280,12 @@ export function parseCommandReportOptions(values: string[] | undefined): Verific
   });
 }
 
+export function typeSafeIndexStatus(): string {
+  if (!typeSafeEnabled()) return "TypeSafe off — not enabled";
+  if (!process.env.TYPESAFE_API_KEY?.trim()) return "TypeSafe off — API key missing";
+  return "TypeSafe on";
+}
+
 export function logLiveIndexEvent(event: LiveIndexEvent): void {
   if (event.type === "watch-ready") {
     console.error(`Codexa watch ready: ${event.repoRoot} (${event.directories} dirs, debounce ${event.debounceMs}ms, poll ${event.pollMs}ms)`);
@@ -290,6 +297,7 @@ export function logLiveIndexEvent(event: LiveIndexEvent): void {
   }
   if (event.type === "index-complete") {
     console.error(`Codexa indexed ${event.files} files, ${event.symbols} symbols, ${event.usageSites} usage sites in ${event.durationMs}ms (${event.reason}).`);
+    console.error(typeSafeIndexStatus());
     return;
   }
   if (event.type === "watch-warning") {
