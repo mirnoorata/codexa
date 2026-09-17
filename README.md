@@ -1232,19 +1232,29 @@ and creates the GitHub Release after that release PR is merged.
 
 This does not publish npm on every main merge. Normal feature and fix PRs land
 on `main` first, Release Please batches releasable changes into its release PR,
-and npm publishing stays downstream of the GitHub Release event.
+and npm publishing stays downstream of a published GitHub Release.
 
-Configure a `RELEASE_PLEASE_TOKEN` GitHub repository secret with a personal
-access token that can create pull requests, tags, and releases. Do not use the
-default `GITHUB_TOKEN` for Release Please if npm publishing should happen
-automatically, because releases created by `GITHUB_TOKEN` do not trigger the
-separate `release: published` npm workflow.
+Release Please uses the short-lived repository `GITHUB_TOKEN`; no personal
+access token or `RELEASE_PLEASE_TOKEN` secret is needed. In repository
+`Settings → Actions → General`, enable **Allow GitHub Actions to create and
+approve pull requests**. The workflow never approves or merges its release PR.
+It explicitly dispatches `check.yml` on the release PR branch and dispatches
+`npm-publish.yml` on `main` with the newly published release tag. These explicit
+triggers are needed because `GITHUB_TOKEN` does not trigger normal push or
+`release: published` workflows. The token has repository-scoped contents,
+issues, pull-request, and Actions write permissions. Maintainers still review
+and merge the release PR through the protected branch flow.
+
+To retry release creation, manually run `release-please.yml` from `main`.
+If the Release already exists but publishing was interrupted, use the npm
+recovery procedure below.
 
 ## npm Package Publishing
 
 The npm package is published by GitHub Actions after the GitHub Release lane
-publishes a release. The trigger is `release: published`; pushed tags alone do
-not publish to npm. The workflow checks the released tag, package identity,
+publishes a release. Release Please explicitly dispatches the publishing
+workflow; manually created releases trigger `release: published`. Pushed tags
+alone do not publish to npm. The workflow checks the released tag, package identity,
 repository URL, version availability, and `npm run security:check`, then runs:
 
 ```bash
@@ -1267,7 +1277,9 @@ to run the full security gate and publish the tagged source of the latest stable
 GitHub Release. Already published
 versions are skipped. This lets a corrected workflow publish an existing tag
 without moving the tag or creating another release. Re-running an old failed
-Actions run still uses its old workflow definition.
+Actions run still uses its old workflow definition. The MCP registry job waits
+for npm to expose the version before registering it; if npm processing exceeds
+the bounded wait, retry the failed MCP job after the version becomes visible.
 
 ## Contributing
 

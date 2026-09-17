@@ -44,9 +44,9 @@ recovery, architecture, and release procedures live in `README.md` and
 - Finish on a named branch through the protected `main` PR flow with
   Conventional Commits; push that branch to GitHub. Do not tag dirty or
   detached source.
-- Run `npm run security:check`. Release Please is the normal lane and requires
-  `RELEASE_PLEASE_TOKEN`; use `npm run release:github` only on explicit request
-  and verify with `gh release view`. At release time, load README `Release Automation`
+- Run `npm run security:check`. Release Please is the normal lane and uses the
+  repository `GITHUB_TOKEN` with explicit workflow dispatches; use
+  `npm run release:github` only on explicit request and verify with `gh release view`. At release time, load README `Release Automation`
   and `docs/PUBLIC_RELEASE_CHECKLIST.md`.
 - Before release-oriented pushes, run `npm run privacy`; it checks repository
   paths, not secrets.
