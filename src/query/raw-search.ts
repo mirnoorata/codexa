@@ -34,8 +34,10 @@ export async function rawSearch(repoRoot: string, query: string | string[], limi
     timeoutMs: RG_TIMEOUT_MS,
     maxBufferBytes: RG_MAX_BUFFER_BYTES
   });
-  const result = isMissingCommand(rgResult) ? await gitGrep(repoRoot, patterns) : rgResult;
-  const parsedHits = parseRgHits(result.stdout, limit + 1, patterns);
+  const result = isMissingCommand(rgResult) ? await gitGrep(repoRoot, patterns, true) : rgResult;
+  const parsedHits = result === rgResult
+    ? parseRgHits(result.stdout, limit + 1, patterns)
+    : parseGitHits(result.stdout, limit + 1, patterns);
   const overflowed = parsedHits.length > limit;
   const hits = parsedHits.slice(0, limit);
   const files = uniqueSorted(hits.map((hit) => hit.path));
@@ -101,7 +103,7 @@ export function normalizeRawSearchPatterns(query: string | string[]): string[] {
 }
 
 function rawSearchArgs(patterns: string[]): string[] {
-  const base = ["--no-config", "-n", "--fixed-strings", "--max-count", "25", "--glob", "!.codex/**"];
+  const base = ["--no-config", "--json", "-n", "--fixed-strings", "--max-count", "25", "--glob", "!.codex/**"];
   if (patterns.length === 1) {
     return [...base, "--", patterns[0], "."];
   }
@@ -115,8 +117,8 @@ function rawSearchCommand(patterns: string[]): string {
   return `rg --no-config -n --fixed-strings ${patterns.map((pattern) => `-e ${JSON.stringify(pattern)}`).join(" ")} .`;
 }
 
-async function gitGrep(repoRoot: string, terms: string[]) {
-  return await runCommand("git", ["--no-pager", "-c", "color.ui=false", "-c", "color.grep=false", "grep", "-n", "-F", "--max-count", "25", ...terms.flatMap((term) => ["-e", term]), "--", ".", ":(exclude).codex/**"], {
+async function gitGrep(repoRoot: string, terms: string[], nullNames = false) {
+  return await runCommand("git", ["--no-pager", "-c", "color.ui=false", "-c", "color.grep=false", "grep", ...(nullNames ? ["-z"] : []), "-n", "-F", "--max-count", "25", ...terms.flatMap((term) => ["-e", term]), "--", ".", ":(exclude).codex/**"], {
     cwd: repoRoot,
     okExitCodes: [0, 1],
     timeoutMs: RG_TIMEOUT_MS,
@@ -135,27 +137,49 @@ function isMissingCommand(result: { exitCode: number | null; error?: Error }): b
 function parseRgHits(output: string, limit: number, patterns: string[]): RawSearchHit[] {
   const hits: RawSearchHit[] = [];
   for (const line of output.split(/\r?\n/)) {
-    if (!line.trim()) {
+    try {
+      const record = JSON.parse(line) as { type?: string; data?: { path?: { text?: string; bytes?: string }; lines?: { text?: string; bytes?: string }; line_number?: number } };
+      if (record.type !== "match" || !record.data) continue;
+      const pathValue = rgText(record.data.path);
+      const text = rgText(record.data.lines);
+      const lineNumber = record.data.line_number;
+      if (pathValue === undefined || text === undefined || !Number.isSafeInteger(lineNumber) || lineNumber! < 1) continue;
+      hits.push(rawHit(pathValue, lineNumber!, text, patterns));
+      if (hits.length >= limit) break;
+    } catch {
+      // A bounded subprocess result may end partway through its last record.
       continue;
-    }
-    const first = line.indexOf(":");
-    const second = first >= 0 ? line.indexOf(":", first + 1) : -1;
-    if (first <= 0 || second <= first) {
-      continue;
-    }
-    const pathValue = line.slice(0, first);
-    const lineNumber = Number.parseInt(line.slice(first + 1, second), 10);
-    if (!Number.isFinite(lineNumber)) {
-      continue;
-    }
-    const pathText = pathValue.replace(/^\.\//, "");
-    const text = line.slice(second + 1).trim().slice(0, 220);
-    hits.push({ path: pathText, line: lineNumber, text, pattern: matchingPattern(pathText, text, patterns) });
-    if (hits.length >= limit) {
-      break;
     }
   }
   return hits;
+}
+
+function rgText(value: { text?: string; bytes?: string } | undefined): string | undefined {
+  if (typeof value?.text === "string") return value.text;
+  return typeof value?.bytes === "string" ? Buffer.from(value.bytes, "base64").toString("utf8") : undefined;
+}
+
+function parseGitHits(output: string, limit: number, patterns: string[]): RawSearchHit[] {
+  const hits: RawSearchHit[] = [];
+  let cursor = 0;
+  while (cursor < output.length && hits.length < limit) {
+    const pathEnd = output.indexOf("\0", cursor);
+    const lineEnd = output.indexOf("\0", pathEnd + 1);
+    const textEnd = output.indexOf("\n", lineEnd + 1);
+    if (pathEnd < cursor || lineEnd <= pathEnd || textEnd < lineEnd) break;
+    const lineNumber = Number(output.slice(pathEnd + 1, lineEnd));
+    if (Number.isSafeInteger(lineNumber) && lineNumber > 0) {
+      hits.push(rawHit(output.slice(cursor, pathEnd), lineNumber, output.slice(lineEnd + 1, textEnd), patterns));
+    }
+    cursor = textEnd + 1;
+  }
+  return hits;
+}
+
+function rawHit(file: string, line: number, contents: string, patterns: string[]): RawSearchHit {
+  const path = file.replace(/^\.\//, "");
+  const text = contents.trim().slice(0, 220);
+  return { path, line, text, pattern: matchingPattern(path, text, patterns) };
 }
 
 function exactish(patterns: string[], hits: RawSearchHit[]): boolean {

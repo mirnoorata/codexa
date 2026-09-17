@@ -109,5 +109,5 @@ export function rankLog2(rank: number): number {
 
 export function isSubpath(candidate: string, parent: string): boolean {
   const rel = path.relative(parent, candidate);
-  return rel === "" || (!rel.startsWith("..") && !path.isAbsolute(rel));
+  return rel === "" || (rel !== ".." && !rel.startsWith(`..${path.sep}`) && !path.isAbsolute(rel));
 }

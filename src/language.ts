@@ -27,7 +27,7 @@ const GENERATED_SOURCE_SEGMENTS = new Set(["generated", "__generated__", "gen"])
 
 export function languageForPath(filePath: string): LanguageId {
   const ext = path.extname(filePath).toLowerCase();
-  if (ext === ".ts" || ext === ".tsx") {
+  if (ext === ".ts" || ext === ".tsx" || ext === ".mts" || ext === ".cts") {
     return "typescript";
   }
   if (ext === ".js" || ext === ".jsx" || ext === ".mjs" || ext === ".cjs") {

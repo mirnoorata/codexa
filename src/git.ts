@@ -205,13 +205,13 @@ export function isCodexaInput(file: string): boolean {
 export function repoRelativePath(file: string, gitRoot: string | null, relativePrefix: string): string | undefined {
   const normalized = normalizePath(file);
   if (!gitRoot || !relativePrefix) {
-    return normalized && !normalized.startsWith("..") ? normalized : undefined;
+    return normalized && normalized !== ".." && !normalized.startsWith("../") && !path.isAbsolute(normalized) ? normalized : undefined;
   }
   if (!(normalized === relativePrefix || normalized.startsWith(`${relativePrefix}/`))) {
     return undefined;
   }
   const relative = normalizePath(path.relative(relativePrefix, normalized));
-  return relative && !relative.startsWith("..") ? relative : undefined;
+  return relative && relative !== ".." && !relative.startsWith("../") && !path.isAbsolute(relative) ? relative : undefined;
 }
 
 function splitNul(value: string): string[] {

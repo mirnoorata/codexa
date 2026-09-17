@@ -386,11 +386,36 @@ function collectToolEvidence(strippedCommand: string, evidence: ScriptToolEviden
       recordToolEvidence(command, args, evidence);
     }
     if (executesResolvedTool && (command === "node" || command === "bash" || command === "sh") && !invocationIsInformational(args)) {
-      for (const arg of args) {
-        recordVerifyScriptEvidence(commandBasename(arg), evidence);
-      }
+      const script = executedScriptOperand(command, args);
+      if (script) recordVerifyScriptEvidence(commandBasename(script), evidence);
     }
   }
+}
+
+// Only the script operand is executable evidence. Eval bodies, option values,
+// and arguments passed to the program must never be mistaken for scripts.
+function executedScriptOperand(command: string, args: string[]): string | undefined {
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index];
+    if (arg === "--") return args[index + 1];
+    if (arg === "-") return undefined;
+    if (!arg.startsWith("-")) return arg;
+    if (command === "node") {
+      if (/^(?:--(?:eval|print|check|interactive|test)(?:=|$)|-[epci])/u.test(arg)) return undefined;
+      if (["-r", "--require", "--import", "--loader", "--experimental-loader", "--conditions", "--env-file", "--env-file-if-exists"].includes(arg)) {
+        index += 1;
+      } else if (/^--(?:require|import|loader|experimental-loader|conditions|env-file|env-file-if-exists)=.+/u.test(arg) || /^-r.+/u.test(arg)) {
+        continue;
+      } else if (!["--enable-source-maps", "--no-warnings", "--trace-warnings", "--trace-deprecation", "--no-deprecation"].includes(arg)) {
+        return undefined;
+      }
+    } else {
+      if (/^-[^-]*[csn]/u.test(arg)) return undefined;
+      if (arg === "-o" || arg === "+o") index += 1;
+      else if (!/^-[euxv]+$/u.test(arg)) return undefined;
+    }
+  }
+  return undefined;
 }
 
 // True for invocations that only print info (`--help`, `--version`) and so

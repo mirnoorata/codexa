@@ -7,6 +7,7 @@ import { BROAD_WORKFLOW_TERMS, LANE_WEIGHTS, RETRIEVAL_RUNTIME_CACHE_LIMIT, SEMA
 import { activeRetrievalLanes as activeLanes, isDecoyLikePath, queryAllowsDecoy, tokenizeRetrievalText as tokenize } from "./retrieval/helpers.js";
 import { promptModeForTask } from "./retrieval/intent.js";
 import { createRetrievalQueryMatcher, type RetrievalQueryMatcher } from "./retrieval/query-matcher.js";
+import { rerankWithTypeSafe, type TypeSafeOptions, type TypeSafeSummary } from "./typesafe-reranker.js";
 
 export type TaskIntent =
   | "architecture"
@@ -106,6 +107,7 @@ export interface RetrievalResult {
   intentConfidence: IntentConfidence;
   diagnostics: string[];
   semantic: SemanticRetrievalSummary;
+  typesafe?: TypeSafeSummary;
 }
 
 interface Document {
@@ -132,7 +134,7 @@ interface RetrievalRuntime {
 
 const retrievalRuntimeCache = new Map<string, RetrievalRuntime>();
 
-export async function retrieveForTask(index: CodexaIndex, query: string, limit = 12, semanticOptions?: SemanticQueryOptions): Promise<RetrievalResult> {
+export async function retrieveForTask(index: CodexaIndex, query: string, limit = 12, semanticOptions?: SemanticQueryOptions, typesafeOptions?: TypeSafeOptions): Promise<RetrievalResult> {
   const rawTerms = tokenize(query);
   const terms = expandedQueryTerms(query);
   const matcher = createRetrievalQueryMatcher(query, terms);
@@ -189,7 +191,8 @@ export async function retrieveForTask(index: CodexaIndex, query: string, limit =
   const broad = rawTerms.length <= 2 || intents.includes("architecture") || intents.includes("workflow");
   const intentConfidence = analyzeIntentConfidence(query, intents, terms, matches, workflows, broad);
   const diagnostics = uniqueSorted([...retrievalDiagnostics(index, matches, workflows, broad, intentConfidence), ...semanticResult.summary.diagnostics.map((diagnostic) => `semantic: ${diagnostic}`)]);
-  return { query, intents, terms, matches, workflows, modules, anchors, processGroups, clusterGroups, broad, intentConfidence, diagnostics, semantic: semanticResult.summary };
+  const reranked = await rerankWithTypeSafe(index, query, matches, typesafeOptions);
+  return { query, intents, terms, matches: reranked.matches, workflows, modules, anchors, processGroups, clusterGroups, broad, intentConfidence, diagnostics, semantic: semanticResult.summary, typesafe: reranked.summary };
 }
 
 export function retrieveIntentOnly(query: string): RetrievalResult {

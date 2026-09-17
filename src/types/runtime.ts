@@ -96,6 +96,11 @@ export interface QueryOptions {
   semanticTimeoutMs?: number;
   semanticBatchSize?: number;
   semanticMaxFiles?: number;
+  /** Explicit opt-in to hosted advisory reranking; a key alone never enables it. */
+  typesafe?: boolean;
+  typesafeModel?: string;
+  typesafeTimeoutMs?: number;
+  typesafeMaxCandidates?: number;
   workspaceFocusFile?: string;
   workspaceSessionId?: string;
 }

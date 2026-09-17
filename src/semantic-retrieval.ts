@@ -1,10 +1,11 @@
-import { createHash, randomUUID } from "node:crypto";
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
-import fsSync from "node:fs";
 import path from "node:path";
 import { runCommand } from "./command.js";
 import type { CodexaIndex, FileFact, QueryOptions } from "./types.js";
 import { stableId, uniqueSorted } from "./util.js";
+import { ensureManagedArtifactDirectory, writeManagedArtifactText, type ManagedArtifactDirectory } from "./managed-artifacts.js";
+import { readSemanticCacheText } from "./semantic-cache-files.js";
 
 const SEMANTIC_CACHE_VERSION = 1 as const;
 const SEMANTIC_CACHE_DIR = ".codex/cache/codexa-semantic-v1";
@@ -42,6 +43,7 @@ export interface SemanticQueryOptions extends SemanticProviderOptions {
 
 export interface SemanticBuildOptions extends SemanticProviderOptions {
   maxFiles?: number;
+  force?: boolean;
 }
 
 interface SemanticChunk {
@@ -58,6 +60,7 @@ interface SemanticVectorRecord {
   title: string;
   preview: string;
   embedding: number[];
+  contentHash?: string;
 }
 
 interface SemanticManifest {
@@ -71,6 +74,7 @@ interface SemanticManifest {
   builtAt: string;
   vectorsFile: string;
   sourceFingerprint: string;
+  providerFingerprint?: string;
 }
 
 export interface SemanticBuildSummary {
@@ -83,6 +87,8 @@ export interface SemanticBuildSummary {
   dimensions: number;
   chunkCount: number;
   sourceFingerprint: string;
+  embeddedChunks: number;
+  reusedChunks: number;
 }
 
 export interface SemanticLaneEntry {
@@ -135,29 +141,37 @@ export async function buildSemanticIndex(repoRootInput: string, index: CodexaInd
   const providerOptions = semanticProviderOptionsWithEnvironment(options);
   const provider = requiredProvider(providerOptions);
   const model = providerModel(provider, providerOptions.model);
+  const cacheDir = path.join(repoRoot, SEMANTIC_CACHE_DIR);
+  const boundary = await ensureManagedArtifactDirectory(repoRoot, cacheDir);
+  const providerFingerprint = hashText(JSON.stringify(["semantic-text-v1", provider, model, providerOptions.dimensions ?? null, providerOptions.command ?? null, providerOptions.args ?? []]));
   const chunks = await semanticChunksForIndex(repoRoot, index, options.maxFiles ?? DEFAULT_MAX_FILES);
   if (chunks.length === 0) {
     throw new Error("semantic index has no eligible chunks to embed");
   }
+  const cached = options.force ? undefined : loadSemanticCache(repoRoot);
+  const reusable = cached?.ok && cached.manifest.providerFingerprint === providerFingerprint
+    ? new Map(cached.vectors.filter((record) => record.contentHash).map((record) => [record.contentHash!, record.embedding]))
+    : new Map<string, number[]>();
+  const missing = chunks.filter((chunk) => !reusable.has(hashText(chunk.text)));
   const embeddings = await embedTexts(
-    chunks.map((chunk) => ({ id: chunk.id, text: chunk.text })),
+    missing.map((chunk) => ({ id: chunk.id, text: chunk.text })),
     { ...providerOptions, provider, model }
   );
   const vectorRecords = chunks.map((chunk) => {
-    const embedding = embeddings.get(chunk.id);
+    const contentHash = hashText(chunk.text);
+    const embedding = reusable.get(contentHash) ?? embeddings.get(chunk.id);
     if (!embedding) {
       throw new Error(`semantic provider did not return an embedding for ${chunk.id}`);
     }
-    return { id: chunk.id, path: chunk.path, title: chunk.title, preview: chunk.preview, embedding };
+    return { id: chunk.id, path: chunk.path, title: chunk.title, preview: chunk.preview, embedding, contentHash };
   });
   const dimensions = vectorRecords[0]?.embedding.length ?? 0;
   if (dimensions <= 0 || vectorRecords.some((record) => record.embedding.length !== dimensions)) {
     throw new Error("semantic provider returned inconsistent embedding dimensions");
   }
 
-  const cacheDir = path.join(repoRoot, SEMANTIC_CACHE_DIR);
   const builtAt = new Date().toISOString();
-  const sourceFingerprint = semanticSourceFingerprint(index, chunks);
+  const sourceFingerprint = hashText(`${providerFingerprint}\n${semanticSourceFingerprint(chunks)}`);
   const manifest: SemanticManifest = {
     schemaVersion: SEMANTIC_CACHE_VERSION,
     snapshotId: index.snapshot.snapshotId,
@@ -168,14 +182,17 @@ export async function buildSemanticIndex(repoRootInput: string, index: CodexaInd
     chunkCount: vectorRecords.length,
     builtAt,
     vectorsFile: semanticVectorFileName({ sourceFingerprint, provider, model, dimensions }),
-    sourceFingerprint
+    sourceFingerprint,
+    providerFingerprint
   };
-  await writeSemanticCache(cacheDir, manifest, vectorRecords);
+  await writeSemanticCache(boundary, manifest, vectorRecords);
   return {
     repoRoot,
     cacheDir,
     manifestPath: path.join(cacheDir, MANIFEST_FILE),
     vectorPath: path.join(cacheDir, manifest.vectorsFile),
+    embeddedChunks: missing.length,
+    reusedChunks: chunks.length - missing.length,
     provider,
     model,
     dimensions,
@@ -352,7 +369,7 @@ async function semanticChunksForIndex(repoRoot: string, index: CodexaIndex, maxF
       .filter(Boolean)
       .join("\n\n");
     chunks.push({
-      id: stableId("semantic-chunk", index.snapshot.snapshotId, file.path),
+      id: stableId("semantic-chunk", hashText(text), file.path),
       path: file.path,
       title: file.path,
       text,
@@ -532,12 +549,12 @@ function loadSemanticCache(repoRoot: string): { ok: true; manifest: SemanticMani
   const cacheDir = path.join(repoRoot, SEMANTIC_CACHE_DIR);
   const manifestPath = path.join(cacheDir, MANIFEST_FILE);
   try {
-    const manifest = JSON.parse(readSizedTextSync(manifestPath, MAX_SEMANTIC_MANIFEST_BYTES)) as SemanticManifest;
+    const manifest = JSON.parse(readSemanticCacheText(repoRoot, manifestPath, MAX_SEMANTIC_MANIFEST_BYTES)) as SemanticManifest;
     if (!isManifest(manifest)) {
       return { ok: false, reason: "semantic cache manifest is invalid" };
     }
     const vectorPath = path.join(cacheDir, manifest.vectorsFile);
-    const vectorLines = readSizedTextSync(vectorPath, MAX_SEMANTIC_VECTOR_BYTES)
+    const vectorLines = readSemanticCacheText(repoRoot, vectorPath, MAX_SEMANTIC_VECTOR_BYTES)
       .split(/\r?\n/u)
       .filter((line) => line.trim().length > 0);
     if (vectorLines.length > MAX_SEMANTIC_VECTOR_RECORDS) {
@@ -555,34 +572,20 @@ function loadSemanticCache(repoRoot: string): { ok: true; manifest: SemanticMani
 
 function readSemanticManifest(repoRoot: string): SemanticManifest | undefined {
   try {
-    const manifest = JSON.parse(readSizedTextSync(path.join(repoRoot, SEMANTIC_CACHE_DIR, MANIFEST_FILE), MAX_SEMANTIC_MANIFEST_BYTES)) as SemanticManifest;
+    const manifest = JSON.parse(readSemanticCacheText(repoRoot, path.join(repoRoot, SEMANTIC_CACHE_DIR, MANIFEST_FILE), MAX_SEMANTIC_MANIFEST_BYTES)) as SemanticManifest;
     return isManifest(manifest) ? manifest : undefined;
   } catch {
     return undefined;
   }
 }
 
-function readSizedTextSync(filePath: string, maxBytes: number): string {
-  const stat = fsSync.statSync(filePath);
-  if (stat.size > maxBytes) {
-    throw new Error(`${path.basename(filePath)} exceeds ${maxBytes} bytes`);
-  }
-  return fsSync.readFileSync(filePath, "utf8");
-}
-
 function isVectorRecordForManifest(record: unknown, manifest: SemanticManifest): record is SemanticVectorRecord {
   return isVectorRecord(record) && record.embedding.length === manifest.dimensions;
 }
 
-async function writeSemanticCache(cacheDir: string, manifest: SemanticManifest, vectors: SemanticVectorRecord[]): Promise<void> {
-  await fs.mkdir(cacheDir, { recursive: true });
-  const tempSuffix = `.tmp-${process.pid}-${Date.now()}-${randomUUID()}`;
-  const manifestTemp = path.join(cacheDir, `${MANIFEST_FILE}${tempSuffix}`);
-  const vectorsTemp = path.join(cacheDir, `${manifest.vectorsFile}${tempSuffix}`);
-  await fs.writeFile(vectorsTemp, vectors.map((record) => JSON.stringify(record)).join("\n") + "\n", "utf8");
-  await fs.writeFile(manifestTemp, JSON.stringify(manifest, null, 2) + "\n", "utf8");
-  await fs.rename(vectorsTemp, path.join(cacheDir, manifest.vectorsFile));
-  await fs.rename(manifestTemp, path.join(cacheDir, MANIFEST_FILE));
+async function writeSemanticCache(boundary: ManagedArtifactDirectory, manifest: SemanticManifest, vectors: SemanticVectorRecord[]): Promise<void> {
+  await writeManagedArtifactText(boundary, manifest.vectorsFile, vectors.map((record) => JSON.stringify(record)).join("\n") + "\n");
+  await writeManagedArtifactText(boundary, MANIFEST_FILE, JSON.stringify(manifest, null, 2) + "\n");
 }
 
 function unavailable(options: SemanticQueryOptions, diagnostics: string[], manifest?: SemanticManifest): SemanticLaneResult {
@@ -683,10 +686,8 @@ function semanticArgsFromEnv(): string[] | undefined {
   }
 }
 
-function semanticSourceFingerprint(index: CodexaIndex, chunks: SemanticChunk[]): string {
+function semanticSourceFingerprint(chunks: SemanticChunk[]): string {
   return createHash("sha256")
-    .update(index.snapshot.snapshotId)
-    .update("\n")
     .update(chunks.map((chunk) => `${chunk.path}:${hashText(chunk.text)}`).join("\n"))
     .digest("hex");
 }

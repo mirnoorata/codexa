@@ -834,6 +834,56 @@ OpenAI uses `OPENAI_API_KEY` and defaults to `text-embedding-3-small`.
 does not ship a vector database and does not call embedding providers unless the
 semantic cache/provider path is configured or explicitly forced.
 
+Unchanged chunks reuse their embeddings across source-index rebuilds. Reuse is
+bound to content, provider, model, requested dimensions, command arguments, and
+preprocessing version. Use `semantic-index --force` to refresh all embeddings,
+including after changing a local embedder's implementation without changing its
+command. Unchanged rebuilds retain one vector generation; generations from
+changed content are retained to avoid deleting data used by concurrent readers.
+
+### TypeSafe Reranking
+
+TypeSafe is an optional hosted relevance scorer. It reorders existing candidate
+files for behavior queries; deterministic scores, anchors, and verification
+authority remain unchanged. It needs no embedding cache. A key alone does not
+enable it.
+
+Provide `TYPESAFE_API_KEY` through your secret manager or a private local file:
+
+```bash
+TYPESAFE_API_KEY="$(cat /path/to/private/typesafe.key)" \
+  codexa find-context /path/to/project --query "where are expired sessions rejected" --typesafe --no-semantic
+```
+
+`search`, `find-context`, and `serve` accept `--typesafe` and
+`--no-typesafe`. For MCP, these settings apply to search and find-context tools. `CODEXA_TYPESAFE=1` enables it for a process; explicit
+`--no-typesafe` overrides that setting. Opting in sends the query, candidate
+paths, symbol names, and up to 3,000 characters of each candidate's source to
+`https://api.typesafe.ai`. Credentials are read from the environment and are
+never stored in the index or comparison output.
+
+The defaults are `jev-latest`, 12 candidates (maximum 20), and a total 2,500 ms
+deadline per rerank, with no retries. Configure them with `--typesafe-model`,
+`--typesafe-max-candidates`, and `--typesafe-timeout-ms`, or the corresponding
+`CODEXA_TYPESAFE_MODEL`, `CODEXA_TYPESAFE_MAX_CANDIDATES`, and
+`CODEXA_TYPESAFE_TIMEOUT_MS` environment variables. Exact path/symbol queries,
+sufficient literal search hits, and stale indexes skip hosted scoring. Missing
+keys, service failures, timeouts, malformed responses, and low-confidence
+results preserve the local ranking.
+
+Run the fixed synthetic comparison after `npm run build`:
+
+```bash
+node scripts/compare-typesafe.mjs
+TYPESAFE_API_KEY="$(cat /path/to/private/typesafe.key)" \
+  node scripts/compare-typesafe.mjs --live
+```
+
+The default output is ignored local state at
+`.codex/cache/typesafe-comparison.json`. See
+[measured results and limits](docs/TYPESAFE_EVALUATION.md) and the
+[TypeSafe JavaScript SDK documentation](https://docs.typesafe.ai/sdk/javascript).
+
 ### LSP Assist
 
 LSP assist is read-only and bounded. Enable it with `--lsp` or
