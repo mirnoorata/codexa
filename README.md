@@ -1251,10 +1251,23 @@ repository URL, version availability, and `npm run security:check`, then runs:
 npm publish --registry https://registry.npmjs.org --access public --tag latest --provenance --ignore-scripts
 ```
 
-For the first public npm release, configure an `NPM_TOKEN` GitHub repository
-secret with publish access. After the package exists and npm trusted publishing
-is configured, the workflow can remove token-based publishing while keeping the
-same release gate and `--ignore-scripts` protection.
+Publishing uses npm trusted publishing (OIDC), without an `NPM_TOKEN` secret.
+In the npm package settings, configure GitHub Actions with owner `mirnoorata`,
+repository `codexa`, workflow filename `npm-publish.yml`, no environment name,
+and permission for direct `npm publish`. The workflow verifies this trust before
+installing dependencies or running the security gate. Authentication failures
+report npm's response and the non-secret workflow identity; tokens are never
+printed or retained by the diagnostic step.
+
+To diagnose or recover an existing stable GitHub Release, run
+`npm-publish.yml` manually from the default branch, providing its tag. The
+default `publish=false` only checks release/package validity and authenticates;
+it does not build, publish npm, or publish to the MCP registry. Set `publish=true`
+to run the full security gate and publish the tagged source of the latest stable
+GitHub Release. Already published
+versions are skipped. This lets a corrected workflow publish an existing tag
+without moving the tag or creating another release. Re-running an old failed
+Actions run still uses its old workflow definition.
 
 ## Contributing
 
