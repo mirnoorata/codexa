@@ -71,7 +71,9 @@ export function addGoTestCoverage(args: string[], cwd: string, command: string, 
     if (ctx.index.symbols.some(symbol => symbol.kind === "function" && symbol.name === "TestMain" && path.posix.dirname(symbol.path) === directory)) continue;
     // Platform/build-constrained files need an observed build selection. Do
     // not infer it from this process's OS or a successful package exit code.
-    if (/(?:^|_)(?:aix|android|darwin|dragonfly|freebsd|illumos|ios|js|linux|netbsd|openbsd|plan9|solaris|wasip1|windows|386|amd64|arm|arm64|loong64|mips|mipsle|mips64|mips64le|ppc64|ppc64le|riscv64|s390x|wasm)(?:_|\.)/u.test(path.posix.basename(file.path))) continue;
+    // Go recognizes _GOOS, _GOARCH, or _GOOS_GOARCH at the end of
+    // the name before _test.go; words earlier in the name are ordinary text.
+    if (/.+_(?:aix|android|darwin|dragonfly|freebsd|illumos|ios|js|linux|netbsd|openbsd|plan9|solaris|wasip1|windows|386|amd64|arm|arm64|loong64|mips|mipsle|mips64|mips64le|ppc64|ppc64le|riscv64|s390x|wasm)_test\.go$/u.test(path.posix.basename(file.path))) continue;
     try {
       const contents = readContainedText(ctx.repoRoot, path.join(ctx.repoRoot, file.path), 256 * 1024);
       if (/^\s*\/\/\s*(?:go:build|\+build)\b/mu.test(contents)) continue;
