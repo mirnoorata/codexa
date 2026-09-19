@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.20.0](https://github.com/mirnoorata/codexa/compare/v0.19.0...v0.20.0) (2026-09-19)
+
+
+### Features
+
+* improve selective change evidence and integrations ([#136](https://github.com/mirnoorata/codexa/issues/136)) ([a79a3a5](https://github.com/mirnoorata/codexa/commit/a79a3a5f59c5a8c695a1ecb938c2e5dbb04d0d3e))
+
+
+### Bug Fixes
+
+* **ci:** diagnose npm trusted publishing and recover releases ([034ea9e](https://github.com/mirnoorata/codexa/commit/034ea9e7cd02a22f2e127b93a8eed02beb0863a4))
+* **release:** use repository token for automated releases ([#133](https://github.com/mirnoorata/codexa/issues/133)) ([3b57764](https://github.com/mirnoorata/codexa/commit/3b57764ded812b6a567886e4663e33297e072472))
+
 ## [0.19.0](https://github.com/mirnoorata/codexa/compare/v0.18.0...v0.19.0) (2026-09-17)
 
 - Reuse accepted TypeSafe decisions for unchanged queries within a running
