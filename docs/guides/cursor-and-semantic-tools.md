@@ -6,10 +6,11 @@ Think receipts, not a second driver grabbing the steering wheel.
 
 ## Install
 
-The `--cursor` setup flag is unreleased; npm version 0.19.0 does not include it.
-To try this branch, run `npm ci` and `npm run build` in the Codexa checkout,
-then `node dist/cli.js init /path/to/project --cursor --no-hooks`.
-The published-package command below applies after the feature is released.
+The `--cursor` setup flag requires a release newer than 0.19.0. If you are
+running an older installation, the `@latest` command below downloads the
+current published version. To use a source checkout instead, run `npm ci`
+and `npm run build`, then
+`node dist/cli.js init /path/to/project --cursor --no-hooks`.
 
 Install Node.js 22 or newer and Git. From your repository, run:
 
@@ -76,7 +77,7 @@ codexa static-analysis . --scip-report /path/to/index.scip.json
 This imports bounded, derived symbols and relationships. It does not run the
 indexer, confer exact semantic authority, or add native language-server support.
 Use it alongside source inspection and your compiler/tests. See the repository's
-[README](../../README.md#static-analysis-reports) for the evidence model.
+[reference](../reference.md#static-analysis-reports) for the evidence model.
 
 Go repositories additionally have conservative package-test recognition for
 commands such as `go test -count=1 ./...`. Nested modules, filtered tests,
