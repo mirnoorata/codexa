@@ -422,14 +422,36 @@ small agent pilot showed extra overhead without a completion benefit; it is
 not evidence of universal savings. Results, dates, caveats, and reproduction
 commands are kept in [Public Proof](docs/reference.md#public-proof).
 
-### Release Automation
+## GitHub Release Timeline
 
-Maintainers use Release Please to prepare version/changelog PRs and GitHub
-Releases. npm publishing follows a published release through GitHub Actions
-and trusted publishing. Ordinary feature merges do not each publish a package.
-See [release automation](docs/reference.md#release-automation),
-[npm publishing and recovery](docs/reference.md#npm-package-publishing), and the
+GitHub Releases are the visible source timeline for the current project.
+Maintainers normally use [Release Automation](#release-automation). An explicitly
+requested manual `npm run release:github` generates a changelog-style summary,
+changed-area summary, restore instructions, and forward-only PR rollback commands.
+See the [manual release reference](docs/reference.md#github-release-timeline).
+
+## Release Automation
+
+Release Please prepares version/changelog PRs and GitHub Releases using the
+repository's `GITHUB_TOKEN`. This does not publish npm on every main merge:
+ordinary changes land first, and npm publishing follows a published release.
+See [release automation](docs/reference.md#release-automation) and the
 [public release checklist](docs/PUBLIC_RELEASE_CHECKLIST.md).
+
+## npm Package Publishing
+
+The maintainer workflow publishes through GitHub Actions and npm trusted
+publishing. It runs after an explicit Release Please dispatch or a manually
+published GitHub Release (`release: published`), not a tag push alone.
+After its release and security checks, the workflow runs:
+
+```bash
+npm publish --registry https://registry.npmjs.org --access public --tag latest --provenance --ignore-scripts
+```
+
+Package users only need the installation instructions above. Maintainers can
+find authentication and recovery procedures in the
+[publishing reference](docs/reference.md#npm-package-publishing).
 
 ## Help and license
 
