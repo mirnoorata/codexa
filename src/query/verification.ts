@@ -40,6 +40,7 @@ import {
   addPlaywrightCommandCoverage
 } from "./verification/javascript-tests.js";
 import { addPythonTestCoverage, addPythonUnittestCoverage } from "./verification/python-tests.js";
+import { addGoTestCoverage } from "./verification/go-tests.js";
 import {
   isNonCompilingTscCommand,
   isPackageManagerRunInformationalWord,
@@ -558,7 +559,7 @@ function testVerificationEvidence(
 }
 
 function coverageCoversTest(coverage: VerificationCoverage, testPath: string, packageRoots: string[], indexedPaths: Set<string>): boolean {
-  const expected = testPath.endsWith(".py") ? "python-tests" : "javascript-tests";
+  const expected = testPath.endsWith(".py") ? "python-tests" : testPath.endsWith(".go") ? "go-tests" : "javascript-tests";
   if (coverage.kind !== expected) {
     return false;
   }
@@ -785,6 +786,10 @@ function analyzeSegment(
   }
   const effectiveWords = stripPackageManagerFlags(words);
   const first = effectiveWords[0];
+  if (first === "go" && effectiveWords[1] === "test") {
+    addGoTestCoverage(effectiveWords.slice(2), cwd, commandText, ctx);
+    return;
+  }
   if ((first === "npm" || first === "pnpm") && effectiveWords[1] === "run" && effectiveWords[2]) {
     if (isPackageManagerRunInformationalWord(effectiveWords[2])) {
       return;

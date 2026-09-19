@@ -1,3 +1,4 @@
+import { validServerCompletion, validServerEvent } from "./helpers/agent-ab-telemetry.js";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { chmod, cp, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
@@ -423,6 +424,28 @@ lines.on("line", (line) => {
     expect(bounded.success).toBe(true);
     expect(bounded.codexaUsage.transportTelemetry).toMatchObject({ status: "partial", correlatedCalls: null });
     expect(bounded.codexaUsage.serverTelemetry).toMatchObject({ status: "malformed", events: null });
+  });
+
+  it("counts provider usage separately and preserves missing usage through the complete analyzer", async () => {
+    const experiment = await createSyntheticV2Experiment(["task-a"]);
+    for (const assignment of experiment.assignments) await writeSyntheticRun(experiment, assignment, 1);
+    const assignment = findSyntheticAssignment(experiment, "task-a", "adaptive-auto-bounded");
+    const telemetryPath = path.join(path.dirname(syntheticTrialResultPath(experiment, assignment)), "codexa-mcp-telemetry.jsonl");
+    const records = (await readFile(telemetryPath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
+    for (const usage of [{ inputTokens: 21, outputTokens: 4 }, {}]) {
+      records[0].typesafe = { status: "fallback", reason: "uncertain-or-no-match", requestAttempted: true, orderChanged: false, cacheHit: false, ...usage };
+      await writeFile(telemetryPath, records.map(record => JSON.stringify(record)).join("\n") + "\n");
+      const summary = analyzeAgentAb(experiment);
+      const run = summary.outcomes.find((outcome: { arm: string }) => outcome.arm === "adaptive-auto-bounded");
+      expect(run.success).toBe(true);
+      expect(run.codexaUsage.serverTelemetry.typesafe).toMatchObject({ requests: 1, inputTokens: usage.inputTokens ?? null, outputTokens: usage.outputTokens ?? null, costUsd: null });
+      expect(summary.efficiencyTelemetry["adaptive-auto-bounded"].server.typesafe.requests).toBe(1);
+    }
+    records[0].typesafe.source = "must never enter telemetry";
+    await writeFile(telemetryPath, records.map(record => JSON.stringify(record)).join("\n") + "\n");
+    const invalid = analyzeAgentAb(experiment).outcomes.find((outcome: { arm: string }) => outcome.arm === "adaptive-auto-bounded");
+    expect(invalid.codexaUsage.serverTelemetry.status).toBe("malformed");
+    expect(invalid.success).toBe(true);
   });
 
   it("invalidates a trial that receives another arm's immutable instruction", async () => {
@@ -995,33 +1018,6 @@ async function writeSyntheticTrajectory(
   const assignment = findSyntheticAssignment(experiment, taskId, "adaptive-auto-bounded");
   const trial = path.dirname(syntheticTrialResultPath(experiment, assignment));
   await writeFile(path.join(trial, "trajectory.json"), `${JSON.stringify(trajectory)}\n`, "utf8");
-}
-
-function validServerEvent(sequence = 1) {
-  return {
-    schemaVersion: 1,
-    sequence,
-    outcome: "ok",
-    tool: "task_brief",
-    profile: "core",
-    requestedFormat: "auto",
-    effectiveFormat: "concise",
-    requestBytes: 20,
-    textBytes: 40,
-    structuredBytes: 60,
-    totalBytes: 120,
-    elapsedMs: 5,
-    unchangedReceipt: false
-  };
-}
-
-function validServerCompletion(eventCount: number) {
-  return {
-    schemaVersion: 1,
-    recordKind: "session-complete",
-    sequence: eventCount + 1,
-    eventCount
-  };
 }
 
 function routedResultUri(hexCharacter: string) {

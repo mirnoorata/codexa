@@ -1,6 +1,7 @@
 import { constants, promises as fs } from "node:fs";
 import type { FileHandle } from "node:fs/promises";
 import path from "node:path";
+import type { TypeSafeTelemetry } from "./typesafe-telemetry.js";
 
 export interface McpOverheadTelemetryEvent {
   schemaVersion: 1;
@@ -22,6 +23,7 @@ export interface McpOverheadTelemetryEvent {
   elapsedMs: number;
   resultReference?: string;
   unchangedReceipt: boolean;
+  typesafe?: TypeSafeTelemetry;
 }
 
 /** Content-free proof that every accepted event reached the telemetry file. */

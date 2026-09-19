@@ -125,7 +125,7 @@ function coverageIsRelevantProof(coverage: VerificationCoverage, changedTargets:
       )
     );
   }
-  if (coverage.kind === "javascript-tests" || coverage.kind === "python-tests" || coverage.kind === "targeted-test") {
+  if (coverage.kind === "javascript-tests" || coverage.kind === "python-tests" || coverage.kind === "go-tests" || coverage.kind === "targeted-test") {
     return recommendedTests.size === 0 && changedTargets.some(
       (changed) =>
         verificationTestRunnerCoversPath(coverage, changed) &&

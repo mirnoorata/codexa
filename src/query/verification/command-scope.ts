@@ -495,7 +495,7 @@ export function commandPlanScore(entry: VerificationCommandPlanEntry): number {
   const covers = new Set(entry.covers);
   return (
     (covers.has("targeted-test") ? 35 : 0) +
-    (covers.has("javascript-tests") || covers.has("python-tests") ? 40 : 0) +
+    (covers.has("javascript-tests") || covers.has("python-tests") || covers.has("go-tests") ? 40 : 0) +
     (covers.has("typescript-syntax") ? 12 : 0) +
     (covers.has("build") ? 10 : 0) +
     (covers.has("lint") ? 4 : 0) +

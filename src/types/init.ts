@@ -12,6 +12,7 @@ export interface InitOptions {
   agentsMd?: boolean;
   claudeMd?: boolean;
   claude?: boolean;
+  cursor?: boolean;
   policyPack?: boolean;
   ci?: boolean;
 }
@@ -23,6 +24,7 @@ export interface InitResult {
   agentsMdPath: string | null;
   claudeMdPath: string | null;
   claudeMcpPath: string | null;
+  cursorMcpPath: string | null;
   policyPack: PolicyPackInitResult | null;
   ciWorkflowPath: string | null;
   serverName: string;

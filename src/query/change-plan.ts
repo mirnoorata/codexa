@@ -321,7 +321,7 @@ export async function changePlanQuery(
     ? completionReview || !effectiveInput.saveSnapshot || !finalTaskId
       ? []
       : [
-          nextTool("post_edit_review", "after planned verification, run one final drift review because no completion/Stop gate owns it; taskId is fixed, and the caller must add actual ranCommands/ranTests, available artifactIds, and applicable invariantReviews", { taskId: finalTaskId }, false, [".codex/cache/codexa-task-lifecycle", ".codex/cache/codexa-outcomes"])
+          nextTool("post_edit_review", "after verification, invoke directly once; no list/describe needed. taskId is fixed. Add actual ranCommands/ranTests as string arrays, available artifactIds, and applicable invariantReviews. Omit evidence that did not run; missing evidence remains missing", { taskId: finalTaskId }, false, [".codex/cache/codexa-task-lifecycle", ".codex/cache/codexa-outcomes"])
         ].filter((tool): tool is ReturnType<typeof nextTool> => Boolean(tool))
     : targetCandidates.length > 0
       ? []

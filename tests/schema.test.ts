@@ -10,7 +10,7 @@ import { CURRENT_VERIFICATION_PROVENANCE } from "../src/types.js";
 describe("Codexa schema contracts", () => {
   it("versions verification coverage independently from the command classifier", () => {
     expect(CURRENT_VERIFICATION_PROVENANCE).toMatchObject({
-      commandCoverageClassifierVersion: "command-coverage-v7",
+      commandCoverageClassifierVersion: "command-coverage-v8",
       verificationCoverageVersion: "verification-coverage-v5",
       verificationLedgerVersion: "verification-ledger-v4"
     });

@@ -927,7 +927,7 @@ function calibrationLabels(input: PostEditOutcomeInput): string[] {
   const commandCoveredTests =
     commandEvidenceCount > 0 &&
     input.verificationLedger.some(
-      (entry) => entry.kind === "test" && entry.status === "covered" && entry.coverageKinds.some((kind) => kind === "javascript-tests" || kind === "python-tests" || kind === "targeted-test")
+      (entry) => entry.kind === "test" && entry.status === "covered" && entry.coverageKinds.some((kind) => kind === "javascript-tests" || kind === "python-tests" || kind === "go-tests" || kind === "targeted-test")
     );
   const unresolvedCommandCoverage = commandEvidenceCount > 0 && input.verificationCoverage.some((entry) => entry.kind === "unknown");
   const failedCommandCoverage = input.verificationCoverage.some((entry) => entry.kind === "unknown" && entry.exitCode !== undefined && entry.exitCode !== 0);

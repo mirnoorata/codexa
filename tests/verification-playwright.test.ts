@@ -94,9 +94,9 @@ describe("Playwright verification credit", () => {
       expect(result.coverage.some((entry) => entry.kind === "javascript-tests" && entry.targetPath === target), command).toBe(true);
       expect(result.coverage.some((entry) => entry.kind === "targeted-test" && entry.targetPath === target), command).toBe(true);
       expect(result.commandEnvelopes, command).toHaveLength(1);
-      expect(result.commandEnvelopes[0].classifierVersion, command).toBe("command-coverage-v7");
+      expect(result.commandEnvelopes[0].classifierVersion, command).toBe("command-coverage-v8");
     }
-    expect(CURRENT_VERIFICATION_PROVENANCE.commandCoverageClassifierVersion).toBe("command-coverage-v7");
+    expect(CURRENT_VERIFICATION_PROVENANCE.commandCoverageClassifierVersion).toBe("command-coverage-v8");
   });
 
   it("keeps bare Cypress runs unscoped and credits only an explicit indexed spec", () => {
@@ -287,7 +287,7 @@ describe("Playwright verification credit", () => {
         packageManager: "vitest",
         scriptName: "vitest",
         args: ["run", "--project", "tests/unit.test.ts", "tests/e2e.spec.ts"],
-        classifierVersion: "command-coverage-v7"
+        classifierVersion: "command-coverage-v8"
       }
     ]);
 
@@ -297,7 +297,7 @@ describe("Playwright verification credit", () => {
     ] as const) {
       const launched = classify({ command, cwd: repo, exitCode: 0 });
       expect(launched.ledger.find((entry) => entry.target === "tests/unit.test.ts"), command).toMatchObject({ status: "covered", trustTier: "reported" });
-      expect(launched.commandEnvelopes, command).toMatchObject([{ packageManager: runner, scriptName: runner, classifierVersion: "command-coverage-v7" }]);
+      expect(launched.commandEnvelopes, command).toMatchObject([{ packageManager: runner, scriptName: runner, classifierVersion: "command-coverage-v8" }]);
     }
   });
 
@@ -321,7 +321,7 @@ describe("Playwright verification credit", () => {
         args: ["test", "tests/e2e.spec.ts"],
         source: "reported",
         scopeStatus: "repo",
-        classifierVersion: "command-coverage-v7"
+        classifierVersion: "command-coverage-v8"
       }
     ]);
     expect(result.ledger.find((entry) => entry.target === "tests/e2e.spec.ts")).toMatchObject({ status: "covered", trustTier: "reported" });

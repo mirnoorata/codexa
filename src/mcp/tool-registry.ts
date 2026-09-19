@@ -118,7 +118,7 @@ export const MCP_TOOL_REGISTRY = [
     name: "capabilities",
     title: "Codexa capability dispatcher",
     description:
-      "Discover or invoke any non-core Codexa operation through one compact, manifest-backed dispatcher. The dispatcher preserves the full logical capability set and validates each invocation with the same operation-specific schema as the direct tool. Compact output unless the selected operation returns more detail.",
+      "Invoke any non-core Codexa operation with action=invoke, operation, and arguments. Use returned nextTools.requiredInputs directly; list/describe are optional when the operation or inputs are unknown. Applies the same validation as the direct tool. Compact output unless the selected operation returns more detail.",
     tier: "primary",
     phase: "inspect",
     cost: "compact",

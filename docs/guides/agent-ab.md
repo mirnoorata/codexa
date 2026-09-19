@@ -669,3 +669,25 @@ observation, which exposed the missing explicit preflight; v5 exposed a
 post-run oracle gap; and v6 had a locally contaminated task hash and was
 interrupted before a usable observation. None is counted in the archived
 outcome.
+
+## Unreleased local candidates
+
+To measure a source change before publishing it, run `npm pack`, place the
+result at each task's `environment/codexa-candidate.tgz`, and set
+`candidate.tarballSha256` to its SHA-256 alongside `codexaVersion`. The complete
+package bytes are included in the immutable task snapshot. Each task Dockerfile
+must include the matching argument and these exact installation steps:
+
+```dockerfile
+ARG CODEXA_TARBALL_SHA256=REPLACE_WITH_SHA256
+COPY codexa-candidate.tgz /tmp/codexa-candidate.tgz
+RUN echo "${CODEXA_TARBALL_SHA256}  /tmp/codexa-candidate.tgz" | sha256sum --check -
+RUN npm install --global --prefix /opt/codexa-runtime /tmp/codexa-candidate.tgz
+```
+
+Keep `ARG CODEXA_VERSION` and normal MCP identity preflight. The tarball is
+bounded to 4 MiB and the whole task to 8 MiB. Do not commit generated packages.
+Without this optional field, the existing published-version lane is unchanged.
+Local model runs can use the runner's supported endpoint configuration; pin the
+served model revision and keep host addresses and credentials in private run
+artifacts. Report infrastructure failures and missing usage as such.

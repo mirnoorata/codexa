@@ -1,0 +1,225 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-09-19",
+  "experimentId": "codexa-qwen-xhigh-conformance-20260919",
+  "purpose": "Local-model integration and source-only route conformance; not a representative efficacy benchmark.",
+  "model": {
+    "name": "Qwen/Qwen3.8-27B-FP8",
+    "revision": "017b9c7af6b5689d5dd426a76e0bc077eb5ca20a",
+    "servingEngine": "vLLM 0.27.1",
+    "transport": "local OpenAI-compatible API",
+    "contextLength": 262144
+  },
+  "framework": {
+    "name": "harbor",
+    "version": "0.18.0"
+  },
+  "runner": {
+    "agent": "codex",
+    "version": "0.145.0",
+    "kwargs": {
+      "reasoning_effort": "xhigh",
+      "web_search": "disabled"
+    }
+  },
+  "candidate": {
+    "codexaVersion": "0.19.0",
+    "tarballSha256": "5c0708734ce8c47cd34f3b3e8b0998307e8f7bf0377f562ce0cd933accacf1b6"
+  },
+  "provenance": {
+    "configHash": "23e0136b4cd1802e1b6ee6cfec33eea69c3c0acfe2ef25efb105132bbbea1035",
+    "harness": {
+      "controllerHash": "acc082ffcbce05615494847647d8ecc15664003f0caf4aa457cc3e5de453bcf7",
+      "analyzerHash": "c0c46e232fbe901305e258f02f7dae09dfa483684bab6173e6f729bdb993751a",
+      "mcpPreflightHash": "f010cebb7d77d0d45bc3274e8b6d8b639c370c8c61e9414c706e107a542d2afb"
+    },
+    "taskHash": "73b60b513e6baf8eed9d1676af719cf29f509573a89746b09e021c0c25f098aa",
+    "note": "Private endpoint, model alias, machine paths, raw transcripts and credentials are not published. Hashes identify the retained local registration; deployment-specific inputs are not a portable reproduction package."
+  },
+  "design": {
+    "tasks": 1,
+    "repetitionsPerArm": 2,
+    "concurrency": 1,
+    "retries": 0,
+    "expectedRouteClass": "source-only",
+    "arms": [
+      "control",
+      "adaptive-auto-bounded"
+    ]
+  },
+  "status": "complete",
+  "protocolStatus": "valid",
+  "candidateIdentityStatus": "valid",
+  "runs": [
+    {
+      "runId": "a74b0f1ceabb4dd2e6dd",
+      "taskId": "path-target-normalization",
+      "repetition": 1,
+      "arm": "adaptive-auto-bounded",
+      "order": 1,
+      "started": true,
+      "finalized": true,
+      "success": false,
+      "failureClass": "verification-failed",
+      "protocolStatus": "valid",
+      "rewards": {
+        "behavior": 0,
+        "changed_files": 2,
+        "changed_lines": 93,
+        "genericity": 0,
+        "public_tests": 1,
+        "regression": 1,
+        "scope": 1,
+        "verified_completion": 0
+      },
+      "inputTokens": 151022,
+      "cacheTokens": 124000,
+      "outputTokens": 4772,
+      "costUsd": null,
+      "agentElapsedMs": 83807,
+      "controllerElapsedMs": 123489,
+      "codexaIndexElapsedMs": 661,
+      "expectedRouteClass": "source-only",
+      "observedCodexaCalls": 0,
+      "routeMatched": true
+    },
+    {
+      "runId": "9648dca5952ec1377abd",
+      "taskId": "path-target-normalization",
+      "repetition": 1,
+      "arm": "control",
+      "order": 2,
+      "started": true,
+      "finalized": true,
+      "success": false,
+      "failureClass": "verification-failed",
+      "protocolStatus": "valid",
+      "rewards": {
+        "behavior": 0,
+        "changed_files": 2,
+        "changed_lines": 83,
+        "genericity": 0,
+        "public_tests": 1,
+        "regression": 0,
+        "scope": 1,
+        "verified_completion": 0
+      },
+      "inputTokens": 102886,
+      "cacheTokens": 83200,
+      "outputTokens": 7980,
+      "costUsd": null,
+      "agentElapsedMs": 129388,
+      "controllerElapsedMs": 167947,
+      "codexaIndexElapsedMs": null,
+      "expectedRouteClass": "source-only",
+      "observedCodexaCalls": 0,
+      "routeMatched": true
+    },
+    {
+      "runId": "88b8f8aac9712c62e261",
+      "taskId": "path-target-normalization",
+      "repetition": 2,
+      "arm": "control",
+      "order": 1,
+      "started": true,
+      "finalized": true,
+      "success": false,
+      "failureClass": "verification-failed",
+      "protocolStatus": "valid",
+      "rewards": {
+        "behavior": 0,
+        "changed_files": 2,
+        "changed_lines": 103,
+        "genericity": 0,
+        "public_tests": 1,
+        "regression": 1,
+        "scope": 1,
+        "verified_completion": 0
+      },
+      "inputTokens": 90240,
+      "cacheTokens": 79200,
+      "outputTokens": 4528,
+      "costUsd": null,
+      "agentElapsedMs": 71052,
+      "controllerElapsedMs": 110308,
+      "codexaIndexElapsedMs": null,
+      "expectedRouteClass": "source-only",
+      "observedCodexaCalls": 0,
+      "routeMatched": true
+    },
+    {
+      "runId": "4e0da6d1645ecd54025c",
+      "taskId": "path-target-normalization",
+      "repetition": 2,
+      "arm": "adaptive-auto-bounded",
+      "order": 2,
+      "started": true,
+      "finalized": true,
+      "success": false,
+      "failureClass": "verification-failed",
+      "protocolStatus": "valid",
+      "rewards": {
+        "behavior": 0,
+        "changed_files": 2,
+        "changed_lines": 80,
+        "genericity": 0,
+        "public_tests": 1,
+        "regression": 1,
+        "scope": 1,
+        "verified_completion": 0
+      },
+      "inputTokens": 105254,
+      "cacheTokens": 92800,
+      "outputTokens": 5831,
+      "costUsd": null,
+      "agentElapsedMs": 97936,
+      "controllerElapsedMs": 136006,
+      "codexaIndexElapsedMs": 636,
+      "expectedRouteClass": "source-only",
+      "observedCodexaCalls": 0,
+      "routeMatched": true
+    }
+  ],
+  "armTotals": {
+    "control": {
+      "runs": 2,
+      "successes": 0,
+      "inputTokens": 193126,
+      "cacheTokens": 162400,
+      "outputTokens": 12508,
+      "agentElapsedMs": 200440,
+      "costUsd": null
+    },
+    "adaptive-auto-bounded": {
+      "runs": 2,
+      "successes": 0,
+      "inputTokens": 256276,
+      "cacheTokens": 216800,
+      "outputTokens": 10603,
+      "agentElapsedMs": 181743,
+      "costUsd": null
+    }
+  },
+  "earlierSetupAttempts": [
+    {
+      "stage": "bridge connectivity",
+      "startedRuns": 1,
+      "finalizedRuns": 0,
+      "outcome": "Stopped after the container could not reach the local model; retained separately."
+    },
+    {
+      "stage": "reasoning setting",
+      "startedRuns": 4,
+      "finalizedRuns": 4,
+      "outcome": "All failed before coding because the local API rejected high; retained separately. A new registration used supported xhigh."
+    }
+  ],
+  "limitations": [
+    "All four visible-test runs passed but independently verified completion was zero in both arms.",
+    "All four traces used zero Codexa calls as expected for the registered source-only task. This does not test plan-review effectiveness or TypeSafe retrieval.",
+    "Two repetitions of one public fixture do not estimate general task success or competitor superiority.",
+    "Token counts are cumulative across model turns; cached input is a subset of input and is not added again.",
+    "No hosted coding-model billing was used. Electricity, hardware and total dollar costs were not measured; unknown cost remains null.",
+    "TypeSafe was evaluated separately in the public retrieval pack."
+  ]
+}

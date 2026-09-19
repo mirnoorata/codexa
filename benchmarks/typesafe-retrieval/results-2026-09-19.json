@@ -1,0 +1,2658 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-09-19",
+  "baseCommit": "3b57764ded812b6a567886e4663e33297e072472",
+  "scope": "Public retrieval regressions; not a blinded or representative agent evaluation",
+  "stages": {
+    "before": {
+      "generatedAt": "2026-09-19T04:00:09.302Z",
+      "node": "v22.22.2",
+      "settings": {
+        "model": "jev-latest",
+        "deadlineMs": 2500,
+        "maxCandidates": 8,
+        "requestCap": 14
+      },
+      "requests": 11,
+      "summary": {
+        "all": {
+          "baseline": {
+            "cases": 14,
+            "top1": 0.21428571428571427,
+            "mrr": 0.33996598639455783,
+            "candidateRecall": 0.7857142857142857,
+            "medianMs": 4.665052999999716,
+            "p95Ms": 79.01336100000026,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "disabled": 14
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          },
+          "candidate": {
+            "cases": 14,
+            "top1": 0.21428571428571427,
+            "mrr": 0.33996598639455783,
+            "candidateRecall": 0.7857142857142857,
+            "medianMs": 227.14993400000003,
+            "p95Ms": 489.8991409999999,
+            "requests": 11,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "fallback": 11,
+              "skipped": 3
+            },
+            "inputTokens": 88732,
+            "outputTokens": 1304,
+            "costUsd": null
+          },
+          "repeat": {
+            "cases": 3,
+            "top1": 1,
+            "mrr": 1,
+            "candidateRecall": 1,
+            "medianMs": 5.184435000000121,
+            "p95Ms": 74.26155699999981,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "skipped": 3
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          }
+        },
+        "behavior": {
+          "baseline": {
+            "cases": 11,
+            "top1": 0,
+            "mrr": 0.15995670995670996,
+            "candidateRecall": 0.7272727272727273,
+            "medianMs": 4.331403000000137,
+            "p95Ms": 79.01336100000026,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "disabled": 11
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          },
+          "candidate": {
+            "cases": 11,
+            "top1": 0,
+            "mrr": 0.15995670995670996,
+            "candidateRecall": 0.7272727272727273,
+            "medianMs": 238.83733699999993,
+            "p95Ms": 489.8991409999999,
+            "requests": 11,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "fallback": 11
+            },
+            "inputTokens": 88732,
+            "outputTokens": 1304,
+            "costUsd": null
+          },
+          "repeat": {
+            "cases": 0
+          }
+        },
+        "exact": {
+          "baseline": {
+            "cases": 3,
+            "top1": 1,
+            "mrr": 1,
+            "candidateRecall": 1,
+            "medianMs": 23.179967999999917,
+            "p95Ms": 74.58909800000038,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "disabled": 3
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          },
+          "candidate": {
+            "cases": 3,
+            "top1": 1,
+            "mrr": 1,
+            "candidateRecall": 1,
+            "medianMs": 4.790273999999954,
+            "p95Ms": 75.0496490000005,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "skipped": 3
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          },
+          "repeat": {
+            "cases": 3,
+            "top1": 1,
+            "mrr": 1,
+            "candidateRecall": 1,
+            "medianMs": 5.184435000000121,
+            "p95Ms": 74.26155699999981,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "skipped": 3
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          }
+        },
+        "calibration": {
+          "baseline": {
+            "cases": 3,
+            "top1": 0.3333333333333333,
+            "mrr": 0.5,
+            "candidateRecall": 1,
+            "medianMs": 4.665052999999716,
+            "p95Ms": 23.179967999999917,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "disabled": 3
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          },
+          "candidate": {
+            "cases": 3,
+            "top1": 0.3333333333333333,
+            "mrr": 0.5,
+            "candidateRecall": 1,
+            "medianMs": 193.24753499999997,
+            "p95Ms": 489.8991409999999,
+            "requests": 2,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "fallback": 2,
+              "skipped": 1
+            },
+            "inputTokens": 11062,
+            "outputTokens": 188,
+            "costUsd": null
+          },
+          "repeat": {
+            "cases": 1,
+            "top1": 1,
+            "mrr": 1,
+            "candidateRecall": 1,
+            "medianMs": 5.184435000000121,
+            "p95Ms": 5.184435000000121,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "skipped": 1
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          },
+          "improvedRanks": 0,
+          "harmedRanks": 0,
+          "lostTop1": 0
+        },
+        "evaluation": {
+          "baseline": {
+            "cases": 11,
+            "top1": 0.18181818181818182,
+            "mrr": 0.2963203463203463,
+            "candidateRecall": 0.7272727272727273,
+            "medianMs": 4.346602999999959,
+            "p95Ms": 79.01336100000026,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "disabled": 11
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          },
+          "candidate": {
+            "cases": 11,
+            "top1": 0.18181818181818182,
+            "mrr": 0.2963203463203463,
+            "candidateRecall": 0.7272727272727273,
+            "medianMs": 227.14993400000003,
+            "p95Ms": 327.0237649999999,
+            "requests": 9,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "fallback": 9,
+              "skipped": 2
+            },
+            "inputTokens": 77670,
+            "outputTokens": 1116,
+            "costUsd": null
+          },
+          "repeat": {
+            "cases": 2,
+            "top1": 1,
+            "mrr": 1,
+            "candidateRecall": 1,
+            "medianMs": 74.26155699999981,
+            "p95Ms": 74.26155699999981,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "skipped": 2
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          },
+          "improvedRanks": 0,
+          "harmedRanks": 0,
+          "lostTop1": 0
+        }
+      },
+      "results": [
+        {
+          "id": "retry-abort",
+          "repository": "p-retry",
+          "kind": "behavior",
+          "partition": "calibration",
+          "baseline": {
+            "rank": 4,
+            "latencyMs": 4.665052999999716,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 4,
+            "latencyMs": 489.8991409999999,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 6,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": false,
+              "inputTokens": 5531,
+              "outputTokens": 94
+            }
+          },
+          "repeat": null
+        },
+        {
+          "id": "retry-budget",
+          "repository": "p-retry",
+          "kind": "behavior",
+          "partition": "calibration",
+          "baseline": {
+            "rank": 4,
+            "latencyMs": 4.331403000000137,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 4,
+            "latencyMs": 193.24753499999997,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 6,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": false,
+              "inputTokens": 5531,
+              "outputTokens": 94
+            }
+          },
+          "repeat": null
+        },
+        {
+          "id": "retry-exact",
+          "repository": "p-retry",
+          "kind": "exact",
+          "partition": "calibration",
+          "baseline": {
+            "rank": 1,
+            "latencyMs": 23.179967999999917,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 1,
+            "latencyMs": 4.790273999999954,
+            "typesafe": {
+              "status": "skipped",
+              "reason": "exact-evidence",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "repeat": {
+            "rank": 1,
+            "latencyMs": 5.184435000000121,
+            "typesafe": {
+              "status": "skipped",
+              "reason": "exact-evidence",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          }
+        },
+        {
+          "id": "signature-age",
+          "repository": "itsdangerous",
+          "kind": "behavior",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 4,
+            "latencyMs": 3.3029099999998834,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 4,
+            "latencyMs": 238.83733699999993,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": false,
+              "inputTokens": 7460,
+              "outputTokens": 124
+            }
+          },
+          "repeat": null
+        },
+        {
+          "id": "signature-future",
+          "repository": "itsdangerous",
+          "kind": "behavior",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 4,
+            "latencyMs": 3.7942909999997028,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 4,
+            "latencyMs": 227.14993400000003,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": false,
+              "inputTokens": 7698,
+              "outputTokens": 124
+            }
+          },
+          "repeat": null
+        },
+        {
+          "id": "key-rotation",
+          "repository": "itsdangerous",
+          "kind": "behavior",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 4,
+            "latencyMs": 3.4481700000001183,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 4,
+            "latencyMs": 202.3626919999997,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": false,
+              "inputTokens": 8197,
+              "outputTokens": 124
+            }
+          },
+          "repeat": null
+        },
+        {
+          "id": "payload-compression",
+          "repository": "itsdangerous",
+          "kind": "behavior",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 6,
+            "latencyMs": 3.104479000000083,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 6,
+            "latencyMs": 201.40502800000013,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": false,
+              "inputTokens": 7564,
+              "outputTokens": 124
+            }
+          },
+          "repeat": null
+        },
+        {
+          "id": "payload-decompression",
+          "repository": "itsdangerous",
+          "kind": "behavior",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 7,
+            "latencyMs": 3.5914699999998447,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 7,
+            "latencyMs": 180.07816700000012,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": false,
+              "inputTokens": 7564,
+              "outputTokens": 124
+            }
+          },
+          "repeat": null
+        },
+        {
+          "id": "signer-exact",
+          "repository": "itsdangerous",
+          "kind": "exact",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 1,
+            "latencyMs": 4.346602999999959,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 1,
+            "latencyMs": 4.620483000000149,
+            "typesafe": {
+              "status": "skipped",
+              "reason": "exact-evidence",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "repeat": {
+            "rank": 1,
+            "latencyMs": 4.1607420000000275,
+            "typesafe": {
+              "status": "skipped",
+              "reason": "exact-evidence",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          }
+        },
+        {
+          "id": "glob-negation",
+          "repository": "picomatch",
+          "kind": "behavior",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 0,
+            "latencyMs": 59.97576599999957,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 0,
+            "latencyMs": 264.91027399999984,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": false,
+              "inputTokens": 10087,
+              "outputTokens": 124
+            }
+          },
+          "repeat": null
+        },
+        {
+          "id": "glob-basename",
+          "repository": "picomatch",
+          "kind": "behavior",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 0,
+            "latencyMs": 79.01336100000026,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 0,
+            "latencyMs": 326.926915,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": false,
+              "inputTokens": 9990,
+              "outputTokens": 124
+            }
+          },
+          "repeat": null
+        },
+        {
+          "id": "glob-ignore",
+          "repository": "picomatch",
+          "kind": "behavior",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 5,
+            "latencyMs": 47.31224800000018,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 5,
+            "latencyMs": 249.77972899999986,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": false,
+              "inputTokens": 9522,
+              "outputTokens": 124
+            }
+          },
+          "repeat": null
+        },
+        {
+          "id": "regex-invalid",
+          "repository": "picomatch",
+          "kind": "behavior",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 0,
+            "latencyMs": 50.30326700000023,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 0,
+            "latencyMs": 327.0237649999999,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": false,
+              "inputTokens": 9588,
+              "outputTokens": 124
+            }
+          },
+          "repeat": null
+        },
+        {
+          "id": "glob-exact",
+          "repository": "picomatch",
+          "kind": "exact",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 1,
+            "latencyMs": 74.58909800000038,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 1,
+            "latencyMs": 75.0496490000005,
+            "typesafe": {
+              "status": "skipped",
+              "reason": "exact-evidence",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "repeat": {
+            "rank": 1,
+            "latencyMs": 74.26155699999981,
+            "typesafe": {
+              "status": "skipped",
+              "reason": "exact-evidence",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          }
+        }
+      ]
+    },
+    "excerpts": {
+      "generatedAt": "2026-09-19T04:04:37.910Z",
+      "node": "v22.22.2",
+      "settings": {
+        "model": "jev-latest",
+        "deadlineMs": 2500,
+        "maxCandidates": 8,
+        "requestCap": 14
+      },
+      "requests": 11,
+      "summary": {
+        "all": {
+          "baseline": {
+            "cases": 14,
+            "top1": 0.21428571428571427,
+            "mrr": 0.33996598639455783,
+            "candidateRecall": 0.7857142857142857,
+            "medianMs": 6.681368999999904,
+            "p95Ms": 80.00582599999962,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "disabled": 14
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          },
+          "candidate": {
+            "cases": 14,
+            "top1": 0.21428571428571427,
+            "mrr": 0.33996598639455783,
+            "candidateRecall": 0.7857142857142857,
+            "medianMs": 195.51969700000018,
+            "p95Ms": 398.0878749999997,
+            "requests": 11,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "fallback": 11,
+              "skipped": 3
+            },
+            "inputTokens": 69813,
+            "outputTokens": 1304,
+            "costUsd": null
+          },
+          "repeat": {
+            "cases": 3,
+            "top1": 1,
+            "mrr": 1,
+            "candidateRecall": 1,
+            "medianMs": 5.062085000000025,
+            "p95Ms": 76.57872599999973,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "skipped": 3
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          }
+        },
+        "behavior": {
+          "baseline": {
+            "cases": 11,
+            "top1": 0,
+            "mrr": 0.15995670995670996,
+            "candidateRecall": 0.7272727272727273,
+            "medianMs": 4.66288300000042,
+            "p95Ms": 80.00582599999962,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "disabled": 11
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          },
+          "candidate": {
+            "cases": 11,
+            "top1": 0,
+            "mrr": 0.15995670995670996,
+            "candidateRecall": 0.7272727272727273,
+            "medianMs": 237.29380100000026,
+            "p95Ms": 398.0878749999997,
+            "requests": 11,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "fallback": 11
+            },
+            "inputTokens": 69813,
+            "outputTokens": 1304,
+            "costUsd": null
+          },
+          "repeat": {
+            "cases": 0
+          }
+        },
+        "exact": {
+          "baseline": {
+            "cases": 3,
+            "top1": 1,
+            "mrr": 1,
+            "candidateRecall": 1,
+            "medianMs": 24.88254300000017,
+            "p95Ms": 77.07789800000046,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "disabled": 3
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          },
+          "candidate": {
+            "cases": 3,
+            "top1": 1,
+            "mrr": 1,
+            "candidateRecall": 1,
+            "medianMs": 5.027215000000069,
+            "p95Ms": 78.08256999999958,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "skipped": 3
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          },
+          "repeat": {
+            "cases": 3,
+            "top1": 1,
+            "mrr": 1,
+            "candidateRecall": 1,
+            "medianMs": 5.062085000000025,
+            "p95Ms": 76.57872599999973,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "skipped": 3
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          }
+        },
+        "calibration": {
+          "baseline": {
+            "cases": 3,
+            "top1": 0.3333333333333333,
+            "mrr": 0.5,
+            "candidateRecall": 1,
+            "medianMs": 6.681368999999904,
+            "p95Ms": 24.88254300000017,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "disabled": 3
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          },
+          "candidate": {
+            "cases": 3,
+            "top1": 0.3333333333333333,
+            "mrr": 0.5,
+            "candidateRecall": 1,
+            "medianMs": 237.29380100000026,
+            "p95Ms": 398.0878749999997,
+            "requests": 2,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "fallback": 2,
+              "skipped": 1
+            },
+            "inputTokens": 8230,
+            "outputTokens": 188,
+            "costUsd": null
+          },
+          "repeat": {
+            "cases": 1,
+            "top1": 1,
+            "mrr": 1,
+            "candidateRecall": 1,
+            "medianMs": 5.062085000000025,
+            "p95Ms": 5.062085000000025,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "skipped": 1
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          },
+          "improvedRanks": 0,
+          "harmedRanks": 0,
+          "lostTop1": 0
+        },
+        "evaluation": {
+          "baseline": {
+            "cases": 11,
+            "top1": 0.18181818181818182,
+            "mrr": 0.2963203463203463,
+            "candidateRecall": 0.7272727272727273,
+            "medianMs": 5.082265000000007,
+            "p95Ms": 80.00582599999962,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "disabled": 11
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          },
+          "candidate": {
+            "cases": 11,
+            "top1": 0.18181818181818182,
+            "mrr": 0.2963203463203463,
+            "candidateRecall": 0.7272727272727273,
+            "medianMs": 179.10570800000005,
+            "p95Ms": 288.7190120000005,
+            "requests": 9,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "fallback": 9,
+              "skipped": 2
+            },
+            "inputTokens": 61583,
+            "outputTokens": 1116,
+            "costUsd": null
+          },
+          "repeat": {
+            "cases": 2,
+            "top1": 1,
+            "mrr": 1,
+            "candidateRecall": 1,
+            "medianMs": 76.57872599999973,
+            "p95Ms": 76.57872599999973,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "skipped": 2
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          },
+          "improvedRanks": 0,
+          "harmedRanks": 0,
+          "lostTop1": 0
+        }
+      },
+      "results": [
+        {
+          "id": "retry-abort",
+          "repository": "p-retry",
+          "kind": "behavior",
+          "partition": "calibration",
+          "baseline": {
+            "rank": 4,
+            "latencyMs": 6.681368999999904,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 4,
+            "latencyMs": 398.0878749999997,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 6,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": false,
+              "inputTokens": 4017,
+              "outputTokens": 94
+            }
+          },
+          "repeat": null
+        },
+        {
+          "id": "retry-budget",
+          "repository": "p-retry",
+          "kind": "behavior",
+          "partition": "calibration",
+          "baseline": {
+            "rank": 4,
+            "latencyMs": 4.66288300000042,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 4,
+            "latencyMs": 237.29380100000026,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 6,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": false,
+              "inputTokens": 4213,
+              "outputTokens": 94
+            }
+          },
+          "repeat": null
+        },
+        {
+          "id": "retry-exact",
+          "repository": "p-retry",
+          "kind": "exact",
+          "partition": "calibration",
+          "baseline": {
+            "rank": 1,
+            "latencyMs": 24.88254300000017,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 1,
+            "latencyMs": 5.027215000000069,
+            "typesafe": {
+              "status": "skipped",
+              "reason": "exact-evidence",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "repeat": {
+            "rank": 1,
+            "latencyMs": 5.062085000000025,
+            "typesafe": {
+              "status": "skipped",
+              "reason": "exact-evidence",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          }
+        },
+        {
+          "id": "signature-age",
+          "repository": "itsdangerous",
+          "kind": "behavior",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 4,
+            "latencyMs": 3.9912820000004103,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 4,
+            "latencyMs": 195.51969700000018,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": false,
+              "inputTokens": 6271,
+              "outputTokens": 124
+            }
+          },
+          "repeat": null
+        },
+        {
+          "id": "signature-future",
+          "repository": "itsdangerous",
+          "kind": "behavior",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 4,
+            "latencyMs": 3.46311999999989,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 4,
+            "latencyMs": 179.10570800000005,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": false,
+              "inputTokens": 6033,
+              "outputTokens": 124
+            }
+          },
+          "repeat": null
+        },
+        {
+          "id": "key-rotation",
+          "repository": "itsdangerous",
+          "kind": "behavior",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 4,
+            "latencyMs": 3.5604709999997795,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 4,
+            "latencyMs": 171.3068549999998,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": false,
+              "inputTokens": 6291,
+              "outputTokens": 124
+            }
+          },
+          "repeat": null
+        },
+        {
+          "id": "payload-compression",
+          "repository": "itsdangerous",
+          "kind": "behavior",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 6,
+            "latencyMs": 3.207600000000184,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 6,
+            "latencyMs": 176.05549900000005,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": false,
+              "inputTokens": 6069,
+              "outputTokens": 124
+            }
+          },
+          "repeat": null
+        },
+        {
+          "id": "payload-decompression",
+          "repository": "itsdangerous",
+          "kind": "behavior",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 7,
+            "latencyMs": 3.112738999999692,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 7,
+            "latencyMs": 170.33462199999985,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": false,
+              "inputTokens": 6069,
+              "outputTokens": 124
+            }
+          },
+          "repeat": null
+        },
+        {
+          "id": "signer-exact",
+          "repository": "itsdangerous",
+          "kind": "exact",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 1,
+            "latencyMs": 5.082265000000007,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 1,
+            "latencyMs": 4.397083000000293,
+            "typesafe": {
+              "status": "skipped",
+              "reason": "exact-evidence",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "repeat": {
+            "rank": 1,
+            "latencyMs": 4.7683139999999185,
+            "typesafe": {
+              "status": "skipped",
+              "reason": "exact-evidence",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          }
+        },
+        {
+          "id": "glob-negation",
+          "repository": "picomatch",
+          "kind": "behavior",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 0,
+            "latencyMs": 61.04154000000017,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 0,
+            "latencyMs": 285.9358940000002,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": false,
+              "inputTokens": 7689,
+              "outputTokens": 124
+            }
+          },
+          "repeat": null
+        },
+        {
+          "id": "glob-basename",
+          "repository": "picomatch",
+          "kind": "behavior",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 0,
+            "latencyMs": 80.00582599999962,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 0,
+            "latencyMs": 288.7190120000005,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": false,
+              "inputTokens": 7588,
+              "outputTokens": 124
+            }
+          },
+          "repeat": null
+        },
+        {
+          "id": "glob-ignore",
+          "repository": "picomatch",
+          "kind": "behavior",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 5,
+            "latencyMs": 48.00112199999967,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 5,
+            "latencyMs": 241.64706300000034,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": false,
+              "inputTokens": 7840,
+              "outputTokens": 124
+            }
+          },
+          "repeat": null
+        },
+        {
+          "id": "regex-invalid",
+          "repository": "picomatch",
+          "kind": "behavior",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 0,
+            "latencyMs": 50.76483999999982,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 0,
+            "latencyMs": 272.592275,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": false,
+              "inputTokens": 7733,
+              "outputTokens": 124
+            }
+          },
+          "repeat": null
+        },
+        {
+          "id": "glob-exact",
+          "repository": "picomatch",
+          "kind": "exact",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 1,
+            "latencyMs": 77.07789800000046,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 1,
+            "latencyMs": 78.08256999999958,
+            "typesafe": {
+              "status": "skipped",
+              "reason": "exact-evidence",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "repeat": {
+            "rank": 1,
+            "latencyMs": 76.57872599999973,
+            "typesafe": {
+              "status": "skipped",
+              "reason": "exact-evidence",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          }
+        }
+      ]
+    },
+    "calibration": {
+      "generatedAt": "2026-09-19T04:05:26.997Z",
+      "node": "v22.22.2",
+      "settings": {
+        "model": "jev-latest",
+        "deadlineMs": 2500,
+        "maxCandidates": 8,
+        "requestCap": 3
+      },
+      "requests": 2,
+      "summary": {
+        "all": {
+          "baseline": {
+            "cases": 3,
+            "top1": 0.3333333333333333,
+            "mrr": 0.5,
+            "candidateRecall": 1,
+            "medianMs": 5.927837000000181,
+            "p95Ms": 23.856980999999905,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "disabled": 3
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          },
+          "candidate": {
+            "cases": 3,
+            "top1": 0.3333333333333333,
+            "mrr": 0.5,
+            "candidateRecall": 1,
+            "medianMs": 178.42984700000034,
+            "p95Ms": 342.1941819999997,
+            "requests": 2,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "fallback": 2,
+              "skipped": 1
+            },
+            "inputTokens": 8230,
+            "outputTokens": 188,
+            "costUsd": null
+          },
+          "repeat": {
+            "cases": 1,
+            "top1": 1,
+            "mrr": 1,
+            "candidateRecall": 1,
+            "medianMs": 4.792793999999958,
+            "p95Ms": 4.792793999999958,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "skipped": 1
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          }
+        },
+        "behavior": {
+          "baseline": {
+            "cases": 2,
+            "top1": 0,
+            "mrr": 0.25,
+            "candidateRecall": 1,
+            "medianMs": 5.927837000000181,
+            "p95Ms": 5.927837000000181,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "disabled": 2
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          },
+          "candidate": {
+            "cases": 2,
+            "top1": 0,
+            "mrr": 0.25,
+            "candidateRecall": 1,
+            "medianMs": 342.1941819999997,
+            "p95Ms": 342.1941819999997,
+            "requests": 2,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "fallback": 2
+            },
+            "inputTokens": 8230,
+            "outputTokens": 188,
+            "costUsd": null
+          },
+          "repeat": {
+            "cases": 0
+          }
+        },
+        "exact": {
+          "baseline": {
+            "cases": 1,
+            "top1": 1,
+            "mrr": 1,
+            "candidateRecall": 1,
+            "medianMs": 23.856980999999905,
+            "p95Ms": 23.856980999999905,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "disabled": 1
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          },
+          "candidate": {
+            "cases": 1,
+            "top1": 1,
+            "mrr": 1,
+            "candidateRecall": 1,
+            "medianMs": 5.351206000000275,
+            "p95Ms": 5.351206000000275,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "skipped": 1
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          },
+          "repeat": {
+            "cases": 1,
+            "top1": 1,
+            "mrr": 1,
+            "candidateRecall": 1,
+            "medianMs": 4.792793999999958,
+            "p95Ms": 4.792793999999958,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "skipped": 1
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          }
+        },
+        "calibration": {
+          "baseline": {
+            "cases": 3,
+            "top1": 0.3333333333333333,
+            "mrr": 0.5,
+            "candidateRecall": 1,
+            "medianMs": 5.927837000000181,
+            "p95Ms": 23.856980999999905,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "disabled": 3
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          },
+          "candidate": {
+            "cases": 3,
+            "top1": 0.3333333333333333,
+            "mrr": 0.5,
+            "candidateRecall": 1,
+            "medianMs": 178.42984700000034,
+            "p95Ms": 342.1941819999997,
+            "requests": 2,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "fallback": 2,
+              "skipped": 1
+            },
+            "inputTokens": 8230,
+            "outputTokens": 188,
+            "costUsd": null
+          },
+          "repeat": {
+            "cases": 1,
+            "top1": 1,
+            "mrr": 1,
+            "candidateRecall": 1,
+            "medianMs": 4.792793999999958,
+            "p95Ms": 4.792793999999958,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "skipped": 1
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          },
+          "improvedRanks": 0,
+          "harmedRanks": 0,
+          "lostTop1": 0
+        }
+      },
+      "results": [
+        {
+          "id": "retry-abort",
+          "repository": "p-retry",
+          "kind": "behavior",
+          "partition": "calibration",
+          "baseline": {
+            "rank": 4,
+            "latencyMs": 5.927837000000181,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 4,
+            "latencyMs": 342.1941819999997,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 6,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": false,
+              "inputTokens": 4017,
+              "outputTokens": 94
+            }
+          },
+          "repeat": null
+        },
+        {
+          "id": "retry-budget",
+          "repository": "p-retry",
+          "kind": "behavior",
+          "partition": "calibration",
+          "baseline": {
+            "rank": 4,
+            "latencyMs": 5.655917000000045,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 4,
+            "latencyMs": 178.42984700000034,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 6,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": false,
+              "inputTokens": 4213,
+              "outputTokens": 94
+            }
+          },
+          "repeat": null
+        },
+        {
+          "id": "retry-exact",
+          "repository": "p-retry",
+          "kind": "exact",
+          "partition": "calibration",
+          "baseline": {
+            "rank": 1,
+            "latencyMs": 23.856980999999905,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 1,
+            "latencyMs": 5.351206000000275,
+            "typesafe": {
+              "status": "skipped",
+              "reason": "exact-evidence",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "repeat": {
+            "rank": 1,
+            "latencyMs": 4.792793999999958,
+            "typesafe": {
+              "status": "skipped",
+              "reason": "exact-evidence",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          }
+        }
+      ]
+    },
+    "policy": {
+      "generatedAt": "2026-09-19T04:08:20.956Z",
+      "node": "v22.22.2",
+      "settings": {
+        "model": "jev-latest",
+        "deadlineMs": 2500,
+        "maxCandidates": 8,
+        "requestCap": 14
+      },
+      "requests": 11,
+      "summary": {
+        "all": {
+          "baseline": {
+            "cases": 14,
+            "top1": 0.21428571428571427,
+            "mrr": 0.33996598639455783,
+            "candidateRecall": 0.7857142857142857,
+            "medianMs": 4.660244000000148,
+            "p95Ms": 82.21225400000003,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "disabled": 14
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          },
+          "candidate": {
+            "cases": 14,
+            "top1": 0.5,
+            "mrr": 0.5714285714285714,
+            "candidateRecall": 0.7857142857142857,
+            "medianMs": 207.78143599999976,
+            "p95Ms": 364.3194510000003,
+            "requests": 11,
+            "cacheHits": 0,
+            "orderChanges": 4,
+            "statuses": {
+              "ok": 4,
+              "fallback": 7,
+              "skipped": 3
+            },
+            "inputTokens": 69813,
+            "outputTokens": 1304,
+            "costUsd": null
+          },
+          "repeat": {
+            "cases": 14,
+            "top1": 0.5,
+            "mrr": 0.5714285714285714,
+            "candidateRecall": 0.7857142857142857,
+            "medianMs": 7.868193999999676,
+            "p95Ms": 93.00163599999996,
+            "requests": 0,
+            "cacheHits": 11,
+            "orderChanges": 4,
+            "statuses": {
+              "ok": 4,
+              "fallback": 7,
+              "skipped": 3
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          }
+        },
+        "behavior": {
+          "baseline": {
+            "cases": 11,
+            "top1": 0,
+            "mrr": 0.15995670995670996,
+            "candidateRecall": 0.7272727272727273,
+            "medianMs": 4.597582999999759,
+            "p95Ms": 82.21225400000003,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "disabled": 11
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          },
+          "candidate": {
+            "cases": 11,
+            "top1": 0.36363636363636365,
+            "mrr": 0.45454545454545453,
+            "candidateRecall": 0.7272727272727273,
+            "medianMs": 232.80560000000014,
+            "p95Ms": 364.3194510000003,
+            "requests": 11,
+            "cacheHits": 0,
+            "orderChanges": 4,
+            "statuses": {
+              "ok": 4,
+              "fallback": 7
+            },
+            "inputTokens": 69813,
+            "outputTokens": 1304,
+            "costUsd": null
+          },
+          "repeat": {
+            "cases": 11,
+            "top1": 0.36363636363636365,
+            "mrr": 0.45454545454545453,
+            "candidateRecall": 0.7272727272727273,
+            "medianMs": 7.868193999999676,
+            "p95Ms": 93.00163599999996,
+            "requests": 0,
+            "cacheHits": 11,
+            "orderChanges": 4,
+            "statuses": {
+              "ok": 4,
+              "fallback": 7
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          }
+        },
+        "exact": {
+          "baseline": {
+            "cases": 3,
+            "top1": 1,
+            "mrr": 1,
+            "candidateRecall": 1,
+            "medianMs": 24.922524000000067,
+            "p95Ms": 77.80448099999921,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "disabled": 3
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          },
+          "candidate": {
+            "cases": 3,
+            "top1": 1,
+            "mrr": 1,
+            "candidateRecall": 1,
+            "medianMs": 4.940955000000031,
+            "p95Ms": 76.85382800000025,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "skipped": 3
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          },
+          "repeat": {
+            "cases": 3,
+            "top1": 1,
+            "mrr": 1,
+            "candidateRecall": 1,
+            "medianMs": 4.998505000000023,
+            "p95Ms": 77.64768000000004,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "skipped": 3
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          }
+        },
+        "calibration": {
+          "baseline": {
+            "cases": 3,
+            "top1": 0.3333333333333333,
+            "mrr": 0.5,
+            "candidateRecall": 1,
+            "medianMs": 4.660244000000148,
+            "p95Ms": 24.922524000000067,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "disabled": 3
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          },
+          "candidate": {
+            "cases": 3,
+            "top1": 0.6666666666666666,
+            "mrr": 0.75,
+            "candidateRecall": 1,
+            "medianMs": 169.2924720000001,
+            "p95Ms": 364.3194510000003,
+            "requests": 2,
+            "cacheHits": 0,
+            "orderChanges": 1,
+            "statuses": {
+              "ok": 1,
+              "fallback": 1,
+              "skipped": 1
+            },
+            "inputTokens": 8230,
+            "outputTokens": 188,
+            "costUsd": null
+          },
+          "repeat": {
+            "cases": 3,
+            "top1": 0.6666666666666666,
+            "mrr": 0.75,
+            "candidateRecall": 1,
+            "medianMs": 7.868193999999676,
+            "p95Ms": 9.05968699999994,
+            "requests": 0,
+            "cacheHits": 2,
+            "orderChanges": 1,
+            "statuses": {
+              "ok": 1,
+              "fallback": 1,
+              "skipped": 1
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          },
+          "improvedRanks": 1,
+          "harmedRanks": 0,
+          "lostTop1": 0
+        },
+        "evaluation": {
+          "baseline": {
+            "cases": 11,
+            "top1": 0.18181818181818182,
+            "mrr": 0.2963203463203463,
+            "candidateRecall": 0.7272727272727273,
+            "medianMs": 4.4845540000001165,
+            "p95Ms": 82.21225400000003,
+            "requests": 0,
+            "cacheHits": 0,
+            "orderChanges": 0,
+            "statuses": {
+              "disabled": 11
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          },
+          "candidate": {
+            "cases": 11,
+            "top1": 0.45454545454545453,
+            "mrr": 0.5227272727272727,
+            "candidateRecall": 0.7272727272727273,
+            "medianMs": 207.78143599999976,
+            "p95Ms": 313.73759100000007,
+            "requests": 9,
+            "cacheHits": 0,
+            "orderChanges": 3,
+            "statuses": {
+              "fallback": 6,
+              "ok": 3,
+              "skipped": 2
+            },
+            "inputTokens": 61583,
+            "outputTokens": 1116,
+            "costUsd": null
+          },
+          "repeat": {
+            "cases": 11,
+            "top1": 0.45454545454545453,
+            "mrr": 0.5227272727272727,
+            "candidateRecall": 0.7272727272727273,
+            "medianMs": 7.3850320000001375,
+            "p95Ms": 93.00163599999996,
+            "requests": 0,
+            "cacheHits": 9,
+            "orderChanges": 3,
+            "statuses": {
+              "fallback": 6,
+              "ok": 3,
+              "skipped": 2
+            },
+            "inputTokens": 0,
+            "outputTokens": 0,
+            "costUsd": null
+          },
+          "improvedRanks": 3,
+          "harmedRanks": 0,
+          "lostTop1": 0
+        }
+      },
+      "results": [
+        {
+          "id": "retry-abort",
+          "repository": "p-retry",
+          "kind": "behavior",
+          "partition": "calibration",
+          "baseline": {
+            "rank": 4,
+            "latencyMs": 4.660244000000148,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 1,
+            "latencyMs": 364.3194510000003,
+            "typesafe": {
+              "status": "ok",
+              "candidates": 6,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": true,
+              "inputTokens": 4017,
+              "outputTokens": 94
+            }
+          },
+          "repeat": {
+            "rank": 1,
+            "latencyMs": 9.05968699999994,
+            "typesafe": {
+              "status": "ok",
+              "candidates": 6,
+              "model": "jev-1.13.0",
+              "cacheHit": true,
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "requestAttempted": false,
+              "orderChanged": true
+            }
+          }
+        },
+        {
+          "id": "retry-budget",
+          "repository": "p-retry",
+          "kind": "behavior",
+          "partition": "calibration",
+          "baseline": {
+            "rank": 4,
+            "latencyMs": 4.597582999999759,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 4,
+            "latencyMs": 169.2924720000001,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 6,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": false,
+              "inputTokens": 4213,
+              "outputTokens": 94
+            }
+          },
+          "repeat": {
+            "rank": 4,
+            "latencyMs": 7.868193999999676,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 6,
+              "model": "jev-1.13.0",
+              "cacheHit": true,
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          }
+        },
+        {
+          "id": "retry-exact",
+          "repository": "p-retry",
+          "kind": "exact",
+          "partition": "calibration",
+          "baseline": {
+            "rank": 1,
+            "latencyMs": 24.922524000000067,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 1,
+            "latencyMs": 4.940955000000031,
+            "typesafe": {
+              "status": "skipped",
+              "reason": "exact-evidence",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "repeat": {
+            "rank": 1,
+            "latencyMs": 4.998505000000023,
+            "typesafe": {
+              "status": "skipped",
+              "reason": "exact-evidence",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          }
+        },
+        {
+          "id": "signature-age",
+          "repository": "itsdangerous",
+          "kind": "behavior",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 4,
+            "latencyMs": 4.027051000000029,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 4,
+            "latencyMs": 186.98679500000026,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": false,
+              "inputTokens": 6271,
+              "outputTokens": 124
+            }
+          },
+          "repeat": {
+            "rank": 4,
+            "latencyMs": 5.6856370000000425,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": true,
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          }
+        },
+        {
+          "id": "signature-future",
+          "repository": "itsdangerous",
+          "kind": "behavior",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 4,
+            "latencyMs": 3.7422710000000734,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 4,
+            "latencyMs": 232.80560000000014,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": false,
+              "inputTokens": 6033,
+              "outputTokens": 124
+            }
+          },
+          "repeat": {
+            "rank": 4,
+            "latencyMs": 6.440649000000121,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": true,
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          }
+        },
+        {
+          "id": "key-rotation",
+          "repository": "itsdangerous",
+          "kind": "behavior",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 4,
+            "latencyMs": 3.550980000000436,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 4,
+            "latencyMs": 171.15444799999977,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": false,
+              "inputTokens": 6291,
+              "outputTokens": 124
+            }
+          },
+          "repeat": {
+            "rank": 4,
+            "latencyMs": 6.528119999999944,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": true,
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          }
+        },
+        {
+          "id": "payload-compression",
+          "repository": "itsdangerous",
+          "kind": "behavior",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 6,
+            "latencyMs": 3.16971999999987,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 1,
+            "latencyMs": 173.8539149999997,
+            "typesafe": {
+              "status": "ok",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": true,
+              "inputTokens": 6069,
+              "outputTokens": 124
+            }
+          },
+          "repeat": {
+            "rank": 1,
+            "latencyMs": 7.3850320000001375,
+            "typesafe": {
+              "status": "ok",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": true,
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "requestAttempted": false,
+              "orderChanged": true
+            }
+          }
+        },
+        {
+          "id": "payload-decompression",
+          "repository": "itsdangerous",
+          "kind": "behavior",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 7,
+            "latencyMs": 3.0518389999997453,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 1,
+            "latencyMs": 207.78143599999976,
+            "typesafe": {
+              "status": "ok",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": true,
+              "inputTokens": 6069,
+              "outputTokens": 124
+            }
+          },
+          "repeat": {
+            "rank": 1,
+            "latencyMs": 6.050047999999606,
+            "typesafe": {
+              "status": "ok",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": true,
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "requestAttempted": false,
+              "orderChanged": true
+            }
+          }
+        },
+        {
+          "id": "signer-exact",
+          "repository": "itsdangerous",
+          "kind": "exact",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 1,
+            "latencyMs": 4.4845540000001165,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 1,
+            "latencyMs": 4.71388399999978,
+            "typesafe": {
+              "status": "skipped",
+              "reason": "exact-evidence",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "repeat": {
+            "rank": 1,
+            "latencyMs": 4.426172999999835,
+            "typesafe": {
+              "status": "skipped",
+              "reason": "exact-evidence",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          }
+        },
+        {
+          "id": "glob-negation",
+          "repository": "picomatch",
+          "kind": "behavior",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 0,
+            "latencyMs": 63.53124799999932,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 0,
+            "latencyMs": 313.73759100000007,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": false,
+              "inputTokens": 7689,
+              "outputTokens": 124
+            }
+          },
+          "repeat": {
+            "rank": 0,
+            "latencyMs": 71.30123100000037,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": true,
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          }
+        },
+        {
+          "id": "glob-basename",
+          "repository": "picomatch",
+          "kind": "behavior",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 0,
+            "latencyMs": 82.21225400000003,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 0,
+            "latencyMs": 285.4144470000001,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": false,
+              "inputTokens": 7588,
+              "outputTokens": 124
+            }
+          },
+          "repeat": {
+            "rank": 0,
+            "latencyMs": 93.00163599999996,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": true,
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          }
+        },
+        {
+          "id": "glob-ignore",
+          "repository": "picomatch",
+          "kind": "behavior",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 5,
+            "latencyMs": 50.45197899999948,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 1,
+            "latencyMs": 303.81899200000043,
+            "typesafe": {
+              "status": "ok",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": true,
+              "inputTokens": 7840,
+              "outputTokens": 124
+            }
+          },
+          "repeat": {
+            "rank": 1,
+            "latencyMs": 53.55236800000057,
+            "typesafe": {
+              "status": "ok",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": true,
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "requestAttempted": false,
+              "orderChanged": true
+            }
+          }
+        },
+        {
+          "id": "regex-invalid",
+          "repository": "picomatch",
+          "kind": "behavior",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 0,
+            "latencyMs": 52.44087500000023,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 0,
+            "latencyMs": 239.01372900000024,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": false,
+              "requestAttempted": true,
+              "orderChanged": false,
+              "inputTokens": 7733,
+              "outputTokens": 124
+            }
+          },
+          "repeat": {
+            "rank": 0,
+            "latencyMs": 58.93633399999999,
+            "typesafe": {
+              "status": "fallback",
+              "reason": "uncertain-or-no-match",
+              "candidates": 8,
+              "model": "jev-1.13.0",
+              "cacheHit": true,
+              "inputTokens": 0,
+              "outputTokens": 0,
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          }
+        },
+        {
+          "id": "glob-exact",
+          "repository": "picomatch",
+          "kind": "exact",
+          "partition": "evaluation",
+          "baseline": {
+            "rank": 1,
+            "latencyMs": 77.80448099999921,
+            "typesafe": {
+              "status": "disabled",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "candidate": {
+            "rank": 1,
+            "latencyMs": 76.85382800000025,
+            "typesafe": {
+              "status": "skipped",
+              "reason": "exact-evidence",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          },
+          "repeat": {
+            "rank": 1,
+            "latencyMs": 77.64768000000004,
+            "typesafe": {
+              "status": "skipped",
+              "reason": "exact-evidence",
+              "requestAttempted": false,
+              "orderChanged": false
+            }
+          }
+        }
+      ]
+    }
+  },
+  "fixtureHash": "f5c4e8fd550acd35e3917729f3f8b81d788266b4965a98bd1fc575dc3ca2753d"
+}
