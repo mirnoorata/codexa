@@ -8,6 +8,7 @@ import path from "node:path";
 import { buildIndexLocked } from "../dist/indexer.js";
 import { findContextQuery } from "../dist/query/search.js";
 import { createQuerySessionFromIndexState } from "../dist/query/session.js";
+import { loadTypeSafeEvalPack, summarizeRetrievalRows } from "./typesafe-eval-pack.mjs";
 
 const groups = [
   {
@@ -47,21 +48,42 @@ const groups = [
     queries: ["where does output encoding replace angle brackets and ampersands", "find the output function that converts quotes into HTML entities"]
   }
 ];
-const cases = groups.flatMap((group) => [
+let cases = groups.flatMap((group) => [
   ...group.queries.map((query) => ({ query, target: group.target, kind: "behavior" })),
   { query: group.target, target: group.target, kind: "exact" }
 ]);
-const fixtureHash = createHash("sha256").update(JSON.stringify(groups)).digest("hex");
+let fixtureHash = createHash("sha256").update(JSON.stringify(groups)).digest("hex");
 const live = process.argv.includes("--live");
 const outputIndex = process.argv.indexOf("--output");
 const output = path.resolve(outputIndex < 0 ? ".codex/cache/typesafe-comparison.json" : process.argv[outputIndex + 1]);
 if (live && !process.env.TYPESAFE_API_KEY?.trim()) throw new Error("Set TYPESAFE_API_KEY in the process environment before --live.");
+const option = name => { const i = process.argv.indexOf(name); if (i < 0) return undefined; const value = process.argv[i + 1]; if (!value || value.startsWith("--")) throw new Error(`Missing ${name} value`); return value; };
+const packPath = option("--pack");
+const pack = packPath ? await loadTypeSafeEvalPack(packPath, option("--repos") ?? ".codex/cache/value-evaluation/repos") : undefined;
+if (pack) { cases = pack.cases; fixtureHash = pack.fixtureHash; }
+const partition = option("--partition");
+if (partition) {
+  assert(pack && ["calibration", "evaluation"].includes(partition), "--partition requires a pack and calibration or evaluation");
+  cases = cases.filter(item => pack.repositories.get(item.repository).partition === partition);
+  assert(cases.length > 0, "partition is empty");
+}
 const root = await mkdtemp(path.join(os.tmpdir(), "codexa-typesafe-comparison-"));
 const results = [];
 let requests = 0;
+let assessments;
 const originalFetch = globalThis.fetch;
-globalThis.fetch = (...args) => { requests++; return originalFetch(...args); };
+globalThis.fetch = async (...args) => {
+  requests++;
+  const response = await originalFetch(...args);
+  // Numeric diagnostics only. Never retain source, request bodies or credentials.
+  try {
+    const payload = await response.clone().json();
+    assessments = Object.fromEntries(Object.entries(payload.answers ?? {}).map(([id, answer]) => [id, { score: answer.score, confidence: answer.confidence }]));
+  } catch { assessments = undefined; }
+  return response;
+};
 try {
+  if (!pack) {
   execFileSync("git", ["init"], { cwd: root, stdio: "ignore" });
   for (const group of groups) {
     await writeFile(path.join(root, group.target), `${group.source}\n`);
@@ -69,19 +91,28 @@ try {
   }
   execFileSync("git", ["add", "."], { cwd: root, stdio: "ignore" });
   execFileSync("git", ["-c", "user.name=Codexa", "-c", "user.email=codexa@example.invalid", "commit", "-m", "fixed synthetic comparison"], { cwd: root, stdio: "ignore" });
-  const index = await buildIndexLocked({ repoRoot: root, writeArtifacts: true });
-  const session = createQuerySessionFromIndexState(root, { index, freshness: index.freshness });
+  }
+  const sessions = new Map();
+  const repositories = pack?.repositories ?? new Map([["synthetic", { root, partition: "synthetic" }]]);
+  for (const [id, repository] of repositories) {
+  const index = await buildIndexLocked({ repoRoot: repository.root, writeArtifacts: false });
+  const session = createQuerySessionFromIndexState(repository.root, { index, freshness: index.freshness });
   // One local warmup only; API requests are limited to one per case.
-  await findContextQuery(session, cases[0].query, 8, { semantic: false, typesafe: false });
+  const first = cases.find(item => (item.repository ?? "synthetic") === id);
+  if (first) await findContextQuery(session, first.query, 8, { semantic: false, typesafe: false });
+  sessions.set(id, session);
+  }
   for (const [position, item] of cases.entries()) {
+    const session = sessions.get(item.repository ?? "synthetic");
     const run = async (enabled) => {
+      assessments = undefined;
       const start = performance.now();
       const result = await findContextQuery(session, item.query, 8, {
         semantic: false, typesafe: enabled, typesafeTimeoutMs: 2500, typesafeMaxCandidates: 8
       });
       const paths = result.data.files.map((file) => file.path);
       return { paths, rank: paths.indexOf(item.target) + 1, latencyMs: performance.now() - start,
-        typesafe: result.data.retrieval.typesafe, intent: result.data.retrieval.intentConfidence };
+        typesafe: result.data.retrieval.typesafe, intent: result.data.retrieval.intentConfidence, assessments };
     };
     // Alternate order to reduce warm-cache bias; no online tuning of the fixture.
     let baseline, candidate;
@@ -92,15 +123,15 @@ try {
       assert.deepEqual([...candidate.paths].sort(), [...baseline.paths].sort(), "TypeSafe must preserve candidates");
     }
     let repeat;
-    if (candidate && ["ok", "skipped"].includes(candidate.typesafe.status)) {
+    if (candidate && (["ok", "skipped"].includes(candidate.typesafe.status) || ["uncertain-or-no-match", "ambiguous-order"].includes(candidate.typesafe.reason))) {
       const beforeRepeat = requests;
       repeat = await run(true);
       assert.equal(requests, beforeRepeat, "An unchanged accepted/exact query must not call TypeSafe again");
       assert.deepEqual(repeat.paths, candidate.paths, "Reuse must preserve the accepted order");
       assert.deepEqual(repeat.intent, candidate.intent, "Reuse must preserve edit authority");
-      if (candidate.typesafe.status === "ok") assert.equal(repeat.typesafe.cacheHit, true);
+      if (candidate.typesafe.status !== "skipped") assert.equal(repeat.typesafe.cacheHit, true);
     }
-    results.push({ ...item, baseline, candidate, repeat });
+    results.push({ ...item, partition: repositories.get(item.repository ?? "synthetic").partition, baseline, candidate, repeat });
     console.log(`${position + 1}/${cases.length} ${item.kind}: baseline rank ${baseline.rank || "absent"}${candidate ? `; TypeSafe rank ${candidate.rank || "absent"} (${candidate.typesafe.status})` : ""}`);
   }
   const summary = {};
@@ -108,20 +139,20 @@ try {
     const selected = results.filter((item) => kind === "all" || item.kind === kind);
     summary[kind] = Object.fromEntries(["baseline", ...(live ? ["candidate", "repeat"] : [])].map((mode) => {
       const rows = selected.map((item) => item[mode]).filter(Boolean);
-      const times = rows.map((row) => row.latencyMs).sort((a, b) => a - b);
-      return [mode, {
-        cases: rows.length, top1: rows.filter((row) => row.rank === 1).length / rows.length,
-        mrr: rows.reduce((sum, row) => sum + (row.rank ? 1 / row.rank : 0), 0) / rows.length,
-        recall: rows.filter((row) => row.rank > 0).length / rows.length,
-        medianMs: times[Math.floor(times.length / 2)], p95Ms: times[Math.ceil(times.length * 0.95) - 1],
-        statuses: rows.reduce((counts, row) => { const status = row.typesafe.status; counts[status] = (counts[status] ?? 0) + 1; return counts; }, {}),
-        inputTokens: rows.reduce((sum, row) => sum + (row.typesafe.inputTokens ?? 0), 0),
-        outputTokens: rows.reduce((sum, row) => sum + (row.typesafe.outputTokens ?? 0), 0)
-      }];
+      return [mode, summarizeRetrievalRows(rows)];
     }));
   }
-  const report = { schemaVersion: 2, fixtureHash, generatedAt: new Date().toISOString(), live, requests, node: process.version,
-    settings: { model: "jev-latest", deadlineMs: 2500, maxCandidates: 8, requestCap: cases.length }, summary, results };
+  for (const partition of new Set(results.map(item => item.partition))) {
+    const selected = results.filter(item => item.partition === partition);
+    summary[partition] = {
+      ...Object.fromEntries(["baseline", ...(live ? ["candidate", "repeat"] : [])].map(mode => [mode, summarizeRetrievalRows(selected.map(item => item[mode]).filter(Boolean))])),
+      improvedRanks: selected.filter(item => item.candidate && item.candidate.rank > 0 && item.candidate.rank < item.baseline.rank).length,
+      harmedRanks: selected.filter(item => item.candidate && item.baseline.rank > 0 && item.candidate.rank > item.baseline.rank).length,
+      lostTop1: selected.filter(item => item.baseline.rank === 1 && item.candidate && item.candidate.rank !== 1).length
+    };
+  }
+  const report = { schemaVersion: 3, fixtureHash, generatedAt: new Date().toISOString(), live, requests, node: process.version,
+    settings: { model: process.env.CODEXA_TYPESAFE_MODEL ?? "jev-latest", deadlineMs: 2500, maxCandidates: 8, requestCap: cases.length }, summary, results };
   await mkdir(path.dirname(output), { recursive: true });
   await writeFile(output, JSON.stringify(report, null, 2) + "\n");
   console.log(JSON.stringify(summary, null, 2));

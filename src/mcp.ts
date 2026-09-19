@@ -31,6 +31,7 @@ import {
 } from "./mcp/telemetry.js";
 import { CORE_PROFILE_TOOL_NAMES, NO_SOURCE_MUTATION_CONTRACT, PRIMARY_CODEX_LOOP } from "./mcp-tool-catalog.js";
 import { CODEXA_VERSION } from "./version.js";
+import { typeSafeTelemetryFromResult } from "./mcp/typesafe-telemetry.js";
 export { compactMcpResult, compactNonPostEditMcpResult, compactPostEditMcpResult } from "./mcp/compaction.js";
 export { DISPATCHABLE_MCP_TOOL_NAMES, MCP_TOOL_CATALOG, PRIMARY_CODEX_LOOP, PRIMARY_MCP_TOOL_NAMES } from "./mcp-tool-catalog.js";
 
@@ -515,7 +516,8 @@ async function createCodexaMcpServer(
           ...byteCounts,
           elapsedMs,
           resultReference: resultReference?.uri,
-          unchangedReceipt
+          unchangedReceipt,
+          typesafe: typeSafeTelemetryFromResult(rawResult.data)
         });
       } catch (error) {
         console.error(`Codexa MCP telemetry event dropped: ${error instanceof Error ? error.message : String(error)}`);

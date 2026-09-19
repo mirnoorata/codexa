@@ -1,5 +1,9 @@
 # Optional TypeSafe reranking evaluation
 
+For the newer repository-based comparison, see the [public retrieval pack and
+measured results](../benchmarks/typesafe-retrieval/README.md). The results below
+are the historical synthetic evaluation, not measurements of the revised policy.
+
 The first live comparison improved the top-ranked file on two of twelve
 synthetic behavior queries. It added about 170 ms median latency. Keep TypeSafe
 opt-in: these results support a limited pilot, not a general production accuracy
@@ -65,7 +69,7 @@ calls. There were 12 API requests total, using 9,708 input and 498 output tokens
 
 This verifies reuse, not general production accuracy. It uses the same small,
 correlated fixture as the initial run and the same provider settings. The cache
-is limited to 128 accepted decisions and five minutes in a running process;
+is limited to 128 valid decisions (accepted rankings or supported abstentions) and five minutes in a running process;
 new CLI processes start empty. Candidate source is reread and hashed before
 reuse, including content beyond the excerpt sent to TypeSafe. Snapshot, query,
 candidate order, model, credential, and bound changes invalidate reuse. Failures,

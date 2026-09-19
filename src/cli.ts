@@ -97,6 +97,7 @@ program
   .option("--agents-md", "write a managed Codexa workflow block into the repo's AGENTS.md (Codex)", false)
   .option("--claude-md", "write a managed Codexa workflow block into the repo's CLAUDE.md (Claude Code)", false)
   .option("--claude", "write the codexa MCP server entry into the repo's .mcp.json for Claude Code", false)
+  .option("--cursor", "write portable project MCP configuration into .cursor/mcp.json", false)
   .option("--policy-pack", "also create the default local proof policy pack without overwriting existing policy files", false)
   .option("--ci", "create the read-only Codexa pull-request review workflow", false)
   .description("Initialize Codexa for a project so future Codex sessions discover it automatically.")
@@ -113,6 +114,7 @@ program
         agentsMd: boolean;
         claudeMd: boolean;
         claude: boolean;
+        cursor: boolean;
         policyPack: boolean;
         ci: boolean;
       }
@@ -127,6 +129,7 @@ program
         agentsMd: opts.agentsMd,
         claudeMd: opts.claudeMd,
         claude: opts.claude,
+        cursor: opts.cursor,
         policyPack: opts.policyPack,
         ci: opts.ci
       });
@@ -143,6 +146,9 @@ program
       }
       if (result.claudeMcpPath) {
         console.log(`Claude Code MCP config: ${result.claudeMcpPath}`);
+      }
+      if (result.cursorMcpPath) {
+        console.log(`Cursor MCP config: ${result.cursorMcpPath}`);
       }
       if (result.policyPack) {
         console.log(`Policy pack: ${result.policyPack.directory}`);

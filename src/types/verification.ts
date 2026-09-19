@@ -40,6 +40,7 @@ export interface TestRecommendationProvenance {
 export type VerificationCoverageKind =
   | "javascript-tests"
   | "python-tests"
+  | "go-tests"
   | "typescript-syntax"
   | "build"
   | "lint"
@@ -48,7 +49,7 @@ export type VerificationCoverageKind =
   | "targeted-test"
   | "unknown";
 
-export type VerificationTestRunner = "vitest" | "jest" | "node-test" | "playwright" | "cypress";
+export type VerificationTestRunner = "vitest" | "jest" | "node-test" | "playwright" | "cypress" | "go";
 
 export type VerificationLedgerStatus = "covered" | "missing" | "waived" | "not_applicable" | "would_cover";
 
@@ -124,7 +125,7 @@ export interface VerificationArtifactLedgerEvidence {
 }
 
 export const VERIFICATION_PROVENANCE_SCHEMA_VERSION = 1 as const;
-export const VERIFICATION_COMMAND_COVERAGE_CLASSIFIER_VERSION = "command-coverage-v7";
+export const VERIFICATION_COMMAND_COVERAGE_CLASSIFIER_VERSION = "command-coverage-v8";
 export const VERIFICATION_COMMAND_ENVELOPE_RULESET_VERSION = "command-envelope-v2";
 export const VERIFICATION_COVERAGE_VERSION = "verification-coverage-v5";
 export const VERIFICATION_LEDGER_VERSION = "verification-ledger-v4";

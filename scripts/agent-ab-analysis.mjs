@@ -603,7 +603,8 @@ function summarizeArmEfficiencyTelemetry(outcomes, arm) {
     escalationEvents: sumTelemetry(serverObserved, "serverTelemetry", "escalationEvents"),
     unchangedReceipts: sumTelemetry(serverObserved, "serverTelemetry", "unchangedReceipts"),
     requestedFormats: mergeNestedCounts(serverObserved.map((outcome) => outcome.codexaUsage.serverTelemetry.requestedFormats)),
-    effectiveFormats: mergeNestedCounts(serverObserved.map((outcome) => outcome.codexaUsage.serverTelemetry.effectiveFormats))
+    effectiveFormats: mergeNestedCounts(serverObserved.map((outcome) => outcome.codexaUsage.serverTelemetry.effectiveFormats)),
+    typesafe: combineTypeSafeTelemetry(selected.map((outcome) => outcome.codexaUsage.serverTelemetry.typesafe))
   };
   return {
     schemaVersion: 1,
@@ -2770,6 +2771,7 @@ function readServerTelemetry(trialDir) {
     aggregate.requestedFormats = sortRecord(aggregate.requestedFormats);
     aggregate.effectiveFormats = sortRecord(aggregate.effectiveFormats);
     aggregate.callsByTool = sortRecord(aggregate.callsByTool);
+    aggregate.typesafe = summarizeTypeSafeTelemetry(events);
     return aggregate;
   } catch (error) {
     return unavailableServerTelemetry(error && typeof error === "object" && error.code === "ELOOP" ? "invalid-file" : "malformed");
@@ -2821,7 +2823,8 @@ function validServerTelemetryEvent(event) {
     "totalBytes",
     "elapsedMs",
     "resultReference",
-    "unchangedReceipt"
+    "unchangedReceipt",
+    "typesafe"
   ]);
   if (Object.keys(event).some((key) => !allowed.has(key))) {
     return false;
@@ -2852,12 +2855,14 @@ function validServerTelemetryEvent(event) {
     && Number.isFinite(event.elapsedMs)
     && event.elapsedMs >= 0
     && event.elapsedMs <= MAX_SERVER_TELEMETRY_EVENT_ELAPSED_MS
-    && typeof event.unchangedReceipt === "boolean";
+    && typeof event.unchangedReceipt === "boolean"
+    && (event.typesafe === undefined || validTypeSafeTelemetry(event.typesafe));
   if (!commonValid) {
     return false;
   }
   if (event.eventKind === "resource-read") {
     return event.tool === "read_mcp_resource"
+      && event.typesafe === undefined
       && event.requestedFormat === "detailed"
       && event.effectiveFormat === "detailed"
       && event.escalationReason === undefined
@@ -2891,7 +2896,8 @@ function unavailableServerTelemetry(status) {
     effectiveFormats: null,
     escalationEvents: null,
     unchangedReceipts: null,
-    callsByTool: null
+    callsByTool: null,
+    typesafe: null
   };
 }
 
@@ -3067,4 +3073,46 @@ function writeAtomicText(file, value) {
   const temporary = `${file}.tmp-${process.pid}`;
   writeFileSync(temporary, value, { encoding: "utf8", flag: "wx", mode: 0o600 });
   renameSync(temporary, file);
+}
+
+// Descriptive provider accounting only; never changes verifier outcomes.
+const typeSafeTelemetryKeys = new Set(['status', 'reason', 'model', 'requestAttempted', 'cacheHit', 'orderChanged', 'candidates', 'latencyMs', 'inputTokens', 'outputTokens']);
+export function validTypeSafeTelemetry(value) {
+  if (!value || typeof value !== 'object' || Array.isArray(value) || Object.keys(value).some(key => !typeSafeTelemetryKeys.has(key))) return false;
+  if (!['disabled', 'skipped', 'ok', 'fallback'].includes(value.status)) return false;
+  if (!['requestAttempted', 'cacheHit', 'orderChanged'].every(key => typeof value[key] === 'boolean')) return false;
+  if (['disabled', 'skipped'].includes(value.status) && value.requestAttempted) return false;
+  if (value.cacheHit && (value.requestAttempted || !['ok', 'fallback'].includes(value.status))) return false;
+  if (value.orderChanged && value.status !== 'ok') return false;
+  if (!['reason', 'model'].every(key => value[key] === undefined || (typeof value[key] === 'string' && /^[a-zA-Z0-9][a-zA-Z0-9._:-]{0,99}$/u.test(value[key])))) return false;
+  if (!['inputTokens', 'outputTokens', 'candidates'].every(key => value[key] === undefined || (Number.isSafeInteger(value[key]) && value[key] >= 0 && value[key] <= (key === 'candidates' ? 20 : 1_000_000_000)))) return false;
+  if (!value.requestAttempted && (value.inputTokens !== 0 || value.outputTokens !== 0)) return false;
+  return value.latencyMs === undefined || (Number.isFinite(value.latencyMs) && value.latencyMs >= 0 && value.latencyMs <= 3_600_000);
+}
+
+export function summarizeTypeSafeTelemetry(events) {
+  const eligible = events.filter(event => event.typesafe || ['search', 'find_context', 'capabilities'].includes(event.logicalOperation ?? event.tool));
+  const observed = eligible.filter(event => event.typesafe);
+  const missing = eligible.length - observed.length;
+  const unknownUsage = observed.filter(event => event.typesafe.inputTokens === undefined || event.typesafe.outputTokens === undefined).length;
+  const sum = key => observed.reduce((total, event) => total + (event.typesafe[key] ?? 0), 0);
+  return {
+    eligibleEvents: eligible.length, observedEvents: observed.length, missingEvents: missing, unknownUsageEvents: unknownUsage,
+    requests: missing ? null : sum('requestAttempted'),
+    inputTokens: missing || unknownUsage ? null : sum('inputTokens'),
+    outputTokens: missing || unknownUsage ? null : sum('outputTokens'),
+    cacheHits: sum('cacheHit'), orderChanges: sum('orderChanged'),
+    statuses: Object.fromEntries(['disabled', 'skipped', 'ok', 'fallback'].map(status => [status, observed.filter(event => event.typesafe.status === status).length])),
+    // Provider charges cannot be derived without an identified price schedule.
+    costUsd: null
+  };
+}
+
+export function combineTypeSafeTelemetry(runs) {
+  if (runs.length === 0) return null;
+  const fields = ['eligibleEvents', 'observedEvents', 'missingEvents', 'unknownUsageEvents', 'requests', 'inputTokens', 'outputTokens', 'cacheHits', 'orderChanges'];
+  return {
+    ...Object.fromEntries(fields.map(key => [key, runs.every(run => typeof run?.[key] === 'number') ? runs.reduce((total, run) => total + run[key], 0) : null])),
+    costUsd: null
+  };
 }

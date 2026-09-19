@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
@@ -150,6 +150,19 @@ try {
   });
   assertIncludes(hookPost.stdout, "Verdict: run_tests", "incomplete post-edit review should remain visible and actionable");
 
+  // Exercise the generated Cursor command with npm's local installed package
+  // resolution; expand only the documented host variable, without a shell.
+  run(codexa, ["init", targetRepo, "--cursor", "--no-hooks", "--no-index"], {
+    cwd: consumerRoot, label: "installed Cursor setup"
+  });
+  const cursorConfig = JSON.parse(readFileSync(path.join(targetRepo, ".cursor/mcp.json"), "utf8"));
+  const cursorServer = Object.values(cursorConfig.mcpServers)[0];
+  const cursorArgs = cursorServer.args.map(value => value.replace("${workspaceFolder}", targetRepo));
+  await smokeMcp(cursorServer.command, targetRepo, {
+    args: cursorArgs, cwd: consumerRoot, label: "generated Cursor MCP command from installed package",
+    env: { ...process.env, npm_config_offline: "true" }
+  });
+
   await smokeMcp(codexa, targetRepo);
   const installedPackageRoot = path.join(consumerRoot, "node_modules", "@mirnoorata", "codexa");
   const installedPluginWrapper = path.join(installedPackageRoot, "plugins", "codexa", "scripts", "codexa-mcp.js");
@@ -268,6 +281,7 @@ async function smokeMcp(command, mcpRoot, options = {}) {
     command,
     args,
     env: options.env,
+    cwd: options.cwd,
     stderr: "pipe"
   });
   const stderrChunks = [];

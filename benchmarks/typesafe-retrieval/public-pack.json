@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "repositories": [
+    { "id": "p-retry", "url": "https://github.com/sindresorhus/p-retry", "commit": "1472907affe8d6107aba5884abc36d6361b3042e", "partition": "calibration" },
+    { "id": "itsdangerous", "url": "https://github.com/pallets/itsdangerous", "commit": "672971d66a2ef9f85151e53283113f33d642dabd", "partition": "evaluation" },
+    { "id": "picomatch", "url": "https://github.com/micromatch/picomatch", "commit": "9fab7bf61913ea334c4203ed321c426cfde44a42", "partition": "evaluation" }
+  ],
+  "cases": [
+    { "id": "retry-abort", "repository": "p-retry", "kind": "behavior", "query": "where does aborting a retry cancel the delay timer", "target": "index.js", "line": 90 },
+    { "id": "retry-budget", "repository": "p-retry", "kind": "behavior", "query": "where does a failed attempt decide whether to consume a retry", "target": "index.js", "line": 148 },
+    { "id": "retry-exact", "repository": "p-retry", "kind": "exact", "query": "index.js", "target": "index.js", "line": 200 },
+    { "id": "signature-age", "repository": "itsdangerous", "kind": "behavior", "query": "where is a signed value rejected when its timestamp is too old", "target": "src/itsdangerous/timed.py", "line": 139 },
+    { "id": "signature-future", "repository": "itsdangerous", "kind": "behavior", "query": "where does signature validation reject a timestamp in the future", "target": "src/itsdangerous/timed.py", "line": 147 },
+    { "id": "key-rotation", "repository": "itsdangerous", "kind": "behavior", "query": "where are older secret keys tried when checking a signature", "target": "src/itsdangerous/signer.py", "line": 235 },
+    { "id": "payload-compression", "repository": "itsdangerous", "kind": "behavior", "query": "where is the payload compressed only when doing so saves space", "target": "src/itsdangerous/url_safe.py", "line": 60 },
+    { "id": "payload-decompression", "repository": "itsdangerous", "kind": "behavior", "query": "where does a leading dot trigger payload decompression", "target": "src/itsdangerous/url_safe.py", "line": 30 },
+    { "id": "signer-exact", "repository": "itsdangerous", "kind": "exact", "query": "src/itsdangerous/signer.py", "target": "src/itsdangerous/signer.py", "line": 244 },
+    { "id": "glob-negation", "repository": "picomatch", "kind": "behavior", "query": "where does a negated glob become a negative lookahead in a regular expression", "target": "lib/picomatch.js", "line": 274 },
+    { "id": "glob-basename", "repository": "picomatch", "kind": "behavior", "query": "where can matching ignore directories and test only the filename", "target": "lib/picomatch.js", "line": 174 },
+    { "id": "glob-ignore", "repository": "picomatch", "kind": "behavior", "query": "where is an otherwise matching path rejected by the ignore patterns", "target": "lib/picomatch.js", "line": 91 },
+    { "id": "regex-invalid", "repository": "picomatch", "kind": "behavior", "query": "where does an invalid regular expression fall back to one that never matches", "target": "lib/picomatch.js", "line": 348 },
+    { "id": "glob-exact", "repository": "picomatch", "kind": "exact", "query": "lib/picomatch.js", "target": "lib/picomatch.js", "line": 340 }
+  ]
+}

@@ -59,7 +59,7 @@ function dependencyCheckVerificationEvidence(
   const testCoverage = input.verificationCoverage.filter((coverage) =>
     testPaths.some(
       (testPath) =>
-        coverage.kind === (testPath.endsWith(".py") ? "python-tests" : "javascript-tests") &&
+        coverage.kind === (testPath.endsWith(".py") ? "python-tests" : testPath.endsWith(".go") ? "go-tests" : "javascript-tests") &&
         verificationTestRunnerCoversPath(coverage, testPath) &&
         coverageCoversPath(coverage, testPath)
     )

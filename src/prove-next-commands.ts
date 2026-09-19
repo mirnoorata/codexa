@@ -67,7 +67,7 @@ function nextVerificationCommands(
             entry.targetPaths.some((target) => missingTests.has(target)) ||
             (hasMissingDependency &&
               entry.covers.some((kind) =>
-                ["build", "typescript-syntax", "javascript-tests", "python-tests", "targeted-test"].includes(kind)
+                ["build", "typescript-syntax", "javascript-tests", "python-tests", "go-tests", "targeted-test"].includes(kind)
               ))
         )
         .map((entry) => entry.command)

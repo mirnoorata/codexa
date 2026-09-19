@@ -184,7 +184,8 @@ function loadAndValidateConfig(inputPath) {
     const taskPath = resolveContainedPath(baseDir, task.path, `task ${task.id}`);
     validateTask(taskPath, config.candidate.codexaVersion, task.name, {
       schemaVersion: config.schemaVersion,
-      serverCommands: schemaV2ServerCommands
+      serverCommands: schemaV2ServerCommands,
+      tarballSha256: config.candidate.tarballSha256
     });
     return { ...task, absolutePath: taskPath, hash: hashDirectory(taskPath) };
   });
@@ -239,7 +240,10 @@ function validateConfigObject(config) {
   }
   validateRunner(config.runner);
   assertObject(config.candidate, "candidate");
-  assertKeys(config.candidate, ["codexaVersion"], "candidate");
+  assertKeysWithOptional(config.candidate, ["codexaVersion"], ["tarballSha256"], "candidate");
+  if (config.candidate.tarballSha256 !== undefined && !/^[a-f0-9]{64}$/u.test(config.candidate.tarballSha256)) {
+    throw new Error("candidate.tarballSha256 must pin the local npm package SHA-256");
+  }
   if (!/^\d+\.\d+\.\d+$/u.test(config.candidate.codexaVersion)) {
     throw new Error("candidate.codexaVersion must be an exact stable semver");
   }
@@ -470,7 +474,20 @@ function validateTask(taskPath, codexaVersion, expectedTaskName, options = { sch
   if (!dockerfile.includes(`ARG CODEXA_VERSION=${codexaVersion}`)) {
     throw new Error("agent Dockerfile Codexa version does not match experiment candidate");
   }
-  const canonicalInstall = 'npm install --global --prefix /opt/codexa-runtime "@mirnoorata/codexa@${CODEXA_VERSION}"';
+  const canonicalInstall = options.tarballSha256
+    ? 'npm install --global --prefix /opt/codexa-runtime /tmp/codexa-candidate.tgz'
+    : 'npm install --global --prefix /opt/codexa-runtime "@mirnoorata/codexa@${CODEXA_VERSION}"';
+  if (options.tarballSha256) {
+    const tarball = path.join(taskPath, "environment/codexa-candidate.tgz");
+    requireRegularFile(tarball, "candidate npm tarball");
+    if (sha256(readFileSync(tarball)) !== options.tarballSha256) throw new Error("candidate npm tarball hash differs from registration");
+    const lines = dockerfile.split(/\r?\n/u).map(line => line.trim());
+    if (!lines.includes("COPY codexa-candidate.tgz /tmp/codexa-candidate.tgz")
+      || !lines.includes(`ARG CODEXA_TARBALL_SHA256=${options.tarballSha256}`)
+      || !lines.some(line => line === 'RUN echo "${CODEXA_TARBALL_SHA256}  /tmp/codexa-candidate.tgz" | sha256sum --check -')) {
+      throw new Error("agent Dockerfile must copy and verify the registered candidate tarball");
+    }
+  }
   const installsPinnedCandidate = dockerfile.split(/\r?\n/u).some((line) => {
     const trimmed = line.trim();
     return !trimmed.startsWith("#")
@@ -793,6 +810,7 @@ function resolveRegisteredInputs(registration, outputDir) {
     rejectSymlinksAndOversizedFiles(taskPath);
     validateTask(taskPath, registration.candidate?.codexaVersion, registeredTask.name, {
       schemaVersion: registration.schemaVersion,
+      tarballSha256: registration.candidate?.tarballSha256,
       serverCommands: registration.schemaVersion === 2
         ? registration.arms.filter((arm) => arm.kind === "codexa").map((arm) => arm.serverCommand)
         : []
@@ -1559,8 +1577,9 @@ function rejectSymlinksAndOversizedFiles(root) {
       if (stat.isDirectory()) {
         walk(target);
       } else if (stat.isFile()) {
-        if (stat.size > 1024 * 1024) {
-          throw new Error("task file exceeds the 1 MiB bound");
+        const fileLimit = relative === "environment/codexa-candidate.tgz" ? 4 * 1024 * 1024 : 1024 * 1024;
+        if (stat.size > fileLimit) {
+          throw new Error("task file exceeds its size bound (1 MiB, or 4 MiB for the candidate tarball)");
         }
         total += stat.size;
       } else {

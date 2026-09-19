@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
 import { cp, mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -20,6 +21,35 @@ describe("agent A/B black-box harness", () => {
     expect(value.primaryReward).toBe("verified_completion");
     expect(value.generalizationUnit).toBe("task");
     expect(value.registeredRuns).toBe(4);
+  });
+
+  it("pins an unreleased package by bytes and rejects a changed package or missing Docker hash check", async () => {
+    const fixture = await copyBenchmark();
+    const fixtureConfig = path.join(fixture, "experiment.json");
+    const value = JSON.parse(await readFile(fixtureConfig, "utf8"));
+    const environment = path.join(fixture, value.tasks[0].path, "environment");
+    const bytes = Buffer.from([31, 139, 8, 255, 0, 128]);
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    value.candidate.tarballSha256 = digest;
+    await writeFile(fixtureConfig, JSON.stringify(value));
+    const tarball = path.join(environment, "codexa-candidate.tgz");
+    await writeFile(tarball, bytes);
+    const dockerfile = path.join(environment, "Dockerfile");
+    const original = await readFile(dockerfile, "utf8");
+    const check = 'RUN echo "${CODEXA_TARBALL_SHA256}  /tmp/codexa-candidate.tgz" | sha256sum --check -';
+    const next = original.replace('"@mirnoorata/codexa@${CODEXA_VERSION}"', '/tmp/codexa-candidate.tgz')
+      + `\nARG CODEXA_TARBALL_SHA256=${digest}\nCOPY codexa-candidate.tgz /tmp/codexa-candidate.tgz\n${check}\n`;
+    await writeFile(dockerfile, next);
+    expect(run(["validate", "--config", fixtureConfig]).status).toBe(0);
+    const output = await mkdtemp(path.join(os.tmpdir(), "codexa-agent-ab-local-package-"));
+    const registerArgs = ["register", "--config", fixtureConfig, "--output", output, "--agent", "codex", "--model", "local/example"];
+    expect(run(registerArgs).status).toBe(0);
+    expect(run([...registerArgs, "--resume"]).status).toBe(0);
+    await writeFile(tarball, Buffer.from([1, 2, 3]));
+    expect(run(["validate", "--config", fixtureConfig]).stderr).toContain("tarball hash differs");
+    await writeFile(tarball, bytes);
+    await writeFile(dockerfile, next.replace(check, ""));
+    expect(run(["validate", "--config", fixtureConfig]).stderr).toContain("copy and verify");
   });
 
   it("rejects unknown configuration fields and task path escapes", async () => {

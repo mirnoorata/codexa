@@ -105,18 +105,30 @@ export async function initializeProject(repoInput: string | undefined, options: 
   const configPath = path.join(codexDir, "config.toml");
   const hooksPath = path.join(codexDir, "hooks.json");
   const claudeMcpPath = options.claude ? path.join(repoRoot, ".mcp.json") : null;
+  const cursorDir = path.join(repoRoot, ".cursor");
+  const cursorMcpPath = options.cursor ? path.join(cursorDir, "mcp.json") : null;
+  if (cursorMcpPath) await assertSafeManagedDirectory(cursorDir);
   await assertSafeManagedDirectory(codexDir);
   const existingConfig = await readManagedTextIfExists(configPath);
   await assertSafeManagedFile(hooksPath);
   // Parse requested shared JSON before touching any other wiring so a bad
   // tracked file cannot leave a one-time portability migration half-applied.
   const existingClaudeMcp = claudeMcpPath ? inspectClaudeMcpConfig(await readManagedTextIfExists(claudeMcpPath), claudeMcpPath) : null;
+  const existingCursorMcp = cursorMcpPath ? inspectClaudeMcpConfig(await readManagedTextIfExists(cursorMcpPath), cursorMcpPath) : null;
   const serverName = validateServerName(
-    options.serverName ?? detectExistingServerName(existingConfig) ?? existingClaudeMcp?.serverName ?? defaultServerName(repoRoot)
+    options.serverName ?? detectExistingServerName(existingConfig) ?? existingClaudeMcp?.serverName ?? existingCursorMcp?.serverName ?? defaultServerName(repoRoot)
   );
   const writeHooks = options.hooks ?? true;
-  const toolProfile = options.toolProfile ?? detectExistingToolProfile(existingConfig) ?? existingClaudeMcp?.toolProfile ?? "core";
+  const toolProfile = options.toolProfile ?? detectExistingToolProfile(existingConfig) ?? existingClaudeMcp?.toolProfile ?? existingCursorMcp?.toolProfile ?? "core";
   const autoRefresh = options.autoRefresh ?? true;
+
+  if (existingCursorMcp) {
+    const servers = existingCursorMcp.parsed.mcpServers;
+    if (servers !== undefined && !isPlainObject(servers)) throw new Error(`Cannot update ${cursorMcpPath}: mcpServers must be an object`);
+    if (isPlainObject(servers) && Object.hasOwn(servers, serverName) && !isCodexaMcpJsonEntry(servers[serverName])) {
+      throw new Error(`Cannot update ${cursorMcpPath}: server name ${serverName} belongs to another server; choose --server-name`);
+    }
+  }
 
   if (options.policyPack) {
     await assertPolicyPackWritable(repoRoot);
@@ -179,6 +191,22 @@ export async function initializeProject(repoInput: string | undefined, options: 
     });
   }
 
+  if (cursorMcpPath && existingCursorMcp) {
+    await mkdir(cursorDir, { recursive: true });
+    await assertSafeManagedDirectory(cursorDir);
+    await upsertClaudeMcpConfig(cursorMcpPath, existingCursorMcp, {
+      autoRefresh,
+      // Always portable, including before the file is first committed. Cursor
+      // expands this variable without relying on its process working directory.
+      launch: { command: "npx", args: ["-y", `@mirnoorata/codexa@${CODEXA_VERSION}`], pinnedNpx: true },
+      repoArg: "${workspaceFolder}",
+      repoRoot,
+      serverName,
+      toolProfile,
+      cursor: true
+    });
+  }
+
   const ciWorkflowPath = options.ci ? await writeCiWorkflow(repoRoot, CODEXA_VERSION) : null;
   const indexed =
     options.index === false
@@ -193,6 +221,7 @@ export async function initializeProject(repoInput: string | undefined, options: 
     agentsMdPath,
     claudeMdPath,
     claudeMcpPath,
+    cursorMcpPath,
     policyPack,
     ciWorkflowPath,
     serverName,
@@ -297,10 +326,12 @@ async function upsertClaudeMcpConfig(
     repoRoot: string;
     serverName: string;
     toolProfile: InitToolProfile;
+    cursor?: boolean;
   }
 ): Promise<void> {
   const { contents: existing, parsed } = existingConfig;
   const servers = isPlainObject(parsed.mcpServers) ? { ...parsed.mcpServers } : {};
+  const previous = options.cursor ? Object.values(servers).find(isCodexaMcpJsonEntry) : undefined;
   for (const [name, entry] of Object.entries(servers)) {
     if (name === options.serverName || isCodexaMcpJsonEntry(entry)) {
       delete servers[name];
@@ -313,6 +344,8 @@ async function upsertClaudeMcpConfig(
   args.push(options.autoRefresh ? "--auto-refresh" : "--no-auto-refresh");
   args.push("--tools", options.toolProfile);
   servers[options.serverName] = {
+    ...(options.cursor && isPlainObject(previous) ? previous : {}),
+    ...(options.cursor ? { type: "stdio" } : {}),
     command: options.launch.command,
     args
   };

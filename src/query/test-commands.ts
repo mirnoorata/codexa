@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import path from "node:path";
 import type { Confidence } from "../types.js";
 import { resolveToolInvocation } from "./verification/script-credit.js";
+import { goModuleRoot } from "./verification/go-tests.js";
 import {
   shellQuote,
   shellWords,
@@ -21,6 +22,13 @@ export interface CandidateTestCommand {
 }
 
 export function candidateTestCommand(repoRoot: string, testPath: string): CandidateTestCommand | undefined {
+  if (testPath.endsWith("_test.go")) {
+    const directory = path.posix.dirname(testPath);
+    const module = goModuleRoot(repoRoot, directory);
+    if (!module) return undefined;
+    const cwd = path.join(repoRoot, directory);
+    return { command: `cd ${shellQuote(cwd)} && go test -count=1 .`, commandCwd: cwd, commandExecutable: "go", commandArgs: ["test", "-count=1", "."], source: `${module === "." ? "" : `${module}/`}go.mod`, confidence: "derived" };
+  }
   if (/\.py$/.test(testPath)) {
     return pythonTestCommand(repoRoot, testPath);
   }

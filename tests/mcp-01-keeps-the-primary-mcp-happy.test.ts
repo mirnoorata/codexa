@@ -83,7 +83,7 @@ it("keeps the core MCP surface selective while preserving every logical operatio
         expect.objectContaining({ name: "search", title: "Codexa hybrid semantic search", description: expect.stringContaining("Search the codebase") }),
         expect.objectContaining({ name: "post_edit_review", title: "Codexa post-edit review", description: expect.stringContaining("Review code changes for drift") }),
         expect.objectContaining({ name: "proof_card", title: "Codexa proof card", description: expect.stringContaining("Final proof packet") }),
-        expect.objectContaining({ name: "capabilities", title: "Codexa capability dispatcher", description: expect.stringContaining("full logical capability set") })
+        expect.objectContaining({ name: "capabilities", title: "Codexa capability dispatcher", description: expect.stringContaining("Use returned nextTools.requiredInputs directly") })
       ])
     );
   });
