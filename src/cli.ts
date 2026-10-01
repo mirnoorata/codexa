@@ -20,6 +20,7 @@ import { createQuerySession } from "./query/session.js";
 import { ingestVerificationArtifact } from "./verification-artifacts.js";
 import { validateArtifactIds } from "./lifecycle-contract.js";
 import { postEditReviewStateIsCurrent, runPostEditHook, runPreEditHook } from "./cli/hooks.js";
+import { readHookInput } from "./cli/hook-input.js";
 import type { ChangeType } from "./types.js";
 import { runEval } from "./eval.js";
 import { registerQueryCommands } from "./cli/query-commands.js";
@@ -253,7 +254,7 @@ program
   .argument("[repo]", "repository root; defaults to the current git root")
   .description("Cheap hook helper that saves an implicit pre-edit baseline when no change-plan snapshot exists before an edit.")
   .action(async (repo: string | undefined) => {
-    await runPreEditHook(resolveRequiredGitRepo(repo, "hook-pre-edit"));
+    await runPreEditHook(resolveRequiredGitRepo(repo, "hook-pre-edit"), await readHookInput());
   });
 
 program
@@ -261,7 +262,7 @@ program
   .argument("[repo]", "repository root; defaults to the current git root")
   .description("Bounded hook helper that runs the post-edit review packet after edit tools.")
   .action(async (repo: string | undefined) => {
-    await runPostEditHook(resolveRequiredGitRepo(repo, "hook-post-edit"));
+    await runPostEditHook(resolveRequiredGitRepo(repo, "hook-post-edit"), await readHookInput());
   });
 
 program
