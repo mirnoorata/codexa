@@ -25,13 +25,17 @@ function runDiagnostic(options: { status?: number; message?: string; missingIden
         if (init.headers.Authorization !== 'Bearer ' + ${JSON.stringify(requestToken)}) throw new Error('Wrong GitHub credential');
         return { ok: true, json: async () => options.missingIdentity ? {} : { value: ${JSON.stringify(idToken)} } };
       }
+      if (calls.length === 3) {
+        if ((init.method || 'GET') !== 'GET' || String(url) !== 'https://registry.npmjs.org/-/package/%40mirnoorata%2Fcodexa/version/1.2.3/status' || init.headers.Authorization !== 'Bearer fixture-npm-publish-secret') process.exit(20);
+        return { ok: true, json: async () => ({ packageName: '@mirnoorata/codexa', version: '1.2.3', status: 'validating' }) };
+      }
       if (calls.length !== 2 || init.method !== 'POST' || String(url) !== 'https://registry.npmjs.org/-/npm/v1/oidc/token/exchange/package/%40mirnoorata%2Fcodexa') throw new Error('Unexpected network request');
       if (init.headers.Authorization !== 'Bearer ' + ${JSON.stringify(idToken)}) throw new Error('Wrong npm exchange credential');
       return { ok: (options.status || 201) === 201, status: options.status || 201, json: async () => options.status ? { message: options.message } : options.missingCredential ? {} : { token: 'fixture-npm-publish-secret' } };
     };
   `;
   const result = spawnSync(process.execPath, ["--input-type=module", "-e", fixture + diagnostic], {
-    env: { ...process.env, ACTIONS_ID_TOKEN_REQUEST_URL: options.noOidc ? "" : "https://oidc.example.invalid/token", ACTIONS_ID_TOKEN_REQUEST_TOKEN: requestToken },
+    env: { ...process.env, PACKAGE_VERSION: "1.2.3", ACTIONS_ID_TOKEN_REQUEST_URL: options.noOidc ? "" : "https://oidc.example.invalid/token", ACTIONS_ID_TOKEN_REQUEST_TOKEN: requestToken },
     encoding: "utf8", timeout: 5000
   });
   return { status: result.status, output: result.stdout + result.stderr };
@@ -42,6 +46,7 @@ describe("npm trusted publishing boundary", () => {
     const result = runDiagnostic();
     expect(result.status).toBe(0);
     expect(result.output).toContain("nothing was published");
+    expect(result.output).toContain("npm lifecycle status for @mirnoorata/codexa@1.2.3: validating");
     for (const secret of [requestToken, idToken, "fixture-npm-publish-secret"]) expect(result.output).not.toContain(secret);
   });
 
