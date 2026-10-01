@@ -30,6 +30,7 @@ export async function runPreEditHook(repo: string, input: HookInput = {}): Promi
   let activeRepoRoot: string;
   try {
     ({ activeRepoRoot } = await resolveHookRepoRoots(repo));
+    await assertHookInputMatchesRepo(activeRepoRoot, input);
   } catch (error) {
     await runAdvisoryHook(configuredRoot, "pre-edit", "change-plan snapshot check", async () => {
       throw error;
@@ -66,7 +67,6 @@ export async function runPreEditHook(repo: string, input: HookInput = {}): Promi
     throw new Error("Codexa task lifecycle requires replan before another managed edit");
   }
   await runAdvisoryHook(configuredRoot, "pre-edit", "change-plan snapshot check", async () => {
-    await assertHookInputMatchesRepo(activeRepoRoot, input);
     const baseline = await saveImplicitBaselineSnapshot(activeRepoRoot);
     if (baseline.status === "existing-snapshot") {
       return { status: "ok", reason: "snapshot-ready", taskId: baseline.taskId };

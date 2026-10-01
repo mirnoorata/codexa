@@ -27,7 +27,7 @@ it("refuses a sibling worktree's edits without reviewing either checkout", async
   }
   await noBaseline(repo);
   await noBaseline(sibling);
-  expect(await readdir(path.join(repo, ".codex/cache/codexa-outcomes"))).toEqual([]);
+  await expect(readdir(path.join(repo, ".codex/cache/codexa-outcomes"))).rejects.toThrow();
 });
 
 it("uses host cwd for relative patch targets and checks move destinations", async () => {
@@ -52,6 +52,38 @@ it("rejects symlink escapes and nested repositories", async () => {
   execFileSync("git", ["init", nested], { stdio: "ignore" });
   expect(hook(repo, { cwd: repo, tool_input: { file_path: "nested/new.ts" } }).stdout).toContain("another repository");
   await noBaseline(repo);
+});
+
+it("rejects raw symlink-parent traversal before lexical normalization", async () => {
+  const repo = await createHookFixtureRepo();
+  const outside = await trackedTmpDir("codexa-hook-parent-");
+  await mkdir(path.join(outside, "child"));
+  await symlink(path.join(outside, "child"), path.join(repo, "link"), "junction");
+  // Do not use path.join here: it would erase the very traversal under test.
+  const raw = `${repo}/link/../victim.ts`;
+  for (const command of ["hook-pre-edit", "hook-post-edit"]) {
+    expect(hook(repo, { cwd: repo, tool_input: { file_path: raw } }, command).stdout).toContain("parent traversal is unsupported");
+  }
+  expect(hook(repo, { cwd: `${repo}/link/..`, tool_input: { file_path: "victim.ts" } }).stdout).toContain("parent traversal is unsupported");
+  await noBaseline(repo);
+});
+
+it("does not let another checkout's invalid lifecycle block the edit", async () => {
+  const repo = await createHookFixtureRepo();
+  const plan = spawnSync(process.execPath, [cli, "change-plan", repo, "--task", "Lifecycle", "--file", "src/main.ts", "--save-snapshot", "--task-id", "invalid-state"], { encoding: "utf8", env: testEnv() });
+  expect(plan.status).toBe(0);
+  const stateDir = path.join(repo, ".codex/cache/codexa-task-lifecycle");
+  const stateFile = (await readdir(stateDir)).find((file) => file.endsWith(".json"));
+  expect(stateFile).toBeTruthy();
+  await writeFile(path.join(stateDir, stateFile!), '{"schemaVersion":1,"taskId":"invalid-state"}\n');
+  const other = await createHookFixtureRepo();
+  const foreign = hook(repo, { cwd: repo, tool_input: { file_path: path.join(other, "src/main.ts") } });
+  expect(foreign.status).toBe(0);
+  expect(foreign.stdout).toContain("outside the configured checkout");
+  // The invalid lifecycle still fails closed for an edit in its own checkout.
+  const local = hook(repo, { cwd: repo, tool_input: { file_path: "src/main.ts" } });
+  expect(local.status).not.toBe(0);
+  expect(local.stdout + local.stderr).toContain("state is unavailable or invalid");
 });
 
 it.each([

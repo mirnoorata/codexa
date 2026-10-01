@@ -791,7 +791,12 @@ worktree), symlink escape, nested repository, or unsupported payload produces
 an advisory **review unavailable** diagnostic instead of evidence for the wrong
 tree. Initialize Codexa separately in the edited worktree and reload that
 checkout's hooks/MCP connection; edit paths do not authorize automatic routing.
-Direct CLI calls without stdin retain the explicit repository behavior.
+Paths containing `..` components are conservatively unsupported, because
+normalizing `symlink/..` can change the actual filesystem target. Supply a
+normalized absolute path for the intended physical target to obtain coverage.
+These checks run before checkout-local lifecycle enforcement, so a stale
+checkout's replan latch cannot block edits in another checkout. Direct CLI
+calls without stdin retain the explicit repository behavior.
 
 AutoVerify failures and non-covering runs are printed even when the review
 verdict is informational. AutoVerify deliberately excludes repository-owned

@@ -74,6 +74,13 @@ export async function assertHookInputMatchesRepo(repoRoot: string, input: HookIn
     if (!target || target.includes("\0") || (!path.isAbsolute(target) && !cwd)) {
       throw new Error("hook edit target needs an absolute path or host cwd");
     }
+    // Lexical normalization erases symlink/.. traversal before realpath can
+    // inspect it. Keep this advisory boundary conservative instead of claiming
+    // coverage for a path whose filesystem meaning differs from path.resolve.
+    const separators = process.platform === "win32" ? /[\\/]/u : /\//u;
+    if (target.split(separators).includes("..") || cwd?.split(separators).includes("..")) {
+      throw new Error("hook target parent traversal is unsupported; use a normalized absolute target without parent components");
+    }
     const absolute = path.resolve(cwd ?? root, target);
     const existing = await existingAncestor(absolute);
     const real = await fs.realpath(existing);
