@@ -81,7 +81,7 @@ describe("Release Please workflow dispatch boundary", () => {
   });
 });
 
-function runVisibility(statuses: number[], mismatch = false) {
+function runVisibility(statuses: Array<number | "timeout" | "network" | "body-timeout" | "malformed" | "bug">, mismatch = false) {
   const dir = mkdtempSync(join(tmpdir(), "release-visibility-"));
   writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "@example/package", version: "1.2.3" }));
   const mocks = `
@@ -90,6 +90,11 @@ function runVisibility(statuses: number[], mismatch = false) {
     globalThis.fetch = async (url, options) => {
       if (url !== 'https://registry.npmjs.org/%40example%2Fpackage/1.2.3' || options.redirect !== 'error' || !options.signal) throw new Error('Unsafe registry request');
       const status = statuses.length > 1 ? statuses.shift() : statuses[0];
+      if (status === 'timeout') throw new DOMException('Timeout fixture', 'TimeoutError');
+      if (status === 'network') throw new TypeError('fetch failed');
+      if (status === 'bug') throw new Error('Unexpected programming error');
+      if (status === 'body-timeout') return { ok: true, status: 200, json: async () => { throw new DOMException('Body timeout fixture', 'TimeoutError'); } };
+      if (status === 'malformed') return { ok: true, status: 200, json: async () => { throw new SyntaxError('Invalid JSON fixture'); } };
       return { ok: status === 200, status, json: async () => ({ name: '@example/package', version: ${JSON.stringify(mismatch ? "0.0.0" : "1.2.3")}, dist: { tarball: 'https://registry.npmjs.org/package.tgz' } }) };
     };
   `;
@@ -100,6 +105,23 @@ function runVisibility(statuses: number[], mismatch = false) {
 }
 
 describe("npm visibility before MCP publication", () => {
+  it("recovers from request, connection, and response-body failures", () => {
+    const result = runVisibility(["timeout", "network", "body-timeout", 200]);
+    expect(result.status).toBe(0);
+    expect(result.output.match(/retrying/g)).toHaveLength(3);
+    expect(result.output).toContain("@example/package@1.2.3 is visible on npm.");
+  });
+  it("bounds repeated network failures and explains recovery", () => {
+    const result = runVisibility(["timeout"]);
+    expect(result.status).not.toBe(0);
+    expect(result.output.match(/retrying/g)).toHaveLength(29);
+    expect(result.output).toContain("A public 404 does not prove the upload failed");
+  });
+  it.each(["bug", "malformed"] as const)("does not retry permanent %s errors", failure => {
+    const result = runVisibility([failure]);
+    expect(result.status).not.toBe(0);
+    expect(result.output).not.toContain("retrying");
+  });
   it("waits through asynchronous processing and temporary registry errors", () => {
     const result = runVisibility([404, 429, 503, 200]);
     expect(result.status).toBe(0);
