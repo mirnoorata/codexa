@@ -1093,3 +1093,21 @@ without moving the tag or creating another release. Re-running an old failed
 Actions run still uses its old workflow definition. The MCP registry job waits
 for npm to expose the version before registering it; if npm processing exceeds
 the bounded wait, retry the failed MCP job after the version becomes visible.
+Request and response-body timeouts and temporary connection failures are retried
+within the same bounded wait. Authentication failures, invalid JSON, and package
+identity mismatches stop the job immediately.
+
+A successful `npm publish` can report that the upload is still processing.
+A public 404 during that period does not prove that the upload failed: do not
+republish or create a new version solely to work around it. A maintainer can
+inspect the exact version through npm's authenticated
+[package lifecycle status API](https://api-docs.npmjs.com/), which distinguishes
+validation, approval, and publication state. If an approval is required, complete
+it through npm's maintainer flow; keep account authentication and 2FA enabled.
+The workflow diagnostic also attempts that read-only status query using its
+existing short-lived trusted-publisher credential. It prints only the validated
+package identity and lifecycle state, never the response body or credential.
+The status endpoint may require maintainer authentication or may not be enabled
+for the package; an unavailable diagnostic does not prove publication failed.
+Run the current workflow with the existing release tag and `publish=false` to
+diagnose without uploading again.

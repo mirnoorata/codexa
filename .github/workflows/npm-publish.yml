@@ -183,6 +183,8 @@ jobs:
 
       - name: Diagnose npm trusted publishing
         if: steps.package.outputs.already_published != 'true' || (github.event_name == 'workflow_dispatch' && !inputs.publish)
+        env:
+          PACKAGE_VERSION: ${{ steps.package.outputs.version }}
         run: |
           node --input-type=module <<'NODE'
           const registry = 'https://registry.npmjs.org';
@@ -217,6 +219,31 @@ jobs:
           }
           const credential = await exchange.json();
           if (typeof credential.token !== 'string' || !credential.token) throw new Error('npm returned no publish credential.');
+          const version = process.env.PACKAGE_VERSION;
+          if (!/^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/.test(version ?? '')) throw new Error('Lifecycle diagnostic requires an exact stable version.');
+          // This read-only endpoint may not accept exchange credentials or be enabled yet.
+          // Never print response bodies or exception messages from credential-bearing requests.
+          try {
+            const response = await fetch(`${registry}/-/package/${encodeURIComponent(packageName)}/version/${encodeURIComponent(version)}/status`, {
+              headers: { Authorization: `Bearer ${credential.token}` },
+              redirect: 'error', signal: AbortSignal.timeout(15000)
+            });
+            if (!response.ok) {
+              console.log(`npm lifecycle status unavailable: HTTP ${response.status}; inspect the exact version with maintainer authentication. This does not prove the upload failed.`);
+            } else {
+              const body = await response.json();
+              const state = body?.status;
+              if (body?.packageName !== packageName || body?.version !== version ||
+                  typeof state !== 'string' || !/^[a-z][a-z0-9_-]{0,63}$/.test(state) ||
+                  [requestToken, idToken, credential.token].some(secret => state.includes(secret))) {
+                console.log('npm lifecycle status unavailable: unexpected response; inspect the exact version with maintainer authentication.');
+              } else {
+                console.log(`npm lifecycle status for ${packageName}@${version}: ${state}`);
+              }
+            }
+          } catch {
+            console.log('npm lifecycle status unavailable: request or response failed; inspect the exact version with maintainer authentication.');
+          }
           console.log('npm trusted publishing accepted. The temporary credential is discarded; nothing was published.');
           NODE
 
@@ -296,20 +323,30 @@ jobs:
           const { name, version } = JSON.parse(readFileSync('package.json', 'utf8'));
           const url = `https://registry.npmjs.org/${encodeURIComponent(name)}/${encodeURIComponent(version)}`;
           for (let attempt = 1; attempt <= 30; attempt++) {
-            const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(5000) });
-            if (response.ok) {
-              const published = await response.json();
+            let status;
+            let published;
+            let transientFailure;
+            try {
+              const response = await fetch(url, { redirect: 'error', signal: AbortSignal.timeout(5000) });
+              status = response.status;
+              if (response.ok) published = await response.json();
+            } catch (error) {
+              if (error?.name !== 'TimeoutError' && error?.name !== 'AbortError' &&
+                  !(error instanceof TypeError && ['fetch failed', 'terminated'].includes(error.message))) throw error;
+              transientFailure = 'temporary registry network failure';
+            }
+            if (!transientFailure && status >= 200 && status < 300) {
               if (published.name !== name || published.version !== version || !published.dist?.tarball) {
                 throw new Error('npm returned unexpected package metadata');
               }
               console.log(`${name}@${version} is visible on npm.`);
               break;
             }
-            if (response.status !== 404 && response.status !== 429 && response.status < 500) {
-              throw new Error(`npm visibility check failed: HTTP ${response.status}`);
+            if (!transientFailure && status !== 404 && status !== 429 && status < 500) {
+              throw new Error(`npm visibility check failed: HTTP ${status}`);
             }
-            if (attempt === 30) throw new Error('Timed out waiting for npm publication; retry the MCP registry job once npm is visible.');
-            console.log(`npm publication is still processing (HTTP ${response.status}); retrying.`);
+            if (attempt === 30) throw new Error('Timed out waiting for npm publication; inspect the accepted version in the npm maintainer account and retry the MCP registry job once npm is visible. A public 404 does not prove the upload failed.');
+            console.log(`npm version visibility is not confirmed (${transientFailure ?? `HTTP ${status}`}); retrying.`);
             await new Promise(resolve => setTimeout(resolve, 10000));
           }
           NODE
