@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.1](https://github.com/mirnoorata/codexa/compare/v0.20.0...v0.20.1) (2026-10-01)
+
+
+### Bug Fixes
+
+* **hooks:** reject edits outside the configured checkout ([#137](https://github.com/mirnoorata/codexa/issues/137)) ([73ad16d](https://github.com/mirnoorata/codexa/commit/73ad16d2ff915bdf7d181c6b47697a8355f64eea))
+
 ## [0.20.0](https://github.com/mirnoorata/codexa/compare/v0.19.0...v0.20.0) (2026-09-19)
 
 
