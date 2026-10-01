@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.20.2](https://github.com/mirnoorata/codexa/compare/v0.20.1...v0.20.2) (2026-10-01)
+
+
+### Bug Fixes
+
+* **release:** recover npm publication diagnostics and visibility retries ([#139](https://github.com/mirnoorata/codexa/issues/139)) ([7332011](https://github.com/mirnoorata/codexa/commit/733201179ddda23c8e5b015081e4df2d3005b786))
+
 ## [0.20.1](https://github.com/mirnoorata/codexa/compare/v0.20.0...v0.20.1) (2026-10-01)
 
 
