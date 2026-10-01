@@ -784,6 +784,23 @@ scrubbed environments and write reports under `.codex/static-analysis/`.
 
 ### AutoVerify Hooks
 
+Hooks keep their configured repository binding. When a host supplies edit JSON
+on stdin, Codexa checks every file/patch target before saving a baseline or
+running review commands. An outside-checkout target (including a sibling Git
+worktree), symlink escape, nested repository, or unsupported payload produces
+an advisory **review unavailable** diagnostic instead of evidence for the wrong
+tree. Initialize Codexa separately in the edited worktree and reload that
+checkout's hooks/MCP connection; edit paths do not authorize automatic routing.
+Direct CLI calls without stdin retain the explicit repository behavior.
+
+AutoVerify failures and non-covering runs are printed even when the review
+verdict is informational. AutoVerify deliberately excludes repository-owned
+executables from ambient PATH and uses a minimal environment; it does not
+activate a project's virtual environment. If a project needs its own Python
+environment, disable automatic execution with `CODEXA_AUTOVERIFY=0`, run its
+documented interpreter explicitly, and supply that evidence to the final
+review. Do not solve missing dependencies by relaxing the executable policy.
+
 `codexa init` writes advisory hooks when Codex hooks are available:
 
 - `hook-pre-edit` silently saves an implicit pre-edit baseline when no

@@ -1,5 +1,6 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
+import { assertHookInputMatchesRepo, type HookInput } from "./hook-input.js";
 import { effectiveAutonomyMode } from "../autonomy.js";
 import { runAutoVerifyForPostEdit, autoVerifyPolicySignature, sanitizeAutoVerifyText } from "../autoverify.js";
 import { acquireCacheLock } from "../cache-lock.js";
@@ -24,7 +25,7 @@ import { pendingTaskLifecycleReplan, pendingTaskLifecycleReplans } from "../task
 
 type HookActionResult = Omit<CodexaHookEventInput, "hook" | "durationMs"> | void;
 
-export async function runPreEditHook(repo: string): Promise<void> {
+export async function runPreEditHook(repo: string, input: HookInput = {}): Promise<void> {
   const configuredRoot = path.resolve(repo);
   let activeRepoRoot: string;
   try {
@@ -65,6 +66,7 @@ export async function runPreEditHook(repo: string): Promise<void> {
     throw new Error("Codexa task lifecycle requires replan before another managed edit");
   }
   await runAdvisoryHook(configuredRoot, "pre-edit", "change-plan snapshot check", async () => {
+    await assertHookInputMatchesRepo(activeRepoRoot, input);
     const baseline = await saveImplicitBaselineSnapshot(activeRepoRoot);
     if (baseline.status === "existing-snapshot") {
       return { status: "ok", reason: "snapshot-ready", taskId: baseline.taskId };
@@ -92,10 +94,11 @@ async function pendingPreEditLifecycleBlock(activeRepoRoot: string): Promise<{ r
   return pending ? { repoRoot: activeRepoRoot, taskId: pending.taskId, reasons: pending.stop.reasons } : undefined;
 }
 
-export async function runPostEditHook(repo: string): Promise<void> {
+export async function runPostEditHook(repo: string, input: HookInput = {}): Promise<void> {
   const configuredRoot = path.resolve(repo);
   await runAdvisoryHook(configuredRoot, "post-edit", "post-edit review", async () => {
     const { activeRepoRoot } = await resolveHookRepoRoots(repo);
+    await assertHookInputMatchesRepo(activeRepoRoot, input);
     await prepareHookManagedState(activeRepoRoot);
     const release = await tryAcquirePostEditHookLock(activeRepoRoot);
     if (!release) {
@@ -149,7 +152,8 @@ export async function runPostEditHook(repo: string): Promise<void> {
             { autoRefresh: true, commandBudgetMs: 15_000, maxResults: 6 }
           )
         : initialResult;
-      if (postEditHookNeedsAttention(result.data)) {
+      const autoVerifyStatus = summarizeAutoVerifyStatus(autoVerify);
+      if (postEditHookNeedsAttention(result.data) || autoVerifyStatus === "failed" || autoVerifyStatus === "non_covering") {
         const autoVerifyOutput = formatAutoVerifyHookOutput(autoVerify, activeRepoRoot);
         if (autoVerifyOutput.length > 0) {
           console.log(autoVerifyOutput.join("\n"));
@@ -157,7 +161,6 @@ export async function runPostEditHook(repo: string): Promise<void> {
         console.log(compactHookOutput(result.text));
       }
       const outcome = postEditOutcomeFromQueryResult(result.data);
-      const autoVerifyStatus = summarizeAutoVerifyStatus(autoVerify);
       const reviewedSignature = postEditHookReviewSignature({ freshness: result.freshness, taskId, autoVerifyMode });
       await savePostEditHookReviewState(activeRepoRoot, {
         signature: reviewedSignature,
